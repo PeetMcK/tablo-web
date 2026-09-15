@@ -1,0 +1,16 @@
+# Linux host with a VAAPI-capable GPU (Intel iGPU, or AMD).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# UNVERIFIED: written from FFmpeg's documented VAAPI pipeline, not tested — no
+# VAAPI hardware was available. Check `ffmpeg -hwaccels` and that
+# /dev/dri/renderD128 exists inside the container before trusting it.
+services:
+  backend:
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - TRANSCODE_VIDEO_ENCODER=h264_vaapi
+      - VAAPI_DEVICE=/dev/dri/renderD128
+      # Fixed-function encoders gain little from parallel jobs.
+      - TRANSCODE_CONCURRENCY=2

@@ -1,0 +1,21 @@
+# Run the backend natively on macOS so it can use the Media Engine.
+#
+# The container cannot reach VideoToolbox: it is a macOS framework and Docker
+# Desktop runs a Linux VM with no passthrough. Only a host process can encode in
+# hardware.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.native.yml up -d
+#   backend/run-native.sh
+#
+# The frontend stays containerized and proxies to the host.
+services:
+  backend:
+    # Replaced by the host process; compose still needs the key to drop it.
+    profiles: ["disabled"]
+
+  frontend:
+    depends_on: !override []
+    environment:
+      - BACKEND_ORIGIN=host.docker.internal:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -3,9 +3,10 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Proxy /api/* to the backend container
+    # Proxy /api/* to the backend. BACKEND_ORIGIN is substituted at container
+    # start, so the backend can run natively on the host for hardware encoding.
     location /api/ {
-        proxy_pass http://backend:8000;
+        proxy_pass http://${BACKEND_ORIGIN};
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $http_host;
