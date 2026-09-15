@@ -8,6 +8,7 @@ import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
 import { ProfileMenu } from "./ProfileMenu";
 import { PageHeader } from "./PageHeader";
+import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
 function useGuideStream(enabled: boolean) {
   const [channels, setChannels] = useState<GuideChannel[]>([]);
@@ -66,7 +67,6 @@ interface Props {
   onLogout: () => void;
 }
 
-type Tab = "live" | "grid" | "library";
 
 
 function matchesContentFilter(ch: GuideChannel, f: ContentFilter): boolean {
@@ -85,10 +85,15 @@ function matchesContentFilter(ch: GuideChannel, f: ContentFilter): boolean {
 }
 
 export function ChannelGrid({ onLogout }: Props) {
+  // Read once on mount so a refresh lands on the same tab / stream. A lazy
+  // useState rather than a ref: the value is needed during render.
+  const [initialRoute] = useState(parseRoute);
   const [playing, setPlaying] = useState<GuideChannel | null>(null);
   const [filter, setFilter] = useState("");
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
-  const [activeTab, setTab] = useState<Tab>("live");
+  const [activeTab, setTab] = useState<Tab>(initialRoute.tab);
+  // Set once the user closes the restored stream, so it does not reopen.
+  const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
@@ -102,6 +107,29 @@ export function ChannelGrid({ onLogout }: Props) {
   }, []);
 
   const { channels, loading: isLoading } = useGuideStream(activeTab === "live");
+
+
+  // A channel named in the URL reopens as soon as the guide contains it.
+  // Derived rather than assigned from an effect, which would cascade renders.
+  const routeWatch = initialRoute.watch;
+  const restoredChannel =
+    !restoreDone && !playing && routeWatch?.kind === "live"
+      ? channels.find(c => c.identifier === routeWatch.id) ?? null
+      : null;
+  const nowPlaying = playing ?? restoredChannel;
+
+  // Keep the URL in step with what is on screen, so a refresh lands here again.
+  useEffect(() => {
+    writeRoute({
+      tab: activeTab,
+      watch: nowPlaying ? { kind: "live", id: nowPlaying.identifier } : null,
+    });
+  }, [activeTab, nowPlaying]);
+
+  const closePlayer = useCallback(() => {
+    setPlaying(null);
+    setRestoreDone(true);
+  }, []);
 
   const filtered = channels.filter(ch => {
     if (!matchesContentFilter(ch, contentFilter)) return false;
@@ -133,22 +161,25 @@ export function ChannelGrid({ onLogout }: Props) {
 
   return (
     <>
-      {playing && (
+      {nowPlaying && (
         <VideoPlayer
-          key={playing.identifier}
+          key={nowPlaying.identifier}
           source={{
             kind: "live",
+            // current_program was previously dropped here, which is why the
+            // player could only show a channel name.
+            program: nowPlaying.current_program,
             channel: {
-              identifier: playing.identifier,
-              call_sign: playing.call_sign,
-              major: playing.major,
-              minor: playing.minor,
-              network: playing.network,
-              kind: playing.kind,
-              display_name: playing.display_name
+              identifier: nowPlaying.identifier,
+              call_sign: nowPlaying.call_sign,
+              major: nowPlaying.major,
+              minor: nowPlaying.minor,
+              network: nowPlaying.network,
+              kind: nowPlaying.kind,
+              display_name: nowPlaying.display_name
             }
           }}
-          onClose={() => setPlaying(null)}
+          onClose={closePlayer}
         />
       )}
 

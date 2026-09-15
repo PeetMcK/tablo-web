@@ -57,7 +57,7 @@ export interface GridChannel extends Omit<GuideChannel, 'current_program'> {
   airings: Program[];
 }
 
-export type CacheState = "absent" | "running" | "complete" | "failed";
+export type CacheState = "absent" | "partial" | "complete" | "failed";
 
 export interface Recording {
   object_id: number;
@@ -80,6 +80,25 @@ export interface Recording {
   watched: boolean;
   position: number;
   cache_state: CacheState;
+  /** Fraction of the recording transcoded, 0-1. */
+  cache_progress: number;
+  /** Kept offline: exempt from eviction, removable only on request. */
+  pinned: boolean;
+  /** Cached copy of something the Tablo no longer has. */
+  offline_only: boolean;
+  /** Offline copy still wanted, but not being worked on right now. */
+  paused: boolean;
+  /** Seconds transcoded so far. */
+  cached_seconds: number;
+  /** Live transcode throughput. Zero once no window has landed recently. */
+  rate: TranscodeRate;
+}
+
+export interface TranscodeRate {
+  /** Megabits per second written to the cache. */
+  mbps: number;
+  /** Seconds of output produced per second spent encoding. */
+  realtime: number;
 }
 
 export interface RecordingList {
@@ -87,6 +106,17 @@ export interface RecordingList {
   returned: number;
   /** Device total. Exceeds `returned` when the fetch limit truncated the list. */
   total: number;
+  /** How many entries exist only as offline copies. */
+  offline_only: number;
+}
+
+export interface Storage {
+  pinned_bytes: number;
+  cache_bytes: number;
+  total_bytes: number;
+  budget_bytes: number;
+  free_bytes: number;
+  pinned_count: number;
 }
 
 export interface RecordingWatch {
@@ -95,6 +125,8 @@ export interface RecordingWatch {
   state: CacheState;
   progress: number;
   duration: number;
+  cached_seconds: number;
+  cached_ranges: [number, number][];
 }
 
 export interface RecordingStatus {
@@ -102,6 +134,11 @@ export interface RecordingStatus {
   state: CacheState;
   progress: number;
   duration: number;
+  /** Seconds of the recording already transcoded. */
+  cached_seconds: number;
+  /** Encoded regions as [startSec, endSec]. Not necessarily contiguous — a
+   *  seek leaves the opening cached and adds a separate island. */
+  cached_ranges: [number, number][];
   error: string | null;
 }
 
@@ -180,13 +217,55 @@ export const api = {
 
   recordings: () => req<RecordingList>("/recordings"),
 
+  /** Every stored resume position, keyed `"<kind>:<ref>"`. */
+  resumeAll: () => req<Record<string, number>>("/resume"),
+
+  putResume: (kind: string, ref: string, position: number, duration: number) =>
+    req<{ ok: boolean }>("/resume", {
+      method: "PUT",
+      body: JSON.stringify({ kind, ref, position, duration }),
+    }),
+
+  /** One-shot handover of positions this browser stored before they moved server-side. */
+  importResume: (entries: Record<string, number>) =>
+    req<{ imported: number }>("/resume/import", {
+      method: "POST",
+      body: JSON.stringify({ entries }),
+    }),
+
   /** Start or attach to a cached transcode. Returns immediately; if the cache is
    *  cold the returned playlist grows as encoding proceeds. */
   watchRecording: (objectId: number) =>
     req<RecordingWatch>(`/recordings/${objectId}/watch`, { method: "POST" }),
 
-  recordingStatus: (objectId: number) =>
-    req<RecordingStatus>(`/recordings/${objectId}/status`),
+  /** Doubles as the "still watching" heartbeat that bounds server-side prefetch. */
+  recordingStatus: (objectId: number, position?: number) =>
+    req<RecordingStatus>(
+      `/recordings/${objectId}/status${position != null ? `?position=${Math.floor(position)}` : ""}`,
+    ),
+
+  /** Stop transcoding without deleting what is already cached. */
+  releaseRecording: (objectId: number) =>
+    req<{ ok: boolean }>(`/recordings/${objectId}/release`, { method: "POST" }),
+
+  /** Keep a full offline copy: transcodes everything, exempt from eviction. */
+  keepRecording: (objectId: number) =>
+    req<{ pinned: boolean; progress: number }>(`/recordings/${objectId}/keep`, { method: "POST" }),
+
+  /** Stop keeping it. The transcode remains until eviction reclaims it. */
+  unkeepRecording: (objectId: number) =>
+    req<{ pinned: boolean }>(`/recordings/${objectId}/keep`, { method: "DELETE" }),
+
+  pauseKeep: (objectId: number) =>
+    req<{ paused: boolean }>(`/recordings/${objectId}/keep/pause`, { method: "POST" }),
+
+  resumeKeep: (objectId: number) =>
+    req<{ paused: boolean }>(`/recordings/${objectId}/keep/resume`, { method: "POST" }),
+
+  deleteRecordingCache: (objectId: number) =>
+    req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),
+
+  storage: () => req<Storage>("/recordings/storage"),
 
   evictRecording: (objectId: number) =>
     req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),

@@ -30,7 +30,7 @@ export function ChannelCard({ channel, now, onClick }: Props) {
         {/* Logo/Badge container */}
         <div className="flex flex-col items-center gap-2 shrink-0">
           <div className="w-16 h-12 flex items-center justify-center bg-black/20 rounded-lg p-1.5 border border-white/5">
-            <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-6 h-6" />
+            <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
           </div>
           <span className="text-[10px] font-black tracking-tighter text-white/30 uppercase">
             {channel.major > 0 ? `${channel.major}.${channel.minor}` : "OTT"}

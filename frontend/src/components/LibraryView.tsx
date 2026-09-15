@@ -1,9 +1,26 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
-import { Play } from "lucide-react";
+import { Play, Download, CheckCircle2, CloudOff, Loader2, Pause, Trash2 } from "lucide-react";
+import { parseRoute, writeRoute } from "../lib/route";
+import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { loadResume, saveResume, resumeKey } from "../lib/resume";
+
+/** A recording still being written has no complete source to transcode. */
+function isPlayable(rec: Recording): boolean {
+  // An offline copy plays regardless of what the device reports — it may not
+  // be on the device at all any more.
+  if (rec.offline_only) return true;
+  return rec.state !== "recording" && !rec.error;
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1024 ** 4) return `${(n / 1024 ** 4).toFixed(1)} TB`;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.round(n / 1024 ** 2)} MB`;
+}
 
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -13,15 +30,97 @@ function formatDuration(seconds: number): string {
 
 export function LibraryView() {
   const [playing, setPlaying] = useState<Recording | null>(null);
+  const [initialRoute] = useState(parseRoute);
+  const [restoreDone, setRestoreDone] = useState(false);
+  const positionRef = useRef(0);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const playingRef = useRef<Recording | null>(null);
+
+  const qc = useQueryClient();
+
+  const { data: storage } = useQuery({
+    queryKey: ["recordings-storage"],
+    queryFn: () => api.storage(),
+    refetchInterval: 15_000,
+  });
+
+  const control = useMutation<unknown, Error, { id: number; action: "pause" | "resume" | "delete" }>({
+    mutationFn: ({ id, action }) =>
+      action === "pause" ? api.pauseKeep(id)
+        : action === "resume" ? api.resumeKeep(id)
+        : api.deleteRecordingCache(id),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["recordings"] });
+      qc.invalidateQueries({ queryKey: ["recordings-storage"] });
+    },
+  });
+
+  const keep = useMutation({
+    mutationFn: ({ id, on }: { id: number; on: boolean }) =>
+      on ? api.keepRecording(id) : api.unkeepRecording(id),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["recordings"] });
+      qc.invalidateQueries({ queryKey: ["recordings-storage"] });
+    },
+  });
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["recordings"],
     queryFn: () => api.recordings(),
     staleTime: 5 * 60_000,
+    // A refetch re-renders this component, which used to reload the player.
+    // That is fixed in VideoPlayer, but there is no reason to churn mid-watch.
+    refetchOnWindowFocus: false,
+    // Poll quickly while a copy is being made so progress actually moves;
+    // back off once nothing is in flight.
+    refetchInterval: (q) => {
+      const rows = q.state.data?.recordings ?? [];
+      const busy = rows.some(r => r.pinned && !r.paused && r.cache_state !== "complete");
+      return busy ? 4_000 : 30_000;
+    },
   });
 
-  const recordings = data?.recordings ?? [];
+  const recordings = useMemo(() => data?.recordings ?? [], [data]);
   const truncated = data ? data.total > data.returned : false;
+
+  // A recording named in the URL reopens as soon as the list contains it.
+  // Derived rather than assigned from an effect, which would cascade renders.
+  const routeWatch = initialRoute.watch;
+  const restoredRecording =
+    !restoreDone && !playing && routeWatch?.kind === "recording"
+      // Guarded: a URL could name a recording that cannot be played.
+      ? recordings.find(r => r.object_id === routeWatch.id && isPlayable(r)) ?? null
+      : null;
+  const nowPlaying = playing ?? restoredRecording;
+
+  // Read the resume point ONCE per recording. Reading it on every render fed
+  // the continuously-saved position back into the player's startPosition, which
+  // changed its identity and tore the player down — every clock tick caused a
+  // reload and a jump backwards.
+  const resumeAt = useMemo(
+    () => (nowPlaying ? loadResume(resumeKey("recording", nowPlaying.object_id)) : 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nowPlaying?.object_id],
+  );
+
+  useEffect(() => {
+    playingRef.current = nowPlaying;
+    if (!nowPlaying) positionRef.current = 0;
+    writeRoute({
+      tab: "library",
+      watch: nowPlaying ? { kind: "recording", id: nowPlaying.object_id } : null,
+    });
+  }, [nowPlaying]);
+
+  // Persist the playhead locally. Throttled to whole seconds; the URL is left
+  // alone so it stays a stable reference to the recording.
+  const handlePosition = useCallback((seconds: number) => {
+    const whole = Math.floor(seconds);
+    if (whole === Math.floor(positionRef.current)) return;
+    positionRef.current = whole;
+    const rec = playingRef.current;
+    if (rec) saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
+  }, []);
 
   if (isLoading) {
     return (
@@ -45,19 +144,35 @@ export function LibraryView() {
 
   return (
     <>
-      {playing && (
+      <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} />
+
+      {nowPlaying && (
         <VideoPlayer
-          key={playing.object_id}
-          source={{ kind: "recording", recording: playing }}
-          onClose={() => setPlaying(null)}
+          key={nowPlaying.object_id}
+          source={{ kind: "recording", recording: nowPlaying }}
+          // Restored from a URL: resume at the saved point, paused, so audio is
+          // not blocked by the missing user activation on a fresh page load.
+          // Resume where this recording was left, whether opened fresh or
+          // restored by a refresh. Only a refresh starts paused — a reload
+          // carries no user activation, so autoplay would be forced to mute.
+          startAt={resumeAt}
+          autoPlay={Boolean(playing)}
+          onPosition={handlePosition}
+          onClose={() => { setPlaying(null); setRestoreDone(true); }}
         />
       )}
 
-      {truncated && (
-        <p className="text-[11px] text-white/30 uppercase tracking-widest mb-2">
-          Showing {data!.returned} of {data!.total} recordings
-        </p>
-      )}
+      <div className="flex items-center gap-4 mb-3 text-[11px] uppercase tracking-widest text-white/30">
+        {truncated && <span>Showing {data!.returned} of {data!.total}</span>}
+        {storage && (
+          <span>
+            {formatBytes(storage.pinned_bytes)} kept
+            {storage.pinned_count > 0 && ` (${storage.pinned_count})`}
+            {" · "}{formatBytes(storage.cache_bytes)} cache
+            {" · "}{formatBytes(storage.free_bytes)} free
+          </span>
+        )}
+      </div>
 
       <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
         {recordings.length === 0 ? (
@@ -66,8 +181,7 @@ export function LibraryView() {
           </div>
         ) : (
           recordings.map((rec) => {
-            // A recording still being written has no complete source to transcode.
-            const playable = rec.state !== "recording" && !rec.error;
+            const playable = isPlayable(rec);
             return (
               <div
                 key={rec.object_id}
@@ -91,14 +205,38 @@ export function LibraryView() {
                       <Play className="w-6 h-6 text-white ml-0.5" fill="currentColor" aria-hidden />
                     </div>
                   </div>
-                  {rec.cache_state === "complete" && (
+                  {rec.pinned ? (
+                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-emerald-600/90 text-[10px] font-bold text-white uppercase tracking-wider">
+                      <CheckCircle2 className="w-3 h-3" aria-hidden />
+                      {rec.cache_state === "complete" ? "Offline" : `${Math.round(rec.cache_progress * 100)}%`}
+                    </div>
+                  ) : rec.cache_state === "complete" ? (
                     <div className="absolute top-3 left-3 px-2 py-1 rounded bg-accent/80 text-[10px] font-bold text-white uppercase tracking-wider">
                       Ready
+                    </div>
+                  ) : null}
+                  {rec.offline_only && (
+                    <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded bg-black/80 text-[10px] font-bold text-white/70 uppercase tracking-wider"
+                         title="Kept here — the Tablo no longer has this recording">
+                      <CloudOff className="w-3 h-3" aria-hidden />
+                      Only here
                     </div>
                   )}
                   <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-black/80 text-[10px] font-bold text-white tabular-nums">
                     {formatDuration(rec.duration)}
                   </div>
+
+                  {/* Fill progress along the bottom edge — the corner badge
+                      alone was too easy to miss. */}
+                  {rec.pinned && rec.cache_state !== "complete" && (
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-black/60">
+                      <div
+                        className={`h-full transition-[width] duration-1000 ease-linear
+                                    ${rec.paused ? "bg-white/40" : "bg-emerald-400"}`}
+                        style={{ width: `${Math.max(1, rec.cache_progress * 100)}%` }}
+                      />
+                    </div>
+                  )}
                 </button>
 
                 <div className="p-5 flex flex-col gap-1">
@@ -109,18 +247,115 @@ export function LibraryView() {
                   <p className="text-xs text-white/40 line-clamp-2 leading-relaxed min-h-[2.5rem]">
                     {rec.description || "No description available"}
                   </p>
+                  {rec.pinned && rec.cache_state !== "complete" && (
+                    <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-widest">
+                      {rec.paused ? (
+                        <span className="text-white/40">Paused</span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 text-emerald-400">
+                          <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
+                          Downloading
+                        </span>
+                      )}
+                      <span className="text-white/35 tabular-nums">
+                        {Math.round(rec.cache_progress * 100)}% ·{" "}
+                        {formatDuration(rec.cached_seconds)} of {formatDuration(rec.duration)}
+                        {!rec.paused && rec.rate?.mbps > 0 && (
+                          <>
+                            {" · "}
+                            <span className="text-emerald-400/70">
+                              {rec.rate.mbps.toFixed(1)} Mb/s
+                            </span>
+                            {rec.rate.realtime > 0 && ` · ${rec.rate.realtime.toFixed(1)}×`}
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  )}
+
                   <div className="mt-4 flex items-center justify-between">
                     <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">
                       {new Date(rec.start).toLocaleDateString()}
                     </span>
-                    <button
-                      onClick={() => playable && setPlaying(rec)}
-                      disabled={!playable}
-                      className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center hover:bg-accent hover:text-white transition text-white/40 disabled:opacity-30 disabled:hover:bg-white/5"
-                      aria-label={`Play ${rec.title ?? "recording"}`}
-                    >
-                      <Play className="w-4 h-4" fill="currentColor" aria-hidden />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {rec.pinned && rec.cache_state !== "complete" && (
+                        <button
+                          onClick={() => control.mutate({
+                            id: rec.object_id,
+                            action: rec.paused ? "resume" : "pause",
+                          })}
+                          disabled={control.isPending}
+                          title={rec.paused ? "Resume download" : "Pause download"}
+                          aria-label={rec.paused
+                            ? `Resume download of ${rec.title ?? "recording"}`
+                            : `Pause download of ${rec.title ?? "recording"}`}
+                          className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
+                                     text-white/50 hover:bg-white/10 hover:text-white transition disabled:opacity-30"
+                        >
+                          {rec.paused
+                            ? <Download className="w-4 h-4" aria-hidden />
+                            : <Pause className="w-4 h-4" fill="currentColor" aria-hidden />}
+                        </button>
+                      )}
+                      {rec.cache_state !== "absent" && (
+                        <button
+                          onClick={() => setConfirmation({
+                            title: `Delete the downloaded copy of "${rec.title ?? "this recording"}"?`,
+                            body: rec.offline_only
+                              ? "The Tablo no longer has this recording. Deleting it here removes the only copy."
+                              : "It can be downloaded again from the Tablo.",
+                            confirmLabel: "Delete copy",
+                            danger: true,
+                            onConfirm: () => control.mutate({ id: rec.object_id, action: "delete" }),
+                          })}
+                          disabled={control.isPending}
+                          title="Delete downloaded copy"
+                          aria-label={`Delete downloaded copy of ${rec.title ?? "recording"}`}
+                          className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
+                                     text-white/40 hover:bg-red-500/20 hover:text-red-300 transition disabled:opacity-30"
+                        >
+                          <Trash2 className="w-4 h-4" aria-hidden />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (!rec.pinned) {
+                            keep.mutate({ id: rec.object_id, on: true });
+                            return;
+                          }
+                          setConfirmation({
+                            title: `Stop keeping "${rec.title ?? "this recording"}" offline?`,
+                            body: rec.offline_only
+                              ? "The Tablo no longer has this recording, so the copy cannot be remade once it is reclaimed."
+                              : "The downloaded copy stays until space is needed, then it is reclaimed automatically.",
+                            confirmLabel: "Stop keeping",
+                            danger: rec.offline_only,
+                            onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
+                          });
+                        }}
+                        disabled={!playable || keep.isPending}
+                        title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
+                        aria-label={rec.pinned ? `Stop keeping ${rec.title ?? "recording"}` : `Keep ${rec.title ?? "recording"} offline`}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center transition disabled:opacity-30
+                          ${rec.pinned
+                            ? "bg-emerald-600/25 text-emerald-300 hover:bg-emerald-600/40"
+                            : "bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/70"}`}
+                      >
+                        {keep.isPending && keep.variables?.id === rec.object_id
+                          ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
+                          : rec.pinned
+                            ? <CheckCircle2 className="w-4 h-4" aria-hidden />
+                            : <Download className="w-4 h-4" aria-hidden />}
+                      </button>
+                      <button
+                        onClick={() => playable && setPlaying(rec)}
+                        disabled={!playable}
+                        className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center hover:bg-accent hover:text-white transition text-white/40 disabled:opacity-30 disabled:hover:bg-white/5"
+                        aria-label={`Play ${rec.title ?? "recording"}`}
+                      >
+                        <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

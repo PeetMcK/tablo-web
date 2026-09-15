@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import Hls from "hls.js";
+import { log, segmentLabel, fmt } from "../lib/debug";
 
 export interface PlayerOptions {
   /**
@@ -18,11 +19,25 @@ export interface PlayerOptions {
    * instead of at the start. Recordings must pass `0`.
    */
   startPosition?: number;
+  /**
+   * Fragment load timeout in ms. A recording segment request can block while the
+   * backend transcodes its window, which the 20s default is too tight for.
+   */
+  fragLoadingTimeOut?: number;
+  /**
+   * Whether to begin playing once the manifest is ready.
+   *
+   * False when restoring after a refresh: a reload carries no user activation,
+   * so an audible autoplay would be refused and we would be forced to mute.
+   * Waiting for the user to press play keeps the sound on.
+   */
+  autoplay?: boolean;
 }
 
 export function usePlayer(
   videoRef: React.RefObject<HTMLVideoElement | null>,
-  { backBufferLength = 90, startPosition = -1 }: PlayerOptions = {},
+  { backBufferLength = 90, startPosition = -1, fragLoadingTimeOut = 20000,
+    autoplay = true }: PlayerOptions = {},
 ) {
   const hlsRef = useRef<Hls | null>(null);
   const nativeErrorHandler = useRef<(() => void) | null>(null);
@@ -63,29 +78,78 @@ export function usePlayer(
         manifestLoadingRetryDelay: 1000,
         levelLoadingTimeOut: 20000,
         levelLoadingMaxRetry: 10,
-        fragLoadingTimeOut: 20000,
+        fragLoadingTimeOut,
         fragLoadingMaxRetry: 10,
         xhrSetup: (xhr) => {
           xhr.withCredentials = false;
         }
       });
       
+      log.hls("attach", { url, backBufferLength, startPosition, fragLoadingTimeOut });
+
+      hls.on(Hls.Events.MANIFEST_PARSED, (_e, d) => {
+        log.hls(`manifest parsed — ${d.levels.length} level(s)`, {
+          duration: fmt(hls.media?.duration ?? NaN),
+        });
+      });
+      hls.on(Hls.Events.LEVEL_LOADED, (_e, d) => {
+        log.hls(`level loaded — ${d.details.fragments.length} fragments`, {
+          totalduration: fmt(d.details.totalduration),
+          live: d.details.live,
+          type: d.details.type,
+        });
+      });
+
+      // Fragment timing is the single most useful signal: a cold window shows up
+      // as one slow fragment, a warm one is near-instant.
+      const fragStart = new Map<string, number>();
+      hls.on(Hls.Events.FRAG_LOADING, (_e, d) => {
+        fragStart.set(d.frag.relurl ?? String(d.frag.sn), performance.now());
+      });
+      hls.on(Hls.Events.FRAG_LOADED, (_e, d) => {
+        const key = d.frag.relurl ?? String(d.frag.sn);
+        const began = fragStart.get(key);
+        fragStart.delete(key);
+        const ms = began ? Math.round(performance.now() - began) : -1;
+        const slow = ms > 1500;
+        const label = segmentLabel(d.frag.url);
+        const detail = { ms, kb: Math.round((d.payload?.byteLength ?? 0) / 1024) };
+        if (slow) log.warn(`frag SLOW ${label} — transcoded on demand`, detail);
+        else log.hls(`frag ${label}`, detail);
+      });
+
+      hls.on(Hls.Events.BUFFER_APPENDED, () => {
+        const b = video.buffered;
+        if (!b.length) return;
+        log.hls(`buffer → ${fmt(b.end(b.length - 1) - video.currentTime)} ahead`, {
+          at: fmt(video.currentTime),
+          end: fmt(b.end(b.length - 1)),
+        });
+      });
+
       hls.loadSource(url);
       hls.attachMedia(video);
       
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        video.play().catch((e) => {
-          console.error("Autoplay failed:", e);
-          // Don't set error here as it might just need a user click
-        });
+        // Sound stays on. Playback only ever starts from a user gesture, so the
+        // autoplay policy permits audio and there is nothing to fall back from.
+        video.muted = false;
+        if (autoplay) video.play().catch((e) => log.warn("play() rejected", e));
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        const where = data.frag ? segmentLabel(data.frag.url) : "-";
         if (data.fatal) {
+          log.warn(`FATAL ${data.type} / ${data.details} @ ${where}`, data);
           setError(`HLS Fatal Error: ${data.type} - ${data.details}`);
           hls.destroy();
         } else {
-          console.warn("HLS Non-fatal error:", data.details);
+          // Non-fatal means hls.js will retry. Repeated ones escalate to fatal,
+          // so they are the early warning rather than noise.
+          log.warn(`recoverable ${data.details} @ ${where}`, {
+            type: data.type,
+            at: fmt(video.currentTime),
+          });
         }
       });
 
@@ -93,7 +157,7 @@ export function usePlayer(
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = url;
       if (startPosition >= 0) {
-        // Native HLS also honours the live edge for EVENT playlists.
+        // Native HLS also honors the live edge for EVENT playlists.
         video.addEventListener(
           "loadedmetadata",
           () => { video.currentTime = startPosition; },
@@ -108,11 +172,12 @@ export function usePlayer(
       };
       nativeErrorHandler.current = handler;
       video.addEventListener("error", handler);
-      video.play().catch((e) => console.error("Native autoplay failed:", e));
+      video.muted = false;
+      if (autoplay) video.play().catch((e) => log.warn("native play() rejected", e));
     } else {
       setError("HLS not supported in this browser");
     }
-  }, [videoRef, backBufferLength, startPosition]);
+  }, [videoRef, backBufferLength, startPosition, fragLoadingTimeOut, autoplay]);
 
   const destroy = useCallback(() => {
     const video = videoRef.current;
