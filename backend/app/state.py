@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -12,7 +13,11 @@ import httpx
 from tablo_api import TabloAuth, TabloClient
 from tablo_api.models import TabloDevice, TabloChannel, TabloStream
 
-CONFIG_PATH = Path("/data/config.json")
+from . import store
+
+# Default suits the container, where /data is a volume. Running the backend
+# natively on macOS - the only way to reach VideoToolbox - needs it elsewhere.
+CONFIG_PATH = Path(os.environ.get("TABLO_CONFIG_PATH", "/data/config.json"))
 
 _lock = Lock()
 
@@ -44,32 +49,67 @@ class AppState:
         self._recording_paths: dict[int, str] = {}
         self.recordings_total: int = 0
 
-    _GRID_CACHE_TTL = 600  # seconds — 10 minutes
+    # Schedules are stable for hours and the device fetch is hundreds of airing
+    # records, so 10 minutes was re-asking far more often than the data changed.
+    # The client keeps its own copy for instant display; this only governs how
+    # often the device is re-consulted.
+    _GRID_CACHE_TTL = int(os.environ.get("GUIDE_CACHE_TTL", "3600"))
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
     def load_config(self) -> None:
-        if not CONFIG_PATH.exists():
-            return
+        """Restore the account from the database.
+
+        Imports the pre-database ``config.json`` first if the table is still
+        empty, so an existing install keeps working without a re-login. That
+        file stored the password in cleartext at mode 0644; the database stores
+        it encrypted (see ``crypto``) and is created 0600.
+        """
         try:
-            cfg = json.loads(CONFIG_PATH.read_text())
-            email = cfg.get("email")
-            password = cfg.get("password")
-            if email and password:
+            store.migrate_config(CONFIG_PATH)
+            creds = store.load_credentials()
+            if creds:
+                email, password = creds
                 self.auth = TabloAuth(email, password)
                 self.email = email
-        except Exception:
-            pass
+                self._restore_devices()
+        except Exception as e:  # noqa: BLE001 - never block startup on storage
+            print(f"[state] could not load credentials: {e}", flush=True)
+
+    def _restore_devices(self) -> None:
+        """Rebuild device objects from storage, avoiding a cloud round trip.
+
+        Discovery is what needs the password; the tokens it produced are enough
+        for every subsequent call, so a restart does not re-authenticate.
+        """
+        rows, active_sid = store.load_devices()
+        if not rows:
+            return
+        self.devices = [
+            TabloDevice(
+                sid=r["sid"],
+                name=r["name"],
+                local_url=r["local_url"],
+                lighthouse_token=r["lighthouse_token"],
+                account_token=r["account_token"],
+                client_id=r["client_id"],
+            )
+            for r in rows
+        ]
+        self.active_device = next(
+            (d for d in self.devices if d.sid == active_sid),
+            self.devices[0] if len(self.devices) == 1 else None,
+        )
+        print(f"[state] restored {len(self.devices)} device(s) from stored tokens "
+              f"- no cloud login needed", flush=True)
 
     def save_config(self, email: str, password: str) -> None:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps({"email": email, "password": password}))
+        store.save_credentials(email, password)
 
     def clear_config(self) -> None:
-        if CONFIG_PATH.exists():
-            CONFIG_PATH.unlink()
+        store.clear_credentials()
         self.auth = None
         self.email = None
         self.devices = []
@@ -90,6 +130,9 @@ class AppState:
         self.active_device = devices[0] if len(devices) == 1 else None
         self._channels = None
         self.save_config(email, password)
+        # Persist the tokens discovery just produced. They, not the password,
+        # are what every later request uses - so a restart can skip the cloud.
+        store.save_devices(devices, self.active_device.sid if self.active_device else None)
         return devices
 
     async def select_device(self, sid: str) -> TabloDevice:
@@ -98,6 +141,7 @@ class AppState:
             raise ValueError(f"Device {sid} not found")
         self.active_device = dev
         self._channels = None
+        store.set_active_device(sid)
         return dev
 
     # ------------------------------------------------------------------
@@ -638,6 +682,20 @@ class AppState:
             self._recording_paths[int(r["object_id"])] = r["path"]
         return out
 
+    async def recording_snapshot(self, object_id: int) -> dict:
+        """Full library projection for one recording, straight from the device.
+
+        Stored when a recording is kept offline, so it can still be listed and
+        played after the Tablo has deleted it.
+        """
+        path = self._recording_paths.get(int(object_id))
+        if path is None:
+            await self.get_recordings()
+            path = self._recording_paths.get(int(object_id))
+        if path is None:
+            raise KeyError(f"recording {object_id} not found")
+        return self._recording_fields(await self.request_device("GET", path))
+
     async def resolve_recording(self, object_id: int) -> tuple[str, int]:
         """Return (device_path, duration) for a recording id.
 
@@ -772,12 +830,47 @@ class AppState:
         }
 
     async def get_grid_guide(self) -> list[dict]:
-        """Fetch a traditional grid guide (channels + multiple upcoming airings)."""
+        """The grid guide: channels plus their upcoming airings.
+
+        Served from the database when it is fresh enough. Previously the only
+        cache was in process memory, so every restart paid a cold rebuild of
+        hundreds of airing records from the device.
+        """
+        stored = await self._stored_guide()
+        if stored is not None:
+            return stored
+
         if self.active_device is None:
             raise RuntimeError("No active device")
         channels = await self.channels()
         logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
-        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map) for c in channels]
+        rows = [
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            for c in channels
+        ]
+        try:
+            await _run_sync(store.save_guide, rows)
+        except Exception as e:  # noqa: BLE001 - caching must not fail the request
+            print(f"[db] could not store guide: {e}", flush=True)
+        return rows
+
+    async def _stored_guide(self) -> list[dict] | None:
+        """The stored guide, if it is fresh and still has something to show.
+
+        A guide whose airings have all ended is treated as absent: rendering
+        empty rows looks like a broken guide rather than a stale one.
+        """
+        try:
+            age = await _run_sync(store.guide_age_seconds)
+            if age is None or age > self._GRID_CACHE_TTL:
+                return None
+            rows = await _run_sync(store.load_guide)
+        except Exception as e:  # noqa: BLE001
+            print(f"[db] could not read guide: {e}", flush=True)
+            return None
+        if not rows or not any(r.get("airings") for r in rows):
+            return None
+        return rows
 
     async def get_epg_guide(self) -> list[dict]:
         """Full multi-day guide fetch for XMLTV EPG — fetches up to 15000 airings."""
@@ -793,6 +886,15 @@ class AppState:
         Phase 1: emits channel stubs immediately so the grid renders at once.
         Phase 2: emits fully-enriched rows (logos + airings) once fetching is done.
         """
+        # A stored guide is already complete, so stream it and stop. This is the
+        # path a page refresh takes: no device round trip, and no stub phase to
+        # blank out rows the client already had.
+        stored = await self._stored_guide()
+        if stored is not None:
+            for row in stored:
+                yield json.dumps(row) + "\n"
+            return
+
         if self.active_device is None:
             raise RuntimeError("No active device")
 
@@ -819,8 +921,18 @@ class AppState:
         except Exception as e:
             print(f"[guide-grid] Phase 2 failed: {type(e).__name__}: {e}")
             return
-        for c in channels:
-            yield json.dumps(self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)) + "\n"
+        rows = [
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            for c in channels
+        ]
+        for row in rows:
+            yield json.dumps(row) + "\n"
+
+        # Stored after streaming so the client is never kept waiting on a write.
+        try:
+            await _run_sync(store.save_guide, rows)
+        except Exception as e:  # noqa: BLE001
+            print(f"[db] could not store guide: {e}", flush=True)
 
     def stop_session(self, session_id: str) -> None:
         with _lock:

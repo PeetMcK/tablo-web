@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "./api/tablo";
 import { LoginScreen } from "./components/LoginScreen";
 import { ChannelGrid } from "./components/ChannelGrid";
+import { hydrateResume, flushResume } from "./lib/resume";
 
 const qc = new QueryClient();
 
@@ -11,8 +12,26 @@ function Inner() {
 
   useEffect(() => {
     api.status()
-      .then(s => setAuthed(s.authenticated))
+      .then(s => {
+        setAuthed(s.authenticated);
+        // Positions live on the server now. Pull them in - and hand over
+        // anything this browser still holds - before anything reads one.
+        if (s.authenticated) void hydrateResume();
+      })
       .catch(() => setAuthed(false));
+  }, []);
+
+  useEffect(() => {
+    // Writes are batched, so a close or a tab switch must not strand the last
+    // position. pagehide fires in cases unload does not, notably on iOS.
+    const flush = () => flushResume();
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flush);
+      flushResume();
+    };
   }, []);
 
   const logout = async () => {

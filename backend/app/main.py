@@ -1,24 +1,43 @@
-import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import log_buffer as _log_buffer
-from .routes import auth, channels, iptv, recordings, stream
-from .state import state, CONFIG_PATH
+from . import store
+from .routes import auth, channels, iptv, recordings, resume, stream
+from .state import state, CONFIG_PATH, _run_sync
 
 _log_buffer.install()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if CONFIG_PATH.exists():
+    # Import the pre-database layout before anything reads it. Both migrations
+    # are guarded on an empty table, so this is a no-op after the first boot.
+    try:
+        await _run_sync(store.migrate_config, CONFIG_PATH)
+        await _run_sync(store.migrate_recordings, recordings.cache.root)
+    except Exception as e:  # noqa: BLE001 - a failed import must not block start
+        print(f"[db] migration failed: {e}", flush=True)
+
+    # Restore the session from stored tokens. Previously this re-POSTed the
+    # password to Tablo's cloud on every single boot; discovery is the only
+    # call that needs it, and its tokens are what every later request uses.
+    try:
+        await _run_sync(state.load_config)
+    except Exception as e:  # noqa: BLE001
+        print(f"[state] restore failed: {e}", flush=True)
+
+    # Falling back to a full login covers a first run and a device list that was
+    # never stored. Tablo issues no refresh token, so this is the only way back.
+    if state.auth and not state.devices:
         try:
-            cfg = json.loads(CONFIG_PATH.read_text())
-            if cfg.get("email") and cfg.get("password"):
-                await state.login(cfg["email"], cfg["password"])
-        except Exception:
-            pass
+            creds = await _run_sync(store.load_credentials)
+            if creds:
+                print("[state] no stored device tokens - authenticating", flush=True)
+                await state.login(*creds)
+        except Exception as e:  # noqa: BLE001
+            print(f"[state] login failed: {e}", flush=True)
 
     # A transcode marked RUNNING after a restart has no process behind it. Sweep
     # those to FAILED so they can be retried instead of wedging forever.
@@ -48,6 +67,7 @@ app.include_router(auth.router)
 app.include_router(channels.router)
 app.include_router(iptv.router)
 app.include_router(recordings.router)
+app.include_router(resume.router)
 app.include_router(stream.router, prefix="/api")
 
 @app.get("/api/health")

@@ -26,6 +26,13 @@ function channelMatchesFilter(ch: GridChannel, f: ContentFilter): boolean {
   return ch.airings.some(a => airingMatchesFilter(a, f));
 }
 
+/**
+ * Stream the grid, keeping whatever is already on screen until it is replaced.
+ *
+ * The guide is stored server-side, so a refresh is answered from the database
+ * without touching the device - fast enough that a client-side copy would be
+ * duplicating state rather than saving a wait.
+ */
 function useGridStream() {
   const [grid, setGrid] = useState<GridChannel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,7 +45,6 @@ function useGridStream() {
     const map = new Map<string, GridChannel>();
 
     async function run() {
-      setLoading(true);
       try {
         for await (const ch of api.guideGridStream(controller.signal)) {
           if (controller.signal.aborted) break;
@@ -152,7 +158,7 @@ export function GuideGridView({ onPlay }: Props) {
             {/* Channel Info */}
             <div className="w-32 shrink-0 p-4 border-r border-white/5 flex flex-col items-center justify-center gap-1.5 bg-black/10">
               <div className="w-12 h-10 flex items-center justify-center bg-black/30 rounded border border-white/5 p-1">
-                <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-5 h-5" />
+                <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
               </div>
               <span className="text-[11px] font-bold text-white/60 tabular-nums">
                 {ch.major > 0 ? `${ch.major}.${ch.minor}` : "FAST"}

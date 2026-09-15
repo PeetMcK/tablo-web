@@ -1,0 +1,435 @@
+"""Typed accessors over the database.
+
+Route and state code talks to these rather than to SQL, so the storage layout
+can change without touching callers. Everything here is blocking; async callers
+go through ``state._run_sync``.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import crypto, db
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Credentials and devices
+# ---------------------------------------------------------------------------
+
+def save_credentials(email: str, password: str | None) -> None:
+    """Store the account, encrypting the password if one was supplied.
+
+    ``password=None`` updates the email without touching a password already
+    stored, so a token refresh does not have to re-supply it.
+    """
+    existing = db.query_one("SELECT password_encrypted FROM credential WHERE id = 1")
+    blob = crypto.encrypt(password) if password is not None else (
+        existing["password_encrypted"] if existing else None
+    )
+    db.execute(
+        "INSERT INTO credential(id, email, password_encrypted, updated_at) "
+        "VALUES (1, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "  email = excluded.email, "
+        "  password_encrypted = excluded.password_encrypted, "
+        "  updated_at = excluded.updated_at",
+        (email, blob, _now()),
+    )
+
+
+def load_credentials() -> tuple[str, str] | None:
+    """The stored account as ``(email, password)``, or None if unusable.
+
+    An unreadable password - key rotated or lost - reads as no credentials at
+    all, which surfaces as the login screen rather than a crash at startup.
+    """
+    row = db.query_one("SELECT email, password_encrypted FROM credential WHERE id = 1")
+    if not row or not row["email"]:
+        return None
+    password = crypto.decrypt(row["password_encrypted"])
+    if password is None:
+        return None
+    return row["email"], password
+
+
+def clear_credentials() -> None:
+    db.execute("DELETE FROM credential", ())
+    db.execute("DELETE FROM device", ())
+
+
+def save_devices(devices: list, active_sid: str | None) -> None:
+    """Persist discovered devices and which one is selected."""
+    with db.write() as conn:
+        for d in devices:
+            conn.execute(
+                "INSERT INTO device(sid, name, local_url, lighthouse_token, active, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(sid) DO UPDATE SET "
+                "  name = excluded.name, "
+                "  local_url = excluded.local_url, "
+                "  lighthouse_token = excluded.lighthouse_token, "
+                "  active = excluded.active, "
+                "  updated_at = excluded.updated_at",
+                (
+                    d.sid,
+                    getattr(d, "name", None),
+                    getattr(d, "local_url", None),
+                    getattr(d, "lighthouse_token", None),
+                    1 if active_sid and d.sid == active_sid else 0,
+                    _now(),
+                ),
+            )
+        first = devices[0] if devices else None
+        token = getattr(first, "account_token", None) if first else None
+        client_id = getattr(first, "client_id", None) if first else None
+        if token or client_id:
+            conn.execute(
+                "UPDATE credential SET account_token = ?, client_id = ? WHERE id = 1",
+                (token, client_id),
+            )
+
+
+def load_devices() -> tuple[list[dict], str | None]:
+    rows = db.query("SELECT * FROM device ORDER BY name")
+    active = next((r["sid"] for r in rows if r["active"]), None)
+    cred = db.query_one("SELECT account_token, client_id FROM credential WHERE id = 1")
+    out = []
+    for r in rows:
+        out.append({
+            "sid": r["sid"],
+            "name": r["name"],
+            "local_url": r["local_url"],
+            "lighthouse_token": r["lighthouse_token"],
+            "account_token": cred["account_token"] if cred else None,
+            "client_id": cred["client_id"] if cred else None,
+        })
+    return out, active
+
+
+def set_active_device(sid: str) -> None:
+    with db.write() as conn:
+        conn.execute("UPDATE device SET active = 0", ())
+        conn.execute("UPDATE device SET active = 1 WHERE sid = ?", (sid,))
+
+
+# ---------------------------------------------------------------------------
+# Migration from the pre-database layout
+# ---------------------------------------------------------------------------
+
+def migrate_config(config_path: Path) -> bool:
+    """Import ``config.json`` once, if the credential table is still empty.
+
+    The file is deliberately left in place. One release of overlap means
+    rolling back does not lose the account.
+    """
+    if db.query_one("SELECT 1 FROM credential WHERE id = 1"):
+        return False
+    if not config_path.exists():
+        return False
+    try:
+        cfg = json.loads(config_path.read_text())
+    except (OSError, ValueError):
+        return False
+    email, password = cfg.get("email"), cfg.get("password")
+    if not email or not password:
+        return False
+    save_credentials(email, password)
+    # Retained for one release so a rollback keeps the account - but it still
+    # holds the password in cleartext, and it was created world-readable. The
+    # database supersedes it; this only narrows the window until it is deleted.
+    try:
+        config_path.chmod(0o600)
+    except OSError:
+        pass
+    print(f"[db] imported credentials from {config_path} "
+          f"(retained at 0600; safe to delete once the database is trusted)", flush=True)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Recording cache index
+# ---------------------------------------------------------------------------
+
+def read_recording(object_id: int) -> dict | None:
+    row = db.query_one("SELECT * FROM recording WHERE object_id = ?", (object_id,))
+    if not row:
+        return None
+    return {
+        "object_id": row["object_id"],
+        "path": row["path"],
+        "source_duration": row["source_duration"],
+        "created_at": row["created_at"],
+        "last_access": row["last_access"],
+        "error": row["error"],
+        "pinned": bool(row["pinned"]),
+        "info": json.loads(row["info"]) if row["info"] else None,
+        "paused": bool(row["paused"]),
+    }
+
+
+def write_recording(meta: dict) -> None:
+    db.execute(
+        "INSERT INTO recording(object_id, path, source_duration, pinned, paused, "
+        "                      error, info, created_at, last_access) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(object_id) DO UPDATE SET "
+        "  path = excluded.path, "
+        "  source_duration = excluded.source_duration, "
+        "  pinned = excluded.pinned, "
+        "  paused = excluded.paused, "
+        "  error = excluded.error, "
+        "  info = excluded.info, "
+        "  last_access = excluded.last_access",
+        (
+            int(meta["object_id"]),
+            meta["path"],
+            int(meta.get("source_duration") or 0),
+            1 if meta.get("pinned") else 0,
+            1 if meta.get("paused") else 0,
+            meta.get("error"),
+            json.dumps(meta["info"]) if meta.get("info") else None,
+            meta.get("created_at") or _now(),
+            meta.get("last_access") or _now(),
+        ),
+    )
+
+
+def delete_recording(object_id: int) -> None:
+    db.execute("DELETE FROM recording WHERE object_id = ?", (object_id,))
+
+
+def pinned_recording_ids() -> list[int]:
+    """Pinned recordings, straight off a partial index.
+
+    The previous implementation opened and parsed every ``meta.json`` under the
+    cache root on each call, which is on the path of every library listing.
+    """
+    return [r["object_id"] for r in db.query(
+        "SELECT object_id FROM recording WHERE pinned = 1 ORDER BY object_id"
+    )]
+
+
+def all_recording_ids() -> list[int]:
+    return [r["object_id"] for r in db.query("SELECT object_id FROM recording")]
+
+
+def eviction_candidates() -> list[int]:
+    """Unpinned recordings, least recently accessed first."""
+    return [r["object_id"] for r in db.query(
+        "SELECT object_id FROM recording WHERE pinned = 0 ORDER BY last_access"
+    )]
+
+
+def migrate_recordings(cache_root: Path) -> int:
+    """Import every ``meta.json`` under the cache root, once.
+
+    Guarded on an empty table and on each row's absence, so a restart mid-import
+    resumes rather than duplicating. The JSON files are left where they are.
+    """
+    if not cache_root.exists():
+        return 0
+    if db.query_one("SELECT 1 FROM recording LIMIT 1"):
+        return 0
+
+    imported = 0
+    for d in sorted(cache_root.iterdir()):
+        if not d.is_dir():
+            continue
+        meta_file = d / "meta.json"
+        if not meta_file.exists():
+            continue
+        try:
+            meta = json.loads(meta_file.read_text())
+        except (OSError, ValueError):
+            continue
+        if not meta.get("object_id") or not meta.get("path"):
+            continue
+        write_recording(meta)
+        imported += 1
+    if imported:
+        print(f"[db] imported {imported} recording(s) from meta.json (files retained)",
+              flush=True)
+    return imported
+
+
+# ---------------------------------------------------------------------------
+# Guide
+# ---------------------------------------------------------------------------
+
+def _end_epoch(start: str | None, duration) -> int:
+    if not start:
+        return 0
+    try:
+        ts = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    return int(ts.timestamp() + (int(duration or 0)))
+
+
+def save_guide(rows: list[dict], now: float | None = None) -> None:
+    """Replace the stored guide, dropping airings that have already ended.
+
+    The grid renders forward from the current hour, so a finished airing can
+    never be displayed again. Pruning on write is what keeps the table from
+    growing without bound - at ~267 bytes per airing the concern is tidiness
+    rather than space.
+    """
+    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    with db.write() as conn:
+        conn.execute("DELETE FROM guide_channel", ())
+        for position, ch in enumerate(rows):
+            conn.execute(
+                "INSERT INTO guide_channel(identifier, call_sign, major, minor, network, "
+                "                          display_name, logo_url, kind, position, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(ch.get("identifier")),
+                    ch.get("call_sign"),
+                    ch.get("major"),
+                    ch.get("minor"),
+                    ch.get("network"),
+                    ch.get("display_name"),
+                    ch.get("logo_url"),
+                    ch.get("kind"),
+                    position,
+                    _now(),
+                ),
+            )
+            for air in ch.get("airings") or []:
+                end = _end_epoch(air.get("start"), air.get("duration"))
+                if end and end < cutoff:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO guide_airing(channel_id, start, duration, "
+                    "    end_epoch, title, subtitle, description, genres, kind) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(ch.get("identifier")),
+                        air.get("start"),
+                        int(air.get("duration") or 0),
+                        end,
+                        air.get("title"),
+                        air.get("subtitle"),
+                        air.get("description"),
+                        json.dumps(air.get("genres") or []),
+                        air.get("kind"),
+                    ),
+                )
+    db.set_setting("guide_updated_at", _now())
+
+
+def load_guide(now: float | None = None) -> list[dict]:
+    """The stored guide, excluding airings that have ended."""
+    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    channels = db.query("SELECT * FROM guide_channel ORDER BY position")
+    if not channels:
+        return []
+
+    by_channel: dict[str, list[dict]] = {}
+    for a in db.query(
+        "SELECT * FROM guide_airing WHERE end_epoch >= ? ORDER BY start", (cutoff,)
+    ):
+        by_channel.setdefault(a["channel_id"], []).append({
+            "start": a["start"],
+            "duration": a["duration"],
+            "title": a["title"],
+            "subtitle": a["subtitle"],
+            "description": a["description"],
+            "genres": json.loads(a["genres"]) if a["genres"] else [],
+            "kind": a["kind"],
+        })
+
+    return [{
+        "identifier": c["identifier"],
+        "call_sign": c["call_sign"],
+        "major": c["major"],
+        "minor": c["minor"],
+        "network": c["network"],
+        "display_name": c["display_name"],
+        "logo_url": c["logo_url"],
+        "kind": c["kind"],
+        "airings": by_channel.get(c["identifier"], []),
+    } for c in channels]
+
+
+def guide_age_seconds(now: datetime | None = None) -> float | None:
+    """Seconds since the guide was last written, or None if never."""
+    raw = db.get_setting("guide_updated_at")
+    if not raw:
+        return None
+    try:
+        written = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return ((now or datetime.now(timezone.utc)) - written).total_seconds()
+
+
+# ---------------------------------------------------------------------------
+# Resume positions
+# ---------------------------------------------------------------------------
+
+# Matches the client's previous localStorage rules, kept so behavior does not
+# change as the store moves server-side.
+MIN_RESUME = 30.0
+END_MARGIN = 60.0
+
+
+def save_resume(kind: str, ref: str, position: float, duration: float) -> None:
+    """Record where playback reached, or forget it near either end.
+
+    Below the opening threshold there is nothing worth resuming, and near the
+    end counts as watched - resuming there drops you on the credits.
+    """
+    if position < MIN_RESUME or (duration > 0 and position > duration - END_MARGIN):
+        db.execute("DELETE FROM resume WHERE kind = ? AND ref = ?", (kind, ref))
+        return
+    db.execute(
+        "INSERT INTO resume(kind, ref, position, duration, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(kind, ref) DO UPDATE SET "
+        "  position = excluded.position, "
+        "  duration = excluded.duration, "
+        "  updated_at = excluded.updated_at",
+        (kind, ref, float(position), float(duration), _now()),
+    )
+
+
+def load_resume(kind: str, ref: str) -> float:
+    row = db.query_one(
+        "SELECT position FROM resume WHERE kind = ? AND ref = ?", (kind, ref)
+    )
+    return float(row["position"]) if row else 0.0
+
+
+def all_resume() -> dict[str, float]:
+    return {
+        f"{r['kind']}:{r['ref']}": float(r["position"])
+        for r in db.query("SELECT kind, ref, position FROM resume")
+    }
+
+
+def import_resume(entries: dict[str, float]) -> int:
+    """Take the client's old localStorage map, once.
+
+    Anything already stored wins, so a replay of the same payload is harmless.
+    """
+    imported = 0
+    for key, position in entries.items():
+        kind, _, ref = key.partition(":")
+        if kind not in ("live", "recording") or not ref:
+            continue
+        if db.query_one("SELECT 1 FROM resume WHERE kind = ? AND ref = ?", (kind, ref)):
+            continue
+        db.execute(
+            "INSERT INTO resume(kind, ref, position, duration, updated_at) "
+            "VALUES (?, ?, ?, 0, ?)",
+            (kind, ref, float(position), _now()),
+        )
+        imported += 1
+    return imported
