@@ -3,7 +3,7 @@
 import re
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 
 from ..state import state
 from ..transcode_cache import (
@@ -200,20 +200,21 @@ async def download_recording(object_id: int):
         )
 
     try:
-        stream = cache.export_mp4(object_id)
+        path = await cache.build_mp4(object_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except InsufficientDisk as e:
+        raise HTTPException(status_code=507, detail=f"Insufficient storage: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {e}")
 
-    filename = _download_name(meta)
-    return StreamingResponse(
-        stream,
+    # FileResponse, not a stream: it sets Content-Length and honours Range, so
+    # the browser can show a real total and a resumable download rather than a
+    # byte count that only grows.
+    return FileResponse(
+        path,
         media_type="video/mp4",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            # Length is unknown until the remux finishes, so the browser shows
-            # progress without a total rather than guessing wrong.
-            "Cache-Control": "no-store",
-        },
+        filename=_download_name(meta),
     )
 
 

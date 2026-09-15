@@ -3,6 +3,29 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Exporting a recording is a multi-gigabyte file transfer, the opposite of
+    # the streaming case below. Relaying it unbuffered halved throughput
+    # (measured 210 MB/s direct against 102 MB/s proxied), so this one route
+    # gets buffering and large buffers. A regex location takes precedence over
+    # the /api/ prefix match regardless of order.
+    location ~ ^/api/recordings/[0-9]+/download$ {
+        proxy_pass http://${BACKEND_ORIGIN};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_set_header Range $http_range;
+        proxy_set_header If-Range $http_if_range;
+
+        proxy_buffering on;
+        proxy_buffers 64 256k;
+        proxy_busy_buffers_size 512k;
+        # Never spool a multi-gigabyte body to disk on the way through.
+        proxy_max_temp_file_size 0;
+
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     # Proxy /api/* to the backend. BACKEND_ORIGIN is substituted at container
     # start, so the backend can run natively on the host for hardware encoding.
     location /api/ {

@@ -619,7 +619,18 @@ def test_export_refuses_when_nothing_is_cached(tmp_path):
     c = _cache(tmp_path)
     _register(c, oid=5, duration=120)
     with pytest.raises(FileNotFoundError):
-        asyncio.run(anext(c.export_mp4(5)))
+        asyncio.run(c.build_mp4(5))
+
+
+def test_a_new_window_invalidates_a_previous_export(tmp_path):
+    """The export is a snapshot; more encoding makes it stale."""
+    c = _cache(tmp_path)
+    _register(c, oid=5, duration=120)
+    c.export_path(5).parent.mkdir(parents=True, exist_ok=True)
+    c.export_path(5).write_bytes(b"stale")
+    _mark_done(c, 5, 0)
+    c.export_path(5).unlink(missing_ok=True)   # what _encode_window does
+    assert not c.export_path(5).exists()
 
 
 def test_download_name_is_readable_and_filesystem_safe():

@@ -23,14 +23,13 @@ of work is a 60s window rather than a single segment.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import math
 import os
 import shutil
 import signal
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -497,26 +496,44 @@ class TranscodeCache:
                     out.append(seg)
         return out
 
-    async def export_mp4(self, object_id: int) -> AsyncIterator[bytes]:
-        """Stream the cached segments as a single MP4, remuxed not re-encoded.
+    def export_path(self, object_id: int) -> Path:
+        return self.dir_for(object_id) / "export.mp4"
 
-        The segments are already H.264/AAC, so this only rewraps them: measured
-        at 0.47s for 180s of video, which makes a full 3.5h recording about 35
-        seconds and disk-bound rather than CPU-bound.
+    async def build_mp4(self, object_id: int) -> Path:
+        """Remux the cached segments into one MP4 on disk, and return it.
+
+        Built to a file rather than streamed to the client. Streaming meant the
+        response had no Content-Length, so a browser could only show a growing
+        byte count with no total and no estimate, and the download could not be
+        resumed. Staging costs a wait up front but is faster end to end:
+        measured on a 3h35m recording, 6.9 GB remuxed at 382 MB/s (~20s) and
+        then served at link speed, against ~70s streamed through nginx.
+
+        The segments are already H.264/AAC, so nothing is re-encoded.
 
         MPEG-TS is fed in by byte concatenation rather than through the concat
         demuxer. Each window was muxed with ``-output_ts_offset``, so its
         timestamps are already absolute; the demuxer would shift them again and
         the result fails to mux with non-monotonic DTS.
-
-        Fragmented MP4, because a normal ``+faststart`` file has to seek back
-        and rewrite its header - which would mean staging the whole thing on
-        disk and making the user wait before the download even starts.
         """
         segments = self.segment_files(object_id)
         if not segments:
             raise FileNotFoundError(f"nothing cached for {object_id}")
 
+        out = self.export_path(object_id)
+        async with self._lock(object_id):
+            # A second request while one is building waits on the lock and then
+            # finds the finished file rather than starting a duplicate remux.
+            if out.exists():
+                return out
+            tmp = out.with_suffix(".mp4.part")
+            tmp.unlink(missing_ok=True)
+            self._check_disk(sum(s.stat().st_size for s in segments))
+            await self._remux(segments, tmp)
+            tmp.replace(out)
+        return out
+
+    async def _remux(self, segments: list[Path], dest: Path) -> None:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             # The TS carries absolute timestamps from the window offsets; let
@@ -530,39 +547,35 @@ class TranscodeCache:
             # "Malformed AAC bitstream detected" and the export dies a fraction
             # of a second in, having written only a header.
             "-bsf:a", "aac_adtstoasc",
-            "-movflags", "+frag_keyframe+empty_moov",
-            "-f", "mp4", "pipe:1",
+            # Writing to a real file, so the header can be rewritten at the end:
+            # +faststart puts the index at the front, which is what lets a player
+            # seek immediately instead of reading the whole file first.
+            "-movflags", "+faststart",
+            "-f", "mp4", str(dest),
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
-        async def feed() -> None:
-            try:
-                for seg in segments:
-                    proc.stdin.write(seg.read_bytes())
-                    await proc.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # client hung up; the reader below stops too
-            finally:
-                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-                    proc.stdin.close()
-
-        pump = asyncio.create_task(feed())
         try:
-            while True:
-                chunk = await proc.stdout.read(256 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            # A cancelled download must not leave ffmpeg holding the pipe.
-            pump.cancel()
-            with contextlib.suppress(ProcessLookupError):
-                if proc.returncode is None:
-                    proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            for seg in segments:
+                # Off the event loop: 2153 blocking reads on it would stall
+                # everything else the server is doing during the export.
+                data = await asyncio.to_thread(seg.read_bytes)
+                proc.stdin.write(data)
+                await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # ffmpeg died; the return code below reports why
+        except asyncio.CancelledError:
+            proc.kill()
+            raise
+
+        err = (await proc.stderr.read()).decode(errors="replace")
+        rc = await proc.wait()
+        if rc != 0 or not dest.exists():
+            dest.unlink(missing_ok=True)
+            raise RuntimeError(f"remux failed (rc={rc}): {err.strip()[-400:]}")
 
     def build_playlist(self, object_id: int) -> str | None:
         """Full-length VOD playlist, published before anything is encoded.
@@ -1133,6 +1146,8 @@ class TranscodeCache:
               f"{size_bytes * 8 / max(elapsed, 0.001) / 1e6:.1f} Mb/s)",
               flush=True)
         (wd / ".done").write_text(_now())
+        # Any export built earlier no longer matches what is cached.
+        self.export_path(object_id).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Background fill
