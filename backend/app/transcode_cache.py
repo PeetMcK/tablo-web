@@ -23,11 +23,11 @@ of work is a 60s window rather than a single segment.
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import os
-import signal
 import shutil
+import signal
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -192,8 +192,14 @@ WATCH_IDLE_TIMEOUT = 45
 # out a slow device seek, short enough to still read as "live".
 RATE_SAMPLES = 6
 
-# No window has landed in this long, so report idle rather than a stale average.
-RATE_IDLE_AFTER = 30.0
+# No window has landed in this long, and nothing is encoding, so report idle
+# rather than a stale average.
+#
+# Generous on purpose: a sample is only recorded when a window *finishes*, and
+# a window takes 35-40s on CPU (longer on a slow device seek). A threshold near
+# that makes the readout blink out between completions even though the download
+# is running steadily. An active encoder overrides this entirely.
+RATE_IDLE_AFTER = 180.0
 
 
 class CacheState(str, Enum):
@@ -390,11 +396,15 @@ class TranscodeCache:
         samples = self._rate.get(object_id)
         if not samples:
             return idle
-        try:
-            now = asyncio.get_event_loop().time()
-        except RuntimeError:  # no running loop (tests, shutdown)
-            return idle
-        if now - samples[-1][0] > RATE_IDLE_AFTER:
+        # Wall clock, not loop time: this is asked for from contexts that have
+        # no running loop, and elapsed real time is what a throughput figure
+        # means anyway.
+        now = time.monotonic()
+        # A live encoder is direct evidence the download is moving, and it
+        # outranks sample age: the first window of a fresh run can be most of a
+        # minute away from producing one.
+        encoding = any(key[0] == object_id for key in self._procs)
+        if not encoding and now - samples[-1][0] > RATE_IDLE_AFTER:
             return idle
 
         seconds = sum(s[2] for s in samples)
@@ -974,7 +984,7 @@ class TranscodeCache:
         size_bytes = sum(f.stat().st_size for f in wd.glob("seg_*.ts"))
         size_mb = size_bytes / 1024**2
         samples = self._rate.setdefault(object_id, deque(maxlen=RATE_SAMPLES))
-        samples.append((asyncio.get_event_loop().time(), size_bytes, elapsed, length))
+        samples.append((time.monotonic(), size_bytes, elapsed, length))
         print(f"[cache] {object_id} w{w} done rc={rc} in {elapsed:.1f}s "
               f"({produced} segs, {size_mb:.0f} MB, {length / max(elapsed, 0.001):.1f}x realtime, "
               f"{size_bytes * 8 / max(elapsed, 0.001) / 1e6:.1f} Mb/s)",

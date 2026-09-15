@@ -1,6 +1,8 @@
 """Tests for recording listing, projection, and the windowed transcode cache."""
 
 import asyncio
+import time
+from collections import deque
 
 import pytest
 from fastapi.testclient import TestClient
@@ -383,6 +385,44 @@ def test_ready_window_is_not_re_encoded(tmp_path):
     _register(c, oid=5, duration=120)
     _mark_done(c, 5, 0)
     assert asyncio.run(c.ensure_window(5, 0, "/r/5", 120)) is True
+
+
+def test_rate_is_reported_from_completed_windows(tmp_path):
+    c = _cache(tmp_path)
+    # 27 MB of output produced in 36s of encoding.
+    c._rate[66220] = deque([(time.monotonic(), 27 * 1024**2, 36.0, 60.0)])
+    rate = c.rate(66220)
+    assert rate["mbps"] == pytest.approx(6.29, abs=0.05)
+    assert rate["realtime"] == pytest.approx(1.67, abs=0.05)
+
+
+def test_rate_survives_the_gap_between_window_completions(tmp_path):
+    """A sample only lands when a window finishes, and that takes 35-40s.
+
+    Treating a sample older than that as idle made the readout blink out
+    mid-download even though encoding never stopped.
+    """
+    c = _cache(tmp_path)
+    c._rate[66220] = deque([(time.monotonic() - 45.0, 27 * 1024**2, 36.0, 60.0)])
+    assert c.rate(66220)["mbps"] > 0
+
+
+def test_rate_reads_as_idle_once_nothing_is_encoding(tmp_path):
+    c = _cache(tmp_path)
+    c._rate[66220] = deque([(time.monotonic() - 600.0, 27 * 1024**2, 36.0, 60.0)])
+    assert c.rate(66220) == {"mbps": 0.0, "realtime": 0.0}
+
+
+def test_a_live_encoder_outranks_a_stale_sample(tmp_path):
+    """Evidence of work beats the clock: a slow window must not read as idle."""
+    c = _cache(tmp_path)
+    c._rate[66220] = deque([(time.monotonic() - 600.0, 27 * 1024**2, 36.0, 60.0)])
+    c._procs[(66220, 7)] = (object(), False)
+    assert c.rate(66220)["mbps"] > 0
+
+
+def test_rate_is_zero_for_a_recording_that_never_encoded(tmp_path):
+    assert _cache(tmp_path).rate(66220) == {"mbps": 0.0, "realtime": 0.0}
 
 
 def test_on_demand_windows_are_bounded(tmp_path):
