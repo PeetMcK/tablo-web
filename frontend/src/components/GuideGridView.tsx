@@ -1,22 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { api, type GridChannel, type Program } from "../api/tablo";
+import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import { ChannelLogo } from "./ChannelLogo";
 
 interface Props {
   onPlay: (channel: GridChannel) => void;
 }
 
-type ContentFilter = "all" | "movies" | "sports" | "news" | "reality" | "documentary" | "ota" | "fast";
-
-const CONTENT_FILTERS: { id: ContentFilter; label: string; icon: string }[] = [
-  { id: "all",          label: "All",          icon: "⊞" },
-  { id: "movies",       label: "Movies",        icon: "🎬" },
-  { id: "sports",       label: "Sports",        icon: "🏆" },
-  { id: "news",         label: "News",          icon: "📰" },
-  { id: "reality",      label: "Reality",       icon: "📺" },
-  { id: "documentary",  label: "Documentary",   icon: "🎞" },
-  { id: "ota",          label: "Broadcast",     icon: "📡" },
-  { id: "fast",         label: "Streaming",     icon: "⚡" },
-];
 
 function airingMatchesFilter(air: Program, f: ContentFilter): boolean {
   if (f === "all") return true;
@@ -124,7 +114,7 @@ export function GuideGridView({ onPlay }: Props) {
               : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
             }`}
         >
-          <span>{f.icon}</span>
+          <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
           <span>{f.label}</span>
         </button>
       ))}
@@ -162,11 +152,7 @@ export function GuideGridView({ onPlay }: Props) {
             {/* Channel Info */}
             <div className="w-32 shrink-0 p-4 border-r border-white/5 flex flex-col items-center justify-center gap-1.5 bg-black/10">
               <div className="w-12 h-10 flex items-center justify-center bg-black/30 rounded border border-white/5 p-1">
-                {ch.logo_url ? (
-                  <img src={ch.logo_url} alt={ch.call_sign} className="max-w-full max-h-full object-contain" />
-                ) : (
-                  <span className="text-[10px] font-bold text-white/40">{ch.call_sign}</span>
-                )}
+                <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-5 h-5" />
               </div>
               <span className="text-[11px] font-bold text-white/60 tabular-nums">
                 {ch.major > 0 ? `${ch.major}.${ch.minor}` : "FAST"}

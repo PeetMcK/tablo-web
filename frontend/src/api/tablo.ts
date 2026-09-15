@@ -57,14 +57,52 @@ export interface GridChannel extends Omit<GuideChannel, 'current_program'> {
   airings: Program[];
 }
 
+export type CacheState = "absent" | "running" | "complete" | "failed";
+
 export interface Recording {
+  object_id: number;
+  /** Alias of object_id, retained for backward compatibility. */
   identifier: number;
   path: string;
   title: string | null;
+  subtitle: string | null;
   description: string | null;
   start: string;
+  /** Seconds actually recorded, including padding — not the scheduled slot. */
   duration: number;
   thumbnail: string | null;
+  width: number | null;
+  height: number | null;
+  /** Device-side recording state, e.g. "finished" or "recording". */
+  state: string | null;
+  /** Device-reported recording fault, if any. */
+  error: string | null;
+  watched: boolean;
+  position: number;
+  cache_state: CacheState;
+}
+
+export interface RecordingList {
+  recordings: Recording[];
+  returned: number;
+  /** Device total. Exceeds `returned` when the fetch limit truncated the list. */
+  total: number;
+}
+
+export interface RecordingWatch {
+  object_id: number;
+  stream_url: string;
+  state: CacheState;
+  progress: number;
+  duration: number;
+}
+
+export interface RecordingStatus {
+  object_id: number;
+  state: CacheState;
+  progress: number;
+  duration: number;
+  error: string | null;
 }
 
 async function* ndjsonStream<T>(path: string, signal?: AbortSignal): AsyncGenerator<T> {
@@ -137,7 +175,21 @@ export const api = {
   
   guideGrid: () => req<GridChannel[]>("/channels/guide-grid"),
 
+  /** @deprecated Use `recordings()` — this returns the unenriched legacy shape. */
   library: () => req<Recording[]>("/channels/library"),
+
+  recordings: () => req<RecordingList>("/recordings"),
+
+  /** Start or attach to a cached transcode. Returns immediately; if the cache is
+   *  cold the returned playlist grows as encoding proceeds. */
+  watchRecording: (objectId: number) =>
+    req<RecordingWatch>(`/recordings/${objectId}/watch`, { method: "POST" }),
+
+  recordingStatus: (objectId: number) =>
+    req<RecordingStatus>(`/recordings/${objectId}/status`),
+
+  evictRecording: (objectId: number) =>
+    req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),
 
   startStream: (identifier: string, transcode?: boolean) => {
     let url = `/stream/${identifier}`;

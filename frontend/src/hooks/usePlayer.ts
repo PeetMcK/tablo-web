@@ -1,7 +1,29 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import Hls from "hls.js";
 
-export function usePlayer(videoRef: React.RefObject<HTMLVideoElement | null>) {
+export interface PlayerOptions {
+  /**
+   * Seconds of already-played media hls.js keeps buffered. Bounds how far back
+   * the viewer can rewind: the default of 90s discards older media even when the
+   * server still holds the segments. Pass the DVR window for live, or `Infinity`
+   * for a fully-cached recording.
+   */
+  backBufferLength?: number;
+  /**
+   * Where playback begins. `-1` means hls.js decides, which for a live or EVENT
+   * playlist is the live edge.
+   *
+   * A recording still being transcoded is served as an EVENT playlist, so the
+   * default drops the viewer at the encoder's frontier — minutes into the show —
+   * instead of at the start. Recordings must pass `0`.
+   */
+  startPosition?: number;
+}
+
+export function usePlayer(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  { backBufferLength = 90, startPosition = -1 }: PlayerOptions = {},
+) {
   const hlsRef = useRef<Hls | null>(null);
   const nativeErrorHandler = useRef<(() => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -31,10 +53,11 @@ export function usePlayer(videoRef: React.RefObject<HTMLVideoElement | null>) {
     const forceNative = isIOS && isSafari;
 
     if (!forceNative && Hls.isSupported()) {
-      const hls = new Hls({ 
-        enableWorker: true, 
+      const hls = new Hls({
+        enableWorker: true,
         lowLatencyMode: true,
-        backBufferLength: 90,
+        backBufferLength,
+        startPosition,
         manifestLoadingTimeOut: 20000,
         manifestLoadingMaxRetry: 10,
         manifestLoadingRetryDelay: 1000,
@@ -69,6 +92,14 @@ export function usePlayer(videoRef: React.RefObject<HTMLVideoElement | null>) {
       hlsRef.current = hls;
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = url;
+      if (startPosition >= 0) {
+        // Native HLS also honours the live edge for EVENT playlists.
+        video.addEventListener(
+          "loadedmetadata",
+          () => { video.currentTime = startPosition; },
+          { once: true },
+        );
+      }
       const handler = () => {
         const err = video.error;
         const code = err ? `code ${err.code}` : "unknown";
@@ -81,7 +112,7 @@ export function usePlayer(videoRef: React.RefObject<HTMLVideoElement | null>) {
     } else {
       setError("HLS not supported in this browser");
     }
-  }, [videoRef]);
+  }, [videoRef, backBufferLength, startPosition]);
 
   const destroy = useCallback(() => {
     const video = videoRef.current;

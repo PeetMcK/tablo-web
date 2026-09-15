@@ -39,6 +39,10 @@ class AppState:
         self._grid_cache: tuple | None = None
         self._grid_cache_time: float = 0.0
         self._grid_cache_lock = asyncio.Lock()
+        # object_id → device path. The client holds only the id, but every device
+        # call needs the category-scoped path, which the id does not encode.
+        self._recording_paths: dict[int, str] = {}
+        self.recordings_total: int = 0
 
     _GRID_CACHE_TTL = 600  # seconds — 10 minutes
 
@@ -148,12 +152,20 @@ class AppState:
 
     async def request_device(self, method: str, path: str, body: str = "") -> dict:
         """Make an authenticated request to the active local Tablo device."""
+        resp = await self._request_device_raw(method, path, body)
+        return resp.json()
+
+    async def _request_device_raw(self, method: str, path: str, body: str = ""):
+        """Signed device request returning the raw httpx response.
+
+        Used directly for non-JSON responses such as snapshot images.
+        """
         if self.active_device is None:
             raise RuntimeError("No active device")
-        
+
         from tablo_api import TabloAuth
         auth_header, date_header = TabloAuth.make_device_auth(method, path, body)
-        
+
         url = self.active_device.local_url.rstrip("/") + path
         resp = await self._http.request(
             method,
@@ -166,7 +178,26 @@ class AppState:
             }
         )
         resp.raise_for_status()
-        return resp.json()
+        return resp
+
+    async def fetch_device_image(self, image_id: int) -> tuple[bytes, str]:
+        """Fetch a snapshot image from the device. Returns (bytes, content_type)."""
+        resp = await self._request_device_raw("GET", f"/images/{int(image_id)}")
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
+
+    async def start_recording_session(self, path: str) -> dict:
+        """Open (or refresh) a device watch session for a recording.
+
+        ``POST {path}/watch`` with an empty body; GET on the same path 404s. The
+        response carries a ``playlist_url`` on the device's *stream* port (80),
+        not the API port, so callers must not assume ``local_url``.
+
+        Re-POSTing an active session refreshes its expiry and returns the same
+        playlist URL, which is what makes this usable as a keepalive.
+        """
+        if not path.startswith("/recordings/"):
+            raise ValueError(f"not a recording path: {path}")
+        return await self.request_device("POST", f"{path}/watch")
 
     def _cloud_headers(self) -> tuple[str, dict]:
         """Return (cloud_base_url, auth_headers) for the active device."""
@@ -528,37 +559,103 @@ class AppState:
             current_program = _current_airing(airings) or cloud_airing_map.get(c.identifier)
             yield _stub(c, logo_url=logo_map.get(c.identifier), current_program=current_program)
 
-    async def get_recordings(self) -> list[dict]:
-        """Fetch all recordings from the device."""
+    @staticmethod
+    def _recording_fields(data: dict) -> dict:
+        """Project a device recording record into the shape the UI consumes.
+
+        Three details the device gets right and the old projection got wrong:
+
+        * Description lives under ``event`` for sports, ``episode`` for series,
+          ``series`` as a fallback. Reading only the latter two left every sports
+          recording with a null description.
+        * ``video_details.duration`` is what was actually recorded, including the
+          padding in ``recorded_offsets``. ``airing_details.duration`` is only the
+          scheduled slot and understates every recording.
+        * ``snapshot_image.image_id`` is a real, fetchable thumbnail.
+        """
+        ad = data.get("airing_details") or {}
+        vd = data.get("video_details") or {}
+        event = data.get("event") or {}
+        episode = data.get("episode") or {}
+        series = data.get("series") or {}
+        user = data.get("user_info") or {}
+        snapshot = data.get("snapshot_image") or {}
+        object_id = data.get("object_id")
+
+        image_id = snapshot.get("image_id")
+        return {
+            "object_id": object_id,
+            # Retained so existing frontend code keyed on `identifier` keeps working.
+            "identifier": object_id,
+            "path": data.get("path"),
+            "title": ad.get("show_title") or event.get("title"),
+            "subtitle": event.get("title") or episode.get("title"),
+            "description": (
+                event.get("description")
+                or episode.get("description")
+                or series.get("description")
+            ),
+            "start": ad.get("datetime"),
+            "duration": vd.get("duration") or ad.get("duration") or 0,
+            "thumbnail": f"/api/recordings/{object_id}/thumbnail" if image_id else None,
+            "width": vd.get("width"),
+            "height": vd.get("height"),
+            "state": vd.get("state"),
+            "error": vd.get("error"),
+            "watched": user.get("watched", False),
+            "position": user.get("position", 0),
+        }
+
+    async def get_recordings(self, limit: int = 200) -> list[dict]:
+        """Fetch recordings from the device, enriched for the Library view.
+
+        Also populates the object_id → path map. The client only ever holds an
+        object_id, but every device call needs the category-scoped path
+        (e.g. ``/recordings/sports/events/80888``), which is not derivable from
+        the id alone.
+        """
         if self.active_device is None:
             raise RuntimeError("No active device")
 
-        import asyncio
         try:
             paths = await self.request_device("GET", "/recordings/airings")
         except Exception:
             return []
 
-        async def fetch_recording(path):
-            try:
-                data = await self.request_device("GET", path)
-                # Enriched with some helpful fields
-                ad = data.get("airing_details", {})
-                return {
-                    "identifier": data.get("object_id"),
-                    "path": path,
-                    "title": ad.get("show_title"),
-                    "description": data.get("episode", {}).get("description") or data.get("series", {}).get("description"),
-                    "start": ad.get("datetime"),
-                    "duration": ad.get("duration"),
-                    "thumbnail": None # Could resolve series image later
-                }
-            except Exception:
-                return None
+        self.recordings_total = len(paths)
+        sem = asyncio.Semaphore(30)
 
-        # Fetch first 50 recordings for now to keep it snappy
-        recordings = await asyncio.gather(*[fetch_recording(p) for p in paths[:50]])
-        return [r for r in recordings if r]
+        async def fetch_recording(path):
+            async with sem:
+                try:
+                    return self._recording_fields(await self.request_device("GET", path))
+                except Exception:
+                    return None
+
+        recordings = await asyncio.gather(*[fetch_recording(p) for p in paths[:limit]])
+        out = [r for r in recordings if r and r.get("object_id") is not None]
+        for r in out:
+            self._recording_paths[int(r["object_id"])] = r["path"]
+        return out
+
+    async def resolve_recording(self, object_id: int) -> tuple[str, int]:
+        """Return (device_path, duration) for a recording id.
+
+        Refreshes the recording list once on a miss so a cold start or a direct
+        API call still works without the client having listed recordings first.
+        """
+        object_id = int(object_id)
+        path = self._recording_paths.get(object_id)
+        if path is None:
+            await self.get_recordings()
+            path = self._recording_paths.get(object_id)
+        if path is None:
+            raise KeyError(f"recording {object_id} not found")
+
+        data = await self.request_device("GET", path)
+        vd = data.get("video_details") or {}
+        ad = data.get("airing_details") or {}
+        return path, int(vd.get("duration") or ad.get("duration") or 0)
 
     async def _build_grid_enrichment(self, max_airings: int = 1000) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import log_buffer as _log_buffer
-from .routes import auth, channels, iptv, stream
+from .routes import auth, channels, iptv, recordings, stream
 from .state import state, CONFIG_PATH
 
 _log_buffer.install()
@@ -19,7 +19,19 @@ async def lifespan(app: FastAPI):
                 await state.login(cfg["email"], cfg["password"])
         except Exception:
             pass
+
+    # A transcode marked RUNNING after a restart has no process behind it. Sweep
+    # those to FAILED so they can be retried instead of wedging forever.
+    try:
+        orphans = recordings.cache.sweep_orphans()
+        if orphans:
+            print(f"[cache] swept {len(orphans)} interrupted transcode(s): {orphans}")
+    except Exception as e:
+        print(f"[cache] sweep failed: {e}")
+
     yield
+
+    await recordings.cache.shutdown()
     await state.http.aclose()
 
 app = FastAPI(title="Tablo Web", lifespan=lifespan)
@@ -35,6 +47,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(channels.router)
 app.include_router(iptv.router)
+app.include_router(recordings.router)
 app.include_router(stream.router, prefix="/api")
 
 @app.get("/api/health")

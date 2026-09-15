@@ -1,6 +1,7 @@
 """Minimal working version."""
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -19,6 +20,14 @@ TRANSCODE_DIR.mkdir(exist_ok=True)
 transcode_procs: dict[str, subprocess.Popen] = {}
 
 MAX_TRANSCODE_SESSIONS = 4
+
+# Rolling DVR window for live transcodes, in segments of HLS_TIME seconds.
+# A 6-segment window (~36s) leaves nothing to rewind into; widening it is what
+# makes pause and rewind work on live. delete_segments is kept so the window
+# stays bounded - without it a forgotten session grows until the disk fills.
+HLS_TIME = 6
+LIVE_DVR_MINUTES = int(os.environ.get("LIVE_DVR_MINUTES", "60"))
+LIVE_DVR_SEGMENTS = max(6, LIVE_DVR_MINUTES * 60 // HLS_TIME)
 
 # Kill any FFmpeg processes left over from a previous run and wipe stale dirs.
 # After a container restart transcode_procs is empty but old FFmpeg processes
@@ -373,9 +382,11 @@ async def start_transcoder(session_id: str, input_url: str):
         "-pix_fmt", "yuv420p", "-g", "60",
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "hls",
-        "-hls_time", "6",
-        "-hls_list_size", "6",
-        "-hls_segment_filename", "%03d.ts",
+        "-hls_time", str(HLS_TIME),
+        # Rolling DVR window rather than a minimal live window, so the player can
+        # pause and rewind within it.
+        "-hls_list_size", str(LIVE_DVR_SEGMENTS),
+        "-hls_segment_filename", "%05d.ts",
         "-hls_flags", "delete_segments+independent_segments",
         "-loglevel", "info",
         "playlist.m3u8"
