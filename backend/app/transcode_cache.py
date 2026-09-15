@@ -23,13 +23,14 @@ of work is a 60s window rather than a single segment.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import os
 import shutil
 import signal
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -134,6 +135,42 @@ def _profiles() -> dict[str, EncoderProfile]:
             flags=["-preset", "p4", "-cq", q or "23", "-rc", "vbr"],
         ),
     }
+
+
+def deinterlace_filter() -> list[str]:
+    """Deinterlacing, applied before any encoder-specific filtering.
+
+    ATSC is split down the middle: ABC and FOX broadcast 720p60 progressive,
+    CBS and NBC broadcast 1080i. Measured across six recordings off this
+    antenna, KTMFABC and KTMFFOX came back 121/121 progressive while KPAX (CBS)
+    and KECI (NBC) came back 121/121 top-field-first. Encoding those fields as
+    if they were frames is what puts comb teeth on every moving edge.
+
+    ``deint=interlaced`` processes only frames actually flagged interlaced, so
+    the 720p60 channels pass through untouched and keep their frame rate. That
+    matters more than it looks: with ``send_field`` an unconditional filter
+    would double the rate of progressive content for nothing.
+
+    Modes, measured on one 1080i window (VideoToolbox, 60s of output):
+
+        off                   7.5s   27 MB   8.0x realtime
+        frame  -> 29.97p      7.6s   27 MB   7.9x realtime   (combing gone, free)
+        field  -> 59.94p     11.6s   48 MB   5.2x realtime   (true 60p motion)
+
+    ``field`` is the default because 1080i carries 59.94 fields per second -
+    half of them are discarded by ``frame``, which is why deinterlaced 1080i
+    otherwise looks less fluid than the 720p60 channels beside it. Sports is
+    exactly the content that shows it.
+
+    bwdif over yadif: same cost here, visibly better on the diagonal edges that
+    interlacing damages most.
+    """
+    mode = os.environ.get("TRANSCODE_DEINTERLACE", "field").lower()
+    if mode in ("off", "none", "0", ""):
+        return []
+    if mode == "frame":
+        return ["bwdif=mode=send_frame:parity=auto:deint=interlaced"]
+    return ["bwdif=mode=send_field:parity=auto:deint=interlaced"]
 
 
 def encoder_profile() -> EncoderProfile:
@@ -438,6 +475,95 @@ class TranscodeCache:
     # Playlist
     # ------------------------------------------------------------------
 
+    def segment_files(self, object_id: int) -> list[Path]:
+        """Every cached segment, in playback order.
+
+        Windows that were never encoded are skipped rather than faked. An
+        export of a partial cache is therefore shorter than the recording, with
+        the missing stretches simply absent - which is why callers gate exports
+        on a complete cache instead of quietly handing over a file with holes.
+        """
+        meta = self.read_meta(object_id)
+        if meta is None or not meta.source_duration:
+            return []
+        out: list[Path] = []
+        for w in range(window_count(meta.source_duration)):
+            if not self.window_ready(object_id, w):
+                continue
+            wd = self.window_dir(object_id, w)
+            for n in range(segments_in_window(meta.source_duration, w)):
+                seg = wd / f"seg_{n:02d}.ts"
+                if seg.exists():
+                    out.append(seg)
+        return out
+
+    async def export_mp4(self, object_id: int) -> AsyncIterator[bytes]:
+        """Stream the cached segments as a single MP4, remuxed not re-encoded.
+
+        The segments are already H.264/AAC, so this only rewraps them: measured
+        at 0.47s for 180s of video, which makes a full 3.5h recording about 35
+        seconds and disk-bound rather than CPU-bound.
+
+        MPEG-TS is fed in by byte concatenation rather than through the concat
+        demuxer. Each window was muxed with ``-output_ts_offset``, so its
+        timestamps are already absolute; the demuxer would shift them again and
+        the result fails to mux with non-monotonic DTS.
+
+        Fragmented MP4, because a normal ``+faststart`` file has to seek back
+        and rewrite its header - which would mean staging the whole thing on
+        disk and making the user wait before the download even starts.
+        """
+        segments = self.segment_files(object_id)
+        if not segments:
+            raise FileNotFoundError(f"nothing cached for {object_id}")
+
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            # The TS carries absolute timestamps from the window offsets; let
+            # FFmpeg rebuild presentation stamps rather than trusting the seam.
+            "-fflags", "+genpts",
+            "-i", "pipe:0",
+            "-c", "copy",
+            # The segments carry AAC in ADTS framing, which is how MPEG-TS
+            # holds it; MP4 needs the raw form with the config in the sample
+            # entry. Without this the muxer rejects the first audio packet with
+            # "Malformed AAC bitstream detected" and the export dies a fraction
+            # of a second in, having written only a header.
+            "-bsf:a", "aac_adtstoasc",
+            "-movflags", "+frag_keyframe+empty_moov",
+            "-f", "mp4", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        async def feed() -> None:
+            try:
+                for seg in segments:
+                    proc.stdin.write(seg.read_bytes())
+                    await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client hung up; the reader below stops too
+            finally:
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    proc.stdin.close()
+
+        pump = asyncio.create_task(feed())
+        try:
+            while True:
+                chunk = await proc.stdout.read(256 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            # A cancelled download must not leave ffmpeg holding the pipe.
+            pump.cancel()
+            with contextlib.suppress(ProcessLookupError):
+                if proc.returncode is None:
+                    proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+
     def build_playlist(self, object_id: int) -> str | None:
         """Full-length VOD playlist, published before anything is encoded.
 
@@ -669,13 +795,26 @@ class TranscodeCache:
         """
         async with self._lock(object_id):
             meta = self.read_meta(object_id)
-            if meta is None or meta.source_duration != source_duration:
+            if meta is None:
                 estimated = self.estimate_bytes(source_duration)
                 self._check_disk(estimated)
                 self.make_room(estimated)
                 meta = CacheMeta(
                     object_id=object_id, path=path, source_duration=source_duration
                 )
+                self.write_meta(meta)
+            elif meta.source_duration != source_duration or meta.path != path:
+                # Update the facts in place. Replacing the record wholesale here
+                # silently cleared `pinned`, which made the recording eligible
+                # for eviction - and an offline copy that had been explicitly
+                # kept was then deleted to make room. Two were lost that way
+                # before this was found.
+                #
+                # No make_room: space for this recording was reserved when it
+                # was first registered, and re-reserving it made re-registering
+                # a large pinned copy fail outright with CacheFull.
+                meta.source_duration = source_duration
+                meta.path = path
                 self.write_meta(meta)
             else:
                 self.touch(object_id)
@@ -902,6 +1041,10 @@ class TranscodeCache:
               f"session={asyncio.get_event_loop().time() - t0:.1f}s", flush=True)
 
         prof = encoder_profile()
+        # Deinterlace ahead of anything encoder-specific: VAAPI's chain ends in
+        # hwupload, and frames have to be progressive before they leave for the
+        # GPU.
+        filters = [*deinterlace_filter(), *prof.filters]
         cmd = [
             "ffmpeg", "-y",
             # 'file' is deliberately excluded: input_url is device-controlled.
@@ -923,7 +1066,7 @@ class TranscodeCache:
             # Pins keyframes to exact segment boundaries so the window's segment
             # count matches what the published playlist already declared.
             "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})",
-            *(["-vf", ",".join(prof.filters)] if prof.filters else []),
+            *(["-vf", ",".join(filters)] if filters else []),
             "-c:v", prof.name, *prof.flags,
             *(["-pix_fmt", prof.pix_fmt] if prof.pix_fmt else []),
             "-c:a", "aac", "-b:a", "160k", "-ac", "2",

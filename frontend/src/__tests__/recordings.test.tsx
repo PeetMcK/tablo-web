@@ -28,6 +28,10 @@ const REC: Recording = {
   paused: false,
   cached_seconds: 0,
   rate: { mbps: 0, realtime: 0 },
+  // Matches the real recording: ABC broadcasts 720p60 progressive.
+  channel: { call_sign: "KTMFABC", network: "ABC", number: "23.1" },
+  scan: "720p",
+  interlaced: false,
 };
 
 function list(overrides: Partial<RecordingList> = {}): RecordingList {
@@ -72,7 +76,11 @@ describe("LibraryView", () => {
     vi.spyOn(api, "recordings").mockResolvedValue(list());
     renderLibrary();
     // 12615s = 3h 30m, not the 10800s (3h) scheduled slot.
-    expect(await screen.findByText("3H 30M")).toBeInTheDocument();
+    //
+    // Lowercase on purpose: uppercased beside a transfer rate, "3H 35M" reads
+    // as megabytes when it means minutes - and the same uppercasing turned
+    // "Mb/s" into "MB/S", displaying megabits spelled as megabytes.
+    expect(await screen.findByText("3h 30m")).toBeInTheDocument();
   });
 
   it("starts playback with the recording's object_id when play is clicked", async () => {
@@ -120,6 +128,54 @@ describe("LibraryView", () => {
     await vi.advanceTimersByTimeAsync(3500);
     expect(status).toHaveBeenCalledWith(80888, expect.any(Number));
     vi.useRealTimers();
+  });
+
+  it("shows the station and scan type", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(list());
+    renderLibrary();
+    expect(await screen.findByText("23.1 ABC")).toBeInTheDocument();
+    expect(screen.getByText("720p")).toBeInTheDocument();
+  });
+
+  it("flags an interlaced source, since it is the one that costs something", async () => {
+    // CBS and NBC broadcast 1080i; it must be deinterlaced on the way to H.264,
+    // which halves throughput and roughly doubles the cached size.
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, channel: { call_sign: "KPAX", network: "CBS", number: "8.1" },
+                     scan: "1080i", interlaced: true }],
+    }));
+    renderLibrary();
+    const badge = await screen.findByText("1080i");
+    expect(badge).toHaveAttribute("title", expect.stringMatching(/deinterlac/i));
+  });
+
+  it("shows the start time, not just the date", async () => {
+    // Several games share a date and channel; kickoff is what tells them apart.
+    vi.spyOn(api, "recordings").mockResolvedValue(list());
+    renderLibrary();
+    const when = new Date(REC.start);
+    const expected = `${when.toLocaleDateString()} ` +
+      when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+
+  it("offers an MP4 export only once the cache is complete", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, cache_state: "complete", cache_progress: 1, pinned: true }],
+    }));
+    renderLibrary();
+    const link = await screen.findByRole("link", { name: /save .* as an mp4/i });
+    expect(link).toHaveAttribute("href", "/api/recordings/80888/download");
+  });
+
+  it("hides the MP4 export while the cache is still partial", async () => {
+    // Exporting a partial cache yields a file with the gaps simply missing.
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, cache_state: "partial", cache_progress: 0.5, pinned: true }],
+    }));
+    renderLibrary();
+    await screen.findByText("NFL Football");
+    expect(screen.queryByRole("link", { name: /as an mp4/i })).toBeNull();
   });
 
   it("reports truncation instead of silently dropping recordings", async () => {

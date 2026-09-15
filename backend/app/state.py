@@ -627,6 +627,13 @@ class AppState:
         object_id = data.get("object_id")
 
         image_id = snapshot.get("image_id")
+        channel = AppState._channel_fields(ad)
+        # The device flags this on the recording itself, so the scan type is
+        # known without probing the stream. Verified against ffmpeg's idet on
+        # all six recordings: the flag and the detection agreed every time.
+        interlaced = "interlaced" in (vd.get("flags") or [])
+        height = vd.get("height")
+        scan = f"{height}{'i' if interlaced else 'p'}" if height else None
         return {
             "object_id": object_id,
             # Retained so existing frontend code keyed on `identifier` keeps working.
@@ -648,6 +655,27 @@ class AppState:
             "error": vd.get("error"),
             "watched": user.get("watched", False),
             "position": user.get("position", 0),
+            "channel": channel,
+            # e.g. "1080i" / "720p". Interlaced sources need deinterlacing on
+            # the way to H.264, which costs throughput and roughly doubles the
+            # cached size, so it is worth showing rather than leaving to be
+            # discovered as combing on a moving edge.
+            "scan": scan,
+            "interlaced": interlaced,
+        }
+
+    @staticmethod
+    def _channel_fields(ad: dict) -> dict | None:
+        """Station identity, flattened out of the nested airing record."""
+        wrapper = ad.get("channel") or {}
+        ch = wrapper.get("channel") or wrapper
+        if not ch.get("call_sign"):
+            return None
+        major, minor = ch.get("major"), ch.get("minor")
+        return {
+            "call_sign": ch.get("call_sign"),
+            "network": ch.get("network"),
+            "number": f"{major}.{minor}" if major is not None else None,
         }
 
     async def get_recordings(self, limit: int = 200) -> list[dict]:

@@ -577,3 +577,107 @@ def test_set_pinned_on_unknown_recording_reports_failure(tmp_path):
 ])
 def test_offline_routes_require_auth(method, path):
     assert getattr(client, method)(path).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Export to a single file
+# ---------------------------------------------------------------------------
+
+def test_segment_files_are_in_playback_order(tmp_path):
+    c = _cache(tmp_path)
+    _register(c, oid=5, duration=120)          # 2 windows, 10 segments each
+    for w in (0, 1):
+        _mark_done(c, 5, w)
+        for n in range(segments_in_window(120, w)):
+            (c.window_dir(5, w) / f"seg_{n:02d}.ts").write_bytes(b"x")
+
+    files = c.segment_files(5)
+    assert [f.parent.name + "/" + f.name for f in files[:3]] == [
+        "w00000/seg_00.ts", "w00000/seg_01.ts", "w00000/seg_02.ts",
+    ]
+    assert files[-1].parent.name == "w00001"
+
+
+def test_segment_files_skip_windows_that_were_never_encoded(tmp_path):
+    """A hole is left as a hole rather than padded with something wrong."""
+    c = _cache(tmp_path)
+    _register(c, oid=5, duration=120)
+    _mark_done(c, 5, 1)
+    for n in range(segments_in_window(120, 1)):
+        (c.window_dir(5, 1) / f"seg_{n:02d}.ts").write_bytes(b"x")
+
+    files = c.segment_files(5)
+    assert files
+    assert all(f.parent.name == "w00001" for f in files)
+
+
+def test_segment_files_empty_for_unknown_recording(tmp_path):
+    assert _cache(tmp_path).segment_files(999) == []
+
+
+def test_export_refuses_when_nothing_is_cached(tmp_path):
+    c = _cache(tmp_path)
+    _register(c, oid=5, duration=120)
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(anext(c.export_mp4(5)))
+
+
+def test_download_name_is_readable_and_filesystem_safe():
+    from app.routes.recordings import _download_name
+
+    meta = CacheMeta(object_id=66220, path="/r/66220",
+                     info={"title": "NFL Football",
+                           "subtitle": "Green Bay Packers at Minnesota Vikings"})
+    assert _download_name(meta) == "NFL Football - Green Bay Packers at Minnesota Vikings.mp4"
+
+
+def test_download_name_strips_path_separators():
+    """A device-supplied title must not be able to steer where a file lands."""
+    from app.routes.recordings import _download_name
+
+    meta = CacheMeta(object_id=1, path="/r/1", info={"title": "../../etc/passwd"})
+    name = _download_name(meta)
+    assert "/" not in name and "\\" not in name
+    # A leading dot would make it a hidden file.
+    assert not name.startswith(".")
+    assert name.endswith(".mp4")
+
+
+def test_download_name_falls_back_without_metadata():
+    from app.routes.recordings import _download_name
+
+    assert _download_name(CacheMeta(object_id=77, path="/r/77")) == "recording-77.mp4"
+
+
+def test_re_registering_keeps_a_recording_pinned(tmp_path):
+    """Registration must not undo what the user asked to keep.
+
+    Rebuilding the record on a duration change cleared `pinned`, which made an
+    explicitly-kept offline copy eligible for eviction. Two were destroyed that
+    way: the cache promise is that only a user action removes them.
+    """
+    c = _cache(tmp_path)
+    c.write_meta(CacheMeta(object_id=80888, path="/r/80888", source_duration=12615,
+                           pinned=True, paused=True, info={"title": "NFL Football"}))
+
+    asyncio.run(c.register(80888, "/r/80888", 12700))   # device reports a new duration
+
+    meta = c.read_meta(80888)
+    assert meta.pinned is True
+    assert meta.paused is True
+    assert meta.info == {"title": "NFL Football"}
+    assert meta.source_duration == 12700   # the fact still updates
+
+
+def test_a_re_registered_pinned_copy_is_still_exempt_from_eviction(tmp_path):
+    """The consequence of the bug above, asserted end to end."""
+    c = _cache(tmp_path, budget=1000)
+    c.write_meta(CacheMeta(object_id=80888, path="/r/80888", source_duration=120,
+                           pinned=True))
+    _mark_done(c, 80888, 0, size=5000)
+
+    asyncio.run(c.register(80888, "/r/80888", 180))
+    c.make_room(0)
+
+    assert c.read_meta(80888) is not None
+    assert c.state(80888) is not CacheState.ABSENT

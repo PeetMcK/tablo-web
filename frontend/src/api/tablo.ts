@@ -92,6 +92,19 @@ export interface Recording {
   cached_seconds: number;
   /** Live transcode throughput. Zero once no window has landed recently. */
   rate: TranscodeRate;
+  /** Station this was recorded from. */
+  channel: RecordingChannel | null;
+  /** Scan type and height, e.g. "1080i" or "720p". */
+  scan: string | null;
+  /** 1080i sources need deinterlacing; 720p60 ones pass through untouched. */
+  interlaced: boolean;
+}
+
+export interface RecordingChannel {
+  call_sign: string;
+  network: string | null;
+  /** Virtual channel, e.g. "8.1". */
+  number: string | null;
 }
 
 export interface TranscodeRate {

@@ -9,7 +9,7 @@ it reaches hardware.
 import pytest  # noqa: F401
 
 
-from app.transcode_cache import encoder_profile, video_encoder
+from app.transcode_cache import deinterlace_filter, encoder_profile, video_encoder
 
 
 def _profile(monkeypatch, encoder, quality=None):
@@ -74,3 +74,39 @@ def test_unknown_encoder_falls_back_without_crashing(monkeypatch):
     assert prof.flags and prof.pix_fmt == "yuv420p"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Deinterlacing
+# ---------------------------------------------------------------------------
+
+def test_deinterlace_defaults_to_field_doubling(monkeypatch):
+    """1080i carries 59.94 fields/s; send_frame would throw half of them away."""
+    monkeypatch.delenv("TRANSCODE_DEINTERLACE", raising=False)
+    assert deinterlace_filter() == ["bwdif=mode=send_field:parity=auto:deint=interlaced"]
+
+
+def test_deinterlace_only_touches_interlaced_frames(monkeypatch):
+    """ABC and FOX broadcast 720p60; filtering those would double their rate."""
+    monkeypatch.delenv("TRANSCODE_DEINTERLACE", raising=False)
+    assert "deint=interlaced" in deinterlace_filter()[0]
+
+
+def test_deinterlace_frame_mode_preserves_frame_rate(monkeypatch):
+    monkeypatch.setenv("TRANSCODE_DEINTERLACE", "frame")
+    assert deinterlace_filter() == ["bwdif=mode=send_frame:parity=auto:deint=interlaced"]
+
+
+@pytest.mark.parametrize("value", ["off", "none", "0", ""])
+def test_deinterlace_can_be_disabled(monkeypatch, value):
+    monkeypatch.setenv("TRANSCODE_DEINTERLACE", value)
+    assert deinterlace_filter() == []
+
+
+def test_deinterlace_precedes_the_hardware_upload(monkeypatch):
+    """VAAPI ends its chain in hwupload; frames must be progressive by then."""
+    monkeypatch.delenv("TRANSCODE_DEINTERLACE", raising=False)
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_vaapi")
+    chain = [*deinterlace_filter(), *encoder_profile().filters]
+    assert chain.index("hwupload") > 0
+    assert chain[0].startswith("bwdif")

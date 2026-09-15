@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
-import { Play, Download, CheckCircle2, CloudOff, Loader2, Pause, Trash2 } from "lucide-react";
+import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
 import { parseRoute, writeRoute } from "../lib/route";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
@@ -22,10 +22,31 @@ function formatBytes(n: number): string {
   return `${Math.round(n / 1024 ** 2)} MB`;
 }
 
+/**
+ * When the recording started, as `9/13/2026 2:25 PM`.
+ *
+ * The date alone was ambiguous on days with several games on the same channel -
+ * three of these start within hours of each other - so the kickoff time is what
+ * actually distinguishes them.
+ */
+function formatAired(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${d.toLocaleDateString()} ${time}`;
+}
+
+/**
+ * Runtime as `3h 35m`.
+ *
+ * Lowercase deliberately, and rendered without the uppercasing applied to the
+ * rest of that line: `3H 35M` sitting beside a transfer rate reads as megabytes
+ * when it means minutes.
+ */
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.round((seconds % 3600) / 60);
-  return h > 0 ? `${h}H ${m}M` : `${m} MIN`;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 export function LibraryView() {
@@ -244,6 +265,37 @@ export function LibraryView() {
                   {rec.subtitle && (
                     <p className="text-xs font-medium text-accent/70 truncate">{rec.subtitle}</p>
                   )}
+                  {(rec.channel || rec.scan) && (
+                    <div className="mt-1 flex items-center gap-1.5 text-[10px] font-bold
+                                    tracking-wide normal-case">
+                      {rec.channel && (
+                        <span className="px-1.5 py-0.5 rounded bg-white/5 text-white/45">
+                          {rec.channel.number && `${rec.channel.number} `}
+                          {rec.channel.network || rec.channel.call_sign}
+                        </span>
+                      )}
+                      {rec.scan && (
+                        // Interlaced is called out because it is the one that
+                        // costs something: it has to be deinterlaced on the way
+                        // to H.264, which halves throughput and roughly doubles
+                        // the cached size.
+                        <span
+                          className={`px-1.5 py-0.5 rounded ${
+                            rec.interlaced
+                              ? "bg-amber-400/10 text-amber-300/80"
+                              : "bg-white/5 text-white/45"
+                          }`}
+                          title={
+                            rec.interlaced
+                              ? "Interlaced source — deinterlaced to 60p during transcode"
+                              : "Progressive source — no deinterlacing needed"
+                          }
+                        >
+                          {rec.scan}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <p className="text-xs text-white/40 line-clamp-2 leading-relaxed min-h-[2.5rem]">
                     {rec.description || "No description available"}
                   </p>
@@ -257,13 +309,18 @@ export function LibraryView() {
                           Downloading
                         </span>
                       )}
-                      <span className="text-white/35 tabular-nums">
+                      {/* normal-case: the units carry meaning here, and the
+                          line's uppercasing turns "3h 35m" into "3H 35M". */}
+                      <span className="text-white/35 tabular-nums normal-case">
                         {Math.round(rec.cache_progress * 100)}% ·{" "}
                         {formatDuration(rec.cached_seconds)} of {formatDuration(rec.duration)}
                         {!rec.paused && rec.rate?.mbps > 0 && (
                           <>
                             {" · "}
-                            <span className="text-emerald-400/70">
+                            <span
+                              className="text-emerald-400/70"
+                              title={`${(rec.rate.mbps / 8).toFixed(1)} MB/s`}
+                            >
                               {rec.rate.mbps.toFixed(1)} Mb/s
                             </span>
                             {rec.rate.realtime > 0 && ` · ${rec.rate.realtime.toFixed(1)}×`}
@@ -274,8 +331,11 @@ export function LibraryView() {
                   )}
 
                   <div className="mt-4 flex items-center justify-between">
-                    <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">
-                      {new Date(rec.start).toLocaleDateString()}
+                    <span
+                      className="text-[10px] font-black text-white/20 uppercase tracking-widest"
+                      title={new Date(rec.start).toLocaleString()}
+                    >
+                      {formatAired(rec.start)}
                     </span>
                     <div className="flex items-center gap-2">
                       {rec.pinned && rec.cache_state !== "complete" && (
@@ -296,6 +356,21 @@ export function LibraryView() {
                             ? <Download className="w-4 h-4" aria-hidden />
                             : <Pause className="w-4 h-4" fill="currentColor" aria-hidden />}
                         </button>
+                      )}
+                      {rec.cache_state === "complete" && (
+                        // A plain link, not a fetch: the browser owns the
+                        // download, so a 7 GB file streams to disk instead of
+                        // being buffered in a tab.
+                        <a
+                          href={`/api/recordings/${rec.object_id}/download`}
+                          download
+                          title="Save as a single MP4 file"
+                          aria-label={`Save ${rec.title ?? "recording"} as an MP4 file`}
+                          className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
+                                     text-white/50 hover:bg-white/10 hover:text-white transition"
+                        >
+                          <FileDown className="w-4 h-4" aria-hidden />
+                        </a>
                       )}
                       {rec.cache_state !== "absent" && (
                         <button

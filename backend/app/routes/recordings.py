@@ -3,7 +3,7 @@
 import re
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ..state import state
 from ..transcode_cache import (
@@ -161,6 +161,60 @@ async def recording_status(object_id: int, position: float | None = None):
         "rate": cache.rate(object_id),
         "error": meta.error if meta else None,
     }
+
+
+def _download_name(meta) -> str:
+    """A filename a person would recognise in their Downloads folder."""
+    info = (meta.info or {}) if meta else {}
+    parts = [p for p in (info.get("title"), info.get("subtitle")) if p]
+    stem = " - ".join(parts) or f"recording-{meta.object_id}"
+    # The title comes from the device, so treat it as untrusted: strip anything
+    # that could steer where the file lands or what it is named. Separators go
+    # first, then leading dots, which would otherwise yield a hidden file.
+    stem = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip().lstrip(". ")[:120].strip()
+    return f"{stem or f'recording-{meta.object_id}'}.mp4"
+
+
+@router.get("/{object_id}/download")
+async def download_recording(object_id: int):
+    """The cached recording as a single MP4.
+
+    Remuxed, never re-encoded: the segments are already H.264/AAC, so this only
+    rewraps them - about 35 seconds for a 3.5h recording, disk-bound.
+
+    Gated on a complete cache. A partial one would export with the missing
+    stretches simply absent, which looks like a corrupt file rather than an
+    incomplete download.
+    """
+    _require_auth()
+    meta = cache.read_meta(object_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Not cached")
+
+    state_now = cache.state(object_id)
+    if state_now is not CacheState.COMPLETE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Recording is {state_now.value}; only a complete cache can be exported",
+        )
+
+    try:
+        stream = cache.export_mp4(object_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    filename = _download_name(meta)
+    return StreamingResponse(
+        stream,
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Length is unknown until the remux finishes, so the browser shows
+            # progress without a total rather than guessing wrong.
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/storage")

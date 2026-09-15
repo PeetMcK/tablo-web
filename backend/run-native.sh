@@ -45,9 +45,23 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 export TRANSCODE_VIDEO_ENCODER="${TRANSCODE_VIDEO_ENCODER:-h264_videotoolbox}"
-# The Media Engine is fixed-function; extra parallel jobs add contention rather
-# than throughput, and the job is bound by pulling segments from the Tablo.
-export TRANSCODE_CONCURRENCY="${TRANSCODE_CONCURRENCY:-2}"
+# Higher than the CPU default, because on hardware the bottleneck moves.
+#
+# Measured per 60s window: fetching and remuxing from the device alone takes
+# 8.0s, and adding the VideoToolbox encode takes 7.5s - the encode is free. The
+# limit is per-request latency waiting on the Tablo to produce segments, which
+# overlapping streams hide. Aggregate throughput, same recording:
+#
+#     concurrency 1  ->  5.1x realtime
+#     concurrency 2  ->  6.2x
+#     concurrency 4  ->  8.4x        <- knee
+#     concurrency 6  ->  9.8x
+#     concurrency 10 -> 10.2x        <- device ceiling, per-window latency 51s
+#
+# Past ~6 the device is saturated and only per-window latency grows, which also
+# slows an on-demand seek sharing the same device. Six VideoToolbox encoders
+# cost ~107% CPU in total, so this is not a CPU trade.
+export TRANSCODE_CONCURRENCY="${TRANSCODE_CONCURRENCY:-4}"
 export TABLO_CONFIG_PATH="${TABLO_CONFIG_PATH:-$DATA/config.json}"
 export TABLO_DB_PATH="${TABLO_DB_PATH:-$DATA/tablo.db}"
 export TABLO_SECRET_KEY_PATH="${TABLO_SECRET_KEY_PATH:-$DATA/.secret_key}"
