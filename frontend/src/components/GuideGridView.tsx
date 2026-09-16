@@ -472,7 +472,15 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             {days.map((d, i) => (
               <div
                 key={d.key}
-                className={`shrink-0 h-7 flex items-center overflow-hidden
+                /* No `overflow-hidden` here, however much it looks like it
+                   belongs: `overflow` other than visible makes an element a
+                   scroll container, and a sticky child measures its offsets
+                   against the NEAREST one. With it, each label pinned 128px
+                   into its own band rather than to the guide's left edge —
+                   measured at 580 where 452 was wanted. The band still
+                   contains the label, because sticky cannot escape its own
+                   containing block. */
+                className={`shrink-0 h-7 flex items-center
                             ${i > 0 ? "border-l border-border-medium" : ""}`}
                 style={{ width: d.hours * HOUR_WIDTH }}
               >
@@ -492,11 +500,11 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           </div>
         </div>
 
-        <div className="flex relative">
+        <div className="flex">
           <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-10">
             <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
           </div>
-          <div className="flex">
+          <div className="flex relative">
             {hours.map((h, i) => (
               <div
                 key={i}
@@ -514,22 +522,20 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                 <span>{h.time}</span>
               </div>
             ))}
+            {/* Now marker, kept to the hour row rather than run up through the
+                day band: the band's label is pinned to the left edge, so a
+                line spanning the whole header crosses the date text on any
+                day that is under way. */}
+            {nowVisible && (
+              <div
+                className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
+                style={{ left: nowLeft }}
+              >
+                <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
+              </div>
+            )}
           </div>
         </div>
-
-        {/* Now marker, spanning both rows of the header rather than only the
-            hours: the band above is part of the same strip, and a line that
-            stopped short of it would read as two separate markers. Offset by
-            the frozen column because it is positioned against the header as a
-            whole now, in the same surface coordinates the body's line uses. */}
-        {nowVisible && (
-          <div
-            className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
-            style={{ left: CHANNEL_W + nowLeft }}
-          >
-            <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
-          </div>
-        )}
       </div>
 
       {/* Grid Rows */}
