@@ -36,10 +36,21 @@ function mockStream(channels: GridChannel[]) {
   });
 }
 
-/** Every horizontally scrollable lane: the time header and one per channel. */
-function lanes(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(".overflow-x-auto"))
-    .filter(el => el.className.includes("flex-1"));
+/**
+ * The guide's one scroll container.
+ *
+ * There used to be a lane per row, synced by offset. These helpers assert the
+ * replacement invariant: not that the lanes agree, but that there is only one.
+ */
+function scroller(container: HTMLElement): HTMLElement {
+  const found = container.querySelectorAll<HTMLElement>(".overflow-auto");
+  expect(found.length).toBe(1);
+  return found[0];
+}
+
+/** The timeline surface of each channel row — sized, no longer scrollable. */
+function timelines(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(".h-24"));
 }
 
 /** Channel whose listings run `hours` past the top of the current hour. */
@@ -71,8 +82,7 @@ describe("GuideGridView timeline extent", () => {
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    const [header] = lanes(container);
-    const columns = header.querySelectorAll(":scope > div");
+    const columns = container.querySelectorAll(".font-mono");
     expect(columns.length).toBeGreaterThanOrEqual(30);
   });
 
@@ -90,10 +100,10 @@ describe("GuideGridView timeline extent", () => {
     expect(await screen.findByText(label)).toBeInTheDocument();
   });
 
-  it("gives every channel the same scroll extent as the clock", async () => {
-    // Programmes are absolutely positioned, so a channel whose listings stop
-    // early scrolls a shorter distance than the header and slides out of step
-    // with it — the lanes are synced by offset, which assumes a shared width.
+  it("gives every channel the same extent as the clock", async () => {
+    // Programmes are absolutely positioned and contribute nothing to width, so
+    // a channel whose listings stop early would draw a shorter row than the
+    // header unless every row is sized from the guide's full run.
     mockStream([...longChannel(30), {
       identifier: "ch2", call_sign: "KECI", major: 13, minor: 1, network: "NBC",
       kind: "ota", display_name: "KECI", logo_url: null,
@@ -103,9 +113,9 @@ describe("GuideGridView timeline extent", () => {
     // Both channels carry an "Hour 0", so match all rather than expecting one.
     await screen.findAllByText("Hour 0");
 
-    const spacers = container.querySelectorAll<HTMLElement>("[data-timeline-spacer]");
-    expect(spacers.length).toBe(2);
-    const widths = new Set([...spacers].map(s => s.style.width));
+    const rows = timelines(container);
+    expect(rows.length).toBe(2);
+    const widths = new Set(rows.map(r => r.style.width));
     expect(widths.size).toBe(1);             // both rows span the same distance
   });
 
@@ -114,42 +124,49 @@ describe("GuideGridView timeline extent", () => {
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    const [header] = lanes(container);
-    expect(header.querySelectorAll(":scope > div").length).toBeGreaterThanOrEqual(6);
+    expect(container.querySelectorAll(".font-mono").length).toBeGreaterThanOrEqual(6);
   });
 });
 
 describe("GuideGridView", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("scrolls every channel together with the clock", async () => {
-    // Each row is its own horizontal scroll container. Without syncing them,
-    // dragging one channel slid that row alone: its programmes no longer lined
-    // up with the hour headings above or with any other channel, so the grid
-    // silently started lying about when things air.
+  it("scrolls as one surface, with nothing left to keep in step", async () => {
+    // This replaces a pair of tests that scrolled one lane and asserted the
+    // others followed. They passed while the guide still tore: the browser
+    // scrolls whichever row the pointer is over with momentum, and the rest
+    // were assigned a frame later with none, so a flick left the hovered row
+    // tracking the clock and the others trailing it. Synthetic scroll events
+    // carry no momentum, so the old tests could never see it.
+    //
+    // The fix is structural, so the test is too: one scroll container, and no
+    // row able to scroll on its own.
     mockStream(grid());
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Survivor");
 
-    const all = lanes(container);
-    expect(all.length).toBeGreaterThan(2);   // header + one per channel
-
-    const [header, ...rows] = all;
-    fireEvent.scroll(rows[0], { target: { scrollLeft: 420 } });
-
-    expect(header.scrollLeft).toBe(420);
-    for (const row of rows) expect(row.scrollLeft).toBe(420);
+    // Scoped to inside the grid: the content-filter chips above it are their
+    // own horizontal scroller and always were.
+    const el = scroller(container);                    // asserts exactly one
+    expect(el.querySelectorAll(".overflow-x-auto").length).toBe(0);
   });
 
-  it("scrolls the rows when the clock itself is dragged", async () => {
+  it("freezes the clock and the channel column against that scroll", async () => {
     mockStream(grid());
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Survivor");
 
-    const [header, ...rows] = lanes(container);
-    fireEvent.scroll(header, { target: { scrollLeft: 96 } });
-
-    for (const row of rows) expect(row.scrollLeft).toBe(96);
+    // Sticky rather than outside the scroller, which is what lets one surface
+    // carry both axes. Opaque too: these have content moving under them, and a
+    // translucent fill would let programmes show through.
+    const frozenTop = container.querySelector(".sticky.top-0");
+    const frozenLeft = container.querySelectorAll(".sticky.left-0");
+    expect(frozenTop).not.toBeNull();
+    expect(frozenTop!.className).toContain("bg-surface-sunken");
+    expect(frozenLeft.length).toBeGreaterThan(1);      // corner + one per row
+    for (const cell of frozenLeft) {
+      expect(cell.className).toContain("bg-surface-sunken");
+    }
   });
 });
 
@@ -193,7 +210,7 @@ describe("jumping the guide to a day and time", () => {
     prime.setHours(19, 0, 0, 0);
     const expected = ((prime.getTime() - top.getTime()) / 3600_000) * 400;
 
-    for (const lane of lanes(container)) expect(lane.scrollLeft).toBe(expected);
+    expect(scroller(container).scrollLeft).toBe(expected);
   });
 
   it("brings the guide back to the live edge, with the current programme intact", async () => {
@@ -201,9 +218,9 @@ describe("jumping the guide to a day and time", () => {
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    const [header, ...rows] = lanes(container);
-    fireEvent.scroll(rows[0], { target: { scrollLeft: 9000 } });
-    expect(header.scrollLeft).toBe(9000);
+    const el = scroller(container);
+    fireEvent.scroll(el, { target: { scrollLeft: 9000 } });
+    expect(el.scrollLeft).toBe(9000);
 
     fireEvent.click(screen.getByRole("button", { name: "NOW" }));
 
@@ -214,7 +231,7 @@ describe("jumping the guide to a day and time", () => {
     top.setMinutes(0, 0, 0);
     const lead = Date.now() - 15 * 60_000;
     const expected = Math.max(0, ((lead - top.getTime()) / 3600_000) * 400);
-    for (const lane of lanes(container)) expect(lane.scrollLeft).toBeCloseTo(expected, 0);
+    expect(scroller(container).scrollLeft).toBeCloseTo(expected, 0);
   });
 
   it("refuses a stretch the timeline cannot reach", async () => {
