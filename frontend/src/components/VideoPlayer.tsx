@@ -38,6 +38,18 @@ interface Props {
  */
 const COMMIT_DEBOUNCE_MS = 280;
 
+/**
+ * How long a stall must last before it earns the waiting overlay.
+ *
+ * The media element reports a stall the instant the playhead moves, so a skip
+ * into buffered video announces one and takes it back a millisecond later.
+ * Painting on the event itself strobed the panel on every press of the skip
+ * buttons — dozens of times a minute during normal watching, each one lasting
+ * a few frames. A real wait, the kind this overlay exists to explain, is a
+ * window being encoded and runs for seconds; it still shows, a beat late.
+ */
+const STALL_GRACE_MS = 1000;
+
 /** Must not exceed the backend's LIVE_DVR_MINUTES window (default 60). */
 const LIVE_DVR_SECONDS = 3600;
 
@@ -571,7 +583,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     };
     const onVolume = () => setMuted(video.muted);
     let stalledAt = 0;
+    let grace: ReturnType<typeof setTimeout> | undefined;
     const onWait = () => {
+      // Already counting: a seek fires `seeking` and `waiting` back to back,
+      // and re-arming on the second would push the overlay a grace further out
+      // every time the element twitched.
+      if (grace !== undefined) return;
       stalledAt = performance.now();
       const t = video.currentTime;
       log.warn(`stalled at ${fmt(t)}`, {
@@ -579,9 +596,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         buffered: timeRangesToArray(video.buffered).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", ") || "none",
         readyState: video.readyState,
       });
-      setWaiting(true);
+      grace = setTimeout(() => setWaiting(true), STALL_GRACE_MS);
     };
     const onPlaying = () => {
+      clearTimeout(grace);
+      grace = undefined;
       if (stalledAt) {
         log.player(`resumed after ${Math.round(performance.now() - stalledAt)}ms at ${fmt(video.currentTime)}`);
         stalledAt = 0;
@@ -603,7 +622,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       ["playing", onPlaying], ["canplay", onPlaying],
     ];
     events.forEach(([e, h]) => video.addEventListener(e, h));
-    return () => events.forEach(([e, h]) => video.removeEventListener(e, h));
+    return () => {
+      clearTimeout(grace);
+      events.forEach(([e, h]) => video.removeEventListener(e, h));
+    };
   }, []);
 
   const togglePlay = useCallback(() => {
@@ -714,7 +736,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // bar's domain, which on a programme bar runs past the live edge into time
     // that has not been broadcast; without this a click out there threw the
     // thumb into the future for the length of the commit debounce, and drove
-    // `liveLead` negative, which reads on screen as "Transcoding 0%".
+    // `liveLead` negative, which reads on screen as "Buffering 0%".
     const t = Math.min(rangeEnd, Math.max(rangeStart, timeAtX(e.clientX)));
     dragRef.current = { x: e.clientX, base: t };
     setFineFactor(1);
@@ -907,7 +929,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     ? Math.min(100, Math.max(0, Math.round((liveLead / LIVE_LEAD_SECONDS) * 100)))
     : null;
   const waitPct = encodePct ?? livePct;
-  const encoding = isLive ? liveTranscoded : cacheState !== "complete";
   // Drawn from the real encoded ranges. A single bar scaled by percent-complete
   // would be wrong the moment the viewer seeks: jumping an hour in leaves the
   // opening cached and starts a separate island further along.
@@ -998,7 +1019,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                                 border-t-transparent animate-spin" />
               )}
               <span className="text-player-fg-muted text-[11px] uppercase tracking-widest">
-                {encoding ? "Transcoding" : "Buffering"}
+                {/* Always the viewer's word for it. Whether the wait is an
+                    encoder working or bytes arriving is our distinction, not
+                    theirs — both look like a paused picture, and "Buffering"
+                    is the one everyone already knows. */}
+                Buffering
               </span>
               {/* Full muted weight, not a dimmed one: the player ladder has no
                   rung below `muted`, and thinning it with an opacity modifier
