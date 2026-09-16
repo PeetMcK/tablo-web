@@ -60,3 +60,23 @@ def test_stream_stop_requires_auth():
 def test_transcode_status_requires_auth():
     resp = client.get("/api/transcode/status/fakesessionid")
     assert resp.status_code == 401
+
+
+def test_grid_rows_carry_the_channel_kind():
+    """The grid must say whether a channel is OTA.
+
+    The player transcodes OTA because no browser decodes MPEG-2 video. It reads
+    that from the channel's `kind`, so a grid row without one plays the raw
+    broadcast into hls.js, which parses every fragment and renders nothing.
+    """
+    from tablo_api.models import TabloChannel
+
+    from app.state import state
+
+    ota = TabloChannel(identifier="S1_008_02", call_sign="KPAXDT2", major=8,
+                       minor=2, network="CW", kind="ota")
+    ott = TabloChannel(identifier="S2", call_sign="FAST", kind="ott")
+
+    rows = [state._assemble_grid_row(c, {}, {}, {}, {}) for c in (ota, ott)]
+
+    assert [r["kind"] for r in rows] == ["ota", "ott"]

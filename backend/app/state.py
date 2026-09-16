@@ -852,6 +852,10 @@ class AppState:
             "major": c.major,
             "minor": c.minor,
             "network": c.network,
+            # The player transcodes OTA because no browser decodes MPEG-2 video.
+            # A row without a kind plays the raw broadcast into hls.js, which
+            # fails to parse every fragment and shows nothing.
+            "kind": c.kind,
             "display_name": c.display_name,
             "logo_url": logo_map.get(c.identifier),
             "airings": airings,
@@ -936,6 +940,7 @@ class AppState:
                 "major": c.major,
                 "minor": c.minor,
                 "network": c.network,
+                "kind": c.kind,
                 "display_name": c.display_name,
                 "logo_url": None,
                 "airings": [],
