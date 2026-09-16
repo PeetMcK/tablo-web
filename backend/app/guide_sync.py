@@ -30,6 +30,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# ---------------------------------------------------------------------------
+# Blocking DB helpers - every one of these must run off the event loop via
+# asyncio.to_thread. This process also serves HLS segments; db.write() and
+# db.execute() are fully synchronous and busy_timeout=5000 means any of them
+# can hold the event loop for up to five seconds under lock contention, which
+# stalls playback mid-stream. See db.py's own docstring: "Connections are
+# thread-local because every call arrives on a thread-pool worker."
+# ---------------------------------------------------------------------------
+
+def _start_run(started: str) -> int:
+    with db.write() as conn:
+        cur = conn.execute(
+            "INSERT INTO guide_sync(started_at) VALUES (?)", (started,)
+        )
+        return cur.lastrowid
+
+
+def _finish_run(run_id: int, seen: int) -> None:
+    db.execute(
+        "UPDATE guide_sync SET finished_at = ?, airings_seen = ?, ok = 1 "
+        "WHERE id = ?",
+        (_now(), seen, run_id),
+    )
+
+
+def _fail_run(run_id: int, error: Exception) -> None:
+    db.execute(
+        "UPDATE guide_sync SET finished_at = ?, ok = 0, error = ? WHERE id = ?",
+        (_now(), f"{type(error).__name__}: {error}", run_id),
+    )
+
+
 async def backfill_index() -> int:
     """Index what is already stored, so search works before the first sync.
 
@@ -46,34 +78,40 @@ async def sync_once(fetch) -> int:
     """Run one sync. Returns airings seen; never raises.
 
     `fetch` is an awaitable returning grid rows, injected so this is testable
-    without a device.
+    without a device. In production `fetch` is `state.get_grid_guide`, which
+    already persists the rows itself - this only prunes and records coverage,
+    so the guide is not written to SQLite twice per cycle.
+
+    Every step that touches the database is guarded independently: starting
+    the run, recording success, and recording failure can each fail on their
+    own (disk full, lock contention), and none of those failures may escape -
+    a silent, permanent death of the sync loop is worse than a lost audit row.
     """
     started = _now()
-    with db.write() as conn:
-        cur = conn.execute(
-            "INSERT INTO guide_sync(started_at) VALUES (?)", (started,)
-        )
-        run_id = cur.lastrowid
+    try:
+        run_id = await asyncio.to_thread(_start_run, started)
+    except Exception as e:  # noqa: BLE001 - starting the run must not fail the sync
+        print(f"[guide] sync could not start: {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc()
+        return 0
 
     try:
         rows = await fetch()
         seen = sum(len(ch.get("airings") or []) for ch in rows)
-        await asyncio.to_thread(store.save_guide, rows)
         removed = await asyncio.to_thread(store.prune_guide)
-        db.execute(
-            "UPDATE guide_sync SET finished_at = ?, airings_seen = ?, ok = 1 "
-            "WHERE id = ?",
-            (_now(), seen, run_id),
-        )
+        await asyncio.to_thread(_finish_run, run_id, seen)
         print(f"[guide] synced {seen} airings, pruned {removed}", flush=True)
         return seen
     except Exception as e:  # noqa: BLE001 - a failed sync must not stop the app
-        db.execute(
-            "UPDATE guide_sync SET finished_at = ?, ok = 0, error = ? WHERE id = ?",
-            (_now(), f"{type(e).__name__}: {e}", run_id),
-        )
         print(f"[guide] sync failed: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
+        try:
+            await asyncio.to_thread(_fail_run, run_id, e)
+        except Exception as inner:  # noqa: BLE001 - recording the failure must not fail too
+            print(
+                f"[guide] could not record sync failure: {type(inner).__name__}: {inner}",
+                flush=True,
+            )
         return 0
 
 
@@ -87,5 +125,12 @@ async def run_forever(fetch) -> None:
         print(f"[guide] backfill failed: {type(e).__name__}: {e}", flush=True)
 
     while True:
-        await sync_once(fetch)
+        # sync_once is documented to never raise, but this loop is the last
+        # line of defence: a single unlucky exception must not silently kill
+        # background syncing for the rest of the process's life.
+        try:
+            await sync_once(fetch)
+        except Exception as e:  # noqa: BLE001 - see above
+            print(f"[guide] sync_once raised unexpectedly: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
         await asyncio.sleep(SYNC_HOURS * 3600)

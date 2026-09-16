@@ -1,7 +1,10 @@
 """The guide mirror is a record of what aired, not a snapshot of the device."""
 
 import asyncio
+import sqlite3
 import time
+
+import pytest
 
 from app import db, guide_sync, store
 
@@ -149,6 +152,95 @@ def test_a_failed_sync_does_not_delete_history():
 
     asyncio.run(guide_sync.sync_once(fetch))
     assert db.query("SELECT 1 FROM guide_airing WHERE title = 'Kept'")
+
+
+def test_sync_once_does_not_double_write_the_guide(monkeypatch):
+    """`fetch` (state.get_grid_guide in production) already persists the rows;
+    sync_once must not save them again - that would double an ~8455-row write
+    and double the FTS trigger firing on every cycle."""
+    calls = []
+    monkeypatch.setattr(store, "save_guide", lambda *a, **k: calls.append((a, k)))
+
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 1
+    assert calls == []
+
+
+def test_sync_once_survives_a_failure_starting_the_run(monkeypatch):
+    """The opening INSERT that allocates `run_id` can itself fail (disk full,
+    lock contention). That must not escape sync_once's 'never raises'
+    contract just because it happens before the main try block."""
+    def boom_write():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "write", boom_write)
+
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 0
+
+
+def test_sync_once_survives_even_when_recording_the_outcome_fails(monkeypatch):
+    """Critical: the guide_sync UPDATE (recording success OR failure) can
+    itself fail. A test that only covers fetch() failing does not exercise
+    this - here fetch succeeds, and it is *recording that* which breaks, and
+    then recording the resulting failure breaks too. Neither may escape."""
+    def boom_execute(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "execute", boom_execute)
+
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 0
+
+
+def test_run_forever_survives_a_sync_once_that_raises(monkeypatch):
+    """Belt and braces: even though sync_once is documented never to raise,
+    run_forever must not let one unlucky exception silently kill background
+    syncing for the rest of the process's life.
+
+    `StopTest` is deliberately a `BaseException`, not an `Exception` - the
+    broad `except Exception` guard around the `sync_once` call must NOT
+    swallow it, since that would (a) prove the guard is too broad and (b)
+    hang this test in an infinite loop. It is raised from the sleep call,
+    which sits outside that guard, once the loop has proven it survived the
+    first exception and reached a second iteration.
+    """
+    calls = {"n": 0}
+
+    class StopTest(BaseException):
+        pass
+
+    async def boom(fetch):
+        calls["n"] += 1
+        raise RuntimeError("boom")
+
+    async def fake_sleep(_seconds):
+        raise StopTest()
+
+    monkeypatch.setattr(guide_sync, "sync_once", boom)
+    monkeypatch.setattr(guide_sync.asyncio, "sleep", fake_sleep)
+
+    async def fetch():
+        return []
+
+    with pytest.raises(StopTest):
+        asyncio.run(guide_sync.run_forever(fetch))
+
+    # The loop reached the sleep call at all only because the RuntimeError
+    # from sync_once was caught rather than propagating out of run_forever.
+    assert calls["n"] == 1
 
 
 def test_backfill_index_reindexes_what_is_already_stored():
