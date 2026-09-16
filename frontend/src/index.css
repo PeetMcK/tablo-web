@@ -274,10 +274,15 @@
   --c-warning-fg: 13 13 20;         /* ink on amber */
   --c-warning-soft: 251 191 36;     --c-warning-soft-a: 0.10;
 
-  /* Weekday headings - the values the feature shipped with, unchanged. Each
-     one measures 5.6-11.6:1 on the page and on a raised card. */
+  /* Weekday headings. Each one measures 5.1-11.6:1 on the page and on a raised
+     card. Monday is the brand swatch rather than the periwinkle the feature
+     shipped with, so the one blue in the wheel is the app's own; it also sits
+     further from Tuesday's cyan than the periwinkle did (1.98 against it,
+     where #5b8af5 managed 1.82). Light keeps its own vivid blue - see the rung
+     above - because the brand's darker shade lands 17 degrees from light's
+     cyan, half the separation #1d4ed8 has. */
   --c-day-0: 167 139 250;           /* #a78bfa violet   7.11:1 */
-  --c-day-1: 91 138 245;            /* #5b8af5 blue     5.90:1 */
+  --c-day-1: 71 140 201;            /* #478cc9 blue     5.40:1 */
   --c-day-2: 34 211 238;            /* #22d3ee cyan    10.71:1 */
   --c-day-3: 52 211 153;            /* #34d399 green   10.07:1 */
   --c-day-4: 251 191 36;            /* #fbbf24 amber   11.60:1 */

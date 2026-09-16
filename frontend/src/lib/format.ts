@@ -18,7 +18,7 @@ const NBSP = " ";
  */
 export const DAY_COLORS = [
   "#a78bfa", // Sunday — violet
-  "#5b8af5", // Monday — blue
+  "#478cc9", // Monday — blue, the brand swatch
   "#22d3ee", // Tuesday — cyan
   "#34d399", // Wednesday — green
   "#fbbf24", // Thursday — amber
