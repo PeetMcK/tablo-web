@@ -80,6 +80,7 @@ Schema stays at version 4. No migration, no backfill.
 ```
 schedulable      bool          -- airing_path is not null
 scheduled        bool          -- derived; see "The sheet"
+past             bool          -- the airing has finished
 schedule_state   string|null   -- the device's own string, passed through
 skip_reason      string|null
 series           {path, schedule_rule} | null
@@ -87,6 +88,12 @@ series           {path, schedule_rule} | null
 
 `schedulable` is computed server-side rather than left to the client to infer
 from a path, because the path itself never leaves the backend (see below).
+
+`past` is not the inverse of the existing `airing_now`, and the difference is
+the whole point of adding it: `airing_now` is false for everything *upcoming*
+too, which is the main thing anyone records. Only `past` means recording is no
+longer possible. Both are computed here for the same reason — the browser's
+clock may differ from the one the guide was built against.
 
 Still served entirely from the mirror. The sheet opens on a click and must not
 wait on a device round trip — the same rule the read path already follows.
@@ -177,8 +184,8 @@ Three states the layout must not treat as failures:
   "Recording isn't available on this channel". The sheet's existing rule is to
   omit rather than empty, and a disabled button with no explanation reads as
   broken.
-- **Past airing**: no episode button; the series control stays, because setting
-  a rule from an old listing is meaningful.
+- **Past airing** (`past: true`): no episode button; the series control stays,
+  because a rule set from an old listing is about every episode still to come.
 - **No series** (a one-off, a movie, an airing whose series was never fetched):
   episode button only.
 
