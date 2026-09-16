@@ -12,38 +12,82 @@ import asyncio
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, NamedTuple
 from urllib.parse import urljoin
 
 from .live_ring import SegmentRing
 
-Fetch = Callable[[str], Awaitable[bytes]]
+ByteRange = tuple[int, int]
+Fetch = Callable[..., Awaitable[bytes]]
 Clock = Callable[[], datetime]
+
+
+class DeviceSegment(NamedTuple):
+    uri: str
+    duration: float
+    #: Inclusive ``(start, end)`` for a byte-range segment, else None.
+    byte_range: ByteRange | None
 
 _MEDIA_SEQUENCE = re.compile(r"#EXT-X-MEDIA-SEQUENCE:(\d+)")
 _EXTINF = re.compile(r"#EXTINF:([0-9.]+)")
+_BYTERANGE = re.compile(r"#EXT-X-BYTERANGE:(\d+)(?:@(\d+))?")
+_STREAM_INF = "#EXT-X-STREAM-INF:"
 
 
-def parse_device_playlist(text: str) -> tuple[int, list[tuple[str, float]]]:
-    """Return ``(media_sequence, [(uri, duration)])`` from a media playlist."""
+def variant_of(text: str) -> str | None:
+    """The media playlist a master playlist points at, if this is one.
+
+    The device serves a master naming a single variant, which FFmpeg and hls.js
+    both follow on their own — so nothing before this needed to know. A
+    follower that reads only EXTINF finds no segments in it and waits for ever.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not line.startswith(_STREAM_INF):
+            continue
+        for candidate in lines[index + 1:]:
+            if not candidate.startswith("#"):
+                return candidate
+        return None
+    return None
+
+
+def parse_device_playlist(text: str) -> tuple[int, list[DeviceSegment]]:
+    """Return ``(media_sequence, segments)`` from a media playlist.
+
+    This device packs its stream as one file addressed by byte range: every
+    EXTINF names the same uri and differs only in ``#EXT-X-BYTERANGE``. Keyed
+    on the uri alone it looks like a single segment repeated for ever, which is
+    exactly what the first live run produced - a ring that never filled.
+    """
     match = _MEDIA_SEQUENCE.search(text)
     sequence = int(match.group(1)) if match else 0
 
-    segments: list[tuple[str, float]] = []
+    segments: list[DeviceSegment] = []
     duration: float | None = None
+    byte_range: ByteRange | None = None
+    # An EXT-X-BYTERANGE with no offset continues from the last one.
+    next_offset = 0
+
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
         if extinf := _EXTINF.match(line):
             duration = float(extinf.group(1))
+        elif byterange := _BYTERANGE.match(line):
+            length = int(byterange.group(1))
+            start = int(byterange.group(2)) if byterange.group(2) else next_offset
+            byte_range = (start, start + length - 1)
+            next_offset = start + length
         elif line.startswith("#"):
-            # Tags may sit between the EXTINF and its URI - a discontinuity,
-            # for instance. They must not clear the pending duration.
+            # Other tags may sit between the EXTINF and its uri - a
+            # discontinuity, a date. They must not clear what is pending.
             continue
         elif duration is not None:
-            segments.append((line, duration))
+            segments.append(DeviceSegment(line, duration, byte_range))
             duration = None
+            byte_range = None
     return sequence, segments
 
 
@@ -74,22 +118,43 @@ class RingFollower:
         # rather than a set of names because the device's window slides: a
         # sequence number is the only stable identity across polls.
         self._taken_through: int | None = None
+        # Resolved once from the master playlist, then polled directly.
+        self._media_url: str | None = None
+
+    async def _media_playlist(self) -> tuple[str, str]:
+        """The media playlist's text and the url it came from."""
+        url = self._media_url or self.playlist_url
+        text = (await self.fetch(url)).decode("utf-8", errors="ignore")
+
+        if self._media_url is None:
+            if variant := variant_of(text):
+                self._media_url = urljoin(self.playlist_url, variant)
+                url = self._media_url
+                text = (await self.fetch(url)).decode("utf-8", errors="ignore")
+            else:
+                # Not a master: this url is the media playlist, so poll it.
+                self._media_url = url
+        return text, url
 
     async def poll_once(self) -> int:
         """Fetch what is new since the last poll. Returns how many arrived."""
-        body = await self.fetch(self.playlist_url)
-        device_sequence, segments = parse_device_playlist(
-            body.decode("utf-8", errors="ignore")
-        )
+        text, media_url = await self._media_playlist()
+        device_sequence, segments = parse_device_playlist(text)
 
         written = 0
-        for offset, (uri, duration) in enumerate(segments):
+        for offset, segment in enumerate(segments):
             sequence = device_sequence + offset
             if self._taken_through is not None and sequence <= self._taken_through:
                 continue
 
             try:
-                payload = await self.fetch(urljoin(self.playlist_url, uri))
+                # Relative to the media playlist, which on this device lives a
+                # directory below the master. A byte-range segment is fetched
+                # as its own file, so what the ring publishes is an ordinary
+                # segment and the browser never learns how the device packs it.
+                payload = await self.fetch(
+                    urljoin(media_url, segment.uri), segment.byte_range,
+                )
             except Exception:
                 # Leave _taken_through where it is so the next poll retries this
                 # segment. Skipping past it would leave a hole in the ring that
@@ -98,7 +163,7 @@ class RingFollower:
 
             name = self.ring.next_name()
             (self.directory / name).write_bytes(payload)
-            self.ring.append(duration, self.now())
+            self.ring.append(segment.duration, self.now())
             self._taken_through = sequence
             written += 1
 

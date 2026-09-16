@@ -28,10 +28,17 @@ import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 const DEVICE = "stream.ts";
 const READ_LIMIT = 256 * 1024;
 
-/** How much the demuxer may read before it must name the streams. */
-const PROBE_BYTES = 512 * 1024;
+/**
+ * How much the demuxer may read before it must name the streams.
+ *
+ * Bounded because the default is 5MB or EOF, which on a live feed is seconds
+ * of black. Not bounded too hard: a cold ring's first segments are where the
+ * PAT and PMT have to be found, and 512KB was not enough for them on a freshly
+ * opened channel - the pump sat waiting and produced nothing at all.
+ */
+const PROBE_BYTES = 2 * 1024 * 1024;
 /** How much media it may analyse for stream parameters, in microseconds. */
-const ANALYZE_MICROSECONDS = 500_000;
+const ANALYZE_MICROSECONDS = 2_000_000;
 
 /** AVFrame flags, from FFmpeg 9's `libavutil/frame.h`. */
 const AV_FRAME_FLAG_INTERLACED = 1 << 3;
@@ -134,6 +141,9 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   let asrc = 0, asink = 0;
   let frameDuration = DEFAULT_FRAME_DURATION;
   let lastVideoPts: number | null = null;
+  /** First decoded audio timestamp, and samples emitted since. */
+  let audioAnchorPts: number | null = null;
+  let audioFramesEmitted = 0;
 
   const feed = () => {
     if (queue.length) {
@@ -274,13 +284,26 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
         const decoded = await libav.ff_decode_multi(actx, apkt, aframe, audioPackets, { fin });
         if (decoded.length) {
           if (!asink) await openAudioGraph(decoded[0]);
+          // Anchored on the decoder's own timestamps, before the graph.
+          // buffersink re-bases what it emits onto the filter's timeline, and
+          // that timeline is not the stream's: on a live feed it reported
+          // audio at 30.6s while video from the same instant read 69.6s, which
+          // is a 39-second lip-sync error dressed up as a starving decoder.
+          if (audioAnchorPts === null) {
+            audioAnchorPts = ptsSeconds(decoded[0]);
+            audioFramesEmitted = 0;
+          }
+
           const filtered = await libav.ff_filter_multi(asrc, asink, aframe, decoded, { fin });
           for (const frame of filtered) {
+            const rate = frame.sample_rate ?? 48000;
+            const frames = frame.data.length / 2;   // interleaved stereo
             out.audio.push({
               samples: frame.data,
-              sampleRate: frame.sample_rate,
-              ptsSeconds: ptsSeconds(frame),
+              sampleRate: rate,
+              ptsSeconds: audioAnchorPts + audioFramesEmitted / rate,
             });
+            audioFramesEmitted += frames;
           }
         }
       }
@@ -332,6 +355,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     vsrc = vsink = 0;
     asrc = asink = 0;
     lastVideoPts = null;
+    audioAnchorPts = null;
+    audioFramesEmitted = 0;
   };
 
   return {

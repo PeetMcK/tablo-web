@@ -6,7 +6,16 @@
  * of the session.
  */
 
-export const FIRST_FRAME_DEADLINE_MS = 5000;
+/**
+ * How long the decoder gets to produce a picture once it has been fed.
+ *
+ * Generous on purpose: giving up costs a rebuffer and a tuner change, so it
+ * should only happen when the WASM path is genuinely broken rather than merely
+ * slow. The clock starts at the first segment handed to the decoder, not at
+ * the open — a cold ring is empty for a few seconds and that is the device's
+ * latency, not the decoder's.
+ */
+export const FIRST_FRAME_DEADLINE_MS = 8000;
 export const STARVATION_WINDOW_MS = 30000;
 export const STARVATION_LIMIT = 2;
 

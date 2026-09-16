@@ -21,7 +21,22 @@ export interface Selection<T> {
   keep: T[];
 }
 
-export const MAX_QUEUED_FRAMES = 8;
+/**
+ * How many field presentations may be held at once.
+ *
+ * Decode is bursty: a 1.5s segment arrives whole and decodes in about a fifth
+ * of a second, producing ~45 frames and so ~90 field presentations, all of
+ * them timestamped across the next second and a half. A cap of 8 threw away
+ * nine tenths of every segment before its moment arrived — measured at half a
+ * field per second reaching the screen, against the 60 it should be.
+ *
+ * The cost is memory: the two fields of a frame share one 3.1MB I420 buffer,
+ * so 96 fields is ~48 frames, ~150MB at the theoretical peak and far less in
+ * practice because presentation drains the queue as fast as decode fills it.
+ * That is the going rate for buffering decoded 1080p; it is why the transport
+ * paces at all rather than letting the decoder run at its full 8x.
+ */
+export const MAX_QUEUED_FRAMES = 96;
 
 export function selectFrame<T extends Timed>(queue: T[], clockSeconds: number): Selection<T> {
   let presentIndex = -1;

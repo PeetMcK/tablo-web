@@ -39,7 +39,14 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
 
   let audio;
   try {
-    audio = await createAudioSink(new AudioContext({ sampleRate: 48000 }), workletUrl);
+    const context = new AudioContext({ sampleRate: 48000 });
+    audio = await createAudioSink(context, workletUrl);
+    // An AudioContext created after an await has no user activation behind it,
+    // so it starts suspended — and a suspended context renders no samples, so
+    // the clock never advances and video freezes on whatever was due at the
+    // first timestamp. Resuming here covers the usual case; pressing play
+    // resumes it again if the browser refused this one.
+    await context.resume().catch(() => {});
   } catch (e) {
     worker.terminate();
     renderer.destroy();

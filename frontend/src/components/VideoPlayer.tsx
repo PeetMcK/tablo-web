@@ -501,7 +501,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           const r = await api.startStream(
             current.channel.identifier, mode === "transcode", mode,
           );
-          if (cancelled) return;
+          // Closed, or reopened, while the request was in flight. The session
+          // exists on the server and holds a tuner, and nothing else will ever
+          // learn its id — so it has to be released here.
+          if (cancelled) {
+            api.stopStream(r.session_id).catch(() => {});
+            return;
+          }
           log.player(`open live ${current.channel.display_name}`, {
             kind: current.channel.kind, mode, wasm,
             why: eligibility.reason || "eligible",

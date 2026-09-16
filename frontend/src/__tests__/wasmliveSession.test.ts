@@ -31,6 +31,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
   const posted: { type: string }[] = [];
   const fetched: string[] = [];
   let clockSeconds: number | null = 36;
+  let bufferedSeconds = 0;
 
   const worker = {
     postMessage: (m: { type: string }) => posted.push(m),
@@ -41,6 +42,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
   const audio = {
     push: vi.fn(),
     get clockSeconds() { return clockSeconds; },
+    get bufferedSeconds() { return bufferedSeconds; },
     starvedBy: vi.fn(() => 0),
     setMuted: vi.fn(),
     muted: false,
@@ -48,12 +50,14 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     resume: vi.fn(async () => {}),
     suspend: vi.fn(async () => {}),
     destroy: vi.fn(async () => {}),
+    diagnostics: () => ({ audioContext: "running" }),
   };
 
   const presenter = {
     offer: vi.fn(),
     tick: vi.fn(),
     newestPts: null as number | null,
+    oldestPts: null as number | null,
     presentedCount: 0,
     queued: 0,
     destroy: vi.fn(),
@@ -77,8 +81,103 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     session, worker, posted, fetched, audio, presenter,
     slide: () => { playlist = PLAYLIST_NEXT; },
     setClock: (t: number | null) => { clockSeconds = t; },
+    setBuffered: (s: number) => { bufferedSeconds = s; },
   };
 }
+
+/** A window with a minute of backlog, the way a running ring looks. */
+const DEEP_PLAYLIST = `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-PROGRAM-DATE-TIME:2026-09-16T20:00:00+00:00
+${Array.from({ length: 40 }, (_, i) => `#EXTINF:1.500,\n${String(i).padStart(5, "0")}.ts`).join("\n")}
+`;
+
+describe("pacing", () => {
+  it("starts near the live edge, not at the front of the window", async () => {
+    // Live means live. Starting at the oldest segment the ring still holds
+    // puts the viewer a minute behind before they have seen a frame.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    await h.session.start();
+
+    const fetched = h.fetched.filter((u) => u.endsWith(".ts"));
+    expect(fetched.length).toBeGreaterThan(0);
+    // The last segments in the window, not the first.
+    expect(fetched.some((u) => u.includes("00039.ts") || u.includes("00038.ts"))).toBe(true);
+    expect(fetched.some((u) => u.includes("00000.ts"))).toBe(false);
+  });
+
+  it("paces the very first poll, before any clock exists", async () => {
+    // A seek into the middle of a deep window: there is a minute of material
+    // ahead and no audio has played yet, so there is no clock to pace
+    // against. Treating that as "no limit" is what made the first live run
+    // fetch 50 seconds of media in one go and evict all of it undrawn.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    await h.session.start();
+    h.fetched.length = 0;
+    h.session.seek(5);
+    await h.session.poll();
+
+    const takenUrls = h.fetched.filter((u) => u.endsWith(".ts"));
+    const taken = takenUrls.length;
+    expect(taken).toBeGreaterThan(0);
+    // And each exactly once: two polls in flight must not both claim them.
+    expect(new Set(takenUrls).size).toBe(taken);
+  });
+
+  it("stops fetching once enough audio is buffered", async () => {
+    // Decode runs at 8x realtime. Without a limit the session swallows the
+    // whole backlog and the field queue fills with frames the clock will not
+    // reach for a minute - which is exactly what the first live run did.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    await h.session.start();
+    const firstBatch = h.fetched.filter((u) => u.endsWith(".ts")).length;
+
+    h.setBuffered(10);
+    await h.session.poll();
+
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBe(firstBatch);
+  });
+
+  it("fetches more as the buffer drains", async () => {
+    // Rewound into the middle of the window, where there is a minute of
+    // material ahead: what is taken has to follow playback rather than
+    // arriving all at once.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(10);
+    h.setBuffered(10);
+    await h.session.start();
+    h.session.seek(10);
+    await h.session.poll();
+    const before = h.fetched.filter((u) => u.endsWith(".ts")).length;
+
+    h.setBuffered(0);
+    await h.session.poll();
+
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(before);
+  });
+
+  it("keeps fetching when the clock has stalled but the buffer is empty", async () => {
+    // The deadlock the live run hit: audio ran dry, so the clock stopped, so
+    // nothing was fetched, so audio never came back. Buffer depth breaks it,
+    // because it falls to zero rather than freezing.
+    let text = DEEP_PLAYLIST;
+    const h = harness({ fetchText: async () => text });
+    h.setClock(null);
+    h.setBuffered(0);
+    await h.session.start();
+    const before = h.fetched.filter((u) => u.endsWith(".ts")).length;
+
+    // The ring gains a segment, as it does every second and a half.
+    text = DEEP_PLAYLIST.replace(/\n$/, "\n#EXTINF:1.500,\n00040.ts\n");
+    await h.session.poll();
+
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(before);
+  });
+});
 
 describe("createSession", () => {
   it("opens the worker before fetching anything", async () => {
@@ -98,29 +197,74 @@ describe("createSession", () => {
     expect(session.seekable).toBeNull();
   });
 
-  it("takes its current time from the audio clock", async () => {
-    const { session } = harness();
+  it("reports the playhead in media time, not the device's timeline", async () => {
+    // Decoded timestamps carry the broadcast's own PTS, which starts wherever
+    // it happens to; the window is seconds since the session opened. Reported
+    // raw, the playhead and the seekable range disagree by the gap between
+    // those two origins — 90 seconds of it, on the first live run.
+    const { session, worker, setClock } = harness();
+    setClock(null);
     await session.start();
-    expect(session.currentTime).toBe(36);
+
+    // The first chunk of the segment at the live edge (36s in) carries a PTS
+    // of 9000: everything after this is offset by the difference.
+    worker.onmessage?.({
+      data: {
+        type: "audio",
+        chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+    setClock(9002);
+
+    expect(session.currentTime).toBe(38);
+    const [start, end] = session.seekable!;
+    expect(session.currentTime).toBeGreaterThanOrEqual(start);
+    expect(session.currentTime).toBeLessThanOrEqual(end);
+  });
+
+  it("re-derives the offset after a seek", async () => {
+    const { session, worker, setClock } = harness();
+    setClock(null);
+    await session.start();
+    worker.onmessage?.({
+      data: {
+        type: "audio",
+        chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    session.seek(31);
+    await session.poll();
+    worker.onmessage?.({
+      data: {
+        type: "audio",
+        chunks: [{ ptsSeconds: 8500, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+    setClock(8500);
+
+    expect(session.currentTime).toBe(30);
   });
 
   it("fetches segments from the playlist's own directory", async () => {
     const { session, fetched } = harness();
     await session.start();
-    expect(fetched).toContain("/api/raw/abc/00005.ts");
+    // The segment at the live edge, resolved against the playlist's path.
     expect(fetched).toContain("/api/raw/abc/00006.ts");
   });
 
   it("sends fetched segment bytes to the worker", async () => {
     const { session, posted } = harness();
     await session.start();
-    expect(posted.filter((m) => m.type === "segment")).toHaveLength(2);
+    expect(posted.filter((m) => m.type === "segment").length).toBeGreaterThan(0);
   });
 
   it("fetches each segment once as the window slides", async () => {
-    const { session, fetched, slide } = harness();
+    const { session, fetched, slide, setClock } = harness();
     await session.start();
     slide();
+    // Playback has moved on, so there is room for what the slide brought.
+    setClock(44);
     await session.poll();
     // 00006 was already taken; only 00007 is new.
     expect(fetched.filter((u) => u.endsWith("00006.ts"))).toHaveLength(1);
@@ -149,9 +293,11 @@ describe("createSession", () => {
   });
 
   it("re-fetches the segment a seek landed in", async () => {
-    const { session, fetched } = harness();
+    const { session, fetched, setClock } = harness();
     await session.start();
     fetched.length = 0;
+    // A seek moves the clock with it; the sink's first chunk sets it there.
+    setClock(31);
     session.seek(31);
     await session.poll();
     expect(fetched).toContain("/api/raw/abc/00005.ts");
@@ -168,9 +314,25 @@ describe("createSession", () => {
     let nowMs = 0;
     const { session } = harness({ nowMs: () => nowMs });
     await session.start();
-    nowMs = 6000;
+    nowMs = 20000;
     session.tick();
     expect(session.failure).toBe("no first frame");
+  });
+
+  it("does not start the deadline until the decoder has been fed", async () => {
+    // A freshly opened ring is empty for a few seconds while the device
+    // produces its first segments. Counting that against the decoder gave up
+    // before there was anything to decode — and on a cold channel that was
+    // every time.
+    let nowMs = 0;
+    const empty = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n";
+    const { session } = harness({ nowMs: () => nowMs, fetchText: async () => empty });
+    await session.start();
+
+    nowMs = 60000;
+    session.tick();
+
+    expect(session.failure).toBeNull();
   });
 
   it("does not fail once frames are flowing", async () => {

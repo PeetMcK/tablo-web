@@ -200,9 +200,26 @@ async def start_stream(
     }
 
 
-async def _fetch_bytes(url: str) -> bytes:
-    resp = await state.http.get(url, follow_redirects=True)
+async def _fetch_bytes(url: str, byte_range: tuple[int, int] | None = None) -> bytes:
+    """Fetch a playlist or a segment from the device.
+
+    The device packs live video as one file addressed by byte range, so most
+    segment fetches are ranged - and a ranged request that the device answers
+    with the whole file would hand the ring a segment containing everything.
+    """
+    headers = {}
+    if byte_range is not None:
+        headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+
+    resp = await state.http.get(url, headers=headers, follow_redirects=True)
     resp.raise_for_status()
+
+    if byte_range is not None and resp.status_code != 206:
+        expected = byte_range[1] - byte_range[0] + 1
+        if len(resp.content) != expected:
+            raise RuntimeError(
+                f"device ignored Range: asked for {expected} bytes, got {len(resp.content)}"
+            )
     return resp.content
 
 

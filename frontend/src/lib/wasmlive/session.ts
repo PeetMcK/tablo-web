@@ -20,6 +20,36 @@ import type { FromWorker, ToWorker } from "./workerProtocol";
 /** How far the clock may run past the newest decoded frame before it counts. */
 const STARVED_SECONDS = 1;
 
+/**
+ * How much decoded media to keep ahead of the clock.
+ *
+ * Decode runs at about 8x realtime, so without a limit the session swallows
+ * the ring's whole backlog in a few seconds and the presenter's queue fills
+ * with fields the clock will not reach for a minute. Everything then evicts
+ * before it can be shown. A few seconds is enough to ride out a slow fetch and
+ * shallow enough that the queue holds what is about to be drawn.
+ */
+const LOOKAHEAD_SECONDS = 2;
+
+/**
+ * Below this much buffered audio, fetch regardless of the lookahead.
+ *
+ * The escape hatch from the deadlock: the playhead only advances while audio
+ * renders, so if the buffer ever empties the clock freezes, the lookahead
+ * looks satisfied for ever, and nothing is fetched again. An empty buffer is
+ * always a reason to fetch.
+ */
+const MIN_BUFFER_SECONDS = 0.5;
+
+/**
+ * How much of the window to start behind the live edge.
+ *
+ * Live means live: starting at the oldest segment the ring still holds would
+ * put the viewer a minute behind before they had seen a frame. One segment of
+ * lead-in is enough to have something decoded when playback begins.
+ */
+const START_BEHIND_EDGE_SECONDS = 3;
+
 export interface SessionDeps {
   playlistUrl: string;
   /** When the backend opened this session, which media time is measured from. */
@@ -65,6 +95,20 @@ export function createSession(deps: SessionDeps): LiveSession {
   let playlist: MediaPlaylist | null = null;
   /** Absolute media sequence of the newest segment sent to the worker. */
   let takenThrough = -1;
+  /**
+   * What to add to a decoded timestamp to get media time.
+   *
+   * Frames and audio carry the device's own PTS timeline, which starts
+   * wherever the broadcast happens to be; the ring's window is seconds since
+   * this session opened. Those are different clocks, and comparing them
+   * directly — which is what the first live run did — makes the playhead and
+   * the seekable range disagree by however far apart the two origins are.
+   */
+  let ptsOffset: number | null = null;
+  /** Media time of the first segment fed since the last reset. */
+  let anchorMedia: number | null = null;
+  /** Media time the decoder has been fed up to, which paces fetching. */
+  let fedThroughMedia: number | null = null;
   let fallback: FallbackState = initialFallbackState(deps.nowMs());
   let paused = false;
   let stopPolling: (() => void) | null = null;
@@ -77,7 +121,13 @@ export function createSession(deps: SessionDeps): LiveSession {
       return;
     }
     if (message.type === "audio") {
-      for (const chunk of message.chunks as DecodedAudioChunk[]) deps.audio.push(chunk);
+      const chunks = message.chunks as DecodedAudioChunk[];
+      // The first chunk after opening or seeking ties the device's timeline to
+      // the ring's: everything the player reads is in media time from here on.
+      if (ptsOffset === null && anchorMedia !== null && chunks.length) {
+        ptsOffset = anchorMedia - chunks[0].ptsSeconds;
+      }
+      for (const chunk of chunks) deps.audio.push(chunk);
       return;
     }
     if (message.type === "error") {
@@ -93,32 +143,69 @@ export function createSession(deps: SessionDeps): LiveSession {
   const poll = async () => {
     const text = await deps.fetchText(deps.playlistUrl);
     playlist = parseMediaPlaylist(text);
+    const { start: windowStart, end: windowEnd } = playlistWindow(playlist, deps.originMs);
 
-    // After a seek, start again from the segment covering the target rather
-    // than from the live edge.
+    // After a seek, start again from the segment covering the target.
     if (seekTarget !== null) {
       const at = segmentAt(playlist, deps.originMs, seekTarget);
       takenThrough = at ? at.sequence - 1 : -1;
       seekTarget = null;
+    } else if (takenThrough < 0) {
+      // Opening: begin near the live edge rather than at the oldest thing the
+      // ring still holds.
+      const target = Math.max(windowStart, windowEnd - START_BEHIND_EDGE_SECONDS);
+      const at = segmentAt(playlist, deps.originMs, target);
+      if (at) takenThrough = at.sequence - 1;
     }
 
+    // Where the decoder has already been fed up to, in media seconds.
+    let at = windowStart;
     for (let index = 0; index < playlist.segments.length; index++) {
       const sequence = playlist.mediaSequence + index;
-      if (sequence <= takenThrough) continue;
-      const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
-      post({ type: "segment", bytes }, [bytes]);
-      takenThrough = sequence;
+      const duration = playlist.segments[index].duration;
+
+      if (sequence > takenThrough) {
+        // Paced on media handed to the decoder against media already played,
+        // not on decoded audio waiting in the sink: decoding lags fetching, so
+        // pacing on the sink's depth over-fetches by however long decode takes
+        // and the field queue fills with video seconds ahead of the sound.
+        //
+        // The buffer floor is the escape hatch. Without it this deadlocks: the
+        // playhead only moves while audio renders, so an empty buffer freezes
+        // the clock, the lookahead then looks satisfied for ever, and nothing
+        // is ever fetched again.
+        const clock = mediaClock() ?? anchorMedia ?? at;
+        const fedAhead = fedThroughMedia === null ? 0 : fedThroughMedia - clock;
+        const starving = deps.audio.bufferedSeconds < MIN_BUFFER_SECONDS;
+        if (!starving && fedAhead > LOOKAHEAD_SECONDS) break;
+
+        if (anchorMedia === null) anchorMedia = at;
+        const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
+        post({ type: "segment", bytes }, [bytes]);
+        takenThrough = sequence;
+        fedThroughMedia = at + duration;
+      }
+      at += duration;
     }
     emit("timeupdate");
   };
 
-  const safePoll = async () => {
-    try {
-      await poll();
-    } catch {
+  /**
+   * One poll at a time, in order.
+   *
+   * `takenThrough` only advances after a fetch resolves, so two polls running
+   * at once — the timer and a seek, say — both see the same segments as new
+   * and fetch every one of them twice: double the device load and double the
+   * decode, for nothing.
+   */
+  let pollChain: Promise<void> = Promise.resolve();
+
+  const safePoll = () => {
+    pollChain = pollChain.then(() => poll()).catch(() => {
       // A backend restart or a dropped request is not the end of the session;
       // the next poll is a couple of seconds away.
-    }
+    });
+    return pollChain;
   };
 
   const tick = () => {
@@ -128,6 +215,17 @@ export function createSession(deps: SessionDeps): LiveSession {
     if (deps.presenter.presentedCount > 0) {
       fallback = reduceFallback(fallback, { kind: "first-frame", atMs: nowMs });
     }
+
+    // The deadline measures the decoder, not the device. A freshly opened ring
+    // is empty for the first few seconds — the same wait the transcode path
+    // budgets twelve seconds for — so the clock only starts once there is
+    // something to decode. Counting from the open gave up before the first
+    // segment had even been written.
+    if (fedThroughMedia === null) {
+      fallback = { ...fallback, startedAtMs: nowMs };
+      return;
+    }
+
     fallback = reduceFallback(fallback, { kind: "tick", atMs: nowMs });
 
     if (!paused && deps.audio.starvedBy(deps.presenter.newestPts) > STARVED_SECONDS) {
@@ -140,6 +238,9 @@ export function createSession(deps: SessionDeps): LiveSession {
   return {
     async start() {
       post({ type: "open" });
+      // The clock only advances while audio is being rendered, so a suspended
+      // context is a frozen picture rather than merely a silent one.
+      void deps.audio.resume();
       await safePoll();
       stopPolling = deps.schedule(
         () => { void safePoll(); },
@@ -157,6 +258,11 @@ export function createSession(deps: SessionDeps): LiveSession {
       // going: the decoder restarts, the audio queue is dropped, and the
       // presenter's fields go with it.
       seekTarget = mediaSeconds;
+      // The decoder restarts, so the timeline it emits does too: both the
+      // anchor and the offset have to be re-derived from the next segment.
+      ptsOffset = null;
+      anchorMedia = null;
+      fedThroughMedia = null;
       post({ type: "reset" });
       deps.audio.flush();
       deps.presenter.destroy();
@@ -176,7 +282,7 @@ export function createSession(deps: SessionDeps): LiveSession {
     setMuted: (muted: boolean) => deps.audio.setMuted(muted),
 
     get currentTime() {
-      return deps.audio.clockSeconds ?? playlistStart();
+      return mediaClock() ?? anchorMedia ?? playlistStart();
     },
 
     get seekable() {
@@ -190,9 +296,14 @@ export function createSession(deps: SessionDeps): LiveSession {
 
     diagnostics: () => ({
       kind: "wasm",
+      ...deps.audio.diagnostics(),
       presented: deps.presenter.presentedCount,
       queuedFields: deps.presenter.queued,
       newestPts: deps.presenter.newestPts,
+      oldestPts: deps.presenter.oldestPts,
+      ptsOffset,
+      anchorMedia,
+      fedThroughMedia,
       takenThrough,
       failure: fallback.failed,
     }),
@@ -218,5 +329,12 @@ export function createSession(deps: SessionDeps): LiveSession {
   function playlistStart(): number {
     if (!playlist) return 0;
     return playlistWindow(playlist, deps.originMs).start;
+  }
+
+  /** The playhead in media time, or null before audio has started. */
+  function mediaClock(): number | null {
+    const clock = deps.audio.clockSeconds;
+    if (clock === null) return null;
+    return clock + (ptsOffset ?? 0);
   }
 }

@@ -25,6 +25,14 @@ class PcmProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs, outputs) {
+    this.calls = (this.calls || 0) + 1;
+    // A heartbeat that does not depend on there being audio to play: without
+    // it, "the clock stopped" and "the processor stopped" look identical from
+    // the page, and they have completely different causes.
+    if (this.calls % 100 === 0) {
+      this.port.postMessage({ calls: this.calls, queued: this.queue.length });
+    }
+
     const left = outputs[0][0];
     const right = outputs[0][1] ?? outputs[0][0];
 

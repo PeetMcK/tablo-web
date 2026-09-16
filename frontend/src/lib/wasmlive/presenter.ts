@@ -36,6 +36,8 @@ export interface Presenter {
   offer(frame: DecodedVideoFrame): void;
   tick(): void;
   readonly newestPts: number | null;
+  /** The oldest field still queued, which is the next one due. */
+  readonly oldestPts: number | null;
   readonly presentedCount: number;
   readonly queued: number;
   destroy(): void;
@@ -87,6 +89,10 @@ export function createPresenter(deps: PresenterDeps): Presenter {
 
     get newestPts() {
       return queue.length ? queue[queue.length - 1].ptsSeconds : null;
+    },
+
+    get oldestPts() {
+      return queue.length ? queue[0].ptsSeconds : null;
     },
 
     get presentedCount() {
