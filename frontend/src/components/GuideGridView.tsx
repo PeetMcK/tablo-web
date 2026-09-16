@@ -318,6 +318,10 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       // Committed, and committed once: see `dominantAxis`.
       g.axis = dominantAxis(dx, dy);
       panned.current = true;
+      // Dragging across text selects it, and a pan that paints the listings
+      // blue as it goes reads as broken. Only while a drag is live, so a
+      // programme title can still be selected and copied at rest.
+      el.classList.add("select-none");
       // Now that this is a drag and not a click, take the pointer: the
       // gesture has to survive leaving the guide, and there is no longer a
       // click for the capture to steal.
@@ -335,6 +339,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     const g = grab.current;
     if (!g || g.id !== e.pointerId) return;
     grab.current = null;
+    scrollerRef.current?.classList.remove("select-none");
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
@@ -450,6 +455,9 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   const scrollToTime = (at: number) => {
     const el = scrollerRef.current;
     if (!el) return;
+    // A throw still coasting would keep writing `scrollLeft` after this lands
+    // and carry the guide straight back off the hour it was sent to.
+    stopGlide();
     // A target inside the last screenful sits past the furthest the guide can
     // scroll, and the browser clamps the write. Read back what it actually did
     // rather than what was asked for, or the jump control's label describes a
@@ -532,6 +540,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     );
     if (!el || !row) return;
 
+    stopGlide();   // same reason as `scrollToTime`: a coast would undo this
     const at = new Date(jumpTo.start).getTime();
     if (Number.isFinite(at)) el.scrollLeft = timeOffset(at - JUMP_LEAD_MS, startTime);
     // `offsetTop` rather than a row-height constant: rows are a fixed height
@@ -547,7 +556,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       attempt,
       landed: Math.abs(el.scrollTop - want) <= 1,
     };
-  }, [jumpTo, attempt, startTime]);
+  }, [jumpTo, attempt, startTime, stopGlide]);
 
   if (isLoading) {
     return (

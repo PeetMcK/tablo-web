@@ -87,7 +87,16 @@ export function dominantAxis(dx: number, dy: number): "x" | "y" {
   return Math.abs(dx) >= Math.abs(dy) ? "x" : "y";
 }
 
-/** Whether the viewer has asked for less movement. Read live, not at import. */
+/**
+ * Whether the viewer has asked for less movement. Read live, not at import.
+ *
+ * Guarded because `matchMedia` is not everywhere: jsdom has no implementation
+ * at all, so an unguarded call threw on every pointer release under test —
+ * silently, inside a React event handler, which left the throw path looking
+ * covered while never running once. No media-query support is not a stated
+ * preference, so it reads as "no preference".
+ */
 export function prefersReducedMotion(): boolean {
+  if (typeof window.matchMedia !== "function") return false;
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }

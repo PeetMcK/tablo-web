@@ -669,3 +669,115 @@ describe("dragging the guide", () => {
     expect(sc.scrollLeft).toBe(1000);
   });
 });
+
+describe("a throw still in flight", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Drive time and animation frames by hand.
+   *
+   * A throw needs samples with distinct timestamps and frames that actually
+   * run, and jsdom provides neither — its clock does not advance between
+   * synchronous events, and nothing paints. Everything else here is the
+   * component's own code.
+   */
+  function fakeClock() {
+    let t = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const queue: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queue.push(cb);
+      return queue.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => { queue[id - 1] = () => {}; });
+    return {
+      tick: (ms: number) => { t += ms; },
+      pending: () => queue.filter(Boolean).length,
+      /** Run frames 16ms apart, as a browser would. */
+      run: (n = 40) => {
+        for (let i = 0; i < n; i++) {
+          const cb = queue.shift();
+          if (!cb) return;
+          t += 16;
+          cb(t);
+        }
+      },
+    };
+  }
+
+  function throwGuide(hourRow: HTMLElement, clock: ReturnType<typeof fakeClock>) {
+    let x = 800;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+    fireEvent.pointerDown(hourRow, { ...common, clientX: x, clientY: 30 });
+    for (let i = 0; i < 6; i++) {
+      clock.tick(10);
+      x -= 40;
+      fireEvent.pointerMove(hourRow, { ...common, clientX: x, clientY: 30 });
+    }
+    fireEvent.pointerUp(hourRow, { ...common, clientX: x, clientY: 30 });
+  }
+
+  it("is called off by a jump, so the guide stays where it was sent", async () => {
+    // Throw the guide, then jump while it is still coasting. Unless the glide
+    // is cancelled it keeps writing `scrollLeft` after the jump has landed,
+    // sliding the guide straight back off the target.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+    mockStream(longChannel(30));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const clock = fakeClock();
+    const sc = scroller(container);
+    const hourRow = container
+      .querySelector<HTMLElement>("[data-guide-header]")!
+      .querySelector<HTMLElement>(".relative")!;
+
+    sc.scrollLeft = 6000;
+    throwGuide(hourRow, clock);
+    expect(clock.pending()).toBeGreaterThan(0);   // the release was a throw
+
+    fireEvent.click(screen.getByRole("button", { name: /now/i }));
+    const landedAt = sc.scrollLeft;
+
+    clock.run();
+    expect(sc.scrollLeft).toBe(landedAt);
+  });
+});
+
+describe("dragging across the listings", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("suppresses text selection only while the drag is live", async () => {
+    // Without this a pan paints the programme titles blue as it travels,
+    // which reads as the guide breaking rather than moving. At rest the text
+    // stays selectable, so a title can still be copied.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const sc = scroller(container);
+    const surface = sc.firstElementChild as HTMLElement;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+
+    expect(sc.classList.contains("select-none")).toBe(false);
+
+    fireEvent.pointerDown(surface, { ...common, clientX: 400, clientY: 300 });
+    // Still under the threshold: this may yet be a click, so nothing changes.
+    fireEvent.pointerMove(surface, { ...common, clientX: 398, clientY: 300 });
+    expect(sc.classList.contains("select-none")).toBe(false);
+
+    fireEvent.pointerMove(surface, { ...common, clientX: 340, clientY: 300 });
+    expect(sc.classList.contains("select-none")).toBe(true);
+
+    fireEvent.pointerUp(surface, { ...common, clientX: 340, clientY: 300 });
+    expect(sc.classList.contains("select-none")).toBe(false);
+  });
+});
