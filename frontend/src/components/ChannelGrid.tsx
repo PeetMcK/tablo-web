@@ -134,6 +134,10 @@ export function ChannelGrid({ onLogout }: Props) {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        // Also closes the topbar dropdown: without this, opening the
+        // palette leaves `searchOpen` untouched, and it silently reappears
+        // underneath once the palette closes again.
+        setSearchOpen(false);
         setPaletteOpen(o => !o);
       }
     }
@@ -201,10 +205,18 @@ export function ChannelGrid({ onLogout }: Props) {
   // ordering — could eat the value it just queued. Clearing it here, in the
   // same handler that performs the switch, keeps "am I leaving Live TV" and
   // "did I just queue something for Live TV" from ever racing.
+  //
+  // Guarded on `!pendingMatch`: `pendingChannel` means two different things
+  // depending on whether the guide stream has caught up to it yet. Unresolved,
+  // it is exactly the stale-queue hole described above and must be dropped on
+  // the way out. Resolved, `pendingMatch` is feeding `nowPlaying` below — the
+  // player is on screen because of it — and clearing it here would unmount
+  // the player just for switching tabs, breaking "watch while browsing" the
+  // same way `restoredChannel` deliberately supports it.
   const goToTab = useCallback((tab: Tab) => {
-    if (tab !== "live") setPendingChannel(null);
+    if (tab !== "live" && !pendingMatch) setPendingChannel(null);
     setTab(tab);
-  }, []);
+  }, [pendingMatch]);
 
   // Activating a search result routes via its `target` rather than a second,
   // parallel navigation path. For Live TV this plays the channel directly when

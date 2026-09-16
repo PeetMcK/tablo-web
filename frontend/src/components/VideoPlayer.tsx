@@ -657,6 +657,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Bare-key shortcuts ("q" to close, space/"k" to play/pause, and so
+      // on) are normal for a media player, but this listener is global — it
+      // fires no matter what has focus. Without this guard, typing into any
+      // text field anywhere on the page (the topbar search box, the Cmd-K
+      // palette) is read as player shortcuts: "q" in "Quantico" closes the
+      // video out from under the typist, and a space anywhere in the query
+      // toggles play/pause instead of reaching the input. Anything that
+      // looks like text entry gets the keystroke to itself instead.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
       if (e.key === "Escape" || e.key === "q") onClose();
       if (e.key === "f") enterFullscreen();
       if (e.key === "m") toggleMute();

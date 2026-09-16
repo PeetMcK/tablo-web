@@ -5,6 +5,14 @@ import { useSearch } from "../hooks/useSearch";
 import { api } from "../api/tablo";
 import type { SearchResponse } from "../api/tablo";
 
+// The real VideoPlayer drives hls.js and the `<video>` element for actual
+// playback, which is irrelevant to the tests below — they only care whether
+// it is mounted or not. Stubbed so mounting it here can't drag in media
+// loading, and so its presence/absence is a one-line assertion.
+vi.mock("../components/VideoPlayer", () => ({
+  VideoPlayer: () => <div data-testid="video-player" />,
+}));
+
 const EMPTY: SearchResponse = {
   query: "", coverage: { since: null, last_sync: null }, groups: [],
 };
@@ -292,6 +300,42 @@ describe("ChannelGrid search wiring", () => {
     // is long gone, cleared the moment the user left Live TV, not revived by
     // coming back.
     expect(screen.queryByTitle("Close (Esc)")).not.toBeInTheDocument();
+  });
+
+  it("keeps a channel resolved from search playing when navigating away from Live TV", async () => {
+    vi.spyOn(api, "status").mockResolvedValue({
+      authenticated: true, email: "viewer@example.com", devices: [], active_sid: null, direct_origin: null,
+    });
+    vi.spyOn(api, "guideGridStream").mockImplementation(async function* () {});
+
+    // Same gate as the test above, but this time the delivery happens
+    // BEFORE leaving Live TV — the channel is resolved, not just queued.
+    let deliver: (() => void) | undefined;
+    vi.spyOn(api, "guideStream").mockImplementation(async function* (signal?: AbortSignal) {
+      await new Promise<void>(resolve => { deliver = resolve; });
+      if (signal?.aborted) return;
+      yield PENDING_CHANNEL;
+    });
+
+    vi.spyOn(api, "search").mockResolvedValue(LIVE_GROUPED);
+    renderChannelGrid();
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "kpax" } });
+    fireEvent.click(await screen.findByRole("option"));
+
+    // Let the stream deliver the channel while still on Live TV, so
+    // `pendingMatch` resolves and the player comes up.
+    deliver?.();
+    expect(await screen.findByTestId("video-player")).toBeInTheDocument();
+
+    // Leaving Live TV for a RESOLVED selection must not drop it — this is
+    // "watch while browsing", the same thing `restoredChannel` gives a
+    // channel reached from a deep link. `goToTab` must only clear an
+    // unresolved queue (the case above), not one already feeding playback.
+    fireEvent.click(screen.getByRole("button", { name: "Guide" }));
+    expect(screen.getByTestId("video-player")).toBeInTheDocument();
   });
 });
 

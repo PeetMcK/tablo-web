@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useSearch } from "../hooks/useSearch";
 import { SearchResultRow } from "./SearchResultRow";
 import type { SearchItem, SearchKind } from "../api/tablo";
+
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
 const LABELS: Record<SearchKind, string> = {
   recording: "Recordings",
@@ -26,6 +28,14 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const { data } = useSearch(query, { limit: 5 });
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // What had focus before this opened, so closing can give it back instead
+  // of dropping focus to <body>. Captured during render (state, not a ref —
+  // React's compiler lint flags a ref write during render) rather than an
+  // effect: an effect would run after the input's `autoFocus` has already
+  // moved focus, by which point `document.activeElement` is this dialog's
+  // own input, not whatever the user was on beforehand.
+  const [previousFocus, setPreviousFocus] = useState<HTMLElement | null>(null);
 
   // One flat list, because the keyboard moves through results rather than
   // through groups - the headings are visual only.
@@ -60,23 +70,62 @@ export function CommandPalette({
   const [wasOpen, setWasOpen] = useState(open);
   if (wasOpen !== open) {
     setWasOpen(open);
-    if (!open) {
+    if (open) {
+      setPreviousFocus(document.activeElement as HTMLElement | null);
+    } else {
       setQuery("");
       setCursor(0);
     }
   }
 
+  // Give focus back to whatever had it before Cmd-K, once the dialog itself
+  // has actually left the DOM. Only `.focus()` here, no setState, so it
+  // doesn't trip the same lint rule the render-time resets above dodge.
+  useEffect(() => {
+    if (open) return;
+    previousFocus?.focus?.();
+  }, [open, previousFocus]);
+
   if (!open) return null;
 
+  // Keeps Tab/Shift+Tab from leaving the dialog — without this, a
+  // keyboard or screen-reader user could tab past the input onto whatever
+  // is sitting behind the backdrop, despite `aria-modal="true"` claiming
+  // otherwise. Only wraps at the boundaries, so it degrades to a no-op loop
+  // when the input is the only focusable element, which it usually is.
+  function trapFocus(e: React.KeyboardEvent) {
+    const nodes = dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE);
+    if (!nodes || nodes.length === 0) return;
+    const list = Array.from(nodes);
+    const first = list[0];
+    const last = list[list.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   function onKeyDown(e: React.KeyboardEvent) {
+    // Unconditional, for every key, not just Escape: VideoPlayer keeps a
+    // global `keydown` listener for its own bare-key shortcuts (space/"k"
+    // play-pause, "q" close, "f"/"m" fullscreen/mute). It now ignores events
+    // whose native target is a text field, which already covers this
+    // dialog's input — but a modal should contain its own keyboard events on
+    // principle, not rely on every listener downstream getting its guard
+    // right. The failure mode if this ever drifted is silent and drops
+    // playback (typing "q" while searching would close the video), so this
+    // stays as a second line of defense.
+    e.stopPropagation();
+
     if (e.key === "Escape") {
-      // Handled here, on the dialog itself, rather than a document listener:
-      // the dropdown underneath (Task 12) has its own Escape handling on the
-      // topbar input, and a document-level listener here would fire for both
-      // and fight over which one wins. The palette holds focus while it is
-      // open, so its own keydown is the only one that sees this Escape.
-      e.stopPropagation();
       onClose();
+      return;
+    }
+    if (e.key === "Tab") {
+      trapFocus(e);
       return;
     }
     if (e.key === "ArrowDown") {
@@ -97,6 +146,7 @@ export function CommandPalette({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Search everything"
