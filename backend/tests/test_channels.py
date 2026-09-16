@@ -14,6 +14,7 @@ PROTECTED_GETS = [
     "/api/channels/local-guide",
     "/api/channels/server-info",
     "/api/channels/airings",
+    "/api/channels/S1_008_02/airings",
 ]
 
 
@@ -80,3 +81,101 @@ def test_grid_rows_carry_the_channel_kind():
     rows = [state._assemble_grid_row(c, {}, {}, {}, {}) for c in (ota, ott)]
 
     assert [r["kind"] for r in rows] == ["ota", "ott"]
+
+
+def test_channel_airings_come_from_the_mirror(monkeypatch):
+    """The live player asks per channel; the device is never touched for it.
+
+    A miss returns an empty list rather than falling back to the device: the
+    player keeps the airing it was opened with, which beats blocking playback
+    on a guide fetch.
+    """
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    store.save_guide([{
+        "identifier": "ch1", "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None, "kind": "ota",
+        "airings": [{
+            "title": "On now", "subtitle": "", "description": "",
+            "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 900)),
+            "duration": 3600, "genres": [], "kind": "episode",
+        }],
+    }], now=now)
+
+    resp = client.get("/api/channels/ch1/airings")
+    assert resp.status_code == 200
+    assert [a["title"] for a in resp.json()["airings"]] == ["On now"]
+
+    assert client.get("/api/channels/nobody/airings").json()["airings"] == []
+
+
+def test_refreshing_the_channel_list_requires_auth():
+    assert client.post("/api/channels/refresh").status_code == 401
+
+
+def test_refreshing_the_channel_list_reports_what_changed(monkeypatch):
+    """A channel disabled in the Tablo app is reported as removed.
+
+    Not a tuner scan: `TabloClient.channels` is a GET against the account's
+    cloud guide, so a channel disappears here because the account stopped
+    listing it, not because anything changed over the air.
+    """
+    import asyncio
+
+    from tablo_api.models import TabloChannel
+
+    from app import store
+    from app.state import AppState
+
+    st = AppState()
+    st.active_device = object()          # only checked for None
+
+    kpax = TabloChannel(identifier="ch1", call_sign="KPAX", major=8, minor=1,
+                        network="CBS", kind="ota")
+    nest = TabloChannel(identifier="ch2", call_sign="THENEST", major=13, minor=5,
+                        network="THENEST", kind="ota")
+
+    # Seed the in-process cache with both, then have the device return only one.
+    st._channels = [kpax, nest]
+
+    async def only_kpax(refresh=False, include_ott=True):
+        return [kpax]
+
+    async def no_enrichment():
+        return {}, {}, {}, {}
+
+    saved: list[list[dict]] = []
+    monkeypatch.setattr(st, "channels", only_kpax)
+    monkeypatch.setattr(st, "_build_grid_enrichment", no_enrichment)
+    monkeypatch.setattr(store, "save_guide", lambda rows: saved.append(rows))
+
+    result = asyncio.run(st.refresh_channel_list())
+
+    assert result["removed"] == ["ch2"]
+    assert result["added"] == []
+    assert result["channels"] == 1
+    # The rebuilt guide is written, which is what stamps a newer sync and so
+    # drops the stale channel from `load_guide`.
+    assert [r["identifier"] for r in saved[0]] == ["ch1"]
+
+
+def test_the_guide_rebuild_asks_the_device_for_a_fresh_channel_list():
+    """`_channels` has no TTL, so the rebuild has to force past it.
+
+    Without this the hour-long guide TTL looks like it expires the channel
+    list but does not: a dropped channel stays in process memory until the
+    backend restarts.
+    """
+    import inspect
+
+    from app.state import AppState
+
+    for method in (AppState.get_grid_guide, AppState.stream_grid_guide_data):
+        src = inspect.getsource(method)
+        assert "self.channels(refresh=True)" in src, f"{method.__name__} must force a refresh"

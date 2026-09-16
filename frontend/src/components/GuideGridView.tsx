@@ -1,11 +1,31 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { api, type GridChannel, type Program } from "../api/tablo";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import { coveredHours, jumpDays, positionLabel } from "../lib/guideJump";
 import { ChannelLogo } from "./ChannelLogo";
+import { GuideJump } from "./GuideJump";
 
 interface Props {
   onPlay: (channel: GridChannel) => void;
 }
+
+const HOUR_WIDTH = 400; // px per hour
+const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
+/**
+ * Width of the frozen channel column, in px. Must match the `w-32` on the
+ * column itself: the scrolled surface is sized from it, and the "now" line is
+ * offset by it, so the two drift apart if only one changes.
+ */
+const CHANNEL_W = 128;
+
+/**
+ * How far before the live edge "back to now" lands.
+ *
+ * Scrolling exactly to now pins the red line to the left edge and clips the
+ * programme in progress at its start - which is the one the viewer is most
+ * likely looking for.
+ */
+const NOW_LEAD_MS = 15 * 60_000;
 
 
 function airingMatchesFilter(air: Program, f: ContentFilter): boolean {
@@ -24,6 +44,48 @@ function channelMatchesFilter(ch: GridChannel, f: ContentFilter): boolean {
   if (f === "ota")  return ch.kind === "ota";
   if (f === "fast") return ch.kind === "ott";
   return ch.airings.some(a => airingMatchesFilter(a, f));
+}
+
+interface Placement {
+  air: Program;
+  left: number;
+  width: number;
+}
+
+/**
+ * Where each airing sits on the timeline, dropping the ones that cannot be drawn.
+ *
+ * Pulled out of the row so a row can ask whether it rendered anything. A
+ * channel looks empty for three different reasons — no listings at all, every
+ * listing already ended, or every listing too narrow to draw — and
+ * `airings.length` only catches the first. Reading the result instead catches
+ * all three, which is what decides whether the row gets a placeholder.
+ */
+function placeAirings(airings: Program[], startTime: number): Placement[] {
+  const out: Placement[] = [];
+  for (const air of airings) {
+    const offsetSecs = (new Date(air.start).getTime() - startTime) / 1000;
+    let left = (offsetSecs / 3600) * HOUR_WIDTH;
+    let width = (air.duration / 3600) * HOUR_WIDTH;
+
+    if (left + width < 0) continue;
+
+    // Clip programmes that started before the grid start so the title text
+    // stays visible at the left edge of the visible area.
+    if (left < 0) {
+      width += left;
+      left = 0;
+    }
+    if (width < 20) continue;
+
+    out.push({ air, left, width });
+  }
+  return out;
+}
+
+/** How a channel names itself out loud — a logo and a number announce nothing. */
+function channelLabel(ch: GridChannel): string {
+  return ch.major > 0 ? `${ch.call_sign} ${ch.major}.${ch.minor}` : ch.call_sign;
 }
 
 /**
@@ -76,37 +138,35 @@ export function GuideGridView({ onPlay }: Props) {
     return () => clearInterval(timer);
   }, []);
 
-  // The hour headings and each channel are separate horizontal scrollers, so
-  // they have to be driven together: scrolling one row on its own slid that
-  // channel out from under the clock, and the grid then showed programmes
-  // against the wrong times without any sign it had happened.
-  //
-  // Kept as one shared offset rather than a piece of state - this runs on every
-  // scroll frame, and re-rendering the whole guide to move it would stutter.
-  const lanes = useRef(new Set<HTMLDivElement>());
-  const offset = useRef(0);
+  /**
+   * The guide is ONE scroller, in both axes.
+   *
+   * It used to be a scroller per row — the hour headings plus one per channel —
+   * held together by writing `scrollLeft` to all the others on every scroll
+   * frame. That kept them aligned at rest but could not keep them aligned in
+   * motion: the browser scrolls whichever row the pointer is over on the
+   * compositor, with momentum and rubber-band, while the rest were assigned
+   * from JavaScript a frame later, with neither. A flick left the hovered row
+   * tracking the clock and the other rows trailing it by about 20px, which is
+   * one frame at a normal flick speed, and at the ends the hovered row would
+   * overscroll while the others clamped dead.
+   *
+   * Frozen row and column are `position: sticky` inside this one scroller
+   * instead, so alignment is not maintained at all — there is only one surface,
+   * and one scroll position. `lanes`, `offset`, `syncLanes` and `registerLane`
+   * are all gone with it.
+   */
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  /** Which hour column the guide is scrolled to, for the jump control's label. */
+  const [hourAt, setHourAt] = useState(0);
 
-  const syncLanes = useCallback((from: HTMLDivElement) => {
-    offset.current = from.scrollLeft;
-    for (const lane of lanes.current) {
-      // Assigning an unchanged scrollLeft still fires `scroll` in some browsers,
-      // which would bounce straight back here; skipping the source and the
-      // already-aligned keeps it from looping.
-      if (lane !== from && lane.scrollLeft !== offset.current) {
-        lane.scrollLeft = offset.current;
-      }
-    }
-  }, []);
-
-  const registerLane = useCallback((el: HTMLDivElement) => {
-    lanes.current.add(el);
-    // A channel that streams in after the guide has been scrolled must arrive
-    // at the offset everything else is already showing.
-    if (el.scrollLeft !== offset.current) el.scrollLeft = offset.current;
-    // Returning a cleanup (React 19) drops the lane on unmount. Without it the
-    // set kept every row a filter change had removed, and each scroll wrote to
-    // detached nodes for the life of the page.
-    return () => { lanes.current.delete(el); };
+  // The jump control names where the guide is, which needs a render to change -
+  // but this runs on every scroll frame, and re-rendering the guide per frame
+  // would stutter. Quantising to the hour column makes it at most one render
+  // per column crossed, and the label only ever names an hour anyway.
+  const trackHour = useCallback((el: HTMLDivElement) => {
+    const hour = Math.floor(el.scrollLeft / HOUR_WIDTH);
+    setHourAt((held) => (held === hour ? held : hour));
   }, []);
 
   // Stable grid start: current hour, zeroed minutes/seconds
@@ -115,9 +175,6 @@ export function GuideGridView({ onPlay }: Props) {
     d.setMinutes(0, 0, 0);
     return d.getTime();
   }, []);
-
-  const HOUR_WIDTH = 400; // px per hour
-  const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 
   /**
    * How far the timeline runs, taken from the listings themselves.
@@ -162,20 +219,55 @@ export function GuideGridView({ onPlay }: Props) {
   const nowLeft = ((now - startTime) / 1000 / 3600) * HOUR_WIDTH;
   const nowVisible = nowLeft >= 0 && nowLeft <= HOUR_WIDTH * totalHours;
 
+  /**
+   * Put an instant at the left edge of the guide.
+   *
+   * One write now rather than a loop over every lane. Written as a plain
+   * handler rather than a `useCallback`: scrolling is a write to the DOM
+   * through a ref, which belongs to an event and not to a memoized value.
+   */
+  const scrollToTime = (at: number) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const want = Math.max(0, ((at - startTime) / 3600_000) * HOUR_WIDTH);
+    // A target inside the last screenful sits past the furthest the guide can
+    // scroll, and the browser clamps the write. Read back what it actually did
+    // rather than what was asked for, or the jump control's label describes a
+    // position the guide is not at.
+    el.scrollLeft = want;
+    setHourAt(Math.floor(el.scrollLeft / HOUR_WIDTH));
+  };
+
+  /** Which hours hold listings, so the jump control can refuse the empty ones. */
+  const covered = useMemo(
+    () => coveredHours(grid.flatMap(ch => ch.airings ?? [])),
+    [grid],
+  );
+
+  const jumpRows = useMemo(
+    () => jumpDays({ startTime, totalHours, covered, now }),
+    [startTime, totalHours, covered, now],
+  );
+
   const filteredGrid = contentFilter === "all" ? grid : grid.filter(ch => channelMatchesFilter(ch, contentFilter));
 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-48 gap-4">
         <div className="w-12 h-12 rounded-full border-4 border-accent border-t-transparent animate-spin" />
-        <p className="text-white/40 text-sm font-medium uppercase tracking-widest">Generating Grid...</p>
+        <p className="text-fg-muted text-sm font-medium uppercase tracking-widest">Generating Grid...</p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4">
-    {/* Content type filter chips */}
+    // `min-h-0` on every link of this chain, not just the scroller. A flex
+    // child defaults to `min-height: auto`, which refuses to shrink below its
+    // content — so a single ancestor without it silently cancels the `flex-1`
+    // below and the card goes back to overflowing the page.
+    <div className="flex flex-col gap-4 flex-1 min-h-0">
+    {/* Content type filter chips, and the jump control in the space they leave */}
+    <div className="flex items-center gap-2">
     <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
       {CONTENT_FILTERS.map(f => (
         <button
@@ -183,8 +275,12 @@ export function GuideGridView({ onPlay }: Props) {
           onClick={() => setContentFilter(f.id)}
           className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
             ${contentFilter === f.id
-              ? "bg-accent text-white shadow-lg shadow-accent/30"
-              : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
+              /* A flat accent rather than the brand ramp: this chip carries a
+                 12px bold LABEL, and nothing clears 4.5:1 against both ends of
+                 the gradient. `bg-accent text-accent-fg` is 6.37:1 light and
+                 5.40:1 dark. The ramp stays on the marks and bars below. */
+              ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
+              : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
             }`}
         >
           <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
@@ -193,75 +289,135 @@ export function GuideGridView({ onPlay }: Props) {
       ))}
     </div>
 
-    <div className="flex flex-col border border-white/5 rounded-3xl overflow-hidden bg-surface-raised shadow-2xl">
+      <div className="flex-1" />
+
+      <GuideJump
+        days={jumpRows}
+        label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}
+        onJump={scrollToTime}
+        onNow={() => scrollToTime(Date.now() - NOW_LEAD_MS)}
+      />
+    </div>
+
+    <div className="flex flex-col flex-1 min-h-0 border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">
+      {/* The single scroller. Both axes, and the only scroll position in the
+          guide. `min-h-0` so it can shrink inside the flex column above it. */}
+      <div
+        ref={scrollerRef}
+        onScroll={e => trackHour(e.currentTarget)}
+        className="flex-1 min-h-0 overflow-auto no-scrollbar"
+      >
+        {/* The scrolled surface. Explicit width so the timeline extends the
+            full run of the guide whatever any individual channel lists — the
+            per-row spacer this replaces existed because programmes are
+            absolutely positioned and contribute nothing to scroll extent. */}
+        <div className="relative" style={{ width: CHANNEL_W + totalHours * HOUR_WIDTH }}>
+
       {/* Time Header */}
-      <div className="flex bg-black/40 border-b border-white/5 sticky top-0 z-20">
-        <div className="w-32 shrink-0 border-r border-white/5 bg-black/20 flex items-center justify-center">
-          <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">Channel</span>
+      {/* Opaque, not `bg-recess`: a sticky element has content moving beneath
+          it, and recess is an 8%/40% wash that programmes would show straight
+          through. The frozen row and the frozen column share `surface-sunken`,
+          which is the token for exactly this and reads within a point or two of
+          what the wash composited to. */}
+      <div className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30 relative">
+        <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-10">
+          <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
         </div>
-        <div className="flex flex-1 overflow-x-auto no-scrollbar relative"
-             ref={registerLane}
-             onScroll={e => syncLanes(e.currentTarget)}>
+        <div className="flex relative">
           {hours.map((h, i) => (
             <div
               key={i}
+              /* The day-boundary column is the stronger of the two: a heavier
+                 border and a heavier text rung. Both rungs still have to carry
+                 11px type, so the pair is fg-secondary / fg-muted rather than
+                 the old white/50 and white/30 — white/30 has no token because
+                 nothing that faint may hold text. */
               className={`shrink-0 font-mono text-[11px] font-bold flex items-center gap-2 px-6 h-10
                           ${h.startsDay
-                            ? "border-l border-white/20 text-white/50"
-                            : "border-r border-white/5 text-white/30"}`}
+                            ? "border-l border-border-medium text-fg-secondary"
+                            : "border-r border-border-subtle text-fg-muted"}`}
               style={{ width: HOUR_WIDTH }}
             >
               {/* The date leads the first column of each day; a stronger left
-                  border makes the boundary visible while scrolling past it. */}
-              {h.day && <span className="text-accent/70">{h.day}</span>}
+                  border makes the boundary visible while scrolling past it.
+                  Full-strength accent, not accent/70: the faded form lands near
+                  3.3:1 on this strip, where the solid token holds ~6:1. */}
+              {h.day && <span className="text-accent">{h.day}</span>}
               <span>{h.time}</span>
             </div>
           ))}
           {/* Now marker in header */}
           {nowVisible && (
             <div
-              className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
+              className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
               style={{ left: nowLeft }}
             >
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1 mt-1" />
+              <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
             </div>
           )}
         </div>
       </div>
 
       {/* Grid Rows */}
-      <div className="flex flex-col max-h-[70vh] overflow-y-auto overflow-x-hidden">
-        {filteredGrid.map((ch) => (
-          <div key={ch.identifier} className="flex border-b border-white/5 hover:bg-white/[0.02] transition">
-            {/* Channel Info */}
-            <div className="w-32 shrink-0 p-4 border-r border-white/5 flex flex-col items-center justify-center gap-1.5 bg-black/10">
-              <div className="w-12 h-10 flex items-center justify-center bg-black/30 rounded border border-white/5 p-1">
+      <div className="flex flex-col">
+        {filteredGrid.map((ch) => {
+          const placed = placeAirings(ch.airings, startTime);
+          return (
+          <div key={ch.identifier} className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition">
+            {/* Channel Info — frozen left, and the tune control.
+                Opaque for the same reason the header is: programmes scroll
+                underneath it. `hover:bg-surface-raised` rather than the usual
+                `bg-fill`, which is a translucent wash and would let the
+                timeline show through the moment you pointed at it.
+
+                A button, not a tile with a click handler. This is the one way
+                to tune that survives: the programme cells are to become show
+                info and recording management, so the affordance has to be
+                unmistakable here first. Its visible content is a logo image
+                and a number, neither of which announces anything, hence the
+                label. */}
+            <button
+              onClick={() => onPlay(ch)}
+              aria-label={`Watch ${channelLabel(ch)}`}
+              className="w-32 shrink-0 p-4 border-r border-border-subtle flex flex-col items-center justify-center gap-1.5
+                         bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+            >
+              <div className="w-12 h-10 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
                 <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
               </div>
-              <span className="text-[11px] font-bold text-white/60 tabular-nums">
+              <span className="text-[11px] font-bold text-fg-muted tabular-nums">
                 {ch.major > 0 ? `${ch.major}.${ch.minor}` : "FAST"}
               </span>
-            </div>
+            </button>
 
-            {/* Programs Timeline */}
-            <div className="flex flex-1 overflow-x-auto no-scrollbar py-2 relative h-24"
-                 ref={registerLane}
-                 onScroll={e => syncLanes(e.currentTarget)}>
-              {ch.airings.map((air, i) => {
+            {/* Programs Timeline — no longer a scroller, just the surface the
+                absolutely-positioned airings are placed on. */}
+            <div className="shrink-0 py-2 relative h-24" style={{ width: totalHours * HOUR_WIDTH }}>
+              {placed.length === 0 ? (
+                /* A channel with nothing drawable is still a channel you can
+                   watch — several carry no EPG data at all and were, until
+                   now, unreachable from the guide entirely. The label is
+                   `sticky` at the width of the frozen column so it stays in
+                   view however far along the timeline you have scrolled,
+                   rather than sitting at hour zero and disappearing. */
+                <button
+                  onClick={() => onPlay(ch)}
+                  aria-label={`Watch ${channelLabel(ch)} — no programme information`}
+                  className="absolute inset-y-2 left-0 flex items-center rounded-sm border-l border-border-subtle
+                             hover:bg-fill-soft transition-colors group text-left"
+                  style={{ width: totalHours * HOUR_WIDTH - 4 }}
+                >
+                  <span
+                    className="sticky px-4 text-[11px] font-medium uppercase tracking-widest whitespace-nowrap
+                               text-fg-faint group-hover:text-fg-muted transition-colors"
+                    style={{ left: CHANNEL_W }}
+                  >
+                    Programming Not Available
+                  </span>
+                </button>
+              ) : placed.map(({ air, left, width }, i) => {
                 const airStart = new Date(air.start).getTime();
-                const offsetSecs = (airStart - startTime) / 1000;
-                let left = (offsetSecs / 3600) * HOUR_WIDTH;
-                let width = (air.duration / 3600) * HOUR_WIDTH;
-
-                if (left + width < 0) return null;
-
-                // Clip programs that started before the grid start so the
-                // title text stays visible at the left edge of the visible area.
-                if (left < 0) {
-                  width += left;
-                  left = 0;
-                }
-                if (width < 20) return null;
 
                 // Progress through this airing (0–100)
                 const progress = air.duration > 0
@@ -273,47 +429,45 @@ export function GuideGridView({ onPlay }: Props) {
                   <button
                     key={i}
                     onClick={() => onPlay(ch)}
-                    className="absolute top-2 bottom-2 bg-white/5 hover:bg-white/10 border-l border-white/10 p-3 flex flex-col text-left group transition-colors rounded-sm overflow-hidden"
+                    className="absolute top-2 bottom-2 bg-fill-soft hover:bg-fill border-l border-border p-3 flex flex-col text-left group transition-colors rounded-sm overflow-hidden"
                     style={{ left, width: width - 4 }}
                   >
-                    <p className="text-[11px] font-bold text-white/80 truncate group-hover:text-accent transition-colors">
+                    <p className="text-[11px] font-bold text-fg-secondary truncate group-hover:text-accent-strong transition-colors">
                       {air.title}
                     </p>
-                    <p className="text-[10px] text-white/20 line-clamp-1 mt-0.5">
+                    <p className="text-[10px] text-fg-muted line-clamp-1 mt-0.5">
                       {air.description || "Live TV Event"}
                     </p>
                     {/* Per-airing progress bar */}
                     {isOnNow && (
-                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-                        <div className="h-full bg-accent/70" style={{ width: `${progress}%` }} />
+                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-fill-soft">
+                        {/* A bar, not a label: the brand ramp is allowed here. */}
+                        <div className="accent-gradient-x h-full opacity-70" style={{ width: `${progress}%` }} />
                       </div>
                     )}
                   </button>
                 );
               })}
 
-              {/* Holds every row to the same scrollable width as the clock.
-                  Programmes are absolutely positioned and contribute nothing
-                  reliable to scroll extent, so a channel whose listings stop
-                  early would scroll a shorter distance than the header and slide
-                  out of step with it at the far end. */}
-              <div
-                className="shrink-0"
-                style={{ width: totalHours * HOUR_WIDTH }}
-                data-timeline-spacer
-                aria-hidden
-              />
-
-              {/* Vertical "now" line across the row */}
-              {nowVisible && (
-                <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
-                  style={{ left: nowLeft }}
-                />
-              )}
             </div>
           </div>
-        ))}
+          );
+        })}
+      </div>
+
+      {/* One "now" line for the whole grid, not one per row. It lives on the
+          scrolled surface so it travels with the timeline, and sits at z-10:
+          above the airings, below the frozen column (z-20) and the frozen
+          header (z-30), so it slides under both rather than over them. */}
+      {nowVisible && (
+        <div
+          className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-10"
+          style={{ left: CHANNEL_W + nowLeft }}
+          aria-hidden
+        />
+      )}
+
+        </div>
       </div>
     </div>
     </div>

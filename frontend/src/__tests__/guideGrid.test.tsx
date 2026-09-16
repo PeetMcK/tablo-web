@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { GuideGridView } from "../components/GuideGridView";
 import { api } from "../api/tablo";
@@ -36,10 +36,21 @@ function mockStream(channels: GridChannel[]) {
   });
 }
 
-/** Every horizontally scrollable lane: the time header and one per channel. */
-function lanes(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(".overflow-x-auto"))
-    .filter(el => el.className.includes("flex-1"));
+/**
+ * The guide's one scroll container.
+ *
+ * There used to be a lane per row, synced by offset. These helpers assert the
+ * replacement invariant: not that the lanes agree, but that there is only one.
+ */
+function scroller(container: HTMLElement): HTMLElement {
+  const found = container.querySelectorAll<HTMLElement>(".overflow-auto");
+  expect(found.length).toBe(1);
+  return found[0];
+}
+
+/** The timeline surface of each channel row — sized, no longer scrollable. */
+function timelines(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(".h-24"));
 }
 
 /** Channel whose listings run `hours` past the top of the current hour. */
@@ -71,8 +82,7 @@ describe("GuideGridView timeline extent", () => {
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    const [header] = lanes(container);
-    const columns = header.querySelectorAll(":scope > div");
+    const columns = container.querySelectorAll(".font-mono");
     expect(columns.length).toBeGreaterThanOrEqual(30);
   });
 
@@ -90,10 +100,10 @@ describe("GuideGridView timeline extent", () => {
     expect(await screen.findByText(label)).toBeInTheDocument();
   });
 
-  it("gives every channel the same scroll extent as the clock", async () => {
-    // Programmes are absolutely positioned, so a channel whose listings stop
-    // early scrolls a shorter distance than the header and slides out of step
-    // with it — the lanes are synced by offset, which assumes a shared width.
+  it("gives every channel the same extent as the clock", async () => {
+    // Programmes are absolutely positioned and contribute nothing to width, so
+    // a channel whose listings stop early would draw a shorter row than the
+    // header unless every row is sized from the guide's full run.
     mockStream([...longChannel(30), {
       identifier: "ch2", call_sign: "KECI", major: 13, minor: 1, network: "NBC",
       kind: "ota", display_name: "KECI", logo_url: null,
@@ -103,9 +113,9 @@ describe("GuideGridView timeline extent", () => {
     // Both channels carry an "Hour 0", so match all rather than expecting one.
     await screen.findAllByText("Hour 0");
 
-    const spacers = container.querySelectorAll<HTMLElement>("[data-timeline-spacer]");
-    expect(spacers.length).toBe(2);
-    const widths = new Set([...spacers].map(s => s.style.width));
+    const rows = timelines(container);
+    expect(rows.length).toBe(2);
+    const widths = new Set(rows.map(r => r.style.width));
     expect(widths.size).toBe(1);             // both rows span the same distance
   });
 
@@ -114,41 +124,198 @@ describe("GuideGridView timeline extent", () => {
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    const [header] = lanes(container);
-    expect(header.querySelectorAll(":scope > div").length).toBeGreaterThanOrEqual(6);
+    expect(container.querySelectorAll(".font-mono").length).toBeGreaterThanOrEqual(6);
   });
 });
 
 describe("GuideGridView", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("scrolls every channel together with the clock", async () => {
-    // Each row is its own horizontal scroll container. Without syncing them,
-    // dragging one channel slid that row alone: its programmes no longer lined
-    // up with the hour headings above or with any other channel, so the grid
-    // silently started lying about when things air.
+  it("scrolls as one surface, with nothing left to keep in step", async () => {
+    // This replaces a pair of tests that scrolled one lane and asserted the
+    // others followed. They passed while the guide still tore: the browser
+    // scrolls whichever row the pointer is over with momentum, and the rest
+    // were assigned a frame later with none, so a flick left the hovered row
+    // tracking the clock and the others trailing it. Synthetic scroll events
+    // carry no momentum, so the old tests could never see it.
+    //
+    // The fix is structural, so the test is too: one scroll container, and no
+    // row able to scroll on its own.
     mockStream(grid());
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Survivor");
 
-    const all = lanes(container);
-    expect(all.length).toBeGreaterThan(2);   // header + one per channel
-
-    const [header, ...rows] = all;
-    fireEvent.scroll(rows[0], { target: { scrollLeft: 420 } });
-
-    expect(header.scrollLeft).toBe(420);
-    for (const row of rows) expect(row.scrollLeft).toBe(420);
+    // Scoped to inside the grid: the content-filter chips above it are their
+    // own horizontal scroller and always were.
+    const el = scroller(container);                    // asserts exactly one
+    expect(el.querySelectorAll(".overflow-x-auto").length).toBe(0);
   });
 
-  it("scrolls the rows when the clock itself is dragged", async () => {
+  it("freezes the clock and the channel column against that scroll", async () => {
     mockStream(grid());
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Survivor");
 
-    const [header, ...rows] = lanes(container);
-    fireEvent.scroll(header, { target: { scrollLeft: 96 } });
+    // Sticky rather than outside the scroller, which is what lets one surface
+    // carry both axes. Opaque too: these have content moving under them, and a
+    // translucent fill would let programmes show through.
+    const frozenTop = container.querySelector(".sticky.top-0");
+    const frozenLeft = container.querySelectorAll(".sticky.left-0");
+    expect(frozenTop).not.toBeNull();
+    expect(frozenTop!.className).toContain("bg-surface-sunken");
+    expect(frozenLeft.length).toBeGreaterThan(1);      // corner + one per row
+    for (const cell of frozenLeft) {
+      expect(cell.className).toContain("bg-surface-sunken");
+    }
+  });
+});
 
-    for (const row of rows) expect(row.scrollLeft).toBe(96);
+describe("jumping the guide to a day and time", () => {
+  // Pinned to an evening. Which dayparts are behind the grid depends on the
+  // hour it opens at, so a real clock would make these pass or fail by the
+  // time of day they happened to run.
+  beforeEach(() => {
+    const evening = new Date();
+    evening.setHours(20, 0, 0, 0);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(evening);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** A guide running two full days from the top of this hour. */
+  const TWO_DAYS = 48;
+
+  it("scrolls every lane to the hour a cell names", async () => {
+    mockStream(longChannel(TWO_DAYS));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    fireEvent.click(screen.getByRole("button", { name: /·/ }));
+
+    // Tomorrow evening: the jump this control exists for, and the one a day
+    // picker cannot express — it is seven screens along from here.
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const label = new RegExp(
+      `${tomorrow.toLocaleDateString([], { weekday: "short" })}.*Prime`, "i");
+    fireEvent.click(screen.getByRole("button", { name: label }));
+
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    const prime = new Date(tomorrow);
+    prime.setHours(19, 0, 0, 0);
+    const expected = ((prime.getTime() - top.getTime()) / 3600_000) * 400;
+
+    expect(scroller(container).scrollLeft).toBe(expected);
+  });
+
+  it("brings the guide back to the live edge, with the current programme intact", async () => {
+    mockStream(longChannel(TWO_DAYS));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const el = scroller(container);
+    fireEvent.scroll(el, { target: { scrollLeft: 9000 } });
+    expect(el.scrollLeft).toBe(9000);
+
+    fireEvent.click(screen.getByRole("button", { name: "NOW" }));
+
+    // Fifteen minutes short of now, so the programme in progress is not
+    // clipped at the left edge. The grid starts at the top of the hour, so
+    // before a quarter past, that lead falls behind the start and clamps to 0.
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    const lead = Date.now() - 15 * 60_000;
+    const expected = Math.max(0, ((lead - top.getTime()) / 3600_000) * 400);
+    expect(scroller(container).scrollLeft).toBeCloseTo(expected, 0);
+  });
+
+  it("refuses a stretch the timeline cannot reach", async () => {
+    mockStream(longChannel(TWO_DAYS));
+    render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    fireEvent.click(screen.getByRole("button", { name: /·/ }));
+
+    // The grid opens at 8pm here and runs forward, so this morning and this
+    // afternoon are behind it. A cell that looked live and did nothing would
+    // be worse than one that says it cannot.
+    const today = new Date();
+    const date = `${today.getMonth() + 1}/${today.getDate()}`;
+    for (const part of ["Morning", "Afternoon"]) {
+      const cell = screen.getByRole("button", { name: `Today ${date}, ${part}` });
+      expect(cell).toBeDisabled();
+    }
+  });
+});
+
+describe("channels you can still tune", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** 13.5 THENEST — a real OTA channel the account lists with no EPG data. */
+  const nest: GridChannel = {
+    identifier: "S999055912_013_05", call_sign: "THENEST", major: 13, minor: 5,
+    network: "THENEST", kind: "ota", display_name: "13.5 THENEST",
+    logo_url: null, airings: [],
+  };
+
+  it("offers a channel with no listings as something to watch", async () => {
+    // Without this the row is blank: nothing to click, and no way to reach the
+    // channel from the guide at all. Four channels on a real device are in
+    // this state.
+    const onPlay = vi.fn();
+    mockStream([nest]);
+    render(<GuideGridView onPlay={onPlay} />);
+
+    const cell = await screen.findByRole("button", { name: /THENEST 13\.5 — no programme information/ });
+    expect(cell).toHaveTextContent("Programming Not Available");
+
+    fireEvent.click(cell);
+    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: nest.identifier }));
+  });
+
+  it("does the same when every listing falls outside the window", async () => {
+    // The row is equally blank when the channel HAS airings and none can be
+    // drawn - all ended before the grid starts, or all too narrow. Keying off
+    // `airings.length` would miss this and leave a dead row.
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    mockStream([{
+      ...nest,
+      airings: [{
+        title: "Finished hours ago",
+        description: "",
+        start: new Date(top.getTime() - 6 * 3600_000).toISOString(),
+        duration: 3600,                      // ended long before the grid start
+        genres: [],
+        kind: null,
+      }],
+    }]);
+    render(<GuideGridView onPlay={() => {}} />);
+
+    expect(await screen.findByText("Programming Not Available")).toBeInTheDocument();
+  });
+
+  it("tunes from the channel tile, which is the affordance that survives", async () => {
+    // Programme cells are to become show info and recording management, so the
+    // tile is the one way to tune that does not change under the user.
+    const onPlay = vi.fn();
+    mockStream(grid());
+    render(<GuideGridView onPlay={onPlay} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Watch KPAX 8.1" }));
+    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: "ch1" }));
+  });
+
+  it("names the channel out loud, since a logo and a number do not", async () => {
+    mockStream(grid());
+    render(<GuideGridView onPlay={() => {}} />);
+
+    await screen.findByText("Survivor");
+    expect(screen.getByRole("button", { name: "Watch KECI 13.1" })).toBeInTheDocument();
   });
 });

@@ -4,8 +4,41 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#4A92D0" />
+    <!-- The page background, not the brand swatch: this is the colour mobile
+         browsers paint their own chrome with, and chrome that does not match
+         the page it frames reads as a rendering fault. The script below
+         rewrites it to whichever theme resolves, so the value here is only the
+         pre-script default and has to be dark's. The brand swatch lives where
+         it belongs - in the mark, /favicon.svg. Keep in step with THEME_COLOR
+         in src/lib/theme.ts. -->
+    <meta name="theme-color" content="#0d0d14" />
     <title>Tablo-Web</title>
+    <script>
+      // Resolve the theme before the first paint, so nobody watches a dark app
+      // flash white on the way in. Mirrors src/lib/theme.ts - keep the storage
+      // key and the two colours in step with it.
+      (function () {
+        var stored = null;
+        try { stored = localStorage.getItem('tablo:theme'); } catch (e) { /* private mode */ }
+
+        var prefersDark = true;
+        try {
+          if (window.matchMedia) {
+            prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+        } catch (e) { /* no matchMedia: fall back to dark */ }
+
+        var dark = stored === 'dark' || (stored !== 'light' && prefersDark);
+        var root = document.documentElement;
+        root.classList.toggle('dark', dark);
+        root.style.colorScheme = dark ? 'dark' : 'light';
+        // Held only until the stylesheet lands; ThemeProvider clears it on mount.
+        root.style.backgroundColor = dark ? '#0d0d14' : '#f6f5f2';
+
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#0d0d14' : '#f6f5f2');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

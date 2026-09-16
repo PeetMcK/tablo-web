@@ -256,3 +256,41 @@ def test_backfill_index_reindexes_what_is_already_stored():
 
     assert indexed == 1
     assert db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+
+
+def test_one_channel_airings_start_at_what_is_on_now():
+    """The live player asks "what is on this channel, and what is next".
+
+    Everything that has already ended is behind the viewer - the DVR window
+    holds none of it - so the list starts with whatever covers the current
+    moment and runs forward.
+    """
+    now = time.time()
+    store.save_guide([_channel("ch1", [
+        _airing("Over", int(now - 7200)),
+        _airing("On now", int(now - 900)),
+        _airing("Up next", int(now + 2700)),
+    ]), _channel("ch2", [_airing("Elsewhere", int(now - 900))])], now=now)
+
+    airings = store.channel_airings("ch1", now=now)
+
+    assert [a["title"] for a in airings] == ["On now", "Up next"]
+
+
+def test_one_channel_airings_carry_what_the_player_renders():
+    now = time.time()
+    store.save_guide(
+        [_channel("ch1", [_airing("On now", int(now - 900), duration=1800)])],
+        now=now,
+    )
+
+    (airing,) = store.channel_airings("ch1", now=now)
+
+    assert airing["title"] == "On now"
+    assert airing["duration"] == 1800
+    assert airing["start"]
+    assert airing["genres"] == []
+
+
+def test_an_unknown_channel_has_no_airings():
+    assert store.channel_airings("nobody", now=time.time()) == []

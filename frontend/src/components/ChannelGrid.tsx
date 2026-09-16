@@ -6,8 +6,8 @@ import { Inbox, Search } from "lucide-react";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
-import { ProfileMenu } from "./ProfileMenu";
-import { PageHeader } from "./PageHeader";
+import { AppMenu } from "./AppMenu";
+import { HeaderClock } from "./HeaderClock";
 import { SearchDropdown } from "./SearchDropdown";
 import { SearchResultsView } from "./SearchResultsView";
 import { CommandPalette } from "./CommandPalette";
@@ -116,6 +116,8 @@ export function ChannelGrid({ onLogout }: Props) {
   const [pendingChannel, setPendingChannel] = useState<string | null>(null);
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   const [activeTab, setTab] = useState<Tab>(initialRoute.tab);
+  /** The Guide is the one tab laid out as a viewport rather than a document. */
+  const isGuide = activeTab === "grid";
   // Set once the user closes the restored stream, so it does not reopen.
   const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -346,41 +348,68 @@ export function ChannelGrid({ onLogout }: Props) {
         />
       )}
 
-      <div className="min-h-screen flex flex-col bg-surface">
+      {/* The Guide is a viewport; Live TV and Library are documents.
+          A guide is a fixed instrument you look into — chrome pinned, one
+          scrollable body, bottom anchored — so it gets `h-dvh` and owns its own
+          scrolling. The other two are grids of cards that want the window
+          scroller, which is what makes find-on-page, scroll restoration and the
+          mobile URL-bar collapse work. Converting them too would cost all three
+          to solve a problem only the Guide has.
+          `dvh`, not `vh`: on mobile `vh` is the LARGEST viewport, so `h-screen`
+          is taller than what you can actually see whenever the URL bar shows. */}
+      <div className={`flex flex-col bg-surface ${isGuide ? "h-dvh overflow-hidden" : "min-h-screen"}`}>
         {/* Header */}
-        <header className="sticky top-0 z-10 glass border-b border-surface-border">
+        {/* Opaque, not `.glass`. Frosted glass means "there is live content
+            behind this that you should still perceive" — true of the player's
+            controls over video, false of a nav bar over a list you have already
+            scrolled past.
+
+            It also made this bar the one element in the app whose contrast
+            could not be stated. `.glass` is a 4.5% wash, so the ground was
+            whatever scrolled under it, and blur averages colour rather than
+            removing it: a 20px blur over a football field is saturated green,
+            not neutral grey. The nav tabs measure 5.92:1 against the page, but
+            that only held at scroll-top. Both themes were affected — dark's
+            page is dark, but the thumbnails passing under it are bright.
+
+            Matching the page colour rather than `surface-raised` keeps it
+            reading as the page continuing under the content; the hairline does
+            the separating. Also drops a `backdrop-filter` compositor layer that
+            was re-rasterising the full header width on every scroll frame, over
+            a grid of video thumbnails. */}
+        {/* z-40, not z-10. A sticky element with a z-index creates a stacking
+            context, so the AppMenu panel's own z-50 only orders it WITHIN this
+            header — against the page, everything in here competes at the
+            header's value. At z-10 that put the whole bar, panel included,
+            underneath the guide's hour row (z-20) and its now-line (z-30),
+            which drew straight through the open menu. The bar is app chrome and
+            belongs above every page layer; the player (z-50) and confirm dialog
+            (z-60) are still above it, which is right — both are modal. */}
+        <header className="sticky top-0 z-40 bg-surface border-b border-border">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
-            {/* Logo */}
-            <div className="flex items-center gap-2.5 mr-6">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent/20"
-                   style={{ background: "linear-gradient(135deg, #5b8af5, #7c5bf5)" }}>
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875C21 4.254 20.496 3.75 19.875 3.75H4.125C3.504 3.75 3 4.254 3 4.875v11.25c0 .621.504 1.125 1.125 1.125z" />
-                </svg>
-              </div>
-              <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
-            </div>
+            {/* The mark is also the settings menu — see AppMenu for why. */}
+            <AppMenu email={userEmail} onLogout={onLogout} />
 
             {/* Navigation Tabs */}
             <nav className="flex items-center gap-1 mr-auto">
               <button
                 onClick={() => goToTab("live")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "live" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
+                           ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Live TV
               </button>
               <button
                 onClick={() => goToTab("grid")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "grid" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
+                           ${activeTab === "grid" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Guide
               </button>
               <button
                 onClick={() => goToTab("library")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "library" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
+                           ${activeTab === "library" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Library
               </button>
@@ -391,7 +420,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 server results for any tab; the Live TV list below is filtered
                 locally too, since that is instant and free. */}
             <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" aria-hidden />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
               <input
                 type="text"
                 value={filter}
@@ -400,9 +429,9 @@ export function ChannelGrid({ onLogout }: Props) {
                 onBlur={() => setSearchOpen(false)}
                 onKeyDown={e => { if (e.key === "Escape") closeSearch(); }}
                 placeholder="Search programs, channels..."
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/5
-                           text-sm placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-accent/40
-                           focus:bg-white/10 transition shadow-inner"
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                           text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
+                           focus:bg-fill transition shadow-inner"
               />
               {searchOpen && filter.trim().length >= 2 && (
                 // Keeps the input focused through the click so `onBlur` above
@@ -418,21 +447,15 @@ export function ChannelGrid({ onLogout }: Props) {
             </div>
 
             <div className="flex items-center gap-4 ml-4">
-              <ProfileMenu email={userEmail} onLogout={onLogout} />
+              <HeaderClock now={now} />
             </div>
           </div>
         </header>
 
         {/* Main content */}
-        <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-10">
+        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 py-10 ${isGuide ? "min-h-0 flex flex-col" : ""}`}>
           {activeTab === "live" && (
             <>
-              <PageHeader
-                title="On Air Now"
-                subtitle="Browse your local guide and start watching instantly"
-                now={now}
-              />
-
               {/* Content type filter chips */}
               <div className="flex gap-2 mb-6 overflow-x-auto pb-1 no-scrollbar">
                 {CONTENT_FILTERS.map(f => (
@@ -441,8 +464,11 @@ export function ChannelGrid({ onLogout }: Props) {
                     onClick={() => setContentFilter(f.id)}
                     className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
                       ${contentFilter === f.id
-                        ? "bg-accent text-white shadow-lg shadow-accent/30"
-                        : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
+                        /* Flat accent, not the ramp — see GuideGridView's copy
+                           of this chip: no foreground clears 4.5:1 against both
+                           brand stops, and this one carries a label. */
+                        ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
+                        : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
                       }`}
                   >
                     <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
@@ -452,9 +478,9 @@ export function ChannelGrid({ onLogout }: Props) {
               </div>
 
               {isLoading && !channels.length ? (
-                <div className="flex flex-col items-center justify-center py-48 gap-6 bg-white/5 rounded-3xl border border-white/5 shadow-2xl">
+                <div className="flex flex-col items-center justify-center py-48 gap-6 bg-fill-soft rounded-3xl border border-border-subtle shadow-2xl">
                   <div className="w-12 h-12 rounded-full border-4 border-accent border-t-transparent animate-spin" />
-                  <p className="text-white font-black tracking-tighter text-xl uppercase mb-1">Building Your Guide</p>
+                  <p className="text-fg font-black tracking-tighter text-xl uppercase mb-1">Building Your Guide</p>
                 </div>
               ) : (
                 <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
@@ -462,7 +488,7 @@ export function ChannelGrid({ onLogout }: Props) {
                     <ChannelCard key={ch.identifier} channel={ch} now={now} onClick={() => setPlaying(ch)} />
                   ))}
                   {filtered.length === 0 && channels.length > 0 && (
-                    <div className="col-span-full flex flex-col items-center justify-center py-24 text-white/20">
+                    <div className="col-span-full flex flex-col items-center justify-center py-24 text-fg-muted">
                       <Inbox className="w-12 h-12 mb-3" strokeWidth={1.5} aria-hidden />
                       <p className="text-sm font-bold uppercase tracking-widest">Nothing on right now</p>
                     </div>
@@ -472,35 +498,24 @@ export function ChannelGrid({ onLogout }: Props) {
             </>
           )}
 
-          {activeTab === "grid" && (
-            <div className="flex flex-col">
-               <PageHeader
-                 title="TV Guide"
-                 subtitle="Traditional timeline view of all upcoming airings"
-                 now={now}
-               />
+          {isGuide && (
+            <div className="flex flex-col flex-1 min-h-0">
                <GuideGridView onPlay={handlePlay} />
             </div>
           )}
 
           {activeTab === "library" && (
             <div className="flex flex-col">
-              <PageHeader
-                title="Recordings"
-                subtitle="Watch and manage your saved content"
-                now={now}
-              />
+              {/* Keyed on the activation counter so searching a recording while
+                  already on this tab genuinely remounts. Without it the panel
+                  keeps the route it snapshotted at its own mount and the
+                  activation silently does nothing. */}
               <LibraryView key={libraryActivation} />
             </div>
           )}
 
           {activeTab === "search" && (
             <div className="flex flex-col">
-              <PageHeader
-                title="Search"
-                subtitle="Every channel, program and recording, in one place"
-                now={now}
-              />
               {/* Shares `filter` with the topbar box above rather than
                   owning a second query state — the effect that writes
                   `route.q` already keys off this same value. Activation

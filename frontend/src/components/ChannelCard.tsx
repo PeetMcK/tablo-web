@@ -22,40 +22,40 @@ export function ChannelCard({ channel, now, onClick }: Props) {
     <button
       onClick={onClick}
       className="group relative flex flex-col rounded-xl overflow-hidden
-                 bg-surface-raised border border-surface-border
+                 bg-surface-raised border border-border
                  hover:border-accent/40 hover:channel-glow
-                 transition-all duration-200 text-left focus:outline-none focus:ring-2 focus:ring-accent/50"
+                 transition-all duration-200 text-left focus:outline-none focus:ring-2 focus:ring-accent"
     >
       <div className="flex p-4 gap-4 items-start">
         {/* Logo/Badge container */}
         <div className="flex flex-col items-center gap-2 shrink-0">
-          <div className="w-16 h-12 flex items-center justify-center bg-black/20 rounded-lg p-1.5 border border-white/5">
+          <div className="w-16 h-12 flex items-center justify-center bg-recess-soft rounded-lg p-1.5 border border-border-subtle">
             <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
           </div>
-          <span className="text-[10px] font-black tracking-tighter text-white/30 uppercase">
+          <span className="text-[10px] font-black tracking-tighter text-fg-muted uppercase">
             {channel.major > 0 ? `${channel.major}.${channel.minor}` : "OTT"}
           </span>
         </div>
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-white/90 truncate mb-0.5">
+          <p className="text-sm font-bold text-fg-secondary truncate mb-0.5">
             {program?.title || "No Information"}
           </p>
-          <p className="text-xs text-white/40 line-clamp-2 leading-relaxed h-8">
+          <p className="text-xs text-fg-muted line-clamp-2 leading-relaxed h-8">
             {program?.description || `Watching ${channel.display_name}`}
           </p>
           
           {/* Progress bar */}
           {program && (
             <div className="mt-3">
-              <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+              <div className="h-1 w-full bg-fill-soft rounded-full overflow-hidden">
                 <div 
-                  className="h-full bg-accent transition-all duration-1000" 
+                  className="accent-gradient-x h-full transition-all duration-1000" 
                   style={{ width: `${progress}%` }} 
                 />
               </div>
-              <div className="flex justify-between mt-1 text-[10px] font-medium text-white/20 uppercase tracking-widest">
+              <div className="flex justify-between mt-1 text-[10px] font-medium text-fg-muted uppercase tracking-widest">
                 <span>{new Date(program.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
                 <span>{Math.round(program.duration / 60)}m</span>
               </div>
@@ -66,8 +66,8 @@ export function ChannelCard({ channel, now, onClick }: Props) {
 
       {/* Overlay play button on hover */}
       <div className="absolute inset-0 bg-accent/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-         <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
-            <svg className="w-6 h-6 text-white translate-x-0.5" fill="currentColor" viewBox="0 0 24 24">
+         <div className="accent-gradient w-12 h-12 rounded-full flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
+            <svg className="w-6 h-6 text-brand-fg translate-x-0.5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>
          </div>

@@ -308,11 +308,27 @@ export const api = {
   channels: (refresh = false) =>
     req<Channel[]>(`/channels${refresh ? "?refresh=true" : ""}`),
 
+  /**
+   * Re-read the account's channel list and rebuild the guide from it.
+   *
+   * Not a tuner scan — the backend re-fetches the list the Tablo cloud holds
+   * for this device, which is the same one read on first connect. A channel
+   * disabled in the Tablo app disappears because the account stops listing it.
+   */
+  refreshChannels: () =>
+    req<{ channels: number; added: string[]; removed: string[] }>(
+      "/channels/refresh", { method: "POST" },
+    ),
+
   guide: () => req<GuideChannel[]>("/channels/guide"),
   guideStream: (signal?: AbortSignal) => guideStream(signal),
   guideGridStream: (signal?: AbortSignal) => guideGridStream(signal),
   
   guideGrid: () => req<GridChannel[]>("/channels/guide-grid"),
+
+  /** What is on one channel now and next, from the guide mirror. */
+  channelAirings: (identifier: string) =>
+    req<{ airings: Program[] }>(`/channels/${encodeURIComponent(identifier)}/airings`),
 
   /** @deprecated Use `recordings()` — this returns the unenriched legacy shape. */
   library: () => req<Recording[]>("/channels/library"),
