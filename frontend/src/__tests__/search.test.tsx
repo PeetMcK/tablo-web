@@ -339,6 +339,38 @@ describe("ChannelGrid search wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guide" }));
     expect(screen.getByTestId("video-player")).toBeInTheDocument();
   });
+
+  it("closes on a second Cmd-K while the palette is open", async () => {
+    mockChannelGridApis();
+    renderChannelGrid();
+
+    // The first press has nowhere to be captured yet — the palette doesn't
+    // exist — so it reaches ChannelGrid's window listener, which opens it.
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await screen.findByRole("dialog");
+
+    // `autoFocus` has moved focus into the dialog's own input by now, which
+    // is the whole reason this needed its own handling: every keystroke for
+    // as long as the palette is open, this one included, originates inside
+    // it and never reaches the window listener that did the opening.
+    expect(document.activeElement).toBe(screen.getByRole("combobox"));
+
+    fireEvent.keyDown(document.activeElement!, { key: "k", metaKey: true });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("still opens with Cmd-K pressed outside the dialog, exactly once", async () => {
+    mockChannelGridApis();
+    renderChannelGrid();
+
+    // Fired on `document.body` rather than the search input or anything
+    // inside the (not yet mounted) palette — this is the "focus is not in
+    // the dialog" case: before the palette exists there is nothing to
+    // capture the keystroke, so the window listener is the only thing that
+    // can and must open it.
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+  });
 });
 
 import { CommandPalette } from "../components/CommandPalette";

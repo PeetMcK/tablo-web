@@ -118,8 +118,24 @@ export function CommandPalette({
     // right. The failure mode if this ever drifted is silent and drops
     // playback (typing "q" while searching would close the video), so this
     // stays as a second line of defense.
+    //
+    // One consequence of that: ChannelGrid's own window-level listener,
+    // which is what actually toggles `open`, never sees a Cmd-K pressed in
+    // here — React's `stopPropagation()` stops the underlying native event
+    // too, and the autoFocus input means focus is inside this dialog for as
+    // long as it is open. So Cmd-K-to-close has to be handled right here,
+    // rather than special-cased out of the stopPropagation above (which
+    // would reopen exactly the leak the VideoPlayer fix closed, for a set of
+    // keys that would need maintaining by hand). The dialog already knows it
+    // is open, which makes it the right place to decide what a second Cmd-K
+    // means anyway.
     e.stopPropagation();
 
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      onClose();
+      return;
+    }
     if (e.key === "Escape") {
       onClose();
       return;
