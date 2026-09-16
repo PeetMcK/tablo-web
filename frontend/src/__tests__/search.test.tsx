@@ -156,3 +156,77 @@ describe("SearchDropdown", () => {
     expect(await screen.findByText(/no matches/i)).toBeInTheDocument();
   });
 });
+
+import { ChannelGrid } from "../components/ChannelGrid";
+
+function mockChannelGridApis() {
+  vi.spyOn(api, "status").mockResolvedValue({
+    authenticated: true, email: "viewer@example.com", devices: [], active_sid: null, direct_origin: null,
+  });
+  // Neither stream matters to these tests — emptied out so mounting the Guide
+  // tab (reached by activating the "airing" result below) does not fire a
+  // real, unmocked `fetch`.
+  vi.spyOn(api, "guideStream").mockImplementation(async function* () {});
+  vi.spyOn(api, "guideGridStream").mockImplementation(async function* () {});
+}
+
+function renderChannelGrid() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ChannelGrid onLogout={() => {}} />
+    </QueryClientProvider>,
+  );
+}
+
+describe("ChannelGrid search wiring", () => {
+  beforeEach(() => {
+    // The route hash persists across tests in jsdom; pin it so every test
+    // here starts on Live TV regardless of what an earlier test left behind.
+    window.history.replaceState(null, "", "#/live");
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reopens the dropdown after activating a result, once a new query is typed", async () => {
+    mockChannelGridApis();
+    vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    renderChannelGrid();
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "broncos" } });
+
+    // Both groups' items share this title; take the airing one (index 1),
+    // whose target is a plain tab switch and needs no channel data in hand.
+    const options = await screen.findAllByRole("option");
+    expect(options).toHaveLength(2);
+    fireEvent.click(options[1]);
+
+    // Closes on activation. Getting here at all exercises the bug that
+    // shipped: the dropdown's own mousedown guard keeps the input
+    // DOM-focused through this click (so `onActivate` beats `onBlur`), which
+    // previously left React's "open" flag desynced from the DOM's focus
+    // state — nothing would ever true it back up.
+    await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
+
+    // Typing a new query, with no intervening click or focus event, must
+    // bring the dropdown back.
+    fireEvent.change(input, { target: { value: "chiefs" } });
+    expect(await screen.findByRole("listbox")).toBeInTheDocument();
+  });
+
+  it("closes the dropdown on Escape", async () => {
+    mockChannelGridApis();
+    vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    renderChannelGrid();
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "broncos" } });
+    await screen.findByRole("listbox");
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+});

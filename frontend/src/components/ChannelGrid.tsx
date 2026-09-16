@@ -91,7 +91,20 @@ export function ChannelGrid({ onLogout }: Props) {
   const [initialRoute] = useState(parseRoute);
   const [playing, setPlaying] = useState<GuideChannel | null>(null);
   const [filter, setFilter] = useState("");
-  const [searchFocused, setSearchFocused] = useState(false);
+  // Whether the results dropdown should be showing. Deliberately NOT derived
+  // from the input's real DOM focus state: the dropdown's own mousedown guard
+  // (below) keeps the input DOM-focused through a click on a result, so a
+  // flag that claimed to track focus would drift from the DOM the moment
+  // activation set it back to false — and nothing would ever true it up
+  // again, since no further focus/blur event fires while the DOM element
+  // never actually lost focus. This is set explicitly by the handlers that
+  // care, never inferred from focus except via the real onFocus/onBlur pair.
+  const [searchOpen, setSearchOpen] = useState(false);
+  // A channel picked from search that was not yet in `channels` when picked
+  // (the guide stream only runs once the Live TV tab is active). Matched
+  // against `channels` below, via `pendingMatch`, as soon as the stream
+  // catches up.
+  const [pendingChannel, setPendingChannel] = useState<string | null>(null);
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   const [activeTab, setTab] = useState<Tab>(initialRoute.tab);
   // Set once the user closes the restored stream, so it does not reopen.
@@ -118,7 +131,16 @@ export function ChannelGrid({ onLogout }: Props) {
     !restoreDone && !playing && routeWatch?.kind === "live"
       ? channels.find(c => c.identifier === routeWatch.id) ?? null
       : null;
-  const nowPlaying = playing ?? restoredChannel;
+  // A channel picked from search before the guide stream had it: matched the
+  // same way `restoredChannel` above is — watch `channels` as it streams in
+  // and pick it up the moment it appears, rather than an effect calling
+  // setState (which would cascade a render on every guide-stream tick).
+  // Cleared by `closePlayer`, which is what stops it reappearing once shown.
+  const pendingMatch =
+    !playing && pendingChannel
+      ? channels.find(c => c.identifier === pendingChannel) ?? null
+      : null;
+  const nowPlaying = playing ?? restoredChannel ?? pendingMatch;
 
   // Keep the URL in step with what is on screen, so a refresh lands here again.
   useEffect(() => {
@@ -131,22 +153,30 @@ export function ChannelGrid({ onLogout }: Props) {
 
   const closePlayer = useCallback(() => {
     setPlaying(null);
+    // Also drops a still-unmatched pending channel: without this, closing a
+    // channel that `pendingMatch` just resolved would immediately reopen it
+    // on the next render (`playing` goes back to null, `pendingMatch` is
+    // still there to fall back to).
+    setPendingChannel(null);
     setRestoreDone(true);
   }, []);
 
   // Activating a search result routes via its `target` rather than a second,
   // parallel navigation path. For Live TV this plays the channel directly when
-  // it is already in hand; for Library it hands off through the same hash the
-  // page reads on mount (see `initialRoute` above and in LibraryView) since
-  // that panel remounts fresh on every tab switch.
+  // it is already in hand, or queues it as `pendingChannel` for the derived
+  // `pendingMatch` above when the guide stream has not caught up yet; for
+  // Library it hands off through the same hash the page reads on mount (see
+  // `initialRoute` above and in LibraryView) since that panel remounts fresh
+  // on every tab switch.
   const handleSearchActivate = useCallback((item: SearchItem) => {
     const { tab, watch } = item.target;
-    setSearchFocused(false);
+    setSearchOpen(false);
     setFilter("");
 
     if (tab === "live" && typeof watch === "string") {
       const ch = channels.find(c => c.identifier === watch);
       if (ch) setPlaying(ch);
+      else setPendingChannel(watch);
     } else if (tab === "library" && typeof watch === "number") {
       writeRoute({ tab: "library", watch: { kind: "recording", id: watch } });
     }
@@ -154,9 +184,11 @@ export function ChannelGrid({ onLogout }: Props) {
   }, [channels]);
 
   const handleSearchSeeAll = useCallback(() => {
-    setSearchFocused(false);
+    setSearchOpen(false);
     setTab("search");
   }, []);
+
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
 
   const filtered = channels.filter(ch => {
     if (!matchesContentFilter(ch, contentFilter)) return false;
@@ -259,15 +291,16 @@ export function ChannelGrid({ onLogout }: Props) {
               <input
                 type="text"
                 value={filter}
-                onChange={e => setFilter(e.target.value)}
-                onFocus={() => setSearchFocused(true)}
-                onBlur={() => setSearchFocused(false)}
+                onChange={e => { setFilter(e.target.value); setSearchOpen(true); }}
+                onFocus={() => setSearchOpen(true)}
+                onBlur={() => setSearchOpen(false)}
+                onKeyDown={e => { if (e.key === "Escape") closeSearch(); }}
                 placeholder="Search programs, channels..."
                 className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/5
                            text-sm placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-accent/40
                            focus:bg-white/10 transition shadow-inner"
               />
-              {searchFocused && filter.trim().length >= 2 && (
+              {searchOpen && filter.trim().length >= 2 && (
                 // Keeps the input focused through the click so `onBlur` above
                 // does not dismiss the dropdown before `onActivate` fires.
                 <div onMouseDown={e => e.preventDefault()}>
