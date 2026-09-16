@@ -1,6 +1,7 @@
 """Global in-process state — auth, active device, live stream sessions."""
 
 import asyncio
+import html
 import json
 import os
 import uuid
@@ -35,6 +36,20 @@ CLOUD_GUIDE_DAYS = int(os.environ.get("TABLO_CLOUD_GUIDE_DAYS", "14"))
 # the device sync slow does not apply - but fourteen requests need no fan-out
 # either, and a burst is a poor way to greet a rate limiter.
 CLOUD_GUIDE_CONCURRENCY = int(os.environ.get("TABLO_CLOUD_GUIDE_CONCURRENCY", "4"))
+
+
+def _unescape(text: str | None) -> str | None:
+    """Undo the cloud's HTML escaping. The device sends none.
+
+    The cloud sends `Follow what&#x27;s happening`, and React escapes again on
+    render, so anything left encoded is displayed literally - the sheet showed
+    `what&#x27;s`. Decoding on the way in keeps the mirror holding text rather
+    than markup, which also means search indexes the word someone would type.
+
+    Safe against double-decoding: `html.unescape` on already-plain text is a
+    no-op, and the device's text has no entities to begin with.
+    """
+    return html.unescape(text) if isinstance(text, str) else text
 
 _lock = Lock()
 
@@ -397,8 +412,8 @@ class AppState:
         ep = a.get("episode") or {}
         season = ep.get("season") or {}
 
-        programme = show.get("title") or a.get("title")
-        episode_title = a.get("title")
+        programme = _unescape(show.get("title") or a.get("title"))
+        episode_title = _unescape(a.get("title"))
         if episode_title == programme:
             episode_title = None
 
@@ -413,7 +428,7 @@ class AppState:
         return {
             "title": programme,
             "subtitle": None,
-            "description": a.get("description"),
+            "description": _unescape(a.get("description")),
             "start": a.get("datetime"),
             "duration": a.get("duration"),
             "genres": a.get("genres") or [],

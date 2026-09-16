@@ -107,6 +107,32 @@ def test_a_season_that_is_not_numbered_is_not_a_number():
     assert AppState._cloud_airing_row(a)["season_number"] is None
 
 
+def test_cloud_text_arrives_html_escaped():
+    """Seen on 500.1: "Follow what&#x27;s happening across America".
+
+    The cloud escapes its text; the device does not. React escapes again on
+    render, so an entity that reaches the browser is displayed literally - the
+    sheet showed `what&#x27;s` where it meant `what's`. Undoing it here keeps
+    the mirror holding text rather than markup, so search indexes the words a
+    person would actually type.
+    """
+    a = _cloud_airing(title="Charlie &amp; the Chocolate Factory")
+    a["description"] = "Follow what&#x27;s happening across America."
+    a["show"]["title"] = "Today&#x27;s News"
+
+    got = AppState._cloud_airing_row(a)
+
+    assert got["description"] == "Follow what's happening across America."
+    assert got["title"] == "Today's News"
+    assert got["episode_title"] == "Charlie & the Chocolate Factory"
+
+
+def test_unescaping_survives_text_that_has_none():
+    got = AppState._cloud_airing_row(_cloud_airing(title="Plain Title"))
+    assert got["episode_title"] == "Plain Title"
+    assert got["description"] == "Live headlines."
+
+
 def test_the_cloud_carries_its_own_artwork():
     """OTT has no series record, so there is no cover_image_id to key off.
 
