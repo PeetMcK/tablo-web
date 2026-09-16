@@ -328,3 +328,49 @@ def test_one_channel_airings_carry_what_the_player_renders():
 
 def test_an_unknown_channel_has_no_airings():
     assert store.channel_airings("nobody", now=time.time()) == []
+
+
+# ---------------------------------------------------------------------------
+# Series records
+# ---------------------------------------------------------------------------
+
+def _series(path: str, title: str = "Odd Squad") -> dict:
+    return {
+        "path": path, "identifier": "C11086138_SHOW_SH020042990000",
+        "title": title, "description": "Agents solve odd problems.",
+        "genres": ["Children", "Educational"], "rating": "tvy",
+        "orig_air_date": "2014-11-26", "episode_runtime": 1800,
+        "cast": [], "cover_image_id": 56113, "thumbnail_image_id": 56112,
+        "background_image_id": 56114, "schedule_rule": "new",
+        "keep_rule": "none", "keep_count": None,
+    }
+
+
+def test_series_round_trips():
+    store.save_series([_series("/guide/series/6408")])
+    got = store.load_series("/guide/series/6408")
+    assert got["title"] == "Odd Squad"
+    assert got["rating"] == "tvy"
+    assert got["genres"] == ["Children", "Educational"]
+    assert got["cover_image_id"] == 56113
+    assert got["schedule_rule"] == "new"
+
+
+def test_saving_a_series_twice_updates_rather_than_duplicates():
+    store.save_series([_series("/guide/series/6408", title="Old")])
+    store.save_series([_series("/guide/series/6408", title="New")])
+    assert store.load_series("/guide/series/6408")["title"] == "New"
+    assert len(db.query("SELECT 1 FROM guide_series")) == 1
+
+
+def test_only_unknown_or_stale_series_need_refreshing():
+    """The first sync fetches ~1,100; later ones must fetch almost none."""
+    store.save_series([_series("/guide/series/6408")])
+    want = store.series_needing_refresh(
+        ["/guide/series/6408", "/guide/series/9999"]
+    )
+    assert want == ["/guide/series/9999"]
+
+
+def test_an_unknown_series_reads_as_none():
+    assert store.load_series("/guide/series/nope") is None

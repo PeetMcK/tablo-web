@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import crypto, db
@@ -592,6 +592,88 @@ def load_guide(now: float | None = None) -> list[dict]:
         "kind": c["kind"],
         "airings": by_channel.get(c["identifier"], []),
     } for c in channels]
+
+
+# ---------------------------------------------------------------------------
+# Series
+# ---------------------------------------------------------------------------
+#
+# `cast` is quoted everywhere below: CAST is a SQL keyword, and while SQLite
+# happens to accept it bare in these positions, a bare keyword as a column name
+# is the kind of thing that works until one statement is rephrased.
+
+def save_series(rows: list[dict]) -> None:
+    """Upsert series records. Never deletes - same reasoning as guide_channel."""
+    stamp = _now()
+    with db.write() as conn:
+        for s in rows:
+            conn.execute(
+                "INSERT INTO guide_series(path, identifier, title, description, "
+                "    genres, rating, orig_air_date, episode_runtime, \"cast\", "
+                "    cover_image_id, thumbnail_image_id, background_image_id, "
+                "    schedule_rule, keep_rule, keep_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "  identifier=excluded.identifier, title=excluded.title, "
+                "  description=excluded.description, genres=excluded.genres, "
+                "  rating=excluded.rating, orig_air_date=excluded.orig_air_date, "
+                "  episode_runtime=excluded.episode_runtime, "
+                "  \"cast\"=excluded.\"cast\", "
+                "  cover_image_id=excluded.cover_image_id, "
+                "  thumbnail_image_id=excluded.thumbnail_image_id, "
+                "  background_image_id=excluded.background_image_id, "
+                "  schedule_rule=excluded.schedule_rule, "
+                "  keep_rule=excluded.keep_rule, keep_count=excluded.keep_count, "
+                "  updated_at=excluded.updated_at",
+                (
+                    s.get("path"), s.get("identifier"), s.get("title"),
+                    s.get("description"), json.dumps(s.get("genres") or []),
+                    s.get("rating"), s.get("orig_air_date"),
+                    s.get("episode_runtime"), json.dumps(s.get("cast") or []),
+                    s.get("cover_image_id"), s.get("thumbnail_image_id"),
+                    s.get("background_image_id"), s.get("schedule_rule"),
+                    s.get("keep_rule"), s.get("keep_count"), stamp,
+                ),
+            )
+
+
+def load_series(path: str) -> dict | None:
+    row = db.query_one("SELECT * FROM guide_series WHERE path = ?", (path,))
+    if row is None:
+        return None
+    out = dict(row)
+    out["genres"] = json.loads(out["genres"] or "[]")
+    out["cast"] = json.loads(out["cast"] or "[]")
+    return out
+
+
+def series_needing_refresh(paths: list[str], max_age_days: int = 30) -> list[str]:
+    """Which of `paths` we have never fetched, or fetched too long ago.
+
+    Ratings and artwork effectively never change, so a long window keeps every
+    sync after the first down to only what is new.
+    """
+    if not paths:
+        return []
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    ).isoformat(timespec="seconds")
+    known = {
+        r["path"] for r in db.query(
+            "SELECT path FROM guide_series WHERE updated_at >= ?", (cutoff,)
+        )
+    }
+    return [p for p in paths if p not in known]
+
+
+def airing_series_paths() -> list[str]:
+    """Distinct series paths seen in the mirror, for the sync to fill in."""
+    return [
+        r["series_path"] for r in db.query(
+            "SELECT DISTINCT series_path FROM guide_airing "
+            "WHERE series_path IS NOT NULL"
+        )
+    ]
 
 
 def guide_age_seconds(now: datetime | None = None) -> float | None:
