@@ -42,49 +42,57 @@ export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
                  bg-surface-raised border border-border
                  hover:border-accent/40 hover:channel-glow transition-all duration-200"
     >
-      {/* The seam, shown only while the card is under the pointer: two targets
-          look like one card until there is a reason to tell them apart. */}
-      <span
-        className="absolute inset-y-0 left-[88px] w-px bg-accent opacity-0
-                   group-hover:opacity-30 transition-opacity pointer-events-none"
-        aria-hidden
-      />
-
       {/* Watch. Its visible content is a logo and a number, neither of which
           announces anything, hence the label — the same reason the guide's
-          tile carries one. */}
+          tile carries one.
+
+          The hover wash is the whole left box, rounded like the card itself.
+          A hairline between the halves said the same thing in a thinner voice
+          and read as a divider in the artwork rather than a seam between two
+          targets; two lit boxes say it without drawing anything.
+
+          `p-1.5 -m-1.5` gives the wash room to stand off the plate without
+          moving anything: the padding grows the painted box, the negative
+          margin hands the same six pixels back to the layout. Six and not
+          eight because the halves sit 16px apart — at eight the two washes
+          meet in the middle and draw the very line this replaced. */}
       <button
         onClick={onPlay}
         aria-label={`Watch ${label(channel)}`}
-        className="relative flex flex-col items-center gap-2 shrink-0 rounded-lg
+        className="relative flex flex-col items-center gap-2 shrink-0 p-1.5 -m-1.5 rounded-xl
+                   transition-colors group-hover:bg-accent-soft
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
-        {/* The puck is centred on the plate, not on the column: centred on the
-            column it lands between the plate and the channel number and covers
-            the number, which is half of what the tile is for. */}
-        <div className="relative w-16 h-12 flex items-center justify-center bg-recess-soft rounded-lg p-1.5 border border-border-subtle">
+        <div className="w-16 h-12 flex items-center justify-center bg-recess-soft rounded-lg p-1.5 border border-border-subtle">
           <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
-
-          {/* The play affordance belongs over the half that plays. It used to
-              cover the whole card, which is what made the card read as one
-              target. */}
-          <span className="absolute inset-0 flex items-center justify-center opacity-0
-                           group-hover:opacity-100 transition-opacity pointer-events-none">
-            <span className="accent-gradient w-9 h-9 rounded-full flex items-center justify-center
-                             shadow-lg scale-90 group-hover:scale-100 transition-transform">
-              {/* Centred on its own box: 7.5..17.5 puts the middle at 12.5,
-                  half a unit right of the viewBox's 12, which is the optical
-                  correction a right-pointing triangle wants and all it wants.
-                  The old glyph ran 8..19 — centre 13.5 — and carried another
-                  2px of transform, so it sat 3.5px right inside its puck. */}
-              <svg className="w-4 h-4 text-brand-fg" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
-                <path d="M7.5 5 17.5 12 7.5 19 Z" />
-              </svg>
-            </span>
-          </span>
         </div>
         <span className="text-[10px] font-black tracking-tighter text-fg-muted uppercase">
           {channel.major > 0 ? `${channel.major}.${channel.minor}` : "OTT"}
+        </span>
+
+        {/* Under the channel, not over it. The puck used to sit on the plate,
+            covering the logo — the one thing on this half that says which
+            channel this is, and the reason anyone aims here.
+
+            It costs no layout to put it below: the tile column runs 71px
+            inside a 97px box on every card, measured, because the programme
+            side is always the taller of the two. A 24px puck lives in that
+            slack, so nothing moves when it appears. Absolute, for the same
+            reason — in the flow it would grow the column and shift the card
+            on hover. */}
+        <span className="absolute bottom-0 left-1/2 -translate-x-1/2 opacity-0
+                         group-hover:opacity-100 transition-opacity pointer-events-none">
+          <span className="accent-gradient w-6 h-6 rounded-full flex items-center justify-center
+                           shadow-lg scale-90 group-hover:scale-100 transition-transform">
+            {/* Centred on its own box: 7.5..17.5 puts the middle at 12.5, half
+                a unit right of the viewBox's 12, which is the optical
+                correction a right-pointing triangle wants and all it wants.
+                The old glyph ran 8..19 — centre 13.5 — and carried another 2px
+                of transform, so it sat 3.5px right inside its puck. */}
+            <svg className="w-3.5 h-3.5 text-brand-fg" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
+              <path d="M7.5 5 17.5 12 7.5 19 Z" />
+            </svg>
+          </span>
         </span>
       </button>
 
@@ -93,7 +101,8 @@ export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
       <button
         onClick={onInfo}
         aria-label={program ? `About ${program.title}` : `About ${label(channel)}`}
-        className="relative flex-1 min-w-0 text-left rounded-lg
+        className="relative flex-1 min-w-0 text-left p-1.5 -m-1.5 rounded-xl
+                   transition-colors group-hover:bg-accent-soft
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
         <p className="text-sm font-bold text-fg-secondary truncate mb-0.5">
@@ -122,10 +131,10 @@ export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
           </div>
         )}
 
-        {/* The counterpart to the play puck: a wash and a word, so the half
-            that opens the sheet says so rather than looking inert. */}
-        <span className="absolute inset-0 flex items-start justify-end p-1 rounded-lg
-                         bg-accent-soft opacity-0 group-hover:opacity-100
+        {/* The word that names what this half does. The wash under it is the
+            button's own background now, so the chip is all that is left to
+            place. */}
+        <span className="absolute top-0 right-0 opacity-0 group-hover:opacity-100
                          transition-opacity pointer-events-none">
           <span className="px-2 py-0.5 rounded-full bg-surface-raised border border-border
                            text-[10px] font-bold tracking-widest uppercase text-accent">

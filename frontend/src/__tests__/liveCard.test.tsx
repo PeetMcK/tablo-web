@@ -91,6 +91,21 @@ describe("a Live TV card", () => {
     expect(desc.className).not.toMatch(/leading-relaxed|\bh-8\b/);
   });
 
+  it("keeps the play puck off the channel's own mark", () => {
+    // It sat over the logo, which is the one thing on that half that says
+    // which channel this is. There is 26px of room under the channel number —
+    // the tile column runs 71px inside a 97px box on every card — so the puck
+    // goes there and covers nothing.
+    const { container } = render(
+      <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const plate = container.querySelector(".bg-recess-soft")!;
+    const puck = container.querySelector(".accent-gradient")!;
+
+    expect(plate.contains(puck)).toBe(false);
+    expect(screen.getByRole("button", { name: /Watch 7\.1 PBS/ }).contains(puck)).toBe(true);
+  });
+
   it("draws the play triangle on its own centre", () => {
     // The old glyph's box ran x 8..19 — centre 13.5 against the viewBox's 12 —
     // and then carried `translate-x-0.5` on top, so it sat 3.5px right of
