@@ -289,7 +289,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // sits in the middle of the frame in browser chrome rather than ours. It
     // also closes off `requestPictureInPicture`, which is why the pop-out
     // goes through the Document Picture-in-Picture API instead.
-    video.disablePictureInPicture = true;
+    //
+    // Only where that API exists to replace it. Safari implements no Document
+    // Picture-in-Picture, so our own button never renders there; taking the
+    // native one away as well would leave that browser with no
+    // picture-in-picture at all, which is a loss rather than a trade.
+    if ("documentPictureInPicture" in window) video.disablePictureInPicture = true;
     videoRef.current = video;
   }
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
