@@ -457,13 +457,21 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                 end = _end_epoch(air.get("start"), air.get("duration"))
                 conn.execute(
                     "INSERT OR REPLACE INTO guide_airing(channel_id, start, duration, "
-                    "    end_epoch, title, subtitle, description, genres, kind) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "    end_epoch, title, subtitle, description, genres, kind, "
+                    "    episode_title, season_number, episode_number, orig_air_date, "
+                    "    series_path, airing_path, schedule_state, schedule_qualifier, "
+                    "    skip_reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(ch.get("identifier")), air.get("start"),
                         int(air.get("duration") or 0), end, air.get("title"),
                         air.get("subtitle"), air.get("description"),
                         json.dumps(air.get("genres") or []), air.get("kind"),
+                        air.get("episode_title"), air.get("season_number"),
+                        air.get("episode_number"), air.get("orig_air_date"),
+                        air.get("series_path"), air.get("airing_path"),
+                        air.get("schedule_state"), air.get("schedule_qualifier"),
+                        air.get("skip_reason"),
                     ),
                 )
                 index_airing(conn, str(ch.get("identifier")), label, air)
@@ -500,6 +508,17 @@ def _airing_row(a) -> dict:
         "description": a["description"],
         "genres": json.loads(a["genres"]) if a["genres"] else [],
         "kind": a["kind"],
+        # Read back so a re-save (backfill_index re-writes what load_guide
+        # returned) does not blank the columns it just read.
+        "episode_title": a["episode_title"],
+        "season_number": a["season_number"],
+        "episode_number": a["episode_number"],
+        "orig_air_date": a["orig_air_date"],
+        "series_path": a["series_path"],
+        "airing_path": a["airing_path"],
+        "schedule_state": a["schedule_state"],
+        "schedule_qualifier": a["schedule_qualifier"],
+        "skip_reason": a["skip_reason"],
     }
 
 

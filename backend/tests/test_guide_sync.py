@@ -25,6 +25,40 @@ def _airing(title: str, start_epoch: int, duration: int = 3600) -> dict:
     }
 
 
+def test_episode_fields_round_trip():
+    """The sheet needs these; the grid ignores them."""
+    now = time.time()
+    air = _airing("Finding Your Roots", int(now + 3600))
+    air.update({
+        "episode_title": "Rags to Riches",
+        "season_number": 12,
+        "episode_number": 10,
+        "orig_air_date": "2026-09-16",
+        "series_path": "/guide/series/6472",
+        "airing_path": "/guide/series/episodes/67388",
+        "schedule_state": "none",
+        "schedule_qualifier": "none",
+        "skip_reason": "none",
+    })
+    store.save_guide([_channel("ch1", [air])], now=now)
+
+    got = store.load_guide(now=now)[0]["airings"][0]
+    assert got["episode_title"] == "Rags to Riches"
+    assert got["season_number"] == 12
+    assert got["episode_number"] == 10
+    assert got["airing_path"] == "/guide/series/episodes/67388"
+    assert got["series_path"] == "/guide/series/6472"
+
+
+def test_an_airing_without_episode_fields_still_saves():
+    """Most airings have no episode data; nulls must not break the write."""
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Bare", int(now + 3600))])], now=now)
+    got = store.load_guide(now=now)[0]["airings"][0]
+    assert got["episode_title"] is None
+    assert got["season_number"] is None
+
+
 def test_a_later_sync_does_not_wipe_earlier_airings():
     """`DELETE FROM guide_channel` cascaded to guide_airing and erased history.
 
