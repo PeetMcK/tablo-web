@@ -24,6 +24,16 @@ export function readyRange(
 }
 
 /**
+ * How far short of the frontier a clamped jump lands, in seconds.
+ *
+ * `hi` is the first instant that does *not* exist yet — the range is half-open,
+ * the way `readyRange` tests it. Seeking exactly there stalls on the very
+ * window the clamp exists to avoid, so a jump that would overshoot stops just
+ * inside instead.
+ */
+const EDGE_MARGIN = 0.5;
+
+/**
  * A jump of `delta` seconds from `from`, held inside `[lo, hi]`.
  *
  * A skip is meant to be instant, so it stops at the last playable moment rather
@@ -31,5 +41,8 @@ export function readyRange(
  * purpose is the scrubber's job.
  */
 export function clampSkip(from: number, delta: number, [lo, hi]: [number, number]): number {
-  return Math.min(hi, Math.max(lo, from + delta));
+  const target = from + delta;
+  if (target <= lo) return lo;
+  if (target >= hi) return Math.max(lo, hi - EDGE_MARGIN);
+  return target;
 }

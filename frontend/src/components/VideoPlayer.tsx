@@ -179,6 +179,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   useEffect(() => {
     let cancelled = false;
 
+    // A new source means a new encoder. Carrying the last one's numbers over
+    // showed the incoming channel as fully transcoded before it had produced a
+    // single frame.
+    setLiveTranscoded(false);
+    setLiveEncoded(null);
+
     const current = sourceRef.current;
     const start = async () => {
       try {
@@ -668,12 +674,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   /**
    * How much of the lead a live stream needs before it can play, as a percent.
    *
-   * Playback resumes once the encoder is far enough ahead of the playhead, so
-   * that gap — not wall-clock time — is the honest thing to show while waiting.
+   * Playback resumes once there is enough video ahead of the playhead, so that
+   * gap — not wall-clock time — is the honest thing to show while waiting.
+   *
+   * Two different measures of it, because neither covers both cases. Before the
+   * first playlist there is no timeline to measure against, so the lead is
+   * everything FFmpeg has encoded. Once a playlist exists the frontier is read
+   * from the timeline itself: FFmpeg's clock counts from the start of the
+   * session, which after an hour of sliding window is no longer the same origin
+   * as the player's, and subtracting across the two would read a stall as 100%.
    */
-  const livePct = isLive && liveTranscoded && liveEncoded !== null
-    ? Math.min(100, Math.max(0, Math.round(
-        ((liveEncoded - shownPos) / LIVE_LEAD_SECONDS) * 100)))
+  const liveLead = rangeEnd > 0 ? rangeEnd - shownPos : liveEncoded;
+  const livePct = isLive && liveTranscoded && liveLead !== null
+    ? Math.min(100, Math.max(0, Math.round((liveLead / LIVE_LEAD_SECONDS) * 100)))
     : null;
   const waitPct = encodePct ?? livePct;
   const encoding = isLive ? liveTranscoded : cacheState !== "complete";

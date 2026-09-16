@@ -29,3 +29,16 @@ def test_hours_and_minutes_count():
 def test_a_negative_start_time_is_ignored():
     """FFmpeg prints time=-577014:32:22.77 before the first frame lands."""
     assert encoded_seconds("time=-577014:32:22.77 bitrate=N/A") is None
+
+
+def test_only_the_tail_of_a_long_log_is_read(tmp_path):
+    """The log grows all session; the poll runs every second while waiting."""
+    from app.routes.stream import LOG_TAIL_BYTES, _log_tail
+
+    log = tmp_path / "ffmpeg.log"
+    log.write_text("x" * 200_000 + "time=00:00:42.00 bitrate=N/A\r")
+
+    tail = _log_tail(log)
+
+    assert len(tail) <= LOG_TAIL_BYTES
+    assert encoded_seconds(tail) == 42.0

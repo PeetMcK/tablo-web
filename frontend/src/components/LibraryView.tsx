@@ -98,16 +98,20 @@ export function LibraryView() {
    * heading rows are the only place the date is read at a glance.
    */
   const days = useMemo(() => {
-    const byDay = new Map<string, Recording[]>();
+    // The heading is rendered from a real timestamp, not from the key: a key is
+    // a bare `2026-09-14`, which Date parses as UTC midnight and would name the
+    // day before for anyone west of UTC — the very slip the key exists to avoid.
+    const byDay = new Map<string, { start: string; items: Recording[] }>();
     for (const rec of recordings) {
-      const key = dayKey(rec.start ?? "");
+      const start = rec.start ?? "";
+      const key = dayKey(start);
       const bucket = byDay.get(key);
-      if (bucket) bucket.push(rec);
-      else byDay.set(key, [rec]);
+      if (bucket) bucket.items.push(rec);
+      else byDay.set(key, { start, items: [rec] });
     }
     return [...byDay.entries()]
       .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([key, items]) => ({ key, items }));
+      .map(([key, group]) => ({ key, ...group }));
   }, [recordings]);
 
   // A recording named in the URL reopens as soon as the list contains it.
@@ -207,22 +211,21 @@ export function LibraryView() {
             <p className="text-white/20 font-black tracking-widest uppercase">No Recordings Found</p>
           </div>
         ) : (
-          days.map(({ key, items }) => (
+          days.map(({ key, start, items }) => (
             <Fragment key={key}>
               {/* The day these aired, in that weekday's colour. Spans the grid,
                   so the cards below it read as one evening's recordings. */}
               <div className="col-span-full flex items-center gap-3 pt-2 first:pt-0">
                 <span
                   className="text-[11px] font-black uppercase tracking-widest whitespace-nowrap"
-                  style={{ color: dayColor(items[0].start) }}
+                  style={{ color: dayColor(start) }}
                 >
-                  {formatDayHeading(items[0].start)}
+                  {formatDayHeading(start) || "Undated"}
                 </span>
                 <span
                   className="h-px flex-1 rounded-full"
                   style={{
-                    background:
-                      `linear-gradient(to right, ${dayColor(items[0].start)}80, transparent)`,
+                    background: `linear-gradient(to right, ${dayColor(start)}80, transparent)`,
                   }}
                 />
               </div>

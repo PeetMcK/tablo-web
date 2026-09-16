@@ -323,6 +323,19 @@ def _rewrite_manifest(manifest: str, session_id: str, playlist_url: str) -> str:
 _TIME_RE = re.compile(r"time=(\d+):(\d\d):(\d\d(?:\.\d+)?)")
 
 
+# FFmpeg's stats line ends in \r, which does not overwrite anything in a file,
+# so the log grows for the life of a session — megabytes per hour. The player
+# polls this endpoint every second while it waits, so only the tail is read.
+LOG_TAIL_BYTES = 8192
+
+
+def _log_tail(path: Path, limit: int = LOG_TAIL_BYTES) -> str:
+    with path.open("rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - limit))
+        return f.read().decode("utf-8", errors="ignore")
+
+
 def encoded_seconds(log_text: str) -> float | None:
     """Seconds of video FFmpeg has written, from the last stats line it printed.
 
@@ -348,7 +361,7 @@ async def transcode_status(session_id: str):
     log_file = session_dir / "ffmpeg.log"
     if log_file.exists():
         try:
-            text = log_file.read_text(errors="ignore")
+            text = _log_tail(log_file)
             # Get last 20 lines of log
             log_content = "\n".join(text.splitlines()[-20:])
             encoded = encoded_seconds(text)

@@ -29,14 +29,21 @@ describe("clampSkip", () => {
     expect(clampSkip(100, -10, [0, 600])).toBe(90);
   });
 
-  it("stops at the last playable moment instead of jumping past it", () => {
-    // Forward 30s with only 8s of encoded video left.
-    expect(clampSkip(592, 30, [0, 600])).toBe(600);
-    // At the live edge, forward does nothing.
-    expect(clampSkip(600, 30, [0, 600])).toBe(600);
+  it("stops just inside the frontier, not on it", () => {
+    // The range is half-open: 600 is the first instant that does not exist yet,
+    // so landing exactly there would stall on the window being encoded.
+    expect(clampSkip(592, 30, [0, 600])).toBe(599.5);
+    // At the live edge, forward stays put rather than seeking past it.
+    expect(clampSkip(600, 30, [0, 600])).toBe(599.5);
   });
 
   it("will not rewind out of the ready range either", () => {
     expect(clampSkip(1805, -10, [1800, 2400])).toBe(1800);
+  });
+
+  it("holds still when the playhead is in a gap", () => {
+    // readyRange collapses to a point there; a jump must not escape it.
+    expect(clampSkip(1000, 30, [1000, 1000])).toBe(1000);
+    expect(clampSkip(1000, -10, [1000, 1000])).toBe(1000);
   });
 });
