@@ -22,7 +22,7 @@ async def search(
     """
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    wanted = [k.strip() for k in kinds.split(",")] if kinds else None
+    wanted = [k for k in (s.strip() for s in kinds.split(",")) if k] if kinds else None
     try:
         return search_mod.search(q, limit=limit, kinds=wanted)
     except Exception as e:  # noqa: BLE001

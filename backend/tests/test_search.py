@@ -297,3 +297,50 @@ def test_limit_is_clamped_rather_than_rejected(monkeypatch):
     r = client.get("/api/search?q=survivor&limit=9999")
     assert r.status_code == 200
     assert r.json()["groups"][0]["items"]
+
+
+def _authed(monkeypatch):
+    import app.routes.search as route
+    monkeypatch.setattr(route.state, "auth", object())
+
+
+def test_a_trailing_comma_does_not_wipe_out_a_valid_kind(monkeypatch):
+    """'airing,' must filter to airing, not match nothing.
+
+    A bare split-on-comma leaves a trailing empty token in the list, which
+    defeats the `not kinds` "no filter" fallback downstream and silently
+    returns zero groups - indistinguishable from a real no-match.
+    """
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    _doc("recording", "1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=airing,").json()
+    want = client.get("/api/search?q=survivor&kinds=airing").json()
+    assert got == want
+    assert [g["kind"] for g in got["groups"]] == ["airing"]
+
+
+def test_stray_commas_alone_mean_no_filter(monkeypatch):
+    """',,' has no real kind in it, so it must behave like no filter at all."""
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    _doc("recording", "1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=,,").json()
+    want = client.get("/api/search?q=survivor").json()
+    assert got == want
+    assert {g["kind"] for g in got["groups"]} == {"airing", "recording"}
+
+
+def test_a_leading_comma_does_not_wipe_out_a_valid_kind(monkeypatch):
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=,airing").json()
+    assert [g["kind"] for g in got["groups"]] == ["airing"]
+
+
+def test_an_unknown_kind_still_matches_nothing(monkeypatch):
+    """A real, named, unrecognized kind is not the same bug as a stray comma."""
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=bogus").json()
+    assert got["groups"] == []
