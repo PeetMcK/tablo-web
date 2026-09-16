@@ -376,7 +376,7 @@ def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
     )
 
 
-def index_recordings(items: list[dict]) -> None:
+def index_recordings(items: list[dict], *, prune: bool = False) -> None:
     """Index the library from a device listing.
 
     Called on every listing rather than on a write, because the device holds
@@ -387,8 +387,18 @@ def index_recordings(items: list[dict]) -> None:
     `index_channel` for why the latter silently corrupts `search_fts` here.
     This is the writer that reindexes most often (every listing), so it is
     the one where that bug would bite hardest.
+
+    `prune=True` says the caller is holding the whole library, so anything
+    indexed and absent from it has been deleted on the device and is dropped
+    from the index. Only the caller can know that: a truncated listing looks
+    identical to a shrunken library from in here, and pruning on one would
+    delete most of the index. `/recordings` compares what it fetched against
+    the device's own count - see there.
+
+    An empty complete listing is a real state (everything deleted), so the
+    early return is only safe when there is nothing to prune against.
     """
-    if not items:
+    if not items and not prune:
         return
     with db.write() as conn:
         for rec in items:
@@ -416,8 +426,27 @@ def index_recordings(items: list[dict]) -> None:
                 ),
             )
 
+        if prune:
+            # A deleted recording left in the index is worse than a missing
+            # one: it is offered, clicked, and fails.
+            refs = [str(r.get("object_id")) for r in items]
+            if refs:
+                marks = ",".join("?" * len(refs))
+                conn.execute(
+                    "DELETE FROM search_doc WHERE kind = 'recording' "
+                    f"AND ref NOT IN ({marks})",
+                    refs,
+                )
+            else:
+                conn.execute("DELETE FROM search_doc WHERE kind = 'recording'")
 
-def save_guide(rows: list[dict], now: float | None = None) -> None:
+
+def save_guide(
+    rows: list[dict],
+    now: float | None = None,
+    *,
+    record_sync: bool = True,
+) -> None:
     """Merge the guide into the mirror, keeping everything already stored.
 
     Append-only by design. This used to issue `DELETE FROM guide_channel`,
@@ -439,9 +468,18 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
     `guide_synced_at`. `load_guide` uses it to show only the channels seen in
     the latest sync, without deleting the ones the device stopped listing -
     see `load_guide` for why.
+
+    `record_sync=False` writes the rows without claiming a sync happened, for
+    the startup backfill: it re-indexes what is already on disk, and stamping
+    that as a fresh sync would report month-old listings as just-fetched for
+    as long as the next sync took to arrive. It reuses the stamp already
+    stored so the channels it writes still match `guide_synced_at`, which is
+    what `load_guide` filters on.
     """
     del now  # retained for signature compatibility; pruning is prune_guide's job
     stamp = _now()
+    if not record_sync:
+        stamp = db.get_setting("guide_synced_at") or stamp
     with db.write() as conn:
         for position, ch in enumerate(rows):
             conn.execute(
@@ -485,8 +523,9 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                     ),
                 )
                 index_airing(conn, str(ch.get("identifier")), label, air)
-    db.set_setting("guide_updated_at", stamp)
-    db.set_setting("guide_synced_at", stamp)
+    if record_sync:
+        db.set_setting("guide_updated_at", stamp)
+        db.set_setting("guide_synced_at", stamp)
 
 
 def prune_guide(now: float | None = None) -> int:

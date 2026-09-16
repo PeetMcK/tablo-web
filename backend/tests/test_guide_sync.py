@@ -294,6 +294,28 @@ def test_backfill_index_reindexes_what_is_already_stored():
     assert db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
 
 
+def test_backfill_does_not_claim_a_sync_happened():
+    """A restart re-indexes what is on disk; that is not a fetch.
+
+    `coverage()` reports `last_sync` so an empty result can be told apart from
+    a period nothing was watching. Stamping the backfill as a sync made every
+    restart report whatever was stored as just-fetched, for as long as the
+    next real sync took to arrive - which is precisely the confusion the
+    coverage line exists to remove.
+    """
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Survivor", int(now + 3600))])], now=now)
+    stamped = db.get_setting("guide_synced_at")
+    assert stamped
+
+    asyncio.run(guide_sync.backfill_index())
+
+    assert db.get_setting("guide_synced_at") == stamped
+    # And the channel is still visible, so the backfill did not orphan it from
+    # the stamp `load_guide` filters on.
+    assert [c["identifier"] for c in store.load_guide()] == ["ch1"]
+
+
 def test_one_channel_airings_start_at_what_is_on_now():
     """The live player asks "what is on this channel, and what is next".
 

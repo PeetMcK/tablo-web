@@ -24,7 +24,10 @@ export function SearchDropdown({
   return (
     <div
       role="listbox"
-      aria-label="Search results"
+      /* Distinct from the results page, which is also a listbox named
+         "Search results": the two used to be indistinguishable to a
+         screen reader, and could be on screen together. */
+      aria-label="Search suggestions"
       className="absolute top-full mt-2 left-0 right-0 z-50 rounded-xl border border-white/10
                  bg-surface-raised shadow-2xl p-2 max-h-[70vh] overflow-y-auto"
     >

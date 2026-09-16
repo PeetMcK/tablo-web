@@ -612,7 +612,16 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       <div
         ref={scrollerRef}
         onScroll={e => trackHour(e.currentTarget)}
-        className="flex-1 min-h-0 overflow-auto no-scrollbar"
+        /* Focusable so the guide answers a keyboard at all. A scroll
+           container that can hold focus is scrolled by the arrow keys, Page
+           Up/Down and Home/End for free — the browser does it, and none of it
+           worked here before because nothing in the guide could be focused.
+           Labelled because a focus stop with no name announces nothing. */
+        tabIndex={0}
+        role="region"
+        aria-label="Programme guide"
+        className="flex-1 min-h-0 overflow-auto no-scrollbar
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
       >
         {/* The scrolled surface. Explicit width so the timeline extends the
             full run of the guide whatever any individual channel lists — the

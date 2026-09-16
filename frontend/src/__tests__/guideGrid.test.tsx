@@ -781,3 +781,23 @@ describe("dragging across the listings", () => {
     expect(sc.classList.contains("select-none")).toBe(false);
   });
 });
+
+describe("reaching the guide from a keyboard", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("gives the scroller a focus stop with a name", async () => {
+    // Arrow keys, Page Up/Down and Home/End scroll whatever scroll container
+    // has focus. Nothing in the guide could take focus, so none of them did
+    // anything — the browser had nothing to act on.
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const sc = scroller(container);
+    expect(sc.tabIndex).toBe(0);
+    expect(sc).toHaveAccessibleName("Programme guide");
+
+    sc.focus();
+    expect(document.activeElement).toBe(sc);
+  });
+});

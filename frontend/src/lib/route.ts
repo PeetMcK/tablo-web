@@ -11,6 +11,17 @@ export interface Route {
 const TABS: Tab[] = ["live", "grid", "library", "search"];
 
 /**
+ * Names the UI uses that the route does not.
+ *
+ * The Guide tab is called "Guide" in the topbar, the menu and every
+ * conversation about it, while its route segment is `grid`. Typing or
+ * bookmarking the obvious `#/guide` landed silently on Live TV. Accepted on
+ * the way in only - `writeRoute` still normalises to `grid`, so the address
+ * bar self-corrects on the next write and there is still one canonical URL.
+ */
+const TAB_ALIASES: Record<string, Tab> = { guide: "grid" };
+
+/**
  * Hash-based routing so a refresh lands where you were.
  *
  * The URL carries identity only — what is playing, not where the playhead is.
@@ -27,7 +38,10 @@ const TABS: Tab[] = ["live", "grid", "library", "search"];
 export function parseRoute(hash: string = window.location.hash): Route {
   const [pathPart, queryPart] = hash.replace(/^#\/?/, "").split("?");
   const parts = pathPart.split("/").filter(Boolean);
-  const tab = (TABS as string[]).includes(parts[0]) ? (parts[0] as Tab) : "live";
+  const named = parts[0];
+  const tab = (TABS as string[]).includes(named)
+    ? (named as Tab)
+    : TAB_ALIASES[named] ?? "live";
   const q = queryPart
     ? new URLSearchParams(queryPart).get("q") ?? undefined
     : undefined;
