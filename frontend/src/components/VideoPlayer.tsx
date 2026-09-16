@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { useQuery } from "@tanstack/react-query";
 import {
   X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
@@ -169,13 +170,92 @@ function formatTime(seconds: number): string {
     : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/**
+ * What `Stage` renders from. Assembled by VideoPlayer, handed across
+ * unchanged, and destructured back into the same names on arrival.
+ */
+interface PlayerView {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  rootRef: React.RefObject<HTMLDivElement | null>;
+  videoHostRef: React.RefObject<HTMLDivElement | null>;
+  barRef: React.RefObject<HTMLDivElement | null>;
+  showControls: boolean;
+  resetHideTimer: () => void;
+  handleSurfaceClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  holdControls: (held: boolean) => void;
+  loading: boolean;
+  combinedError: string | null;
+  onClose: () => void;
+  waiting: boolean;
+  waitPct: number | null;
+  encodingAt: EncodingProgress | null;
+  poppedOut: boolean;
+  togglePictureInPicture: () => void;
+  enterFullscreen: () => void;
+  paused: boolean;
+  togglePlay: () => void;
+  skip: (delta: number) => void;
+  muted: boolean;
+  toggleMute: () => void;
+  isLive: boolean;
+  atLiveEdge: boolean;
+  goLive: () => void;
+  title: string;
+  subtitle: string | null;
+  program: Program | null | undefined;
+  programRemaining: number;
+  barStart: number;
+  barEnd: number;
+  span: number;
+  pct: number;
+  shownPos: number;
+  rangeEnd: number;
+  readyBands: { key: string; left: number; width: number }[];
+  hoverAt: number | null;
+  scrubbing: boolean;
+  shownPreview: string | null;
+  fineFactor: number;
+  onBarPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onBarPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onBarPointerUp: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onBarKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
+  setHoverAt: (t: number | null) => void;
+  formatTime: (seconds: number) => string;
+  clockTime: (iso: string) => string;
+  clockAt: (t: number) => string;
+  onProgramBar: boolean;
+  position: number;
+  previewAt: number | null;
+  rangeStart: number;
+}
+
 function clockTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
-  const videoRef = useRef<HTMLVideoElement>(null);
+  /**
+   * The one video element, made here rather than rendered.
+   *
+   * Two React roots render the stage — the tab's and the picture-in-picture
+   * window's — and each would build a `<video>` of its own from the same JSX.
+   * Only one element can carry the stream: hls.js attaches a MediaSource to
+   * it, and a second element would start from nothing. So it is created once,
+   * owned by nobody, and appended to whichever host is mounted.
+   */
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  if (!videoRef.current) {
+    const video = document.createElement("video");
+    video.className = "w-full h-full object-contain";
+    video.playsInline = true;
+    // Suppresses the browser's own floating picture-in-picture button, which
+    // sits in the middle of the frame in browser chrome rather than ours. It
+    // also closes off `requestPictureInPicture`, which is why the pop-out
+    // goes through the Document Picture-in-Picture API instead.
+    video.disablePictureInPicture = true;
+    videoRef.current = video;
+  }
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
   /** Where the video sits, and returns to after a spell in its own window. */
@@ -204,6 +284,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [apiError, setApiError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [muted, setMuted] = useState(false);
+  /** True while the stage is mounted on a picture-in-picture window instead. */
+  const [poppedOut, setPoppedOut] = useState(false);
   const [paused, setPaused] = useState(!openPlaying);
   const [waiting, setWaiting] = useState(false);
   const [position, setPosition] = useState(0);
@@ -875,6 +957,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * which is what the browser's own version showed too.
    */
   const pipWindow = useRef<Window | null>(null);
+  const pipRoot = useRef<Root | null>(null);
+  /**
+   * The latest view, for the popped-out root to render.
+   *
+   * A ref because the effect that re-renders that root is declared before the
+   * view is built, and effects run after the render that fills this in.
+   */
+  const viewRef = useRef<PlayerView | null>(null);
 
   const togglePictureInPicture = useCallback(async () => {
     const video = videoRef.current;
@@ -887,32 +977,67 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
     try {
-      // Proportioned to the picture so the window opens without letterboxing.
-      const w = await dpip.requestWindow({
-        width: 480,
-        height: Math.round(480 * (video.videoHeight / (video.videoWidth || 16 / 9) || 9 / 16)),
-      });
+      // No size, no position: the browser reopens the window where the viewer
+      // last left it, and neither is ours to set — `resizeTo` is refused on a
+      // picture-in-picture window and there are no coordinates to pass.
+      const w = await dpip.requestWindow();
       pipWindow.current = w;
-      w.document.body.style.cssText = "margin:0;background:#000;overflow:hidden";
-      video.style.cssText = "width:100vw;height:100vh;object-fit:contain";
-      w.document.body.append(video);
 
-      // Closing is the viewer's, not ours: the window has its own close
-      // button, and the tab needs its picture back whichever way it goes.
+      // The window arrives with no styles at all, so every class the stage
+      // uses has to be carried over or it lands there unstyled.
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          const css = Array.from(sheet.cssRules).map((r) => r.cssText).join("");
+          const style = w.document.createElement("style");
+          style.textContent = css;
+          w.document.head.append(style);
+        } catch {
+          // A sheet we are not allowed to read. Ours are same-origin, so
+          // there is nothing here worth failing the pop-out over.
+        }
+      }
+      w.document.title = title;
+      w.document.body.style.cssText = "margin:0;overflow:hidden";
+
+      // A React root of the window's own. This is the whole point: React
+      // delegates events to the root container, so a stage merely moved into
+      // this document would fire its clicks where nothing is listening —
+      // which is exactly what happened. A root here listens here.
+      const mount = w.document.createElement("div");
+      w.document.body.append(mount);
+      pipRoot.current = createRoot(mount);
+      setPoppedOut(true);
+
+      // However it closes — our button, the window's own, the tab going away
+      // — the root has to come down and the video come home, or the player is
+      // left with nothing to show.
       w.addEventListener("pagehide", () => {
-        video.style.cssText = "";
-        host.append(video);
+        pipRoot.current?.unmount();
+        pipRoot.current = null;
         pipWindow.current = null;
+        setPoppedOut(false);
+        // Back into the tab's host, which the stage remounts on the next
+        // render. Done here too so the picture is never left orphaned if that
+        // render is delayed.
+        host.append(video);
       }, { once: true });
     } catch (e) {
       // Refused for want of a user gesture, or not implemented here after all.
       log.warn("picture-in-picture rejected", e);
     }
-  }, []);
+  }, [title]);
 
   // A player torn down while popped out would leave the window orphaned,
   // holding a video element that no longer belongs to anything.
   useEffect(() => () => pipWindow.current?.close(), []);
+
+  // Keep the popped-out root in step. It renders the same stage from the same
+  // view, so every state change in here reaches that window too — without
+  // this it would show the moment it was opened at, frozen.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (pipRoot.current && view) pipRoot.current.render(<Stage view={view} />);
+  });
 
   /**
    * Click zones across the video surface: left two fifths rewind, middle fifth
@@ -1076,6 +1201,85 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     programRemaining = Math.max(0, Math.round((start + dur - now) / 60000));
   }
 
+  /**
+   * Everything the stage renders from, as one object.
+   *
+   * The stage is rendered by two React roots — the tab's, and one mounted on
+   * the picture-in-picture window — and a second root cannot reach the first
+   * one's context. So the whole view is handed over explicitly and
+   * destructured back into the same names on the other side, which is what
+   * keeps the markup itself identical in both places.
+   */
+  const view: PlayerView = {
+    videoRef, rootRef, videoHostRef, barRef,
+    showControls, resetHideTimer, handleSurfaceClick, holdControls,
+    loading, combinedError, onClose, waiting, waitPct, encodingAt,
+    poppedOut, togglePictureInPicture, enterFullscreen,
+    paused, togglePlay, skip, muted, toggleMute,
+    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
+    barStart, barEnd, span, pct, shownPos, rangeEnd,
+    readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
+    onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
+    formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
+  };
+
+  viewRef.current = view;
+
+  // Popped out, the stage is not in this tree at all: the window's own root
+  // renders it. What stays here is the way back.
+  if (poppedOut) {
+    return (
+      <div className="dark fixed inset-0 z-50 bg-media flex flex-col items-center
+                      justify-center gap-4">
+        <button
+          onClick={togglePictureInPicture}
+          className="w-20 h-20 rounded-full glass text-player-fg flex items-center
+                     justify-center hover:bg-fill transition"
+          title="Close picture-in-picture"
+          aria-label="Close picture-in-picture"
+        >
+          <PictureInPicture2 className="w-9 h-9" aria-hidden />
+        </button>
+        <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
+      </div>
+    );
+  }
+
+  return <Stage view={view} />;
+}
+
+/**
+ * The player's whole surface, rendered from a view rather than its own state.
+ *
+ * Separated for one reason: it has to be mountable inside a
+ * picture-in-picture window, on a React root of that window's own, because
+ * React delegates its events to the root container and a subtree merely moved
+ * into another document fires them where nothing is listening. Everything in
+ * here is presentation; the state and the handlers belong to VideoPlayer.
+ */
+function Stage({ view }: { view: PlayerView }) {
+  const {
+    videoRef, rootRef, videoHostRef, barRef,
+    showControls, resetHideTimer, handleSurfaceClick, holdControls,
+    loading, combinedError, onClose, waiting, waitPct, encodingAt,
+    poppedOut, togglePictureInPicture, enterFullscreen,
+    paused, togglePlay, skip, muted, toggleMute,
+    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
+    barStart, barEnd, span, pct, shownPos, rangeEnd,
+    readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
+    onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
+    formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
+  } = view;
+
+  // Whichever root mounted this stage, the one video element belongs in its
+  // host. Done here rather than in VideoPlayer so it cannot race the second
+  // root's commit: by the time this runs, the host below exists.
+  useEffect(() => {
+    const video = videoRef.current;
+    const host = videoHostRef.current;
+    if (video && host && video.parentElement !== host) host.append(video);
+  });
+
   return (
     // `dark`, unconditionally. The player is the one surface that does not
     // follow the theme: it is a fullscreen media UI sitting on frames we do not
@@ -1100,27 +1304,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       onMouseMove={resetHideTimer}
       onClick={handleSurfaceClick}
     >
-      {/* No autoPlay attribute: usePlayer starts playback explicitly. Leaving it
-          on let the browser resume by itself whenever the element received data
-          after a stall, so pause would not stick and playback could jump. */}
-      {/* The video lives alone inside a host of its own so that picture-in-
-          picture can physically move it into another window and put it back.
-          React owns this host's children and never inserts a sibling beside
-          the video, so while the element is away there is no reference node
-          for a later render to trip over. */}
-      <div ref={videoHostRef} className="w-full h-full">
-        <video
-          ref={videoRef}
-          className="w-full h-full object-contain"
-          playsInline
-          // Suppresses the browser's own floating picture-in-picture button,
-          // which sits in the middle of the frame in browser chrome rather
-          // than ours and is the reason the control below exists. It also
-          // disables `requestPictureInPicture`, so the pop-out goes through
-          // the Document Picture-in-Picture API instead.
-          disablePictureInPicture
-        />
-      </div>
+      {/* An empty host. The video element is not rendered here — it is made
+          once, imperatively, and moved into whichever host is currently
+          mounted (see `ensureVideo`). It has to be, because this stage is
+          rendered by two different React roots — the tab's and the
+          picture-in-picture window's — and a JSX `<video>` would give each
+          root an element of its own. The stream is attached to one element
+          through a MediaSource; a second would start from nothing. */}
+      <div ref={videoHostRef} className="w-full h-full" />
 
       {/* A blocking sheet, not a see-through veil: it carries text and a button,
           so it uses the player's own panel rather than a scrim. In light that is
