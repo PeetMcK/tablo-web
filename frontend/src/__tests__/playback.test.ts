@@ -45,8 +45,11 @@ describe("clampSkip", () => {
     // The range is half-open: 600 is the first instant that does not exist yet,
     // so landing exactly there would stall on the window being encoded.
     expect(clampSkip(592, 30, [0, 600])).toBe(599.5);
-    // At the live edge, forward stays put rather than seeking past it.
-    expect(clampSkip(600, 30, [0, 600])).toBe(599.5);
+    // Standing on the frontier already, forward genuinely stays put — it used
+    // to answer 599.5, which is to say a tap on Forward stepped backwards. The
+    // caller reads "no movement" and does not seek at all, so there is no
+    // landing on 600 to stall on.
+    expect(clampSkip(600, 30, [0, 600])).toBe(600);
   });
 
   it("will not rewind out of the ready range either", () => {
@@ -134,7 +137,9 @@ describe("stalled on the encoder's frontier", () => {
   });
 
   it("does not jump forward into the window being encoded", () => {
-    expect(clampSkip(600, 30, readyRange(600, opts))).toBeLessThan(600);
+    // Not past 600, and not backwards away from it either: the playhead is
+    // already as far on as anything that exists, so forward holds still.
+    expect(clampSkip(600, 30, readyRange(600, opts))).toBe(600);
   });
 });
 
@@ -193,6 +198,21 @@ describe("skipping forward on a live edge", () => {
 
   it("still rewinds freely from there", () => {
     expect(clampSkip(26, -10, edge, LIVE_EDGE_MARGIN)).toBe(16);
+  });
+
+  it("will not turn a forward tap into a rewind", () => {
+    // Playback on live rides a few seconds behind the edge, so the playhead is
+    // normally *inside* the cushion already. Clamping to `hi - margin` without
+    // regard to direction sent it backwards: measured in the browser, Forward
+    // moved the playhead from 139.92 to 134.18 against an edge of 144.18.
+    expect(clampSkip(139.92, 30, [0, 144.18], LIVE_EDGE_MARGIN)).toBe(139.92);
+    expect(clampSkip(35, 30, edge, LIVE_EDGE_MARGIN)).toBe(35);
+  });
+
+  it("will not turn a rewind into a jump forward", () => {
+    // The same trap at the other end: standing before `lo`, a back-10 must not
+    // be dragged up to it.
+    expect(clampSkip(5, -10, [10, 36], LIVE_EDGE_MARGIN)).toBe(5);
   });
 
   it("leaves a finished recording able to reach its own ending", () => {

@@ -105,6 +105,11 @@ export const LIVE_EDGE_MARGIN = 10;
  * a frontier still being produced, and leave it alone when it is a settled end.
  * Overshooting returns the same landing spot every time, so a caller can tell
  * a skip that goes nowhere from one that moves.
+ *
+ * A skip never travels against its own direction. The playhead can already be
+ * inside the margin — on live it usually is, because playback chases an edge
+ * that is only ever seconds ahead — and clamping to a frontier that sits
+ * behind it turned a tap on Forward into a rewind of several seconds.
  */
 export function clampSkip(
   from: number,
@@ -113,9 +118,10 @@ export function clampSkip(
   margin: number = EDGE_MARGIN,
 ): number {
   const target = from + delta;
-  if (target <= lo) return lo;
-  if (target >= hi) return Math.max(lo, hi - margin);
-  return target;
+  const landing = target <= lo ? lo
+    : target >= hi ? Math.max(lo, hi - margin)
+    : target;
+  return delta > 0 ? Math.max(from, landing) : Math.min(from, landing);
 }
 
 /**

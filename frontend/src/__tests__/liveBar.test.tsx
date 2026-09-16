@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { VideoPlayer } from "../components/VideoPlayer";
+import { SEGMENT_SECONDS } from "../lib/playback";
 import { api } from "../api/tablo";
 import type { Channel, Program } from "../api/tablo";
 
@@ -125,25 +126,44 @@ describe("the live bar", () => {
     expect(screen.queryByText(clock(startedAt))).toBeNull();
   });
 
-  it("will not seek past the live edge, however wide the bar is", async () => {
-    const { container } = renderLive();
-    await playAt(container, HOUR_AGO_QUARTER);
-
+  /** Watch where a forward skip actually puts the playhead, from `at`. */
+  function skipForwardFrom(container: HTMLElement, at: number): number[] {
     const video = container.querySelector("video")!;
     const seeks: number[] = [];
     Object.defineProperty(video, "currentTime", {
       configurable: true,
-      get: () => HOUR_AGO_QUARTER,
+      get: () => at,
       set: (t: number) => seeks.push(t),
     });
-
-    // Forward 30 from the live edge. Three quarters of the bar is programme
-    // that has not been broadcast; landing there would stall the player and
-    // raise the transcoding overlay.
     fireEvent.click(screen.getByRole("button", { name: /forward 30 seconds/i }));
+    return seeks;
+  }
+
+  it("will not seek past the live edge, however wide the bar is", async () => {
+    const { container } = renderLive();
+    await playAt(container, HOUR_AGO_QUARTER);
+
+    // Forward 30 from a quarter-minute behind the edge. Three quarters of the
+    // bar is programme that has not been broadcast; landing there would stall
+    // the player and raise the overlay. It must stop short of the edge, and by
+    // more than a hair — the encoder only extends it a segment at a time.
+    const seeks = skipForwardFrom(container, HOUR_AGO_QUARTER - 15);
 
     await waitFor(() => expect(seeks.length).toBeGreaterThan(0));
-    expect(Math.max(...seeks)).toBeLessThanOrEqual(HOUR_AGO_QUARTER);
+    expect(Math.max(...seeks)).toBeLessThanOrEqual(HOUR_AGO_QUARTER - SEGMENT_SECONDS);
+  });
+
+  it("does nothing at all once it is already at the edge", async () => {
+    // Not "seeks somewhere harmless" — seeks nowhere. Clamping to a frontier
+    // the playhead has already reached used to drag it backwards, so a tap on
+    // Forward rewound several seconds.
+    const { container } = renderLive();
+    await playAt(container, HOUR_AGO_QUARTER);
+
+    const seeks = skipForwardFrom(container, HOUR_AGO_QUARTER);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seeks).toEqual([]);
   });
 
   it("eases the cached band's growth but never its position", async () => {
