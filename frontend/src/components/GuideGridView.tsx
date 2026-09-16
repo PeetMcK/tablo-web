@@ -139,7 +139,6 @@ export function GuideGridView({ onPlay }: Props) {
     return d.getTime();
   }, []);
 
-
   /**
    * How far the timeline runs, taken from the listings themselves.
    *
@@ -186,19 +185,18 @@ export function GuideGridView({ onPlay }: Props) {
   /**
    * Put an instant at the left edge of the guide.
    *
-   * `syncLanes` from the other direction: same lanes, same shared offset, but
-   * driven by a chosen time rather than by a pointer.
-   */
-  /**
-   * Put an instant at the left edge of the guide.
-   *
    * `syncLanes` from the other direction — same lanes, same shared offset,
    * driven by a chosen time rather than by a pointer. Written as a plain
    * handler rather than a `useCallback`: moving the lanes is a write to the
    * DOM through a ref, which belongs to an event and not to a memoized value.
    */
   const scrollToTime = (at: number) => {
-    offset.current = Math.max(0, ((at - startTime) / 3600_000) * HOUR_WIDTH);
+    const want = Math.max(0, ((at - startTime) / 3600_000) * HOUR_WIDTH);
+    // A target inside the last screenful sits past the furthest the lanes can
+    // scroll, and the browser clamps the write. Record what the lanes actually
+    // did rather than what was asked for, or the shared offset and the jump
+    // control's label both describe a position the guide is not at.
+    let landed = want;
     for (const lane of lanes.current) {
       // Same write as `syncLanes` above, and `react-hooks/immutability` allows
       // it there: it objects here only because this handler is passed to a
@@ -206,9 +204,11 @@ export function GuideGridView({ onPlay }: Props) {
       // props the compiler memoizes. Scrolling a lane is an imperative move on
       // a node, not a value anything renders from.
       // eslint-disable-next-line react-hooks/immutability
-      if (lane.scrollLeft !== offset.current) lane.scrollLeft = offset.current;
+      if (lane.scrollLeft !== want) lane.scrollLeft = want;
+      landed = lane.scrollLeft;
     }
-    setHourAt(Math.floor(offset.current / HOUR_WIDTH));
+    offset.current = landed;
+    setHourAt(Math.floor(landed / HOUR_WIDTH));
   };
 
   /** Which hours hold listings, so the jump control can refuse the empty ones. */

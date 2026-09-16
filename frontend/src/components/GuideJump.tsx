@@ -23,6 +23,12 @@ export function GuideJump({ days, label, onJump, onNow }: Props) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
+  // Driven off DAYPARTS rather than written out, so the header and the rows
+  // cannot drift from the list they are describing. An inline style, not a
+  // Tailwind arbitrary value: those are matched in the source at build time
+  // and a template literal produces no class at all.
+  const columns = `76px repeat(${DAYPARTS.length}, minmax(0, 1fr))`;
+
   // Bound only while open: a listener that lives for the life of the guide
   // would run on every click in the app to answer a question nobody asked.
   useEffect(() => {
@@ -78,7 +84,7 @@ export function GuideJump({ days, label, onJump, onNow }: Props) {
           className="absolute top-full right-0 mt-2 z-40 w-[340px] p-4 rounded-2xl
                      bg-surface-overlay border border-border shadow-2xl shadow-shade"
         >
-          <div className="grid grid-cols-[76px_repeat(4,minmax(0,1fr))] gap-1.5 mb-2">
+          <div className="grid gap-1.5 mb-2" style={{ gridTemplateColumns: columns }}>
             <div />
             {DAYPARTS.map(p => (
               <div key={p.id} className="flex flex-col items-center gap-px">
@@ -91,7 +97,7 @@ export function GuideJump({ days, label, onJump, onNow }: Props) {
 
           <div className="flex flex-col gap-1.5">
             {days.map(day => (
-              <div key={day.key} className="grid grid-cols-[76px_repeat(4,minmax(0,1fr))] gap-1.5 items-center">
+              <div key={day.key} className="grid gap-1.5 items-center" style={{ gridTemplateColumns: columns }}>
                 <div className="flex flex-col">
                   <span className="text-[11px] font-extrabold text-fg-secondary">{day.label}</span>
                   <span className="text-[9px] font-semibold text-fg-faint tabular-nums">{day.date}</span>

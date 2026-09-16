@@ -85,6 +85,34 @@ describe("jumpDays", () => {
     expect(tomorrow.cells.find((c) => c.part.id === "prime")!.state).toBe("listed");
   });
 
+  it("labels a cell clamped to the guide's start with where it lands", () => {
+    // The grid opens at 8pm, inside Prime (7pm-11pm), so Prime can only jump
+    // to 8pm. Once `now` moves on past 11pm it is an ordinary listed cell -
+    // and reading "7pm" on a cell that lands on 8pm names an hour the guide
+    // does not hold.
+    const [today] = jumpDays({ ...base, now: EIGHT_PM + 4 * HOUR });
+    const prime = today.cells.find((c) => c.part.id === "prime")!;
+    expect(prime.state).toBe("listed");
+    expect(prime.at).toBe(EIGHT_PM);
+    expect(prime.label).toBe("8pm");
+  });
+
+  it("reaches the small hours through the evening before them", () => {
+    // An overnight film at 2am. Ending Late at midnight left 00:00-06:00 in no
+    // daypart at all, so nothing could jump to it — the one stretch of the day
+    // a viewer cannot find by scrolling from where they are.
+    const twoAm = new Date(EIGHT_PM);
+    twoAm.setDate(twoAm.getDate() + 1);
+    twoAm.setHours(2, 0, 0, 0);
+
+    const covered = new Set([twoAm.getTime()]);
+    const [today] = jumpDays({ ...base, covered });
+    const late = today.cells.find((c) => c.part.id === "late")!;
+
+    expect(late.state).toBe("listed");
+    expect(new Date(late.at).getHours()).toBe(23);
+  });
+
   it("runs no further than the guide does", () => {
     const short = jumpDays({ ...base, totalHours: 6, covered: allCovered(EIGHT_PM, 6) });
     expect(short).toHaveLength(1);
@@ -105,8 +133,13 @@ describe("positionLabel", () => {
     expect(label).toBe("Wed · Morning");
   });
 
-  it("falls back to the first daypart before the day's morning starts", () => {
-    // 5 hours along is 1am — after midnight, before Morning begins.
-    expect(positionLabel(EIGHT_PM, 5 * HOUR_WIDTH, HOUR_WIDTH)).toBe("Wed · Late");
+  it("keeps the small hours with the evening they followed", () => {
+    // 5 hours along is 1am on Wednesday — which is Tuesday's Late block, and
+    // has to read as the same cell that jumps there. Naming it "Wed" would
+    // point at a row whose Late cell is a day away.
+    expect(positionLabel(EIGHT_PM, 5 * HOUR_WIDTH, HOUR_WIDTH)).toBe("Today · Late");
+
+    // The same hour a day on belongs to Wednesday evening.
+    expect(positionLabel(EIGHT_PM, 29 * HOUR_WIDTH, HOUR_WIDTH)).toBe("Wed · Late");
   });
 });

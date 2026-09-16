@@ -12,6 +12,9 @@
 
 const HOUR = 3600_000;
 
+/** How much of one airing is worth walking hour by hour. See `coveredHours`. */
+const MAX_AIRING_HOURS = 14 * 24;
+
 export interface Daypart {
   id: string;
   label: string;
@@ -23,6 +26,11 @@ export interface Daypart {
  * Prime starts at 7, not 8. A jump puts its target hour at the left edge and
  * the viewer reads forward from there, so landing on 7 leaves the 8 o'clock
  * hour on screen with its run-up; landing on 8 hides everything before it.
+ *
+ * Late runs to the next day's Morning rather than to midnight, so the small
+ * hours belong to the evening they followed. Ending it at midnight left
+ * 00:00-06:00 in no daypart at all: an overnight film could not be jumped to
+ * from anywhere, and the button read "Late" at a position no cell could reach.
  */
 export const DAYPARTS: Daypart[] = [
   { id: "morning", label: "Morning", hour: 6 },
@@ -58,6 +66,19 @@ function dayStart(t: number): number {
   return d.getTime();
 }
 
+/**
+ * Midnight at the start of the local day after `t`'s.
+ *
+ * Stepping the date rather than adding 24h: a local day is 23 or 25 hours long
+ * either side of a daylight saving change, and an epoch day is always 24.
+ */
+function nextDayStart(t: number): number {
+  const d = new Date(dayStart(t));
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
 /** The instant a daypart begins on the local day containing `t`. */
 function partStart(t: number, part: Daypart): number {
   const d = new Date(dayStart(t));
@@ -65,10 +86,13 @@ function partStart(t: number, part: Daypart): number {
   return d.getTime();
 }
 
-/** Where a daypart ends: the next one's start, or the end of the day. */
+/** Where a daypart ends: the next one's start, or tomorrow's first. */
 function partEnd(t: number, index: number): number {
   const next = DAYPARTS[index + 1];
-  return next ? partStart(t, next) : dayStart(t) + 24 * HOUR;
+  if (next) return partStart(t, next);
+  // The last block runs past midnight into the small hours, which belong to
+  // the evening before them and not to a morning that has not begun.
+  return partStart(nextDayStart(t), DAYPARTS[0]);
 }
 
 /**
@@ -86,7 +110,10 @@ export function coveredHours(
     const from = new Date(airing.start).getTime();
     const seconds = airing.duration ?? 0;
     if (Number.isNaN(from) || !(seconds > 0)) continue;
-    const to = from + seconds * 1000;
+    // Bounded, because the loop below is per hour and the duration comes from
+    // the device: a corrupt one would spin for millions of iterations on the
+    // render path. Nothing the guide holds runs for a fortnight.
+    const to = from + Math.min(seconds, MAX_AIRING_HOURS * 3600) * 1000;
     for (let h = Math.floor(from / HOUR) * HOUR; h < to; h += HOUR) covered.add(h);
   }
   return covered;
@@ -125,29 +152,35 @@ export function jumpDays({ startTime, totalHours, covered, now }: {
   const endTime = startTime + totalHours * HOUR;
   const days: JumpDay[] = [];
 
-  for (let day = dayStart(startTime); day < endTime; day += 24 * HOUR) {
-    // Re-derive from a Date rather than adding 24h repeatedly, so a daylight
-    // saving change does not walk the boundary an hour off for every day after.
+  // Step the local date rather than adding 24h repeatedly: a daylight saving
+  // change makes the local day 23 or 25 hours long, and the epoch arithmetic
+  // walked the boundary an hour off for every day after it - which listed the
+  // changeover day twice, once from its own midnight and once from 23:00.
+  for (let day = dayStart(startTime); day < endTime; day = nextDayStart(day)) {
     const d = new Date(day);
     // The grid's own day, not merely the first row: a day with nothing to jump
     // to is skipped below, and counting rows would move "Today" onto tomorrow.
     const first = day === dayStart(startTime);
 
     const cells = DAYPARTS.map((part, i) => {
-      const at = partStart(d.getTime(), part);
-      const ends = partEnd(d.getTime(), i);
+      const begins = partStart(day, part);
+      const ends = partEnd(day, i);
+      // Never behind the grid's own origin: a reachable cell that begins
+      // before the timeline does still has to land on the timeline.
+      const at = Math.max(begins, startTime);
       const state: CellState =
         ends <= startTime ? "past"
           : now >= at && now < ends ? "live"
-            : !anyCovered(covered, Math.max(at, startTime), Math.min(ends, endTime)) ? "empty"
+            : !anyCovered(covered, at, Math.min(ends, endTime)) ? "empty"
               : "listed";
       return {
         part,
-        // Never behind the grid's own origin: a reachable cell that begins
-        // before the timeline does still has to land on the timeline.
-        at: Math.max(at, startTime),
+        at,
         state,
-        label: state === "live" ? "NOW" : hourLabel(at),
+        // A cell that jumps is labelled with the hour it lands on, which is
+        // not the daypart's own hour once the clamp above has moved it. A
+        // dead cell jumps nowhere, so it keeps naming its daypart.
+        label: state === "live" ? "NOW" : hourLabel(state === "listed" ? at : begins),
       };
     });
 
@@ -179,15 +212,20 @@ export function positionLabel(
   hourWidth: number,
 ): string {
   const at = startTime + (offsetPx / hourWidth) * HOUR;
-  const d = new Date(at);
-  const hour = d.getHours();
+  const hour = new Date(at).getHours();
 
-  // Before the first daypart of the day, the viewer is in the small hours —
-  // which belong to the previous evening's Late block, and read that way.
-  const index = DAYPARTS.findLastIndex((p) => hour >= p.hour);
-  const part = index === -1 ? DAYPARTS[DAYPARTS.length - 1] : DAYPARTS[index];
+  // Before the day's first daypart the viewer is in the small hours, which
+  // belong to the evening before them — the same block whose cell jumps here.
+  // The day has to move back with the part, or the button names Wednesday
+  // while the cell that reaches this hour sits in Tuesday's row.
+  const small = hour < DAYPARTS[0].hour;
+  const part = small
+    ? DAYPARTS[DAYPARTS.length - 1]
+    : DAYPARTS[DAYPARTS.findLastIndex((p) => hour >= p.hour)];
+  const owning = small ? dayStart(at) - HOUR : at;
 
-  const sameDay = dayStart(at) === dayStart(startTime);
-  const day = sameDay ? "Today" : d.toLocaleDateString([], { weekday: "short" });
+  const day = dayStart(owning) === dayStart(startTime)
+    ? "Today"
+    : new Date(owning).toLocaleDateString([], { weekday: "short" });
   return `${day} · ${part.label}`;
 }
