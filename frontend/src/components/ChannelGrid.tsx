@@ -8,6 +8,7 @@ import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
 import { ProfileMenu } from "./ProfileMenu";
 import { PageHeader } from "./PageHeader";
+import { HeaderClock } from "./HeaderClock";
 import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
 function useGuideStream(enabled: boolean) {
@@ -92,6 +93,8 @@ export function ChannelGrid({ onLogout }: Props) {
   const [filter, setFilter] = useState("");
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   const [activeTab, setTab] = useState<Tab>(initialRoute.tab);
+  /** The Guide is the one tab laid out as a viewport rather than a document. */
+  const isGuide = activeTab === "grid";
   // Set once the user closes the restored stream, so it does not reopen.
   const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -183,7 +186,16 @@ export function ChannelGrid({ onLogout }: Props) {
         />
       )}
 
-      <div className="min-h-screen flex flex-col bg-surface">
+      {/* The Guide is a viewport; Live TV and Library are documents.
+          A guide is a fixed instrument you look into — chrome pinned, one
+          scrollable body, bottom anchored — so it gets `h-dvh` and owns its own
+          scrolling. The other two are grids of cards that want the window
+          scroller, which is what makes find-on-page, scroll restoration and the
+          mobile URL-bar collapse work. Converting them too would cost all three
+          to solve a problem only the Guide has.
+          `dvh`, not `vh`: on mobile `vh` is the LARGEST viewport, so `h-screen`
+          is taller than what you can actually see whenever the URL bar shows. */}
+      <div className={`flex flex-col bg-surface ${isGuide ? "h-dvh overflow-hidden" : "min-h-screen"}`}>
         {/* Header */}
         {/* Opaque, not `.glass`. Frosted glass means "there is live content
             behind this that you should still perceive" — true of the player's
@@ -273,19 +285,19 @@ export function ChannelGrid({ onLogout }: Props) {
             </div>
 
             <div className="flex items-center gap-4 ml-4">
+              <HeaderClock now={now} />
               <ProfileMenu email={userEmail} onLogout={onLogout} />
             </div>
           </div>
         </header>
 
         {/* Main content */}
-        <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-10">
+        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 py-10 ${isGuide ? "min-h-0 flex flex-col" : ""}`}>
           {activeTab === "live" && (
             <>
               <PageHeader
                 title="On Air Now"
                 subtitle="Browse your local guide and start watching instantly"
-                now={now}
               />
 
               {/* Content type filter chips */}
@@ -330,12 +342,11 @@ export function ChannelGrid({ onLogout }: Props) {
             </>
           )}
 
-          {activeTab === "grid" && (
-            <div className="flex flex-col">
+          {isGuide && (
+            <div className="flex flex-col flex-1 min-h-0">
                <PageHeader
                  title="TV Guide"
                  subtitle="Traditional timeline view of all upcoming airings"
-                 now={now}
                />
                <GuideGridView onPlay={handlePlay} />
             </div>
@@ -346,7 +357,6 @@ export function ChannelGrid({ onLogout }: Props) {
               <PageHeader
                 title="Recordings"
                 subtitle="Watch and manage your saved content"
-                now={now}
               />
               <LibraryView />
             </div>

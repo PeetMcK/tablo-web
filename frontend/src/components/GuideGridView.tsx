@@ -234,7 +234,11 @@ export function GuideGridView({ onPlay }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    // `min-h-0` on every link of this chain, not just the scroller. A flex
+    // child defaults to `min-height: auto`, which refuses to shrink below its
+    // content — so a single ancestor without it silently cancels the `flex-1`
+    // below and the card goes back to overflowing the page.
+    <div className="flex flex-col gap-4 flex-1 min-h-0">
     {/* Content type filter chips, and the jump control in the space they leave */}
     <div className="flex items-center gap-2">
     <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
@@ -268,7 +272,7 @@ export function GuideGridView({ onPlay }: Props) {
       />
     </div>
 
-    <div className="flex flex-col border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">
+    <div className="flex flex-col flex-1 min-h-0 border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">
       {/* Time Header */}
       <div className="flex bg-recess border-b border-border-subtle sticky top-0 z-20">
         <div className="w-32 shrink-0 border-r border-border-subtle bg-recess-soft flex items-center justify-center">
@@ -312,7 +316,16 @@ export function GuideGridView({ onPlay }: Props) {
       </div>
 
       {/* Grid Rows */}
-      <div className="flex flex-col max-h-[70vh] overflow-y-auto overflow-x-hidden">
+      {/* Was `max-h-[70vh]`. 70vh measures against the viewport, but what this
+          needs is what remains OF the viewport once the bar, the page padding,
+          the title block, the filter row and the hour headings have taken their
+          share. Those are different numbers, and the gap grew every time
+          anything above changed height — on a 900px window the card's bottom
+          edge, its rounded corner and the end of its own scrollbar all sat
+          about 120px below the fold, so you scrolled this scroller to read and
+          the page scroller to find out where it ended. `flex-1 min-h-0` asks
+          for the remainder instead of guessing at it, at every window size. */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         {filteredGrid.map((ch) => (
           <div key={ch.identifier} className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition">
             {/* Channel Info */}
