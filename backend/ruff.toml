@@ -1,0 +1,20 @@
+# Ruff for the backend.
+#
+# The default rule set, minus three rules this codebase disagrees with on
+# purpose. Everything else stays on — the async-blocking, subprocess and
+# unused-directive checks all found something real the first time this ran.
+
+[lint]
+ignore = [
+    # Blind `except Exception` and its two silent variants.
+    #
+    # This is a media server sitting between a browser and a device that can
+    # go away mid-stream. A failed logo fetch, a transcode PID that is already
+    # gone, one malformed airing in eight hundred — none of them is allowed to
+    # take a request down. Every site is a deliberate swallow with a comment
+    # saying so, and the narrow alternative is a hand-maintained list of every
+    # way a Tablo can misbehave, which is a worse thing to keep true.
+    "BLE001", # blind except
+    "S110",   # try-except-pass
+    "S112",   # try-except-continue
+]

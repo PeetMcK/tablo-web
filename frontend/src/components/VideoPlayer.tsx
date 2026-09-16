@@ -278,34 +278,37 @@ function clockTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/**
+ * The one video element, made here rather than rendered.
+ *
+ * Two React roots render the stage — the tab's and the picture-in-picture
+ * window's — and each would build a `<video>` of its own from the same JSX.
+ * Only one element can carry the stream: hls.js attaches a MediaSource to it,
+ * and a second element would start from nothing. So it is created once, owned
+ * by nobody, and appended to whichever host is mounted.
+ */
+function createStageVideo(): HTMLVideoElement {
+  const video = document.createElement("video");
+  video.className = "w-full h-full object-contain";
+  video.playsInline = true;
+  // Suppresses the browser's own floating picture-in-picture button, which
+  // sits in the middle of the frame in browser chrome rather than ours. It
+  // also closes off `requestPictureInPicture`, which is why the pop-out
+  // goes through the Document Picture-in-Picture API instead.
+  //
+  // Only where that API exists to replace it. Safari implements no Document
+  // Picture-in-Picture, so our own button never renders there; taking the
+  // native one away as well would leave that browser with no
+  // picture-in-picture at all, which is a loss rather than a trade.
+  if ("documentPictureInPicture" in window) video.disablePictureInPicture = true;
+  return video;
+}
+
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
-  /**
-   * The one video element, made here rather than rendered.
-   *
-   * Two React roots render the stage — the tab's and the picture-in-picture
-   * window's — and each would build a `<video>` of its own from the same JSX.
-   * Only one element can carry the stream: hls.js attaches a MediaSource to
-   * it, and a second element would start from nothing. So it is created once,
-   * owned by nobody, and appended to whichever host is mounted.
-   */
+  /** The stage's video element, built once on the first render. */
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  if (!videoRef.current) {
-    const video = document.createElement("video");
-    video.className = "w-full h-full object-contain";
-    video.playsInline = true;
-    // Suppresses the browser's own floating picture-in-picture button, which
-    // sits in the middle of the frame in browser chrome rather than ours. It
-    // also closes off `requestPictureInPicture`, which is why the pop-out
-    // goes through the Document Picture-in-Picture API instead.
-    //
-    // Only where that API exists to replace it. Safari implements no Document
-    // Picture-in-Picture, so our own button never renders there; taking the
-    // native one away as well would leave that browser with no
-    // picture-in-picture at all, which is a loss rather than a trade.
-    if ("documentPictureInPicture" in window) video.disablePictureInPicture = true;
-    videoRef.current = video;
-  }
+  if (videoRef.current == null) videoRef.current = createStageVideo();
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -1076,13 +1079,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   /** The live shortcut handler, so a new pop-out can be given it too. */
   const keyHandler = useRef<((e: KeyboardEvent) => void) | null>(null);
   const pipRoot = useRef<Root | null>(null);
-  /**
-   * The latest view, for the popped-out root to render.
-   *
-   * A ref because the effect that re-renders that root is declared before the
-   * view is built, and effects run after the render that fills this in.
-   */
-  const viewRef = useRef<PlayerView | null>(null);
 
   const togglePictureInPicture = useCallback(async () => {
     const video = videoRef.current;
@@ -1146,19 +1142,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       // Refused for want of a user gesture, or not implemented here after all.
       log.warn("picture-in-picture rejected", e);
     }
-  }, [title]);
+  }, [title, openMirror, closeMirror]);
 
   // A player torn down while popped out would leave the window orphaned,
   // holding a video element that no longer belongs to anything.
   useEffect(() => () => pipWindow.current?.close(), []);
-
-  // Keep the popped-out root in step. It renders the same stage from the same
-  // view, so every state change in here reaches that window too — without
-  // this it would show the moment it was opened at, frozen.
-  useEffect(() => {
-    const view = viewRef.current;
-    if (pipRoot.current && view) pipRoot.current.render(<Stage view={view} pip />);
-  });
 
   /**
    * Click zones across the video surface: left two fifths rewind, middle fifth
@@ -1361,7 +1349,16 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
   };
 
-  viewRef.current = view;
+  // Keep the popped-out root in step. It renders the same stage from the same
+  // view, so every state change in here reaches that window too — without this
+  // it would show the moment it was opened at, frozen.
+  //
+  // Declared here rather than with the other effects because it renders from
+  // the view: carrying the view to an earlier effect meant writing a ref
+  // during render, which is what this replaces.
+  useEffect(() => {
+    if (pipRoot.current) pipRoot.current.render(<Stage view={view} pip />);
+  });
 
   // Popped out, the stage stays mounted here but hands the picture over and
   // steps behind the way back.

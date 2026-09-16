@@ -4,11 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import guide_sync
+from . import guide_sync, store
 from . import log_buffer as _log_buffer
-from . import store
 from .routes import auth, channels, iptv, recordings, resume, search, stream
-from .state import state, CONFIG_PATH, _run_sync
+from .state import CONFIG_PATH, _run_sync, state
 
 _log_buffer.install()
 
@@ -19,7 +18,7 @@ async def lifespan(app: FastAPI):
     try:
         await _run_sync(store.migrate_config, CONFIG_PATH)
         await _run_sync(store.migrate_recordings, recordings.cache.root)
-    except Exception as e:  # noqa: BLE001 - a failed import must not block start
+    except Exception as e:
         print(f"[db] migration failed: {e}", flush=True)
 
     # Restore the session from stored tokens. Previously this re-POSTed the
@@ -27,7 +26,7 @@ async def lifespan(app: FastAPI):
     # call that needs it, and its tokens are what every later request uses.
     try:
         await _run_sync(state.load_config)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"[state] restore failed: {e}", flush=True)
 
     # Falling back to a full login covers a first run and a device list that was
@@ -38,7 +37,7 @@ async def lifespan(app: FastAPI):
             if creds:
                 print("[state] no stored device tokens - authenticating", flush=True)
                 await state.login(*creds)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[state] login failed: {e}", flush=True)
 
     # A transcode marked RUNNING after a restart has no process behind it. Sweep

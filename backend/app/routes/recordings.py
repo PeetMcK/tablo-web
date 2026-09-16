@@ -92,7 +92,7 @@ async def list_recordings():
     complete = state.recordings_total > 0 and len(merged) >= expected
     try:
         await _run_sync(partial(store.index_recordings, prune=complete), merged)
-    except Exception as e:  # noqa: BLE001 - indexing must never break the library
+    except Exception as e:
         print(f"[search] indexing recordings failed: {e}", flush=True)
 
     return {
@@ -326,7 +326,7 @@ async def keep_recording(object_id: int):
         if image_id:
             body, _ = await state.fetch_device_image(image_id)
             cache.thumbnail_path(object_id).write_bytes(body)
-    except Exception as e:  # noqa: BLE001 - a missing thumbnail is cosmetic
+    except Exception as e:
         print(f"[keep] {object_id} thumbnail not saved: {e}")
 
     # Pinned entries fill completely and ignore the watcher-idle timeout.

@@ -3,6 +3,8 @@
 import asyncio
 import os
 import re
+import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -60,16 +62,18 @@ SWEEP_MARKER = TRANSCODE_DIR.name
 # and cause new sessions to time out waiting for their first playlist segment.
 def _startup_cleanup():
     try:
-        import signal
-        result = subprocess.run(["pgrep", "-f", SWEEP_MARKER], capture_output=True, text=True)
+        # `check=False`: pgrep exits 1 when it matches nothing, which is the
+        # ordinary case on a clean start, not a failure.
+        result = subprocess.run(
+            ["pgrep", "-f", SWEEP_MARKER], capture_output=True, text=True, check=False
+        )
         for pid in result.stdout.split():
             try:
-                import os; os.kill(int(pid), signal.SIGKILL)
+                os.kill(int(pid), signal.SIGKILL)
             except Exception:
                 pass
     except Exception:
         pass
-    import shutil
     for d in TRANSCODE_DIR.iterdir():
         try:
             shutil.rmtree(d)
@@ -92,7 +96,7 @@ def _kill(session_id: str) -> None:
         try:
             proc.kill()
             proc.wait(timeout=3)
-        except Exception:  # noqa: BLE001 - a dead process is the goal either way
+        except Exception:
             pass
 
 
@@ -113,7 +117,7 @@ def reap_idle_transcoders() -> list[str]:
         import shutil
         try:
             shutil.rmtree(TRANSCODE_DIR / sid)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         state.stop_session(sid)
     return stale
@@ -131,7 +135,7 @@ async def reap_forever():
             if killed := reap_idle_transcoders():
                 print(f"[stream] reaped {len(killed)} idle transcode(s): {killed}",
                       flush=True)
-        except Exception as e:  # noqa: BLE001 - a bad sweep must not end the loop
+        except Exception as e:
             print(f"[stream] reap failed: {e}", flush=True)
 
 

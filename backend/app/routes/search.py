@@ -30,5 +30,5 @@ async def search(
         # is also serving, for up to busy_timeout (5s), on every settled
         # keystroke from all three surfaces.
         return await _run_sync(search_mod.search, q, limit, wanted)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {e}")

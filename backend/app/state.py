@@ -5,14 +5,13 @@ import html
 import json
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 
 import httpx
-
 from tablo_api import TabloAuth, TabloClient
-from tablo_api.models import TabloDevice, TabloChannel, TabloStream
+from tablo_api.models import TabloChannel, TabloDevice, TabloStream
 
 from . import store
 
@@ -107,7 +106,7 @@ class AppState:
                 self.auth = TabloAuth(email, password)
                 self.email = email
                 self._restore_devices()
-        except Exception as e:  # noqa: BLE001 - never block startup on storage
+        except Exception as e:
             print(f"[state] could not load credentials: {e}", flush=True)
 
     def _restore_devices(self) -> None:
@@ -489,7 +488,7 @@ class AppState:
                     if r.status_code != 200:
                         return []
                     return (r.json() or {}).get("grid") or []
-                except Exception:  # noqa: BLE001 - one bad day is not a lost guide
+                except Exception:
                     return []
 
         pages = await asyncio.gather(*[fetch_day(d) for d in range(days)])
@@ -965,7 +964,7 @@ class AppState:
             async with sem:
                 try:
                     return await self.request_device("GET", path)
-                except Exception:  # noqa: BLE001 - one bad series is not a failed sync
+                except Exception:
                     return None
 
         results = [r for r in await asyncio.gather(*[fetch(p) for p in wanted]) if r]
@@ -1191,7 +1190,7 @@ class AppState:
         ]
         try:
             await _run_sync(store.save_guide, rows)
-        except Exception as e:  # noqa: BLE001 - caching must not fail the request
+        except Exception as e:
             print(f"[db] could not store guide: {e}", flush=True)
         return rows
 
@@ -1249,7 +1248,7 @@ class AppState:
             if age is None or age > self._GRID_CACHE_TTL:
                 return None
             rows = await _run_sync(store.load_guide)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[db] could not read guide: {e}", flush=True)
             return None
         if not rows or not any(r.get("airings") for r in rows):
@@ -1319,7 +1318,7 @@ class AppState:
         # Stored after streaming so the client is never kept waiting on a write.
         try:
             await _run_sync(store.save_guide, rows)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[db] could not store guide: {e}", flush=True)
 
     def stop_session(self, session_id: str) -> None:

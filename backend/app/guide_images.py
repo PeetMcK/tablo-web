@@ -42,7 +42,7 @@ async def get(image_id: int, fetch) -> bytes | None:
 
     try:
         data, _ = await fetch(image_id)
-    except Exception:  # noqa: BLE001 - a missing poster is not an error
+    except Exception:
         return None
 
     try:
