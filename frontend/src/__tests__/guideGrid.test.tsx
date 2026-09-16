@@ -252,3 +252,70 @@ describe("jumping the guide to a day and time", () => {
     }
   });
 });
+
+describe("channels you can still tune", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** 13.5 THENEST — a real OTA channel the account lists with no EPG data. */
+  const nest: GridChannel = {
+    identifier: "S999055912_013_05", call_sign: "THENEST", major: 13, minor: 5,
+    network: "THENEST", kind: "ota", display_name: "13.5 THENEST",
+    logo_url: null, airings: [],
+  };
+
+  it("offers a channel with no listings as something to watch", async () => {
+    // Without this the row is blank: nothing to click, and no way to reach the
+    // channel from the guide at all. Four channels on a real device are in
+    // this state.
+    const onPlay = vi.fn();
+    mockStream([nest]);
+    render(<GuideGridView onPlay={onPlay} />);
+
+    const cell = await screen.findByRole("button", { name: /THENEST 13\.5 — no programme information/ });
+    expect(cell).toHaveTextContent("Programming Not Available");
+
+    fireEvent.click(cell);
+    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: nest.identifier }));
+  });
+
+  it("does the same when every listing falls outside the window", async () => {
+    // The row is equally blank when the channel HAS airings and none can be
+    // drawn - all ended before the grid starts, or all too narrow. Keying off
+    // `airings.length` would miss this and leave a dead row.
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    mockStream([{
+      ...nest,
+      airings: [{
+        title: "Finished hours ago",
+        description: "",
+        start: new Date(top.getTime() - 6 * 3600_000).toISOString(),
+        duration: 3600,                      // ended long before the grid start
+        genres: [],
+        kind: null,
+      }],
+    }]);
+    render(<GuideGridView onPlay={() => {}} />);
+
+    expect(await screen.findByText("Programming Not Available")).toBeInTheDocument();
+  });
+
+  it("tunes from the channel tile, which is the affordance that survives", async () => {
+    // Programme cells are to become show info and recording management, so the
+    // tile is the one way to tune that does not change under the user.
+    const onPlay = vi.fn();
+    mockStream(grid());
+    render(<GuideGridView onPlay={onPlay} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Watch KPAX 8.1" }));
+    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: "ch1" }));
+  });
+
+  it("names the channel out loud, since a logo and a number do not", async () => {
+    mockStream(grid());
+    render(<GuideGridView onPlay={() => {}} />);
+
+    await screen.findByText("Survivor");
+    expect(screen.getByRole("button", { name: "Watch KECI 13.1" })).toBeInTheDocument();
+  });
+});

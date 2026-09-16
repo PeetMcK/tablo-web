@@ -46,6 +46,48 @@ function channelMatchesFilter(ch: GridChannel, f: ContentFilter): boolean {
   return ch.airings.some(a => airingMatchesFilter(a, f));
 }
 
+interface Placement {
+  air: Program;
+  left: number;
+  width: number;
+}
+
+/**
+ * Where each airing sits on the timeline, dropping the ones that cannot be drawn.
+ *
+ * Pulled out of the row so a row can ask whether it rendered anything. A
+ * channel looks empty for three different reasons — no listings at all, every
+ * listing already ended, or every listing too narrow to draw — and
+ * `airings.length` only catches the first. Reading the result instead catches
+ * all three, which is what decides whether the row gets a placeholder.
+ */
+function placeAirings(airings: Program[], startTime: number): Placement[] {
+  const out: Placement[] = [];
+  for (const air of airings) {
+    const offsetSecs = (new Date(air.start).getTime() - startTime) / 1000;
+    let left = (offsetSecs / 3600) * HOUR_WIDTH;
+    let width = (air.duration / 3600) * HOUR_WIDTH;
+
+    if (left + width < 0) continue;
+
+    // Clip programmes that started before the grid start so the title text
+    // stays visible at the left edge of the visible area.
+    if (left < 0) {
+      width += left;
+      left = 0;
+    }
+    if (width < 20) continue;
+
+    out.push({ air, left, width });
+  }
+  return out;
+}
+
+/** How a channel names itself out loud — a logo and a number announce nothing. */
+function channelLabel(ch: GridChannel): string {
+  return ch.major > 0 ? `${ch.call_sign} ${ch.major}.${ch.minor}` : ch.call_sign;
+}
+
 /**
  * Stream the grid, keeping whatever is already on screen until it is replaced.
  *
@@ -318,37 +360,64 @@ export function GuideGridView({ onPlay }: Props) {
 
       {/* Grid Rows */}
       <div className="flex flex-col">
-        {filteredGrid.map((ch) => (
+        {filteredGrid.map((ch) => {
+          const placed = placeAirings(ch.airings, startTime);
+          return (
           <div key={ch.identifier} className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition">
-            {/* Channel Info — frozen left. Opaque for the same reason the header
-                is: programmes scroll underneath it. */}
-            <div className="w-32 shrink-0 p-4 border-r border-border-subtle flex flex-col items-center justify-center gap-1.5 bg-surface-sunken sticky left-0 z-20">
+            {/* Channel Info — frozen left, and the tune control.
+                Opaque for the same reason the header is: programmes scroll
+                underneath it. `hover:bg-surface-raised` rather than the usual
+                `bg-fill`, which is a translucent wash and would let the
+                timeline show through the moment you pointed at it.
+
+                A button, not a tile with a click handler. This is the one way
+                to tune that survives: the programme cells are to become show
+                info and recording management, so the affordance has to be
+                unmistakable here first. Its visible content is a logo image
+                and a number, neither of which announces anything, hence the
+                label. */}
+            <button
+              onClick={() => onPlay(ch)}
+              aria-label={`Watch ${channelLabel(ch)}`}
+              className="w-32 shrink-0 p-4 border-r border-border-subtle flex flex-col items-center justify-center gap-1.5
+                         bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+            >
               <div className="w-12 h-10 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
                 <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
               </div>
               <span className="text-[11px] font-bold text-fg-muted tabular-nums">
                 {ch.major > 0 ? `${ch.major}.${ch.minor}` : "FAST"}
               </span>
-            </div>
+            </button>
 
             {/* Programs Timeline — no longer a scroller, just the surface the
                 absolutely-positioned airings are placed on. */}
             <div className="shrink-0 py-2 relative h-24" style={{ width: totalHours * HOUR_WIDTH }}>
-              {ch.airings.map((air, i) => {
+              {placed.length === 0 ? (
+                /* A channel with nothing drawable is still a channel you can
+                   watch — several carry no EPG data at all and were, until
+                   now, unreachable from the guide entirely. The label is
+                   `sticky` at the width of the frozen column so it stays in
+                   view however far along the timeline you have scrolled,
+                   rather than sitting at hour zero and disappearing. */
+                <button
+                  onClick={() => onPlay(ch)}
+                  aria-label={`Watch ${channelLabel(ch)} — no programme information`}
+                  className="absolute inset-y-2 left-0 flex items-center rounded-sm border-l border-border-subtle
+                             hover:bg-fill-soft transition-colors group text-left"
+                  style={{ width: totalHours * HOUR_WIDTH - 4 }}
+                >
+                  <span
+                    className="sticky px-4 text-[11px] font-medium uppercase tracking-widest whitespace-nowrap
+                               text-fg-faint group-hover:text-fg-muted transition-colors"
+                    style={{ left: CHANNEL_W }}
+                  >
+                    Programming Not Available
+                  </span>
+                </button>
+              ) : placed.map(({ air, left, width }, i) => {
                 const airStart = new Date(air.start).getTime();
-                const offsetSecs = (airStart - startTime) / 1000;
-                let left = (offsetSecs / 3600) * HOUR_WIDTH;
-                let width = (air.duration / 3600) * HOUR_WIDTH;
-
-                if (left + width < 0) return null;
-
-                // Clip programs that started before the grid start so the
-                // title text stays visible at the left edge of the visible area.
-                if (left < 0) {
-                  width += left;
-                  left = 0;
-                }
-                if (width < 20) return null;
 
                 // Progress through this airing (0–100)
                 const progress = air.duration > 0
@@ -382,7 +451,8 @@ export function GuideGridView({ onPlay }: Props) {
 
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* One "now" line for the whole grid, not one per row. It lives on the
