@@ -9,6 +9,7 @@ import { GuideGridView } from "./GuideGridView";
 import { ProfileMenu } from "./ProfileMenu";
 import { PageHeader } from "./PageHeader";
 import { SearchDropdown } from "./SearchDropdown";
+import { SearchResultsView } from "./SearchResultsView";
 import { CommandPalette } from "./CommandPalette";
 import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
@@ -91,7 +92,14 @@ export function ChannelGrid({ onLogout }: Props) {
   // useState rather than a ref: the value is needed during render.
   const [initialRoute] = useState(parseRoute);
   const [playing, setPlaying] = useState<GuideChannel | null>(null);
-  const [filter, setFilter] = useState("");
+  // Seeded from the hash so a deep link to `#/search?q=broncos` lands on
+  // the same query rather than an empty box. Only meaningful when the
+  // route opened directly on the search tab — `writeRoute` only ever
+  // writes `q` for that tab (see the effect below), so `initialRoute.q`
+  // is otherwise noise.
+  const [filter, setFilter] = useState(() =>
+    initialRoute.tab === "search" ? initialRoute.q ?? "" : ""
+  );
   // Whether the results dropdown should be showing. Deliberately NOT derived
   // from the input's real DOM focus state: the dropdown's own mousedown guard
   // (below) keeps the input DOM-focused through a click on a result, so a
@@ -441,6 +449,27 @@ export function ChannelGrid({ onLogout }: Props) {
                 now={now}
               />
               <LibraryView />
+            </div>
+          )}
+
+          {activeTab === "search" && (
+            <div className="flex flex-col">
+              <PageHeader
+                title="Search"
+                subtitle="Every channel, program and recording, in one place"
+                now={now}
+              />
+              {/* Shares `filter` with the topbar box above rather than
+                  owning a second query state — the effect that writes
+                  `route.q` already keys off this same value. Activation
+                  goes through `handleSearchActivate`, the same path the
+                  dropdown and palette use, so this surface cannot drift
+                  from their pendingChannel/goToTab handling. */}
+              <SearchResultsView
+                query={filter}
+                onQueryChange={setFilter}
+                onActivate={handleSearchActivate}
+              />
             </div>
           )}
         </main>

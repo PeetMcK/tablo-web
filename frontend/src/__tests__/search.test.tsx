@@ -348,3 +348,40 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+import { SearchResultsView } from "../components/SearchResultsView";
+
+describe("SearchResultsView", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("filters to one kind when a chip is chosen", async () => {
+    const spy = vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SearchResultsView query="broncos" onQueryChange={() => {}} onActivate={() => {}} />
+      </QueryClientProvider>,
+    );
+    // GROUPED's recording and airing items share a title (see the
+    // ChannelGrid tests above for the same fixture quirk) — the "All" chip
+    // renders both groups, so wait for both rather than a single match.
+    await screen.findAllByText("Broncos at Chiefs");
+
+    fireEvent.click(screen.getByRole("button", { name: /^guide$/i }));
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith("broncos",
+        expect.objectContaining({ kinds: ["airing"] })),
+    );
+  });
+
+  it("reports how far back the guide can be trusted", async () => {
+    vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SearchResultsView query="broncos" onQueryChange={() => {}} onActivate={() => {}} />
+      </QueryClientProvider>,
+    );
+    // Distinguishes "did not air" from "we were not watching".
+    expect(await screen.findByText(/history since/i)).toBeInTheDocument();
+  });
+});
