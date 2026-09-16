@@ -383,17 +383,17 @@ export function LibraryView() {
                       {rec.cache_state !== "absent" && (
                         <button
                           onClick={() => setConfirmation({
-                            title: `Delete the downloaded copy of "${rec.title ?? "this recording"}"?`,
+                            title: `Delete the cached video of "${rec.title ?? "this recording"}"?`,
                             body: rec.offline_only
                               ? "The Tablo no longer has this recording. Deleting it here removes the only copy."
-                              : "It can be downloaded again from the Tablo.",
-                            confirmLabel: "Delete copy",
+                              : "It can be cached again from the Tablo.",
+                            confirmLabel: "Delete cache",
                             danger: true,
                             onConfirm: () => control.mutate({ id: rec.object_id, action: "delete" }),
                           })}
                           disabled={control.isPending}
-                          title="Delete downloaded copy"
-                          aria-label={`Delete downloaded copy of ${rec.title ?? "recording"}`}
+                          title="Delete cached video"
+                          aria-label={`Delete cached video of ${rec.title ?? "recording"}`}
                           className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
                                      text-white/40 hover:bg-red-500/20 hover:text-red-300 transition disabled:opacity-30"
                         >
@@ -410,7 +410,7 @@ export function LibraryView() {
                             title: `Stop keeping "${rec.title ?? "this recording"}" offline?`,
                             body: rec.offline_only
                               ? "The Tablo no longer has this recording, so the copy cannot be remade once it is reclaimed."
-                              : "The downloaded copy stays until space is needed, then it is reclaimed automatically.",
+                              : "The cached video stays until space is needed, then it is reclaimed automatically.",
                             confirmLabel: "Stop keeping",
                             danger: rec.offline_only,
                             onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
