@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { GuideGridView } from "../components/GuideGridView";
 import { api } from "../api/tablo";
@@ -150,5 +150,88 @@ describe("GuideGridView", () => {
     fireEvent.scroll(header, { target: { scrollLeft: 96 } });
 
     for (const row of rows) expect(row.scrollLeft).toBe(96);
+  });
+});
+
+describe("jumping the guide to a day and time", () => {
+  // Pinned to an evening. Which dayparts are behind the grid depends on the
+  // hour it opens at, so a real clock would make these pass or fail by the
+  // time of day they happened to run.
+  beforeEach(() => {
+    const evening = new Date();
+    evening.setHours(20, 0, 0, 0);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(evening);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** A guide running two full days from the top of this hour. */
+  const TWO_DAYS = 48;
+
+  it("scrolls every lane to the hour a cell names", async () => {
+    mockStream(longChannel(TWO_DAYS));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    fireEvent.click(screen.getByRole("button", { name: /·/ }));
+
+    // Tomorrow evening: the jump this control exists for, and the one a day
+    // picker cannot express — it is seven screens along from here.
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const label = new RegExp(
+      `${tomorrow.toLocaleDateString([], { weekday: "short" })}.*Prime`, "i");
+    fireEvent.click(screen.getByRole("button", { name: label }));
+
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    const prime = new Date(tomorrow);
+    prime.setHours(19, 0, 0, 0);
+    const expected = ((prime.getTime() - top.getTime()) / 3600_000) * 400;
+
+    for (const lane of lanes(container)) expect(lane.scrollLeft).toBe(expected);
+  });
+
+  it("brings the guide back to the live edge, with the current programme intact", async () => {
+    mockStream(longChannel(TWO_DAYS));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const [header, ...rows] = lanes(container);
+    fireEvent.scroll(rows[0], { target: { scrollLeft: 9000 } });
+    expect(header.scrollLeft).toBe(9000);
+
+    fireEvent.click(screen.getByRole("button", { name: "NOW" }));
+
+    // Fifteen minutes short of now, so the programme in progress is not
+    // clipped at the left edge. The grid starts at the top of the hour, so
+    // before a quarter past, that lead falls behind the start and clamps to 0.
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    const lead = Date.now() - 15 * 60_000;
+    const expected = Math.max(0, ((lead - top.getTime()) / 3600_000) * 400);
+    for (const lane of lanes(container)) expect(lane.scrollLeft).toBeCloseTo(expected, 0);
+  });
+
+  it("refuses a stretch the timeline cannot reach", async () => {
+    mockStream(longChannel(TWO_DAYS));
+    render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    fireEvent.click(screen.getByRole("button", { name: /·/ }));
+
+    // The grid opens at 8pm here and runs forward, so this morning and this
+    // afternoon are behind it. A cell that looked live and did nothing would
+    // be worse than one that says it cannot.
+    const today = new Date();
+    const date = `${today.getMonth() + 1}/${today.getDate()}`;
+    for (const part of ["Morning", "Afternoon"]) {
+      const cell = screen.getByRole("button", { name: `Today ${date}, ${part}` });
+      expect(cell).toBeDisabled();
+    }
   });
 });

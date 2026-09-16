@@ -1,11 +1,25 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { api, type GridChannel, type Program } from "../api/tablo";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import { coveredHours, jumpDays, positionLabel } from "../lib/guideJump";
 import { ChannelLogo } from "./ChannelLogo";
+import { GuideJump } from "./GuideJump";
 
 interface Props {
   onPlay: (channel: GridChannel) => void;
 }
+
+const HOUR_WIDTH = 400; // px per hour
+const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
+
+/**
+ * How far before the live edge "back to now" lands.
+ *
+ * Scrolling exactly to now pins the red line to the left edge and clips the
+ * programme in progress at its start - which is the one the viewer is most
+ * likely looking for.
+ */
+const NOW_LEAD_MS = 15 * 60_000;
 
 
 function airingMatchesFilter(air: Program, f: ContentFilter): boolean {
@@ -85,9 +99,18 @@ export function GuideGridView({ onPlay }: Props) {
   // scroll frame, and re-rendering the whole guide to move it would stutter.
   const lanes = useRef(new Set<HTMLDivElement>());
   const offset = useRef(0);
+  /** Which hour column the guide is scrolled to, for the jump control's label. */
+  const [hourAt, setHourAt] = useState(0);
 
   const syncLanes = useCallback((from: HTMLDivElement) => {
     offset.current = from.scrollLeft;
+    // The jump control names where the guide is, which needs a render to
+    // change - but this runs on every scroll frame, and re-rendering the guide
+    // per frame is exactly what the ref above exists to avoid. Quantising to
+    // the hour column makes it at most one render per column crossed, and the
+    // label only ever names an hour anyway.
+    const hour = Math.floor(from.scrollLeft / HOUR_WIDTH);
+    setHourAt((held) => (held === hour ? held : hour));
     for (const lane of lanes.current) {
       // Assigning an unchanged scrollLeft still fires `scroll` in some browsers,
       // which would bounce straight back here; skipping the source and the
@@ -116,8 +139,6 @@ export function GuideGridView({ onPlay }: Props) {
     return d.getTime();
   }, []);
 
-  const HOUR_WIDTH = 400; // px per hour
-  const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 
   /**
    * How far the timeline runs, taken from the listings themselves.
@@ -162,6 +183,45 @@ export function GuideGridView({ onPlay }: Props) {
   const nowLeft = ((now - startTime) / 1000 / 3600) * HOUR_WIDTH;
   const nowVisible = nowLeft >= 0 && nowLeft <= HOUR_WIDTH * totalHours;
 
+  /**
+   * Put an instant at the left edge of the guide.
+   *
+   * `syncLanes` from the other direction: same lanes, same shared offset, but
+   * driven by a chosen time rather than by a pointer.
+   */
+  /**
+   * Put an instant at the left edge of the guide.
+   *
+   * `syncLanes` from the other direction — same lanes, same shared offset,
+   * driven by a chosen time rather than by a pointer. Written as a plain
+   * handler rather than a `useCallback`: moving the lanes is a write to the
+   * DOM through a ref, which belongs to an event and not to a memoized value.
+   */
+  const scrollToTime = (at: number) => {
+    offset.current = Math.max(0, ((at - startTime) / 3600_000) * HOUR_WIDTH);
+    for (const lane of lanes.current) {
+      // Same write as `syncLanes` above, and `react-hooks/immutability` allows
+      // it there: it objects here only because this handler is passed to a
+      // component rather than to a DOM element, which puts the ref inside
+      // props the compiler memoizes. Scrolling a lane is an imperative move on
+      // a node, not a value anything renders from.
+      // eslint-disable-next-line react-hooks/immutability
+      if (lane.scrollLeft !== offset.current) lane.scrollLeft = offset.current;
+    }
+    setHourAt(Math.floor(offset.current / HOUR_WIDTH));
+  };
+
+  /** Which hours hold listings, so the jump control can refuse the empty ones. */
+  const covered = useMemo(
+    () => coveredHours(grid.flatMap(ch => ch.airings ?? [])),
+    [grid],
+  );
+
+  const jumpRows = useMemo(
+    () => jumpDays({ startTime, totalHours, covered, now }),
+    [startTime, totalHours, covered, now],
+  );
+
   const filteredGrid = contentFilter === "all" ? grid : grid.filter(ch => channelMatchesFilter(ch, contentFilter));
 
   if (isLoading) {
@@ -175,7 +235,8 @@ export function GuideGridView({ onPlay }: Props) {
 
   return (
     <div className="flex flex-col gap-4">
-    {/* Content type filter chips */}
+    {/* Content type filter chips, and the jump control in the space they leave */}
+    <div className="flex items-center gap-2">
     <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
       {CONTENT_FILTERS.map(f => (
         <button
@@ -195,6 +256,16 @@ export function GuideGridView({ onPlay }: Props) {
           <span>{f.label}</span>
         </button>
       ))}
+    </div>
+
+      <div className="flex-1" />
+
+      <GuideJump
+        days={jumpRows}
+        label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}
+        onJump={scrollToTime}
+        onNow={() => scrollToTime(Date.now() - NOW_LEAD_MS)}
+      />
     </div>
 
     <div className="flex flex-col border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">
