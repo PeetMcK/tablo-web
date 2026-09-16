@@ -149,7 +149,9 @@ describe("the player's chrome", () => {
     const { container } = renderLive();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
 
-    const pipDoc = document.implementation.createHTMLDocument("pip");
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const pipDoc = frame.contentDocument!;
     const pipWindow = {
       document: pipDoc,
       close: vi.fn(),
@@ -170,8 +172,8 @@ describe("the player's chrome", () => {
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 
-    // The tab keeps the way back, and nothing else.
-    expect(screen.getByTitle("Close picture-in-picture")).toBeInTheDocument();
+    // And the tab is no longer holding it: one element, one home.
+    expect(container.querySelector("video")).toBeNull();
     // Placement is the browser's to remember.
     expect(requestWindow).toHaveBeenCalledWith();
   });
@@ -183,7 +185,9 @@ describe("the player's chrome", () => {
     const { container } = renderLive();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
 
-    const pipDoc = document.implementation.createHTMLDocument("pip");
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const pipDoc = frame.contentDocument!;
     const pipWindow = {
       document: pipDoc,
       close: vi.fn(),

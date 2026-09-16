@@ -206,6 +206,7 @@ interface PlayerView {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   rootRef: React.RefObject<HTMLDivElement | null>;
   videoHostRef: React.RefObject<HTMLDivElement | null>;
+  placeVideo: (host: HTMLDivElement) => void;
   barRef: React.RefObject<HTMLDivElement | null>;
   showControls: boolean;
   resetHideTimer: () => void;
@@ -301,7 +302,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [openAt] = useState(startAt);
   const [openPlaying] = useState(autoPlay);
 
-  const { load, destroy, error: playerError } = usePlayer(videoRef, {
+  const { load, destroy, reattach, error: playerError } = usePlayer(videoRef, {
     // Live keeps the DVR window buffered so rewind has something to land on;
     // a cached recording is fully addressable server-side, so nothing needs
     // holding in memory.
@@ -991,7 +992,44 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * attachment; the window is furnished with the picture and nothing else,
    * which is what the browser's own version showed too.
    */
+  /**
+   * Whether the picture should be playing once it lands in its new home.
+   *
+   * Captured at the moment the move is asked for, because by the time it has
+   * happened the answer is gone: unmounting the stage takes the element out of
+   * the document, which queues a pause, so anything reading `paused` on the
+   * other side is reading the consequence of the move rather than the state
+   * the viewer chose.
+   */
+  const resumeAfterMove = useRef(false);
+
+  /**
+   * Put the one video element in `host`, and make it work there.
+   *
+   * Three things, and all three are needed. The move itself, which no React
+   * root can do because the element belongs to none of them. Rebinding the
+   * stream, because hls.js publishes its MediaSource as a `blob:` URL owned
+   * by the document that made it — carried across and back, that URL stops
+   * resolving and the next append kills the stream outright. And resuming,
+   * because taking a media element out of a document pauses it.
+   */
+  const placeVideo = useCallback((host: HTMLDivElement) => {
+    const video = videoRef.current;
+    if (!video || video.parentElement === host) return;
+    host.append(video);
+    reattach();
+    if (!resumeAfterMove.current) return;
+    resumeAfterMove.current = false;
+    // On a later task: the pause the move causes is queued too, and a play()
+    // in this turn would simply be undone by it.
+    setTimeout(() => {
+      video.play().catch((e) => log.warn("resume after move refused", e));
+    }, 0);
+  }, [reattach]);
+
   const pipWindow = useRef<Window | null>(null);
+  /** The live shortcut handler, so a new pop-out can be given it too. */
+  const keyHandler = useRef<((e: KeyboardEvent) => void) | null>(null);
   const pipRoot = useRef<Root | null>(null);
   /**
    * The latest view, for the popped-out root to render.
@@ -1008,6 +1046,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
     } }).documentPictureInPicture;
     if (!video || !host || !dpip) return;
+
+    // Asked for now, while the answer is still true. Both directions go
+    // through here, and the window's own close button is caught below.
+    resumeAfterMove.current = !video.paused;
 
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
@@ -1041,12 +1083,17 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       const mount = w.document.createElement("div");
       w.document.body.append(mount);
       pipRoot.current = createRoot(mount);
+      if (keyHandler.current) w.addEventListener("keydown", keyHandler.current);
       setPoppedOut(true);
 
       // However it closes — our button, the window's own, the tab going away
       // — the root has to come down and the video come home, or the player is
       // left with nothing to show.
       w.addEventListener("pagehide", () => {
+        // Closed from the window itself rather than our button, so the state
+        // has not been captured yet — and the root coming down is what takes
+        // the element out of the document and pauses it.
+        resumeAfterMove.current = !video.paused;
         pipRoot.current?.unmount();
         pipRoot.current = null;
         pipWindow.current = null;
@@ -1072,7 +1119,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   // this it would show the moment it was opened at, frozen.
   useEffect(() => {
     const view = viewRef.current;
-    if (pipRoot.current && view) pipRoot.current.render(<Stage view={view} />);
+    if (pipRoot.current && view) pipRoot.current.render(<Stage view={view} owns />);
   });
 
   /**
@@ -1161,8 +1208,17 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
         return;
       }
-      if (e.key === "Escape" || e.key === "q") onClose();
+      // Escape dismisses the nearest thing, and while the picture is out in
+      // its own window that is the window — not the player behind it. Closing
+      // the player from here would take away a pop-out the viewer was
+      // watching and the programme with it.
+      if (e.key === "Escape" || e.key === "q") {
+        if (poppedOut) togglePictureInPicture();
+        else onClose();
+      }
       if (e.key === "f") enterFullscreen();
+      // Symmetrical with the button: out if it is in, in if it is out.
+      if (e.key === "p") togglePictureInPicture();
       if (e.key === "m") toggleMute();
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
       if (e.key === "ArrowLeft") skip(-10);
@@ -1170,8 +1226,18 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       resetHideTimer();
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer]);
+    // The pop-out is a window of its own: while it has focus its keys go to
+    // it and never reach this one, so it is given the same handler. Added
+    // here for a window already open, and at open time for one that is not.
+    pipWindow.current?.addEventListener("keydown", handler);
+    keyHandler.current = handler;
+    return () => {
+      window.removeEventListener("keydown", handler);
+      pipWindow.current?.removeEventListener("keydown", handler);
+      if (keyHandler.current === handler) keyHandler.current = null;
+    };
+  }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer,
+      poppedOut, togglePictureInPicture]);
 
   const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
@@ -1245,7 +1311,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * keeps the markup itself identical in both places.
    */
   const view: PlayerView = {
-    videoRef, rootRef, videoHostRef, barRef,
+    videoRef, rootRef, videoHostRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
@@ -1259,27 +1325,34 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   viewRef.current = view;
 
-  // Popped out, the stage is not in this tree at all: the window's own root
-  // renders it. What stays here is the way back.
-  if (poppedOut) {
-    return (
-      <div className="dark fixed inset-0 z-50 bg-media flex flex-col items-center
-                      justify-center gap-4">
-        <button
-          onClick={togglePictureInPicture}
-          className="w-20 h-20 rounded-full glass text-player-fg flex items-center
-                     justify-center hover:bg-fill transition"
-          title="Close picture-in-picture"
-          aria-label="Close picture-in-picture"
-        >
-          <PictureInPictureExit className="w-9 h-9" aria-hidden />
-        </button>
-        <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
-      </div>
-    );
-  }
-
-  return <Stage view={view} />;
+  // Popped out, the stage stays mounted here but hands the picture over and
+  // steps behind the way back.
+  //
+  // Mounted, not removed: unmounting it takes the host out of the document,
+  // and with nowhere for the element to be between one root's commit and the
+  // other's the browser pauses it — a media element removed from a document
+  // is paused on the next task unless it is back in one by then. Two hosts,
+  // both always present, make every hand-over a move rather than a removal.
+  return (
+    <>
+      {poppedOut && (
+        <div className="dark fixed inset-0 z-[60] bg-media flex flex-col items-center
+                        justify-center gap-4">
+          <button
+            onClick={togglePictureInPicture}
+            className="w-20 h-20 rounded-full glass text-player-fg flex items-center
+                       justify-center hover:bg-fill transition"
+            title="Close picture-in-picture"
+            aria-label="Close picture-in-picture"
+          >
+            <PictureInPictureExit className="w-9 h-9" aria-hidden />
+          </button>
+          <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
+        </div>
+      )}
+      <Stage view={view} owns={!poppedOut} />
+    </>
+  );
 }
 
 /**
@@ -1291,9 +1364,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
  * into another document fires them where nothing is listening. Everything in
  * here is presentation; the state and the handlers belong to VideoPlayer.
  */
-function Stage({ view }: { view: PlayerView }) {
+function Stage({ view, owns }: { view: PlayerView; owns: boolean }) {
   const {
-    videoRef, rootRef, videoHostRef, barRef,
+    rootRef, videoHostRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
@@ -1367,31 +1440,28 @@ function Stage({ view }: { view: PlayerView }) {
   const lent = (zone: SurfaceZone) => (hoverZone === zone ? "bg-fill" : "");
 
   // Whichever root mounted this stage, the one video element belongs in its
-  // host. Done here rather than in VideoPlayer so it cannot race the second
-  // root's commit: by the time this runs, the host below exists.
+  // host. Called from here rather than done in VideoPlayer so it cannot race
+  // the other root's commit: by the time this runs, the host below exists.
   useEffect(() => {
-    const video = videoRef.current;
     const host = videoHostRef.current;
-    if (!video || !host || video.parentElement === host) return;
-
-    // Carrying the picture between windows stops it, and not by our choice:
-    // taking a media element out of a document queues a task that pauses it,
-    // and moving one is a removal followed by an insertion. So the state is
-    // read before the move and put back after.
-    //
-    // Restored on a later task, because that pause is queued too — calling
-    // play() here would be undone by a pause that has not run yet.
-    const wasPlaying = !video.paused;
-    host.append(video);
-    if (!wasPlaying) return;
-    // Unconditionally, rather than only when it reads as paused: whether that
-    // queued pause has run yet is not knowable from here, and asking an
-    // already-playing element to play is nothing.
-    const resume = setTimeout(() => {
-      video.play().catch((e) => log.warn("resume after move refused", e));
-    }, 0);
-    return () => clearTimeout(resume);
+    // One element, one home. Both stages stay mounted so the picture is never
+    // between documents — that gap is what pauses it — but only the one the
+    // viewer is looking at may claim it, or the two effects take it from each
+    // other on every render.
+    if (owns && host) placeVideo(host);
   });
+
+  // Not the stage the viewer is looking at: all it owes anyone is a host for
+  // the picture to come back to. Rendering its chrome as well would put a
+  // second set of controls and a second close button in the document — the
+  // duplicates would answer queries, take clicks, and read as a bug.
+  if (!owns) {
+    return (
+      <div className="dark fixed inset-0 z-50 bg-media flex items-center justify-center">
+        <div ref={videoHostRef} className="w-full h-full" />
+      </div>
+    );
+  }
 
   return (
     // `dark`, unconditionally. The player is the one surface that does not
