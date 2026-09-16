@@ -55,7 +55,9 @@ async def lifespan(app: FastAPI):
     async def _fetch_guide():
         return await state.get_grid_guide(max_airings=15000, concurrency=guide_sync.SYNC_CONCURRENCY)
 
-    guide_task = asyncio.create_task(guide_sync.run_forever(_fetch_guide))
+    guide_task = asyncio.create_task(
+        guide_sync.run_forever(_fetch_guide, state.sync_series)
+    )
 
     yield
 

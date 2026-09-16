@@ -74,13 +74,16 @@ async def backfill_index() -> int:
     return sum(len(ch.get("airings") or []) for ch in rows)
 
 
-async def sync_once(fetch) -> int:
+async def sync_once(fetch, sync_series=None) -> int:
     """Run one sync. Returns airings seen; never raises.
 
     `fetch` is an awaitable returning grid rows, injected so this is testable
     without a device. In production `fetch` is `state.get_grid_guide`, which
     already persists the rows itself - this only prunes and records coverage,
     so the guide is not written to SQLite twice per cycle.
+
+    `sync_series` is injected the same way, and is optional so every existing
+    caller and test keeps working without one.
 
     Every step that touches the database is guarded independently: starting
     the run, recording success, and recording failure can each fail on their
@@ -99,6 +102,19 @@ async def sync_once(fetch) -> int:
         rows = await fetch()
         seen = sum(len(ch.get("airings") or []) for ch in rows)
         removed = await asyncio.to_thread(store.prune_guide)
+
+        # Series capture rides the background sync rather than the interactive
+        # guide path - see docs/superpowers/specs/2026-09-16-show-info-design.md.
+        # Guarded on its own: the guide is the point, and losing a sync's
+        # coverage record over a missing poster would be a poor trade.
+        try:
+            paths = await asyncio.to_thread(store.airing_series_paths)
+            fetched = await sync_series(paths) if sync_series else 0
+            if fetched:
+                print(f"[guide] captured {fetched} series", flush=True)
+        except Exception as e:  # noqa: BLE001 - metadata must not fail the sync
+            print(f"[guide] series capture failed: {type(e).__name__}: {e}", flush=True)
+
         await asyncio.to_thread(_finish_run, run_id, seen)
         print(f"[guide] synced {seen} airings, pruned {removed}", flush=True)
         return seen
@@ -115,7 +131,7 @@ async def sync_once(fetch) -> int:
         return 0
 
 
-async def run_forever(fetch) -> None:
+async def run_forever(fetch, sync_series=None) -> None:
     """Index what is already stored, then sync at startup and every SYNC_HOURS."""
     try:
         indexed = await backfill_index()
@@ -129,7 +145,7 @@ async def run_forever(fetch) -> None:
         # line of defence: a single unlucky exception must not silently kill
         # background syncing for the rest of the process's life.
         try:
-            await sync_once(fetch)
+            await sync_once(fetch, sync_series)
         except Exception as e:  # noqa: BLE001 - see above
             print(f"[guide] sync_once raised unexpectedly: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()

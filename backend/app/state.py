@@ -19,6 +19,10 @@ from . import store
 # natively on macOS - the only way to reach VideoToolbox - needs it elsewhere.
 CONFIG_PATH = Path(os.environ.get("TABLO_CONFIG_PATH", "/data/config.json"))
 
+# Matches guide_sync's own concurrency: this runs on the same background loop
+# and shares the device with playback, which saturates around 10x realtime.
+SERIES_SYNC_CONCURRENCY = int(os.environ.get("TABLO_SERIES_SYNC_CONCURRENCY", "8"))
+
 _lock = Lock()
 
 
@@ -742,6 +746,63 @@ class AppState:
         vd = data.get("video_details") or {}
         ad = data.get("airing_details") or {}
         return path, int(vd.get("duration") or ad.get("duration") or 0)
+
+    @staticmethod
+    def _series_row(data: dict) -> dict:
+        """One series record, as the mirror stores it."""
+        s = data.get("series") or {}
+        keep = data.get("keep") or {}
+
+        def image_id(key: str):
+            return (s.get(key) or {}).get("image_id")
+
+        return {
+            "path": data.get("path"),
+            "identifier": data.get("identifier"),
+            "title": s.get("title"),
+            "description": s.get("description"),
+            "genres": s.get("genres") or [],
+            "rating": s.get("series_rating"),
+            "orig_air_date": s.get("orig_air_date"),
+            "episode_runtime": s.get("episode_runtime"),
+            "cast": s.get("cast") or [],
+            "cover_image_id": image_id("cover_image"),
+            "thumbnail_image_id": image_id("thumbnail_image"),
+            "background_image_id": image_id("background_image"),
+            # Captured, not yet exposed - see docs/tablo-device-api.md.
+            "schedule_rule": data.get("schedule_rule"),
+            "keep_rule": keep.get("rule"),
+            "keep_count": keep.get("count"),
+        }
+
+    async def sync_series(self, paths: list[str]) -> int:
+        """Fetch and store the series we do not already have. Never raises.
+
+        Runs on the background sync, never on the interactive guide path: a
+        cold guide load spans ~350 distinct series, and 350 round trips is the
+        wrong thing to put in front of someone waiting for the grid.
+        """
+        if self.active_device is None:
+            return 0
+        wanted = await _run_sync(store.series_needing_refresh, paths)
+        if not wanted:
+            return 0
+
+        sem = asyncio.Semaphore(SERIES_SYNC_CONCURRENCY)
+
+        async def fetch(path: str):
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:  # noqa: BLE001 - one bad series is not a failed sync
+                    return None
+
+        results = [r for r in await asyncio.gather(*[fetch(p) for p in wanted]) if r]
+        if not results:
+            return 0
+        rows = [AppState._series_row(r) for r in results]
+        await _run_sync(store.save_series, rows)
+        return len(rows)
 
     @staticmethod
     def _airing_row(a: dict) -> dict:

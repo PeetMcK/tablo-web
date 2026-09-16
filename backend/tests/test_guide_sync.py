@@ -256,7 +256,7 @@ def test_run_forever_survives_a_sync_once_that_raises(monkeypatch):
     class StopTest(BaseException):
         pass
 
-    async def boom(fetch):
+    async def boom(fetch, sync_series=None):
         calls["n"] += 1
         raise RuntimeError("boom")
 
@@ -374,3 +374,53 @@ def test_only_unknown_or_stale_series_need_refreshing():
 
 def test_an_unknown_series_reads_as_none():
     assert store.load_series("/guide/series/nope") is None
+
+
+def test_series_capture_fetches_only_what_is_missing(monkeypatch):
+    """A cold guide load spans ~350 series and a full guide ~1,100.
+
+    Re-fetching them every sync would be most of the sync's cost for data that
+    effectively never changes.
+    """
+    from app.state import AppState
+
+    store.save_series([_series("/guide/series/6408")])
+
+    asked = []
+
+    async def fake_request(method, path, body=""):
+        asked.append(path)
+        return {
+            "path": path, "identifier": "X", "object_id": 1,
+            "schedule": {"rule": "none"}, "schedule_rule": "none",
+            "keep": {"rule": "none", "count": None},
+            "series": {"title": "Fetched", "genres": [], "cast": [],
+                       "description": None, "series_rating": None,
+                       "orig_air_date": None, "episode_runtime": None,
+                       "cover_image": {"image_id": 1},
+                       "thumbnail_image": None, "background_image": None},
+        }
+
+    st = AppState()
+    st.active_device = object()
+    monkeypatch.setattr(st, "request_device", fake_request)
+
+    saved = asyncio.run(st.sync_series(["/guide/series/6408", "/guide/series/7777"]))
+
+    assert asked == ["/guide/series/7777"]      # the known one is skipped
+    assert saved == 1
+    assert store.load_series("/guide/series/7777")["title"] == "Fetched"
+
+
+def test_a_failing_series_fetch_does_not_fail_the_sync(monkeypatch):
+    """The guide is the point; artwork and ratings are not worth losing it over."""
+    from app.state import AppState
+
+    async def boom(method, path, body=""):
+        raise RuntimeError("device unreachable")
+
+    st = AppState()
+    st.active_device = object()
+    monkeypatch.setattr(st, "request_device", boom)
+
+    assert asyncio.run(st.sync_series(["/guide/series/7777"])) == 0
