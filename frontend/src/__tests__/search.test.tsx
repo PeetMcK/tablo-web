@@ -158,6 +158,25 @@ describe("SearchDropdown", () => {
 });
 
 import { ChannelGrid } from "../components/ChannelGrid";
+import type { GuideChannel } from "../api/tablo";
+
+const LIVE_ITEM: SearchItem = {
+  kind: "channel", ref: "chA", title: "KPAX Test", subtitle: null, channel: "8.1 KPAX",
+  start_epoch: null, duration: 0,
+  target: { tab: "live", watch: "chA" }, recorded: null,
+};
+
+const LIVE_GROUPED: SearchResponse = {
+  query: "kpax",
+  coverage: { since: null, last_sync: null },
+  groups: [{ kind: "channel", total: 1, items: [LIVE_ITEM] }],
+};
+
+/** What the guide stream eventually delivers for `LIVE_ITEM.target.watch`. */
+const PENDING_CHANNEL: GuideChannel = {
+  identifier: "chA", call_sign: "KPAX", major: 8, minor: 1, network: "PBS",
+  kind: "ota", display_name: "KPAX Test", logo_url: null, current_program: null,
+};
 
 function mockChannelGridApis() {
   vi.spyOn(api, "status").mockResolvedValue({
@@ -228,6 +247,51 @@ describe("ChannelGrid search wiring", () => {
 
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("does not auto-start playback for a channel queued before leaving Live TV", async () => {
+    vi.spyOn(api, "status").mockResolvedValue({
+      authenticated: true, email: "viewer@example.com", devices: [], active_sid: null, direct_origin: null,
+    });
+    vi.spyOn(api, "guideGridStream").mockImplementation(async function* () {});
+
+    // The guide stream only ever delivers the channel once this test says
+    // so — that is what lets the channel's arrival be placed AFTER the tab
+    // has already been left and returned to, which is the exact ordering
+    // the bug needed.
+    let deliver: (() => void) | undefined;
+    vi.spyOn(api, "guideStream").mockImplementation(async function* (signal?: AbortSignal) {
+      await new Promise<void>(resolve => { deliver = resolve; });
+      if (signal?.aborted) return;
+      yield PENDING_CHANNEL;
+    });
+
+    vi.spyOn(api, "search").mockResolvedValue(LIVE_GROUPED);
+    renderChannelGrid();
+
+    // Queue a live channel that is not yet in `channels` (the stream above
+    // has not delivered anything).
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "kpax" } });
+    fireEvent.click(await screen.findByRole("option"));
+
+    // Leave Live TV before the stream ever delivers the channel — this is
+    // the moment the queued selection must be forgotten.
+    fireEvent.click(screen.getByRole("button", { name: "Guide" }));
+
+    // Return to Live TV. This restarts the guide stream from scratch.
+    fireEvent.click(screen.getByRole("button", { name: "Live TV" }));
+
+    // Only now does the (new) stream deliver the channel that was originally
+    // queued.
+    deliver?.();
+    expect(await screen.findByText(/Watching KPAX Test/)).toBeInTheDocument();
+
+    // It must land in the grid, not auto-open — the selection that queued it
+    // is long gone, cleared the moment the user left Live TV, not revived by
+    // coming back.
+    expect(screen.queryByTitle("Close (Esc)")).not.toBeInTheDocument();
   });
 });
 

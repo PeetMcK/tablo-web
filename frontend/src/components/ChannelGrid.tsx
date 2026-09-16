@@ -177,6 +177,27 @@ export function ChannelGrid({ onLogout }: Props) {
     setRestoreDone(true);
   }, []);
 
+  // Every tab switch goes through here rather than the raw `setTab`, so that
+  // a `pendingChannel` left unresolved cannot outlive the tab it was queued
+  // on. Without this, leaving Live TV before the guide stream delivers it
+  // (which aborts the stream — see `useGuideStream`'s cleanup — so it never
+  // resolves there) would leave `pendingChannel` sitting in plain component
+  // state with nothing to time it out. Return to Live TV later, on some
+  // unrelated visit, and the stream restarts, finds the channel, and
+  // auto-opens a selection the user made and forgot about, having clicked
+  // nothing this time.
+  //
+  // This intentionally is NOT a `useEffect` watching `activeTab`: that would
+  // fire on the very same render that `handleSearchActivate` queues a fresh
+  // `pendingChannel` and switches to Live TV in one go, and — depending on
+  // ordering — could eat the value it just queued. Clearing it here, in the
+  // same handler that performs the switch, keeps "am I leaving Live TV" and
+  // "did I just queue something for Live TV" from ever racing.
+  const goToTab = useCallback((tab: Tab) => {
+    if (tab !== "live") setPendingChannel(null);
+    setTab(tab);
+  }, []);
+
   // Activating a search result routes via its `target` rather than a second,
   // parallel navigation path. For Live TV this plays the channel directly when
   // it is already in hand, or queues it as `pendingChannel` for the derived
@@ -196,13 +217,16 @@ export function ChannelGrid({ onLogout }: Props) {
     } else if (tab === "library" && typeof watch === "number") {
       writeRoute({ tab: "library", watch: { kind: "recording", id: watch } });
     }
-    setTab(tab);
-  }, [channels]);
+    // `goToTab` only clears `pendingChannel` for a tab other than "live" —
+    // this call is always "live" in the branch above that just set it, so
+    // the value set two lines up survives.
+    goToTab(tab);
+  }, [channels, goToTab]);
 
   const handleSearchSeeAll = useCallback(() => {
     setSearchOpen(false);
-    setTab("search");
-  }, []);
+    goToTab("search");
+  }, [goToTab]);
 
   const closeSearch = useCallback(() => setSearchOpen(false), []);
 
@@ -289,22 +313,22 @@ export function ChannelGrid({ onLogout }: Props) {
 
             {/* Navigation Tabs */}
             <nav className="flex items-center gap-1 mr-auto">
-              <button 
-                onClick={() => setTab("live")}
+              <button
+                onClick={() => goToTab("live")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "live" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
               >
                 Live TV
               </button>
-              <button 
-                onClick={() => setTab("grid")}
+              <button
+                onClick={() => goToTab("grid")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "grid" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
               >
                 Guide
               </button>
-              <button 
-                onClick={() => setTab("library")}
+              <button
+                onClick={() => goToTab("library")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "library" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
               >
