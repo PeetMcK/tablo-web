@@ -188,8 +188,6 @@ interface PlayerView {
   onClose: () => void;
   waiting: boolean;
   waitPct: number | null;
-  encodingAt: EncodingProgress | null;
-  poppedOut: boolean;
   togglePictureInPicture: () => void;
   enterFullscreen: () => void;
   paused: boolean;
@@ -1213,8 +1211,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const view: PlayerView = {
     videoRef, rootRef, videoHostRef, barRef,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
-    loading, combinedError, onClose, waiting, waitPct, encodingAt,
-    poppedOut, togglePictureInPicture, enterFullscreen,
+    loading, combinedError, onClose, waiting, waitPct,
+    togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
@@ -1261,8 +1259,8 @@ function Stage({ view }: { view: PlayerView }) {
   const {
     videoRef, rootRef, videoHostRef, barRef,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
-    loading, combinedError, onClose, waiting, waitPct, encodingAt,
-    poppedOut, togglePictureInPicture, enterFullscreen,
+    loading, combinedError, onClose, waiting, waitPct,
+    togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
