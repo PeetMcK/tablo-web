@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { api, type GridChannel, type Program } from "../api/tablo";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import {
+  DATE_GAIN, DRAG_SLOP, GLIDE_DECAY, GLIDE_STOP, MIN_THROW,
+  dominantAxis, prefersReducedMotion, throwVelocity, type DragSample,
+} from "../lib/drag";
 import { coveredHours, jumpDays, positionLabel } from "../lib/guideJump";
 import { ChannelLogo } from "./ChannelLogo";
 import { GuideJump } from "./GuideJump";
@@ -196,6 +200,145 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   const [info, setInfo] = useState<{ channel: string; start: string } | null>(null);
   /** The `jumpTo` nonce whose sheet has been opened. See the jump block below. */
   const [shownJump, setShownJump] = useState<number | null>(null);
+
+  // ---- dragging the guide ------------------------------------------------
+  // Nothing here is state: it is all pointer bookkeeping and writes to
+  // `scrollLeft`/`scrollTop`, and a re-render per pointer move would stutter
+  // the very thing being dragged. The scroller's own `onScroll` already keeps
+  // the jump control's label honest.
+  const glide = useRef<number | null>(null);
+  const grab = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+    /** Multiplier on the drag: 1 from the hours, DATE_GAIN from the date band. */
+    gain: number;
+    /** Locked at the slop threshold; null until the gesture commits to one. */
+    axis: "x" | "y" | null;
+    samples: DragSample[];
+  } | null>(null);
+  // Set when a drag panned, so the click that follows a pan does not open the
+  // programme under it. Cleared on the next press rather than by the click
+  // itself: a pan that ends over empty space is followed by no click at all,
+  // and a flag left standing would eat the next real one.
+  const panned = useRef(false);
+
+  const stopGlide = useCallback(() => {
+    if (glide.current !== null) {
+      cancelAnimationFrame(glide.current);
+      glide.current = null;
+    }
+  }, []);
+  // A guide left mid-throw must not keep calling back into a dead component.
+  useEffect(() => stopGlide, [stopGlide]);
+
+  /** Coast to a stop along whichever axes the gesture kept. */
+  const throwGuide = useCallback((vx: number, vy: number) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    let x = vx;
+    let y = vy;
+    let prev = performance.now();
+    const frame = (ts: number) => {
+      const step = ts - prev;
+      prev = ts;
+      if (step > 0) {
+        const wasLeft = el.scrollLeft;
+        const wasTop = el.scrollTop;
+        el.scrollLeft -= x * step;
+        el.scrollTop -= y * step;
+        // Clamped at an edge: the guide has run out, so drop that axis rather
+        // than grind against the end for the rest of the decay.
+        if (el.scrollLeft === wasLeft) x = 0;
+        if (el.scrollTop === wasTop) y = 0;
+        const decay = Math.pow(GLIDE_DECAY, step);
+        x *= decay;
+        y *= decay;
+      }
+      if (Math.abs(x) < GLIDE_STOP && Math.abs(y) < GLIDE_STOP) {
+        glide.current = null;
+        return;
+      }
+      glide.current = requestAnimationFrame(frame);
+    };
+    glide.current = requestAnimationFrame(frame);
+  }, []);
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // Touch already pans this scroller natively, and a worse gesture in place
+    // of a good one is not a trade worth making.
+    if (e.pointerType === "touch" || e.button !== 0) return;
+    const el = scrollerRef.current;
+    if (!el) return;
+
+    stopGlide();
+    panned.current = false;
+
+    const target = e.target as HTMLElement;
+    const header = target.closest("[data-guide-header]");
+    // The header is a ruler, so it is geared and moves time only. The
+    // listings are the content itself, so they move one-to-one - gearing
+    // there would slide the programmes out from under the pointer.
+    const gain = header
+      ? (target.closest("[data-day-band]") ? DATE_GAIN : 1)
+      : 1;
+
+    grab.current = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      left: el.scrollLeft,
+      top: el.scrollTop,
+      gain,
+      axis: header ? "x" : null,
+      samples: [{ t: performance.now(), x: e.clientX, y: e.clientY }],
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [stopGlide]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const g = grab.current;
+    const el = scrollerRef.current;
+    if (!g || !el || g.id !== e.pointerId) return;
+
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+
+    if (g.axis === null) {
+      if (Math.abs(dx) + Math.abs(dy) <= DRAG_SLOP) return;
+      // Committed, and committed once: see `dominantAxis`.
+      g.axis = dominantAxis(dx, dy);
+      panned.current = true;
+    }
+
+    if (g.axis === "x") el.scrollLeft = g.left - dx * g.gain;
+    else el.scrollTop = g.top - dy;
+
+    g.samples.push({ t: performance.now(), x: e.clientX, y: e.clientY });
+    if (g.samples.length > 12) g.samples.shift();
+  }, []);
+
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const g = grab.current;
+    if (!g || g.id !== e.pointerId) return;
+    grab.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+
+    // Never crossed the threshold, so it was a click: leave it to the button
+    // underneath, which opens the programme.
+    if (g.axis === null || prefersReducedMotion()) return;
+
+    const v = throwVelocity(g.samples, performance.now());
+    if (!v) return;
+    const vx = g.axis === "x" ? v.x * g.gain : 0;
+    const vy = g.axis === "y" ? v.y : 0;
+    if (Math.abs(vx) < MIN_THROW && Math.abs(vy) < MIN_THROW) return;
+    throwGuide(vx, vy);
+  }, [throwGuide]);
 
   // The jump control names where the guide is, which needs a render to change -
   // but this runs on every scroll frame, and re-rendering the guide per frame
@@ -449,13 +592,20 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       <div
         ref={scrollerRef}
         onScroll={e => trackHour(e.currentTarget)}
-        className="flex-1 min-h-0 overflow-auto scroll-time-only"
+        className="flex-1 min-h-0 overflow-auto no-scrollbar"
       >
         {/* The scrolled surface. Explicit width so the timeline extends the
             full run of the guide whatever any individual channel lists — the
             per-row spacer this replaces existed because programmes are
             absolutely positioned and contribute nothing to scroll extent. */}
-        <div className="relative" style={{ width: CHANNEL_W + totalHours * HOUR_WIDTH }}>
+        <div
+          className="relative"
+          style={{ width: CHANNEL_W + totalHours * HOUR_WIDTH }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
 
       {/* Time Header */}
       {/* Opaque, not `bg-recess`: a sticky element has content moving beneath
@@ -467,15 +617,19 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           they drew a divider across the corner that lines up with nothing —
           the column it heads is not split. So the header is a row of two
           things, the corner and the stack of dates over hours. */}
-      <div ref={headerRef} className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30">
+      <div
+        ref={headerRef}
+        data-guide-header
+        className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30"
+      >
         <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-20">
           <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
         </div>
 
-        <div className="flex flex-col">
+        <div className="flex flex-col cursor-grab active:cursor-grabbing select-none">
         {/* Day band. One per calendar day, spanning exactly that day's hours,
             so the boundary you scroll across is the real one. */}
-        <div className="flex border-b border-border-subtle">
+        <div data-day-band className="flex border-b border-border-subtle hover:bg-fill-soft transition-colors">
           <div className="flex">
             {days.map((d, i) => (
               <div
@@ -508,7 +662,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           </div>
         </div>
 
-        <div className="flex relative">
+        <div className="flex relative hover:bg-fill-soft transition-colors">
             {hours.map((h, i) => (
               <div
                 key={i}
@@ -620,7 +774,10 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                     key={i}
                     /* Opens information; it does not tune. The channel tile
                        above is the tune affordance - see its comment. */
-                    onClick={() => setInfo({ channel: ch.identifier, start: air.start })}
+                    onClick={() => {
+                      if (panned.current) return;
+                      setInfo({ channel: ch.identifier, start: air.start });
+                    }}
                     className="absolute top-2 bottom-2 bg-fill-soft hover:bg-fill border-l border-border p-3 flex flex-col text-left group transition-colors rounded-sm overflow-hidden"
                     style={{ left, width: width - 4 }}
                   >
