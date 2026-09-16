@@ -39,6 +39,23 @@ const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 const CHANNEL_W = 128;
 
 /**
+ * Height of one channel row, in px — and it is a measurement, not a taste.
+ *
+ * An airing cell never grows: it is a title on one line and a description
+ * clamped to one more, always. So the row is exactly what that content needs:
+ * the cell's own 12px padding top and bottom, a 16.5px title line, the 2px
+ * gap, and a 15px description line — 57.5 — inside the 8px the timeline
+ * insets its cells by at either end. Anything taller is dead space under every
+ * cell in the guide, which is what this used to be (`h-24`, 96px, ~22 of it
+ * empty).
+ *
+ * The frozen channel tile has to fit inside the same number, which is why its
+ * padding and logo box are as tight as they are — if it outgrows this, flex
+ * stretches the row and the gap comes straight back.
+ */
+const ROW_H = 74;
+
+/**
  * How far before the live edge "back to now" lands.
  *
  * Scrolling exactly to now pins the red line to the left edge and clips the
@@ -804,11 +821,11 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             <button
               onClick={() => onPlay(ch)}
               aria-label={`Watch ${channelLabel(ch)}`}
-              className="w-32 shrink-0 p-4 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1.5
+              className="w-32 shrink-0 p-2 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1
                          bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
             >
-              <div className="w-12 h-10 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
+              <div className="w-12 h-9 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
                 <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
               </div>
               <span className="text-[11px] font-bold text-fg-muted tabular-nums">
@@ -818,8 +835,9 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
             {/* Programs Timeline — no longer a scroller, just the surface the
                 absolutely-positioned airings are placed on. */}
-            <div className="shrink-0 py-2 relative h-24 border-b border-border-subtle"
-                 style={{ width: totalHours * HOUR_WIDTH }}>
+            <div data-timeline
+                 className="shrink-0 py-2 relative border-b border-border-subtle"
+                 style={{ width: totalHours * HOUR_WIDTH, height: ROW_H }}>
               {placed.length === 0 ? (
                 /* A channel with nothing drawable is still a channel you can
                    watch — several carry no EPG data at all and were, until
