@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
-import { ChevronDown, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { api } from "../api/tablo";
 import { ThemeControl } from "./ThemeControl";
 
@@ -109,10 +109,12 @@ export function AppMenu({ email, onLogout }: Props) {
   }, []);
 
   return (
-    <div className="relative mr-6" ref={ref}>
+    // No trailing margin here: the header sets the gap to the nav, and it is
+    // the same 4px the tab pills sit apart from each other.
+    <div className="relative" ref={ref}>
       {/* A disclosure, not a `role="menu"`: the panel holds a radiogroup and a
           couple of buttons, and `menu` would promise menuitem children it does
-          not have. `aria-expanded` plus the chevron carry the state. */}
+          not have. `aria-expanded` carries the state. */}
       <button
         ref={triggerRef}
         onClick={() => setOpen(v => !v)}
@@ -120,7 +122,7 @@ export function AppMenu({ email, onLogout }: Props) {
         aria-label="Tablo-Web menu"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        className="group flex items-center gap-2.5 -m-1 p-1 rounded-xl hover:bg-fill-soft
+        className="group flex items-center -m-1 p-1 rounded-xl hover:bg-fill-soft
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent transition"
       >
         {/* The brand ramp, via `.accent-gradient` — both stops are the brand's
@@ -139,13 +141,9 @@ export function AppMenu({ email, onLogout }: Props) {
             <path d="M8 21h8" />
           </svg>
         </div>
-        {/* The wordmark is gone — the mark alone carries the brand here, so the
-            button's name lives in `aria-label` instead of visible text. */}
-        <ChevronDown
-          className={`w-4 h-4 shrink-0 text-fg-muted group-hover:text-fg-secondary transition ${open ? "rotate-180" : ""}`}
-          strokeWidth={2.5}
-          aria-hidden
-        />
+        {/* Wordmark and chevron are both gone: the mark alone is the trigger.
+            `aria-label` carries the button's name and `aria-expanded` its
+            state, so nothing an assistive reader needs went with them. */}
       </button>
 
       {open && (
