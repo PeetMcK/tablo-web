@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -122,6 +122,63 @@ CREATE TABLE IF NOT EXISTS resume (
 """
 
 
+# Version 2 adds the search index and the guide sync log.
+#
+# `search_fts` is an external-content FTS5 table over `search_doc`: the text
+# lives once, in `search_doc`, and FTS keeps only its index. That means FTS has
+# no way to notice a write on its own, so the triggers below are mandatory - a
+# delete with no trigger leaves the row still matching, which shows up as
+# results for things that no longer exist.
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS guide_sync (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    airings_seen  INTEGER NOT NULL DEFAULT 0,
+    ok            INTEGER NOT NULL DEFAULT 0,
+    error         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS search_doc (
+    kind         TEXT NOT NULL,
+    ref          TEXT NOT NULL,
+    title        TEXT,
+    subtitle     TEXT,
+    body         TEXT,
+    channel      TEXT,
+    start_epoch  INTEGER,
+    duration     INTEGER NOT NULL DEFAULT 0,
+    target       TEXT NOT NULL,
+    PRIMARY KEY (kind, ref)
+);
+CREATE INDEX IF NOT EXISTS search_doc_start ON search_doc(start_epoch);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
+    title, subtitle, body, channel,
+    content='search_doc',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS search_doc_ai AFTER INSERT ON search_doc BEGIN
+    INSERT INTO search_fts(rowid, title, subtitle, body, channel)
+    VALUES (new.rowid, new.title, new.subtitle, new.body, new.channel);
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_doc_ad AFTER DELETE ON search_doc BEGIN
+    INSERT INTO search_fts(search_fts, rowid, title, subtitle, body, channel)
+    VALUES ('delete', old.rowid, old.title, old.subtitle, old.body, old.channel);
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_doc_au AFTER UPDATE ON search_doc BEGIN
+    INSERT INTO search_fts(search_fts, rowid, title, subtitle, body, channel)
+    VALUES ('delete', old.rowid, old.title, old.subtitle, old.body, old.channel);
+    INSERT INTO search_fts(rowid, title, subtitle, body, channel)
+    VALUES (new.rowid, new.title, new.subtitle, new.body, new.channel);
+END;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -198,6 +255,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         with conn:
             if version < 1:
                 conn.executescript(_SCHEMA_V1)
+            if version < 2:
+                conn.executescript(_SCHEMA_V2)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True
