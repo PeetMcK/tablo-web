@@ -203,10 +203,16 @@ class AppState:
         resp = await self._request_device_raw(method, path, body)
         return resp.json()
 
-    async def _request_device_raw(self, method: str, path: str, body: str = ""):
+    async def _request_device_raw(
+        self, method: str, path: str, body: str = "", follow_redirects: bool = False
+    ):
         """Signed device request returning the raw httpx response.
 
         Used directly for non-JSON responses such as snapshot images.
+
+        `follow_redirects` is off by default and only `fetch_device_image` turns
+        it on. On the API port a redirect means something unexpected happened;
+        on the image path it is the normal answer. See `fetch_device_image`.
         """
         if self.active_device is None:
             raise RuntimeError("No active device")
@@ -223,14 +229,32 @@ class AppState:
                 "Authorization": auth_header,
                 "Date": date_header,
                 "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
-            }
+            },
+            follow_redirects=follow_redirects,
         )
         resp.raise_for_status()
         return resp
 
     async def fetch_device_image(self, image_id: int) -> tuple[bytes, str]:
-        """Fetch a snapshot image from the device. Returns (bytes, content_type)."""
-        resp = await self._request_device_raw("GET", f"/images/{int(image_id)}")
+        """Fetch an image from the device. Returns (bytes, content_type).
+
+        Follows redirects, which is the whole trick. `/images/{id}` returns a
+        body for a few ids and a 302 for most, pointing at the device's *stream*
+        port: `http://<device>:80/stream/thumb?id=...&path=<base64>`. Measured
+        on a real guide, 157 of 160 imminent cover images answered that way.
+
+        Without following it, `raise_for_status` turns every one into an error
+        and `guide_images.get` reports it as an absent poster - which is silent
+        by design, so the symptom is simply that almost no sheet has artwork.
+
+        This is the same split `start_recording_session` documents: media lives
+        on port 80, the API on 8887, and `local_url` is the API. httpx drops the
+        Authorization header on a cross-origin hop, which is correct here - the
+        redirect target carries its own signed `path` parameter.
+        """
+        resp = await self._request_device_raw(
+            "GET", f"/images/{int(image_id)}", follow_redirects=True
+        )
         return resp.content, resp.headers.get("content-type", "image/jpeg")
 
     async def start_recording_session(self, path: str) -> dict:
