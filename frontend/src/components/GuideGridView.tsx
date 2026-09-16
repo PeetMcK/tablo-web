@@ -4,6 +4,7 @@ import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { coveredHours, jumpDays, positionLabel } from "../lib/guideJump";
 import { ChannelLogo } from "./ChannelLogo";
 import { GuideJump } from "./GuideJump";
+import { ShowInfo } from "./ShowInfo";
 
 interface Props {
   onPlay: (channel: GridChannel) => void;
@@ -159,6 +160,8 @@ export function GuideGridView({ onPlay }: Props) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   /** Which hour column the guide is scrolled to, for the jump control's label. */
   const [hourAt, setHourAt] = useState(0);
+  // The open show sheet, keyed the way `guide_airing` is. Null when closed.
+  const [info, setInfo] = useState<{ channel: string; start: string } | null>(null);
 
   // The jump control names where the guide is, which needs a render to change -
   // but this runs on every scroll frame, and re-rendering the guide per frame
@@ -428,7 +431,9 @@ export function GuideGridView({ onPlay }: Props) {
                 return (
                   <button
                     key={i}
-                    onClick={() => onPlay(ch)}
+                    /* Opens information; it does not tune. The channel tile
+                       above is the tune affordance - see its comment. */
+                    onClick={() => setInfo({ channel: ch.identifier, start: air.start })}
                     className="absolute top-2 bottom-2 bg-fill-soft hover:bg-fill border-l border-border p-3 flex flex-col text-left group transition-colors rounded-sm overflow-hidden"
                     style={{ left, width: width - 4 }}
                   >
@@ -464,6 +469,21 @@ export function GuideGridView({ onPlay }: Props) {
           className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-10"
           style={{ left: CHANNEL_W + nowLeft }}
           aria-hidden
+        />
+      )}
+
+      {/* The sheet a programme cell opens. Tuning from it goes through the
+          same `onPlay` the channel tile uses, so there is one tune path. */}
+      {info && (
+        <ShowInfo
+          channel={info.channel}
+          start={info.start}
+          onClose={() => setInfo(null)}
+          onTune={() => {
+            const ch = filteredGrid.find((c) => c.identifier === info.channel);
+            setInfo(null);
+            if (ch) onPlay(ch);
+          }}
         />
       )}
 

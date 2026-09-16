@@ -311,6 +311,20 @@ describe("channels you can still tune", () => {
     expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: "ch1" }));
   });
 
+  it("opens information from a programme cell, and still tunes from the tile", async () => {
+    // This is the change: a cell used to tune. The tile is now the tune
+    // affordance, which is why it became a real button first.
+    const onPlay = vi.fn();
+    mockStream(grid());
+    render(<GuideGridView onPlay={onPlay} />);
+
+    fireEvent.click(await screen.findByText("Survivor"));
+    expect(onPlay).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Watch KPAX 8.1" }));
+    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: "ch1" }));
+  });
+
   it("names the channel out loud, since a logo and a number do not", async () => {
     mockStream(grid());
     render(<GuideGridView onPlay={() => {}} />);
