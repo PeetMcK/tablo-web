@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { api, type GridChannel, type Program } from "../api/tablo";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { ChannelLogo } from "./ChannelLogo";
@@ -76,6 +76,39 @@ export function GuideGridView({ onPlay }: Props) {
     return () => clearInterval(timer);
   }, []);
 
+  // The hour headings and each channel are separate horizontal scrollers, so
+  // they have to be driven together: scrolling one row on its own slid that
+  // channel out from under the clock, and the grid then showed programmes
+  // against the wrong times without any sign it had happened.
+  //
+  // Kept as one shared offset rather than a piece of state - this runs on every
+  // scroll frame, and re-rendering the whole guide to move it would stutter.
+  const lanes = useRef(new Set<HTMLDivElement>());
+  const offset = useRef(0);
+
+  const syncLanes = useCallback((from: HTMLDivElement) => {
+    offset.current = from.scrollLeft;
+    for (const lane of lanes.current) {
+      // Assigning an unchanged scrollLeft still fires `scroll` in some browsers,
+      // which would bounce straight back here; skipping the source and the
+      // already-aligned keeps it from looping.
+      if (lane !== from && lane.scrollLeft !== offset.current) {
+        lane.scrollLeft = offset.current;
+      }
+    }
+  }, []);
+
+  const registerLane = useCallback((el: HTMLDivElement) => {
+    lanes.current.add(el);
+    // A channel that streams in after the guide has been scrolled must arrive
+    // at the offset everything else is already showing.
+    if (el.scrollLeft !== offset.current) el.scrollLeft = offset.current;
+    // Returning a cleanup (React 19) drops the lane on unmount. Without it the
+    // set kept every row a filter change had removed, and each scroll wrote to
+    // detached nodes for the life of the page.
+    return () => { lanes.current.delete(el); };
+  }, []);
+
   // Stable grid start: current hour, zeroed minutes/seconds
   const startTime = useMemo(() => {
     const d = new Date();
@@ -132,7 +165,9 @@ export function GuideGridView({ onPlay }: Props) {
         <div className="w-32 shrink-0 border-r border-white/5 bg-black/20 flex items-center justify-center">
           <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">Channel</span>
         </div>
-        <div className="flex flex-1 overflow-x-auto no-scrollbar relative">
+        <div className="flex flex-1 overflow-x-auto no-scrollbar relative"
+             ref={registerLane}
+             onScroll={e => syncLanes(e.currentTarget)}>
           {hours.map((h, i) => (
             <div key={i} className="shrink-0 font-mono text-[11px] font-bold text-white/30 flex items-center px-6 border-r border-white/5 h-10"
                  style={{ width: HOUR_WIDTH }}>
@@ -166,7 +201,9 @@ export function GuideGridView({ onPlay }: Props) {
             </div>
 
             {/* Programs Timeline */}
-            <div className="flex flex-1 overflow-x-auto no-scrollbar py-2 relative h-24">
+            <div className="flex flex-1 overflow-x-auto no-scrollbar py-2 relative h-24"
+                 ref={registerLane}
+                 onScroll={e => syncLanes(e.currentTarget)}>
               {ch.airings.map((air, i) => {
                 const airStart = new Date(air.start).getTime();
                 const offsetSecs = (airStart - startTime) / 1000;

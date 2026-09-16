@@ -12,6 +12,16 @@
 }
 
 @layer utilities {
+  /* Used in four places and never defined, so it did nothing. The global rule
+     above sets only `width`, which governs vertical scrollbars — horizontal
+     ones are sized by `height` and kept the default ~15px, drawing a grey pill
+     across the guide under the hour headings and beneath every channel row. */
+  .no-scrollbar {
+    scrollbar-width: none;            /* Firefox */
+    -ms-overflow-style: none;         /* old Edge */
+  }
+  .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; }
+
   .glass {
     background: rgba(255,255,255,0.04);
     backdrop-filter: blur(20px);
