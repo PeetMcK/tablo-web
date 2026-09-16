@@ -450,7 +450,13 @@ export function ChannelGrid({ onLogout }: Props) {
               under it. The narrower gutter is also 16px of the row back: at
               320px the topbar did not fit, and what did not fit pushed the
               whole document sideways. */}
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-1">
+          {/* A fixed height, not `py-4`. The row is as tall as its tallest
+              child, and on a phone that child changes: the search icon is 38px
+              closed and the field is 42px open, so opening search grew the bar
+              by 4px and shoved the whole page down under it. 74px is what the
+              field's own 42 plus that 16px of padding already came to, so the
+              wide layout is unchanged and the phone simply stops moving. */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-[74px] flex items-center gap-1">
             {/* The mark is also the settings menu — see AppMenu for why. */}
             <AppMenu email={userEmail} onLogout={onLogout} />
 
