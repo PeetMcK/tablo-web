@@ -575,7 +575,11 @@ export function ChannelGrid({ onLogout }: Props) {
             them, on every page, which read as the controls sitting low in
             their own band rather than as deliberate room. The foot of the
             page keeps its 40px — only the top was out. */}
-        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 pt-4 pb-10 ${isGuide ? "min-h-0 flex flex-col" : ""}`}>
+        {/* The guide loses the 40px foot on a phone: the grid runs to both
+            edges there (see GuideGridView's own `-mx-6`), and a band of page
+            under it would be the one side still framed. */}
+        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 pt-4
+                          ${isGuide ? "pb-0 sm:pb-10 min-h-0 flex flex-col" : "pb-10"}`}>
           {activeTab === "live" && (
             <>
               {/* Content type filter chips */}

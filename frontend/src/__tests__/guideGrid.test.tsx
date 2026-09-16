@@ -1149,3 +1149,25 @@ describe("reaching the guide from a keyboard", () => {
     expect(document.activeElement).toBe(sc);
   });
 });
+
+describe("the guide at phone width", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("stops being a card and runs to both edges", async () => {
+    // The page's own px-6 is 48px of the narrowest screen there is, spent
+    // framing the one view that wants every pixel of width it can get.
+    mockStream(grid());
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Survivor");
+
+    const card = scroller(container).parentElement!;
+
+    expect(card.className).toMatch(/-mx-6/);          // out through main's padding
+    expect(card.className).toMatch(/\bsm:mx-0\b/);    // and back inside it at sm
+    expect(card.className).toMatch(/\brounded-none\b/);
+    expect(card.className).toMatch(/\bsm:rounded-3xl\b/);
+    // Rules above and below, no frame down the sides it no longer has.
+    expect(card.className).toMatch(/\bborder-y\b/);
+    expect(card.className).toMatch(/\bsm:border\b/);
+  });
+});
