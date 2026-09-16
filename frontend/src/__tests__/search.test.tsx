@@ -591,3 +591,35 @@ describe("ChannelGrid guide search handoff", () => {
       expect(detail).toHaveBeenCalledWith("chA", "2026-09-27T17:00:00Z"));
   });
 });
+
+describe("the topbar dropdown and the results page", () => {
+  beforeEach(() => window.history.replaceState(null, "", "#/live"));
+  afterEach(() => vi.restoreAllMocks());
+
+  it("stands down on the search tab, where the page already answers", async () => {
+    // Both surfaces run the same query. Floating a three-row summary over a
+    // fifty-row page says less and covers the top of it.
+    mockChannelGridApis();
+    vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    renderChannelGrid();
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "broncos" } });
+    expect(await screen.findByRole("listbox", { name: /suggestions/i }))
+      .toBeInTheDocument();
+
+    // The "N more" link moves to the results page; the dropdown's job ends.
+    fireEvent.click(screen.getAllByText(/\d+ more/)[0]);
+    await waitFor(() =>
+      expect(screen.queryByRole("listbox", { name: /suggestions/i }))
+        .not.toBeInTheDocument());
+
+    // Typing again on that tab refines the page, and still no dropdown.
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "broncos game" } });
+    await new Promise(r => setTimeout(r, 350));
+    expect(screen.queryByRole("listbox", { name: /suggestions/i }))
+      .not.toBeInTheDocument();
+  });
+});

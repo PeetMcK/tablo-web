@@ -426,3 +426,65 @@ def test_an_unknown_kind_still_matches_nothing(monkeypatch):
     _doc("airing", "a|1", "Survivor")
     got = client.get("/api/search?q=survivor&kinds=bogus").json()
     assert got["groups"] == []
+
+
+def _rec(object_id: int, title: str) -> dict:
+    return {
+        "object_id": object_id, "title": title, "subtitle": "", "description": "",
+        "start": "2026-09-15T00:15:00Z", "duration": 60, "channel": None,
+    }
+
+
+def test_a_deleted_recording_leaves_the_index():
+    """A listing known to be complete is also a statement about what is gone.
+
+    Left in, a deleted recording is still offered by search, and clicking the
+    result fails - which is worse than it simply not being there.
+    """
+    store.index_recordings([_rec(1, "Kept"), _rec(2, "Deleted")])
+    assert len(db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")) == 2
+
+    store.index_recordings([_rec(1, "Kept")], prune=True)
+
+    refs = [r["ref"] for r in db.query("SELECT ref FROM search_doc WHERE kind = 'recording'")]
+    assert refs == ["1"]
+    # And it is gone from the text index too, not just the table behind it.
+    assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'deleted'")
+
+
+def test_an_incomplete_listing_deletes_nothing():
+    """Truncated and shrunken look identical from inside the index.
+
+    Only the caller knows which it is holding, so pruning is off unless it
+    says otherwise - see `/recordings`, which compares what it fetched against
+    the device's own count.
+    """
+    store.index_recordings([_rec(1, "Kept"), _rec(2, "Also kept")])
+    store.index_recordings([_rec(1, "Kept")])
+
+    assert len(db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")) == 2
+
+
+def test_an_empty_complete_listing_empties_the_library():
+    """Everything deleted on the device is a real state, not a missing answer."""
+    store.index_recordings([_rec(1, "Kept")])
+    store.index_recordings([], prune=True)
+
+    assert not db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")
+
+
+def test_pruning_recordings_leaves_the_guide_alone():
+    """The prune is scoped to one kind; airings and channels are another
+    writer's business entirely."""
+    now = time.time()
+    store.save_guide([_ch(airings=[{
+        "title": "Survivor", "subtitle": "", "description": "",
+        "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600)),
+        "duration": 3600, "genres": [], "kind": "episode",
+    }])], now=now)
+    store.index_recordings([_rec(1, "Kept")])
+
+    store.index_recordings([], prune=True)
+
+    assert db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+    assert db.query("SELECT 1 FROM search_doc WHERE kind = 'channel'")

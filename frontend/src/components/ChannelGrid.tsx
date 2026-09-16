@@ -453,7 +453,12 @@ export function ChannelGrid({ onLogout }: Props) {
                            text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
                            focus:bg-fill transition shadow-inner"
               />
-              {searchOpen && filter.trim().length >= 2 && (
+              {/* Not on the search tab: the results page below is the same
+                  query answered at fifty rows a group, so floating a
+                  three-row summary of it over the top says less and hides
+                  more. Everywhere else the dropdown is the only answer
+                  there is. */}
+              {searchOpen && activeTab !== "search" && filter.trim().length >= 2 && (
                 // Keeps the input focused through the click so `onBlur` above
                 // does not dismiss the dropdown before `onActivate` fires.
                 <div onMouseDown={e => e.preventDefault()}>

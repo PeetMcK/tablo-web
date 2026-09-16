@@ -254,11 +254,25 @@ def test_guide_round_trips():
     assert rows[0]["logo_url"] == "http://logo"
 
 
-def test_ended_airings_are_pruned_on_write():
+def test_load_guide_hides_airings_that_have_ended_without_deleting_them():
+    """Hidden at read, kept on disk - the name of this test used to say the
+    opposite, which is the one thing the guide mirror must never do.
+
+    Nothing is pruned on write. The device's guide is forward-looking, so an
+    aired programme falls off it permanently and our copy is the only record
+    that it happened; `prune_guide` removes rows by age and nothing else
+    does. What `load_guide` gives back is a view for the grid, which has no
+    use for a programme that has finished.
+    """
     now = datetime.now(timezone.utc)
     store.save_guide(_guide(now))
+
     titles = [a["title"] for a in store.load_guide()[0]["airings"]]
     assert titles == ["Upcoming"]
+
+    # Still stored, and still findable - this is the half the old name denied.
+    stored = {r["title"] for r in db.query("SELECT title FROM guide_airing")}
+    assert stored == {"Over", "Upcoming"}
 
 
 def test_genres_survive_the_round_trip():

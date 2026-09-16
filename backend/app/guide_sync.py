@@ -12,6 +12,7 @@ import asyncio
 import os
 import traceback
 from datetime import datetime, timezone
+from functools import partial
 
 from . import db, store
 
@@ -67,10 +68,15 @@ async def backfill_index() -> int:
 
     Migration creates empty tables; without this, search returns nothing until
     a sync finishes, which looks identical to a broken feature.
+
+    Written with `record_sync=False`: this is a re-index of what is already on
+    disk, not a fetch. Stamping it as a sync would make `coverage()` report
+    whatever is stored as freshly synced from the moment the process starts,
+    which is exactly the confusion the coverage line exists to remove.
     """
     rows = await asyncio.to_thread(store.load_guide)
     if rows:
-        await asyncio.to_thread(store.save_guide, rows)
+        await asyncio.to_thread(partial(store.save_guide, record_sync=False), rows)
     return sum(len(ch.get("airings") or []) for ch in rows)
 
 
