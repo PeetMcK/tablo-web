@@ -50,7 +50,7 @@ function scroller(container: HTMLElement): HTMLElement {
 
 /** The timeline surface of each channel row — sized, no longer scrollable. */
 function timelines(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(".h-24"));
+  return Array.from(container.querySelectorAll<HTMLElement>("[data-timeline]"));
 }
 
 /** Channel whose listings run `hours` past the top of the current hour. */
