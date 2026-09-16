@@ -417,7 +417,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
-                Live TV
+                Live
               </button>
               <button
                 onClick={() => goToTab("grid")}
