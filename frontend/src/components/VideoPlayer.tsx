@@ -5,6 +5,7 @@ import {
   X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
   PictureInPicture2,
 } from "lucide-react";
+import { PictureInPictureExit } from "./icons";
 import { usePlayer } from "../hooks/usePlayer";
 import { api, previewUrl } from "../api/tablo";
 import type {
@@ -196,6 +197,14 @@ interface PlayerView {
   onClose: () => void;
   waiting: boolean;
   waitPct: number | null;
+  /**
+   * Whether this stage is the one in the popped-out window.
+   *
+   * The markup is the same either side, so anything that differs between the
+   * two has to be told which side it is on: the chrome sizes down to the
+   * smaller window, and the picture-in-picture button turns around — out of
+   * the tab there, back into it here.
+   */
   poppedOut: boolean;
   togglePictureInPicture: () => void;
   enterFullscreen: () => void;
@@ -1245,7 +1254,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           title="Close picture-in-picture"
           aria-label="Close picture-in-picture"
         >
-          <PictureInPicture2 className="w-9 h-9" aria-hidden />
+          <PictureInPictureExit className="w-9 h-9" aria-hidden />
         </button>
         <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
       </div>
@@ -1757,10 +1766,15 @@ function Stage({ view }: { view: PlayerView }) {
                   onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
                   className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
                   ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
-                  title="Picture in picture"
-                  aria-label="Picture in picture"
+                  title={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
+                  aria-label={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
                 >
-                  <PictureInPicture2 className="w-4 h-4" aria-hidden />
+                  {/* The same button either side of the pop-out, so the icon
+                      carries which way it goes: the plain frame out of the
+                      tab, the arrow back into it. */}
+                  {poppedOut
+                    ? <PictureInPictureExit className="w-4 h-4" aria-hidden />
+                    : <PictureInPicture2 className="w-4 h-4" aria-hidden />}
                 </button>
               )}
 
