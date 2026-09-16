@@ -15,29 +15,19 @@ const NEWS_HOUR: Program = {
   start: new Date(Date.now() - 15 * 60 * 1000).toISOString(), duration: 3600,
 };
 
-function renderLive() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <VideoPlayer
-        source={{ kind: "live", channel: CHANNEL, program: NEWS_HOUR }}
-        onClose={() => {}}
-      />
-    </QueryClientProvider>,
-  );
-}
-
 /**
- * Carrying the picture to another window pauses it — the spec queues a pause
- * when a media element leaves a document, and a move is a removal followed by
- * an insertion. Playback has to be put back on the other side.
+ * Popping out used to stop playback, and the reason was never ours: a media
+ * element taken out of a document is paused, its MediaSource blob stops
+ * resolving, and the new window has no user activation to play with. Nothing
+ * moves now, so none of that applies — and these hold it that way.
  */
-describe("popping out while playing", () => {
+describe("popping out leaves the playing element alone", () => {
   let play: ReturnType<typeof vi.spyOn>;
+  let pause: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
     vi.spyOn(api, "startStream").mockResolvedValue({
       session_id: "abc", proxy_url: "/a", stream_url: "/b", transcoded: true,
     });
@@ -50,21 +40,18 @@ describe("popping out while playing", () => {
       configurable: true,
       get: () => ({ length: 1, start: () => 0, end: () => 900 }),
     });
+    // Both absent from jsdom: the button is gated on the API existing, and
+    // the mirror is built from the element's own tracks.
     (window as unknown as Record<string, unknown>).documentPictureInPicture = {
       requestWindow: vi.fn(),
     };
+    (HTMLMediaElement.prototype as unknown as Record<string, unknown>).captureStream =
+      () => ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream;
   });
   afterEach(() => {
     vi.restoreAllMocks();
     delete (window as unknown as Record<string, unknown>).documentPictureInPicture;
   });
-
-  /** Pretend the element is playing, the way a real one would be. */
-  function stubPaused(paused: boolean) {
-    Object.defineProperty(HTMLMediaElement.prototype, "paused", {
-      configurable: true, get: () => paused,
-    });
-  }
 
   function fakePipWindow() {
     const frame = document.createElement("iframe");
@@ -74,51 +61,16 @@ describe("popping out while playing", () => {
       document: pipDoc,
       close: vi.fn(),
       addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
     } as unknown as Window;
     const requestWindow = vi.fn().mockResolvedValue(w);
     (window as unknown as Record<string, unknown>).documentPictureInPicture = { requestWindow };
-    return { pipDoc, requestWindow, close: w.close };
+    return { pipDoc, close: w.close as ReturnType<typeof vi.fn> };
   }
 
-  it("carries on playing into the pop-out", async () => {
-    stubPaused(false);
-    const { container } = renderLive();
-    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-    const { pipDoc } = fakePipWindow();
-    const video = container.querySelector("video")!;
-    play.mockClear();
-
-    fireEvent.click(screen.getByTitle("Picture in picture"));
-    await waitFor(() => expect(pipDoc.body.contains(video)).toBe(true));
-
-    // Queued, because the pause the move causes is queued too.
-    await waitFor(() => expect(play).toHaveBeenCalled());
-  });
-
-  it("leaves a paused picture paused", async () => {
-    // Popping out is not a play button.
-    stubPaused(true);
-    const { container } = renderLive();
-    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-    const { pipDoc } = fakePipWindow();
-    const video = container.querySelector("video")!;
-    play.mockClear();
-
-    fireEvent.click(screen.getByTitle("Picture in picture"));
-    await waitFor(() => expect(pipDoc.body.contains(video)).toBe(true));
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(play).not.toHaveBeenCalled();
-  });
-
-  it("lets Escape dismiss the pop-out rather than the player", async () => {
-    // While the picture is out in its own window, that window is the nearest
-    // thing Escape can mean. Closing the player would take away a pop-out the
-    // viewer was watching and the programme with it.
-    stubPaused(false);
-    const onClose = vi.fn();
+  function renderPlayer(onClose = () => {}) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { container } = render(
+    return render(
       <QueryClientProvider client={qc}>
         <VideoPlayer
           source={{ kind: "live", channel: CHANNEL, program: NEWS_HOUR }}
@@ -126,15 +78,39 @@ describe("popping out while playing", () => {
         />
       </QueryClientProvider>,
     );
+  }
+
+  it("never re-parents or pauses the element it is playing", async () => {
+    const { container } = renderPlayer();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-    const { pipDoc, close } = fakePipWindow();
+    const { pipDoc } = fakePipWindow();
     const video = container.querySelector("video")!;
+    const home = video.parentElement;
+    play.mockClear();
+    pause.mockClear();
 
     fireEvent.click(screen.getByTitle("Picture in picture"));
-    await waitFor(() => expect(pipDoc.body.contains(video)).toBe(true));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+
+    // Same parent, and nobody asked it to stop or to start again.
+    expect(video.parentElement).toBe(home);
+    expect(pause).not.toHaveBeenCalled();
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("lets Escape dismiss the pop-out rather than the player", async () => {
+    // While the picture is out in its own window, that window is the nearest
+    // thing Escape can mean. Closing the player would take the programme too.
+    const onClose = vi.fn();
+    const { container } = renderPlayer(onClose);
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc, close } = fakePipWindow();
+    void container;
+
+    fireEvent.click(screen.getByTitle("Picture in picture"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     fireEvent.keyDown(window, { key: "Escape" });
-    // The window is asked to close; the player is left alone.
     await waitFor(() => expect(close).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
   });

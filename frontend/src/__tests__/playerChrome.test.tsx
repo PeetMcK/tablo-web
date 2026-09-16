@@ -62,6 +62,8 @@ describe("the player's chrome", () => {
     (window as unknown as Record<string, unknown>).documentPictureInPicture = {
       requestWindow: vi.fn(),
     };
+    (HTMLMediaElement.prototype as unknown as Record<string, unknown>).captureStream =
+      () => ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream;
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -140,79 +142,53 @@ describe("the player's chrome", () => {
     expect(titles).toEqual(["Mute (M)", "Picture in picture", "Fullscreen (F)"]);
   });
 
-  it("mounts the stage on the pop-out window and takes the same video there", async () => {
-    // Moving the DOM alone was not enough: React delegates events to the root
-    // container, so a stage merely relocated into the other document fired
-    // its clicks where nothing was listening. The window gets a root of its
-    // own, and the one video element — the stream is attached to it through a
-    // MediaSource, so a second would start from nothing — goes with it.
-    const { container } = renderLive();
-    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-
+  /**
+   * A stand-in for the window the browser hands back.
+   *
+   * Backed by an iframe rather than a bare document, because a React root has
+   * to render into it and that needs a document with a window of its own.
+   */
+  function fakePipWindow() {
     const frame = document.createElement("iframe");
     document.body.append(frame);
     const pipDoc = frame.contentDocument!;
-    const pipWindow = {
+    const w = {
       document: pipDoc,
       close: vi.fn(),
       addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
     } as unknown as Window;
-    const requestWindow = vi.fn().mockResolvedValue(pipWindow);
+    const requestWindow = vi.fn().mockResolvedValue(w);
     (window as unknown as Record<string, unknown>).documentPictureInPicture = { requestWindow };
+    return { pipDoc, requestWindow, close: w.close as ReturnType<typeof vi.fn> };
+  }
+
+  it("mounts the stage on the pop-out window and shows a mirror there", async () => {
+    // The element itself stays put. Carrying it across breaks the stream
+    // twice over — the MediaSource blob belongs to this document, and a fresh
+    // window has no user activation to play with — so the pop-out gets a
+    // muted mirror of the same tracks and the controls keep driving the
+    // original.
+    const { container } = renderLive();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc, requestWindow } = fakePipWindow();
 
     const video = container.querySelector("video")!;
-
     fireEvent.click(screen.getByTitle("Picture in picture"));
-    await waitFor(() => expect(requestWindow).toHaveBeenCalledTimes(1));
 
-    // Same element, now living in the other document, with the transport
-    // rendered around it rather than left behind.
-    await waitFor(() => expect(pipDoc.body.contains(video)).toBe(true));
-    expect(pipDoc.body.querySelector("video")).toBe(video);
+    await waitFor(() => expect(requestWindow).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 
-    // And the tab is no longer holding it: one element, one home.
-    expect(container.querySelector("video")).toBeNull();
+    const mirror = pipDoc.body.querySelector("video");
+    expect(mirror).not.toBeNull();
+    expect(mirror).not.toBe(video);          // a mirror, not the original
+    expect(mirror!.muted).toBe(true);        // which is why it may autoplay
+    // The original never left, and still carries the sound.
+    expect(container.contains(video)).toBe(true);
+    expect(video.muted).toBe(false);
     // Placement is the browser's to remember.
     expect(requestWindow).toHaveBeenCalledWith();
-  });
-
-  it("turns the pop-out button around once the stage is in the other window", async () => {
-    // Same button, same place in the row, either side of the pop-out — so
-    // what it says and what it draws has to follow the state, or the button
-    // in the popped-out window still offers to pop out.
-    const { container } = renderLive();
-    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-
-    const frame = document.createElement("iframe");
-    document.body.append(frame);
-    const pipDoc = frame.contentDocument!;
-    const pipWindow = {
-      document: pipDoc,
-      close: vi.fn(),
-      addEventListener: vi.fn(),
-    } as unknown as Window;
-    (window as unknown as Record<string, unknown>).documentPictureInPicture = {
-      requestWindow: vi.fn().mockResolvedValue(pipWindow),
-    };
-
-    // In the tab, it points out.
-    const inTab = [...container.querySelectorAll("button")]
-      .find((b) => b.getAttribute("title") === "Picture in picture")!;
-    expect(inTab.querySelector("svg")!.getAttribute("class"))
-      .toContain("lucide-picture-in-picture-2");
-
-    fireEvent.click(screen.getByTitle("Picture in picture"));
-
-    // In the window it opened, it points back.
-    const back = await waitFor(() => {
-      const b = pipDoc.body.querySelector('button[title="Close picture-in-picture"]');
-      expect(b).not.toBeNull();
-      return b!;
-    });
-    expect(back.querySelector("svg")!.getAttribute("class"))
-      .toContain("lucide-picture-in-picture-exit");
   });
 
   it("fullscreens the player, not the bare video element", async () => {

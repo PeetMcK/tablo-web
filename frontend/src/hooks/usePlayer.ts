@@ -214,34 +214,5 @@ export function usePlayer(
 
   useEffect(() => () => { hlsRef.current?.destroy(); }, []);
 
-  /**
-   * Re-bind the stream to the element after it has moved documents.
-   *
-   * hls.js feeds the element through a MediaSource published as a `blob:` URL,
-   * and that URL belongs to the document that created it. Carry the element
-   * into a picture-in-picture window and back and the blob no longer resolves
-   * — the fetch fails with ERR_FILE_NOT_FOUND and the next append kills the
-   * stream with a fatal bufferAppendError.
-   *
-   * Detaching and attaching builds a fresh MediaSource against the element
-   * where it now lives. The buffer is lost and refills from the playhead,
-   * which is a moment's wait rather than a dead player. Returns silently for
-   * native HLS, which has no MediaSource to rebuild.
-   */
-  const reattach = useCallback(() => {
-    const hls = hlsRef.current;
-    const video = videoRef.current;
-    if (!hls || !video) return;
-    const at = video.currentTime;
-    hls.detachMedia();
-    hls.attachMedia(video);
-    // attachMedia starts from the element's own clock, which the move can
-    // reset; put it back so the picture resumes where it was.
-    if (Number.isFinite(at) && at > 0) {
-      const restore = () => { video.currentTime = at; };
-      hls.once(Hls.Events.MEDIA_ATTACHED, restore);
-    }
-  }, [videoRef]);
-
-  return { load, destroy, reattach, error };
+  return { load, destroy, error };
 }
