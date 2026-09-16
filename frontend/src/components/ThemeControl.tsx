@@ -13,7 +13,7 @@ interface Props {
 /**
  * The Light / Dark / System picker.
  *
- * Shared by ProfileMenu and the signed-out screens rather than copied into
+ * Shared by AppMenu and the signed-out screens rather than copied into
  * each: a radio group is arrow-key driven with a roving tabindex, so Tab lands
  * on the group once rather than three times, and that is exactly the sort of
  * small stateful detail that drifts apart once it exists twice.

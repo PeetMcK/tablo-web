@@ -47,7 +47,7 @@ function Inner() {
       <div className="relative min-h-screen flex items-center justify-center bg-surface text-fg">
         {/* Reachable here too: a slow or unreachable device can leave this
             screen up for a while, and it is signed-out chrome like the login
-            screen, where ProfileMenu's copy of this control does not exist. */}
+            screen, where AppMenu's copy of this control does not exist. */}
         <div className="absolute top-4 right-4">
           <ThemeControl label="Appearance" compact />
         </div>

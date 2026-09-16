@@ -29,7 +29,7 @@ export function LoginScreen({ onSuccess }: Props) {
   return (
     <div className="relative min-h-screen flex items-center justify-center p-6"
          style={{ background: "radial-gradient(ellipse at 50% 0%, rgb(var(--c-accent) / 0.08) 0%, transparent 60%)" }}>
-      {/* ProfileMenu owns the theme picker once you are signed in, but it never
+      {/* AppMenu owns the theme picker once you are signed in, but it never
           mounts before then - so someone who prefers light on a dark machine had
           a dark login screen and no way out. Same control, sized down and parked
           in the corner so it does not compete with the form. */}

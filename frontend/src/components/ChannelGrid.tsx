@@ -6,7 +6,7 @@ import { Inbox, Search } from "lucide-react";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
-import { ProfileMenu } from "./ProfileMenu";
+import { AppMenu } from "./AppMenu";
 import { HeaderClock } from "./HeaderClock";
 import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
@@ -216,30 +216,8 @@ export function ChannelGrid({ onLogout }: Props) {
             a grid of video thumbnails. */}
         <header className="sticky top-0 z-10 bg-surface border-b border-border">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
-            {/* Logo */}
-            <div className="flex items-center gap-2.5 mr-6">
-              {/* The brand ramp, via `.accent-gradient` — both stops are the
-                  brand's own in either theme, since a mark is not a themed
-                  surface. `shadow-accent-glow` is the token form of the old
-                  shadow-accent/20. */}
-              <div className="accent-gradient w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent-glow">
-                {/* `text-brand-fg`, not `text-accent-fg`: accent-fg is ink in
-                    dark (it labels flat accent fills), which would vanish into
-                    the ramp. brand-fg is white in both themes and clears the
-                    3:1 graphic bar at the worst stop. */}
-                <svg className="w-5 h-5 text-brand-fg" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                     strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
-                  {/* Stadium screen: corner radius is half the height, so both ends
-                      are true semicircles — the brand mark, wearing a TV stand. */}
-                  <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5" />
-                  <path d="M12 15.75v5.25" />
-                  <path d="M8 21h8" />
-                </svg>
-              </div>
-              {/* No colour class: the wordmark inherits `text-fg` from <body>,
-                  which is white in dark and ink in light. */}
-              <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
-            </div>
+            {/* The mark is also the settings menu — see AppMenu for why. */}
+            <AppMenu email={userEmail} onLogout={onLogout} />
 
             {/* Navigation Tabs */}
             <nav className="flex items-center gap-1 mr-auto">
@@ -285,7 +263,6 @@ export function ChannelGrid({ onLogout }: Props) {
 
             <div className="flex items-center gap-4 ml-4">
               <HeaderClock now={now} />
-              <ProfileMenu email={userEmail} onLogout={onLogout} />
             </div>
           </div>
         </header>

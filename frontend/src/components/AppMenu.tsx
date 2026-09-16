@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
+import { ChevronDown } from "lucide-react";
 import { api } from "../api/tablo";
 import { useTheme, THEME_LABELS } from "../lib/theme";
 import { ThemeControl } from "./ThemeControl";
@@ -8,20 +9,53 @@ interface Props {
   onLogout: () => void;
 }
 
-export function ProfileMenu({ email, onLogout }: Props) {
+/**
+ * The app mark, doubling as the settings menu.
+ *
+ * This was a monogram in the top-right corner, which is the conventional place
+ * for an account menu — but the monogram was `email.slice(0, 2)`, the first two
+ * characters of the address rather than anything derived from a name, and the
+ * app is single-tenant and self-hosted, so there is no second identity for an
+ * avatar to disambiguate from. It identified nothing and never could.
+ *
+ * What the menu actually holds is app settings: appearance, a debug report, and
+ * a sign-out that on your own server is close to never used. Settings hanging
+ * off the app mark is coherent in a way it would not be in a multi-user
+ * product, and it gives the mark — previously inert — something to do.
+ *
+ * The trade is discoverability: a logo conventionally goes home or does
+ * nothing, so nothing about it says "click here to sign out". The chevron is
+ * what keeps that from being mystery meat, and is not optional. It is affordable
+ * here only because everything behind it is low-frequency.
+ */
+export function AppMenu({ email, onLogout }: Props) {
   const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const themeLabelId = useId();
+  const panelId = useId();
   const { theme, resolvedTheme } = useTheme();
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e: MouseEvent) => {
+    const onPointer = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    // Escape and focus return. Without these the menu could be opened by
+    // keyboard but not dismissed by it, and a screen reader was never told it
+    // had opened at all — the trigger carried no `aria-expanded`.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   const generateDebugReport = useCallback(async () => {
@@ -53,22 +87,52 @@ export function ProfileMenu({ email, onLogout }: Props) {
     }
   }, []);
 
-  const initials = email
-    ? email.slice(0, 2).toUpperCase()
-    : "?";
-
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative mr-6" ref={ref}>
+      {/* A disclosure, not a `role="menu"`: the panel holds a radiogroup and a
+          couple of buttons, and `menu` would promise menuitem children it does
+          not have. `aria-expanded` plus the chevron carry the state. */}
       <button
+        ref={triggerRef}
         onClick={() => setOpen(v => !v)}
-        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-black text-fg-secondary hover:text-fg transition border border-border hover:border-border-medium bg-fill-soft hover:bg-fill"
-        title="Account"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        className="group flex items-center gap-2.5 -m-1 p-1 rounded-xl hover:bg-fill-soft
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-accent transition"
       >
-        {initials}
+        {/* The brand ramp, via `.accent-gradient` — both stops are the brand's
+            own in either theme, since a mark is not a themed surface. */}
+        <div className="accent-gradient w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent-glow">
+          {/* `text-brand-fg`, not `text-accent-fg`: accent-fg is ink in dark (it
+              labels flat accent fills), which would vanish into the ramp.
+              brand-fg is white in both themes and clears the 3:1 graphic bar at
+              the worst stop. */}
+          <svg className="w-5 h-5 text-brand-fg" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+               strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+            {/* Stadium screen: corner radius is half the height, so both ends
+                are true semicircles — the brand mark, wearing a TV stand. */}
+            <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5" />
+            <path d="M12 15.75v5.25" />
+            <path d="M8 21h8" />
+          </svg>
+        </div>
+        {/* No colour class: the wordmark inherits `text-fg` from <body>, which
+            is white in dark and ink in light. */}
+        <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
+        <ChevronDown
+          className={`w-4 h-4 shrink-0 text-fg-muted group-hover:text-fg-secondary transition ${open ? "rotate-180" : ""}`}
+          strokeWidth={2.5}
+          aria-hidden
+        />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-11 w-64 rounded-2xl bg-surface-raised border border-border shadow-2xl shadow-shade z-50 overflow-hidden">
+        // Anchored left now that the trigger is, rather than right.
+        <div
+          id={panelId}
+          className="absolute left-0 top-12 w-64 rounded-2xl bg-surface-raised border border-border shadow-2xl shadow-shade z-50 overflow-hidden"
+        >
           {email && (
             <div className="px-4 py-3 border-b border-border-subtle">
               {/* 10px is nowhere near WCAG's "large text" threshold, so these
