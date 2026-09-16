@@ -948,12 +948,10 @@ describe("the filter row as the window narrows", () => {
     // last had them.
     const { controls } = await row();
 
-    // A row: pushed across by the margin. A column: aligned to the far cross
-    // edge, which is the right. Back to a row at xl, where the chips' `flex-1`
-    // does the pushing and `self-auto` restores the top alignment.
+    // One rule for every line it can end up on: take whatever is left of the
+    // row. Beside the chips that is the space they do not use; wrapped onto
+    // its own line it is the whole of it.
     expect(controls.className).toMatch(/\bml-auto\b/);
-    expect(controls.className).toMatch(/\bsm:self-end\b/);
-    expect(controls.className).toMatch(/\bxl:self-auto\b/);
   });
 
   it("hands the chips over to one control at phone width", async () => {
@@ -971,14 +969,22 @@ describe("the filter row as the window narrows", () => {
     expect(chips.className).not.toMatch(/overflow-x-auto/);
   });
 
-  it("puts the jump control under the chips in between, beside them when wide", async () => {
-    const { outer } = await row();
+  it("drops the jump control to its own line by collision, not by width", async () => {
+    // What decides it is Streaming and NOW meeting, which is not a width — so
+    // the row wraps and `min-w-max` keeps the chips one line while one fits,
+    // leaving the controls nowhere but the next line at the moment the two
+    // would crowd. `xl` was a guess at that point and a poor one: it stacked
+    // them with 164px of the row still empty.
+    const { outer, chips } = await row();
 
-    // Row at phone width, where the three controls fit a line between them;
-    // a column once the chips are a row of their own; a row again when there
-    // is width for chips and controls side by side.
-    expect(outer.className).toMatch(/sm:flex-col/);
-    expect(outer.className).toMatch(/xl:flex-row/);
+    expect(outer.className).toMatch(/flex-wrap/);
+    expect(outer.className).not.toMatch(/flex-col/);
+    expect(outer.className).not.toMatch(/\bxl:|min-\[1140px\]/);
+    // 16px between them, twice the gap between NOW and the date pill: they
+    // break apart before they touch, not after.
+    expect(outer.className).toMatch(/gap-x-4/);
+    // Only while a single line of chips fits at all; below that they wrap.
+    expect(chips.className).toMatch(/min-\[880px\]:min-w-max/);
   });
 
   it("filters from the collapsed control too", async () => {

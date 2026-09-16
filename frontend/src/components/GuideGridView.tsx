@@ -685,23 +685,38 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
         Three shapes as the window narrows, in order:
 
-          xl and up  chips on one line, NOW and the date jump at the right end
-          sm to xl   NOW and the jump drop to a line of their own beneath the
-                     chips, which wrap onto as many lines as they need
-          below sm   the chips become one pill-and-popover, and all three
-                     controls share a single line again
+          wide     chips on one line, NOW and the date jump at the right end
+          tighter  NOW and the jump drop to a line of their own beneath the
+                   chips, which are still one line
+          tighter  the chips wrap onto as many lines as they need
+          phone    the chips become one pill-and-popover, and all three
+                   controls share a single line again
 
-        Hence `flex-row sm:flex-col xl:flex-row`, which looks odd written down
-        and is exactly that sequence: a row at phone width because three small
-        controls fit one, a column while the chips need the full width, a row
-        again once there is room for both. */}
-    <div data-filter-row className="flex flex-row sm:flex-col xl:flex-row xl:items-start gap-2">
+        No breakpoint decides the first of those, because the thing that
+        matters is not a width: it is Streaming and NOW meeting in the middle.
+        So the row simply wraps, and `min-w-max` on the chips keeps them a
+        single line while there is room for one — which leaves the controls
+        nowhere to go but the next line at exactly the moment the two would
+        crowd. The browser works out where that is; a number here would only
+        ever be an estimate of it, and `xl` was a bad one, stacking them with
+        164px of the row still empty.
+
+        `gap-x-4` is what "would crowd" means: 16px, twice the space between
+        NOW and the date pill beside it. They break apart before they touch,
+        not after.
+
+        `min-w-max` only above 880px — 809px of chips inside `main`'s 48px of
+        padding, and a little over. Below that the chips themselves have to
+        wrap, so they must be allowed to shrink. */}
+    <div data-filter-row
+         className="flex flex-wrap items-start gap-x-4 gap-y-2">
     {/* Wrapping, not a hidden-scrollbar overflow. As a scroller the eighth
         chip ran under the NOW pill and off the edge with nothing to say it was
         there — 809px of chips in 553px of room at the width this was found at.
         `min-w-0` so the wrapping box may actually be narrower than its
         content, which a flex child refuses by default. */}
-    <div data-filter-chips className="hidden sm:flex flex-wrap gap-2 xl:flex-1 xl:min-w-0">
+    <div data-filter-chips
+         className="hidden sm:flex flex-wrap gap-2 min-[880px]:min-w-max">
       {CONTENT_FILTERS.map(f => (
         <button
           key={f.id}
@@ -728,17 +743,11 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
         <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
       </div>
 
-      {/* Right-aligned at every width. At full width the chips' `flex-1` does
-          that by itself, but on a line of their own — or on a phone's single
-          line beside the collapsed control — the pair sat left, so it moved
-          across the toolbar twice as the window narrowed. `ml-auto` pushes it
-          in a row, `self-end` puts it at the far cross edge in a column, and
-          `xl:self-auto` hands the vertical alignment back to the parent's
-          `items-start` once it is a row again.
-
-          No spacer beside it: the chip box takes the room now, and a `flex-1`
-          here would split it with them and wrap the chips early. */}
-      <div data-filter-controls className="ml-auto sm:ml-0 sm:self-end xl:self-auto shrink-0">
+      {/* Right-aligned at every width, whichever line it is on: `ml-auto` eats
+          whatever is left of the row, beside the chips or under them. Without
+          it the pair sat left once it wrapped, so it crossed the toolbar as the
+          window narrowed. */}
+      <div data-filter-controls className="ml-auto shrink-0">
         <GuideJump
           days={jumpRows}
           label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}
