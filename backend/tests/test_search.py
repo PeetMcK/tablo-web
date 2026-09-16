@@ -78,6 +78,26 @@ def test_reindexing_the_same_airing_does_not_duplicate_it():
     assert len(rows) == 1
 
 
+def test_reindexing_does_not_leave_the_old_title_in_the_index():
+    """INSERT OR REPLACE does not fire the delete trigger, so a replaced row
+    left its terms in FTS forever while the new terms were added beside them.
+    Counting search_doc rows cannot see this; only FTS can.
+    """
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+    store.save_guide([_ch(airings=[{
+        "title": "Broncos at Chiefs", "subtitle": "", "description": "",
+        "start": start, "duration": 3600, "genres": [], "kind": "episode",
+    }])], now=now)
+    store.save_guide([_ch(airings=[{
+        "title": "Seahawks at Rams", "subtitle": "", "description": "",
+        "start": start, "duration": 3600, "genres": [], "kind": "episode",
+    }])], now=now)
+
+    assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'broncos'")
+    assert db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'seahawks'")
+
+
 def test_pruning_an_airing_removes_it_from_the_index():
     now = time.time()
     store.save_guide([_ch(airings=[{

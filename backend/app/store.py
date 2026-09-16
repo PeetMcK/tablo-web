@@ -305,12 +305,25 @@ def index_channel(conn, ch: dict) -> None:
 
     Takes an open connection so it joins the caller's transaction: the index
     and the row it describes must land together or not at all.
+
+    An explicit `ON CONFLICT ... DO UPDATE`, not `INSERT OR REPLACE`: REPLACE
+    conflict resolution only fires SQLite's delete triggers when
+    `PRAGMA recursive_triggers` is on, which it is not here (and would have to
+    be set on every thread-local connection to help). With it off, `search_fts`
+    never sees the old row deleted - the new terms are added beside the old
+    ones instead of replacing them, so a search index grows stale and unbounded
+    while `search_doc` itself looks correct. The `ON CONFLICT DO UPDATE` form
+    fires an `UPDATE`, which `search_doc_au` (added in Task 1) already handles.
     """
     ident = str(ch.get("identifier"))
     conn.execute(
-        "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+        "INSERT INTO search_doc(kind, ref, title, subtitle, body, "
         "    channel, start_epoch, duration, target) "
-        "VALUES ('channel', ?, ?, ?, ?, ?, NULL, 0, ?)",
+        "VALUES ('channel', ?, ?, ?, ?, ?, NULL, 0, ?) "
+        "ON CONFLICT(kind, ref) DO UPDATE SET "
+        "  title=excluded.title, subtitle=excluded.subtitle, body=excluded.body, "
+        "  channel=excluded.channel, start_epoch=excluded.start_epoch, "
+        "  duration=excluded.duration, target=excluded.target",
         (
             ident,
             ch.get("display_name") or ch.get("call_sign"),
@@ -323,15 +336,23 @@ def index_channel(conn, ch: dict) -> None:
 
 
 def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
-    """Put one airing in the search index, keyed the same way as guide_airing."""
+    """Put one airing in the search index, keyed the same way as guide_airing.
+
+    Uses `ON CONFLICT DO UPDATE`, not `INSERT OR REPLACE` - see the note on
+    `index_channel` for why the latter silently corrupts `search_fts` here.
+    """
     genres = air.get("genres") or []
     body = " ".join(
         str(p) for p in (air.get("description"), *genres, label) if p
     )
     conn.execute(
-        "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+        "INSERT INTO search_doc(kind, ref, title, subtitle, body, "
         "    channel, start_epoch, duration, target) "
-        "VALUES ('airing', ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES ('airing', ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(kind, ref) DO UPDATE SET "
+        "  title=excluded.title, subtitle=excluded.subtitle, body=excluded.body, "
+        "  channel=excluded.channel, start_epoch=excluded.start_epoch, "
+        "  duration=excluded.duration, target=excluded.target",
         (
             f"{channel_id}|{air.get('start')}",
             air.get("title"),
