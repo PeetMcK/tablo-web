@@ -7,6 +7,7 @@ already written in terms of groups of kinds.
 
 import json
 import re
+import time
 
 from . import db
 
@@ -15,6 +16,12 @@ MIN_QUERY = 2
 # Groups in the order a person wants them: what you already have, then what is
 # coming, then where to watch it.
 KIND_ORDER = ("recording", "airing", "channel")
+
+# How far a recording's start may drift from the airing's and still be the same
+# showing. Recordings carry padding, so they rarely start on the minute. Wider
+# than this starts matching a different repeat of the same programme, which is
+# a worse answer than admitting we do not know.
+MATCH_WINDOW = 300
 
 # bm25 returns negative numbers and more negative is a better match, so results
 # order ascending. Weights are title, subtitle, body, channel - a title hit
@@ -101,6 +108,20 @@ def search(q: str, limit: int = 5, kinds: list[str] | None = None) -> dict:
     return out
 
 
+def _recorded_for(title: str | None, start_epoch: int | None) -> dict | None:
+    """The recording of this showing, if there is one."""
+    if not title or not start_epoch or start_epoch > time.time():
+        return None
+    row = db.query_one(
+        "SELECT ref FROM search_doc WHERE kind = 'recording' "
+        "  AND lower(trim(title)) = lower(trim(?)) "
+        "  AND abs(start_epoch - ?) <= ? "
+        "ORDER BY abs(start_epoch - ?) LIMIT 1",
+        (title, start_epoch, MATCH_WINDOW, start_epoch),
+    )
+    return {"object_id": int(row["ref"])} if row else None
+
+
 def _item(row) -> dict:
     return {
         "kind": row["kind"],
@@ -111,4 +132,8 @@ def _item(row) -> dict:
         "start_epoch": row["start_epoch"] or None,
         "duration": row["duration"],
         "target": json.loads(row["target"]),
+        "recorded": (
+            _recorded_for(row["title"], row["start_epoch"])
+            if row["kind"] == "airing" else None
+        ),
     }

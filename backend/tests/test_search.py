@@ -231,3 +231,44 @@ def test_punctuation_in_a_query_does_not_break_fts():
     _doc("airing", "a|1", "Rick Steves' Europe")
     out = search_mod.search('steves"')
     assert out["groups"]
+
+
+def test_a_past_airing_says_whether_it_was_recorded():
+    """Searching backwards is about whether you missed something."""
+    aired = 1_760_000_000
+    _doc("airing", "ch1|x", "Broncos at Chiefs", start=aired)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+            "    channel, start_epoch, duration, target) "
+            "VALUES ('recording', '80888', 'Broncos at Chiefs', '', '', "
+            "        '8.1 CBS', ?, 3600, '{}')",
+            (aired + 60,),        # a recording starts a touch late
+        )
+
+    item = search_mod.search("broncos", kinds=["airing"])["groups"][0]["items"][0]
+    assert item["recorded"] == {"object_id": 80888}
+
+
+def test_a_different_showing_of_the_same_title_is_not_claimed_as_recorded():
+    """Repeats share a title; only a near-simultaneous start is the same showing."""
+    aired = 1_760_000_000
+    _doc("airing", "ch1|y", "Broncos at Chiefs", start=aired)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+            "    channel, start_epoch, duration, target) "
+            "VALUES ('recording', '999', 'Broncos at Chiefs', '', '', "
+            "        '8.1 CBS', ?, 3600, '{}')",
+            (aired + 1800,),      # half an hour off: a different showing
+        )
+
+    item = search_mod.search("broncos", kinds=["airing"])["groups"][0]["items"][0]
+    assert item["recorded"] is None
+
+
+def test_an_upcoming_airing_is_not_cross_referenced():
+    import time
+    _doc("airing", "ch1|z", "Future Game", start=int(time.time()) + 86_400)
+    item = search_mod.search("future", kinds=["airing"])["groups"][0]["items"][0]
+    assert item["recorded"] is None
