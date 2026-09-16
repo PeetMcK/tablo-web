@@ -749,6 +749,18 @@ def imminent_cover_ids(hours: int = 12, now: float | None = None) -> list[int]:
     return [r["id"] for r in rows]
 
 
+# The device's `schedule.state` is an open enumeration - `/server/capabilities`
+# advertises features whose states we have never seen. Naming the values that
+# mean "not recording" and treating everything else as recording fails safe: an
+# unseen state shows a REC badge that can be turned off, rather than hiding a
+# recording that is actually scheduled.
+_NOT_RECORDING = {None, "none", "skipped"}
+
+
+def _is_scheduled(state: str | None) -> bool:
+    return state not in _NOT_RECORDING
+
+
 def airing_detail(channel: str, start: str, now: float | None = None) -> dict | None:
     """Everything the show sheet renders, from the mirror alone.
 
@@ -791,6 +803,21 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
         "rating": (series or {}).get("rating"),
         "image_url": image_url,
         "airing_now": start_epoch <= at < end_epoch,
+        # Recording state. `schedulable` is decided here rather than left to the
+        # client to infer from a path, because the path never leaves the backend
+        # - see routes/schedule.py.
+        "schedulable": air["airing_path"] is not None,
+        "scheduled": _is_scheduled(air["schedule_state"]),
+        # Not the inverse of `airing_now`: that is also false for everything
+        # upcoming, which is the main thing anyone records.
+        "past": end_epoch <= at,
+        "schedule_state": air["schedule_state"],
+        "skip_reason": air["skip_reason"],
+        "series": (
+            {"path": air["series_path"],
+             "schedule_rule": (series or {}).get("schedule_rule")}
+            if air["series_path"] else None
+        ),
         "channel": {
             "identifier": channel,
             "call_sign": ch["call_sign"] if ch else None,

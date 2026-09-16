@@ -140,3 +140,64 @@ def test_series_future_airings_skips_the_past_and_the_unschedulable():
     assert [r["start"] for r in got] == [start]
     assert got[0]["channel"] == "ch1"
     assert got[0]["airing_path"] == "/guide/series/episodes/67388"
+
+
+def test_airing_detail_says_whether_it_can_be_recorded():
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+    store.save_series([{
+        "path": "/guide/series/6472", "identifier": "X",
+        "title": "Finding Your Roots", "description": None, "genres": [],
+        "rating": "tvpg", "orig_air_date": None, "episode_runtime": 3600,
+        "cast": [], "cover_image_id": None, "thumbnail_image_id": None,
+        "background_image_id": None, "schedule_rule": "new",
+        "keep_rule": "none", "keep_count": None,
+    }])
+
+    d = store.airing_detail("ch1", start, now=now)
+    assert d["schedulable"] is True
+    assert d["scheduled"] is False          # schedule_state is "none"
+    assert d["schedule_state"] == "none"
+    assert d["past"] is False               # _guide() puts it an hour out
+    assert d["series"] == {"path": "/guide/series/6472", "schedule_rule": "new"}
+
+
+def test_an_airing_that_has_finished_is_past():
+    """Distinct from `airing_now`, which is also false for everything upcoming
+    - and upcoming is what people record."""
+    now = time.time()
+    rows, _ = _guide(now)
+    ended = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 7200))
+    rows[0]["airings"][0]["start"] = ended
+    store.save_guide(rows, now=now)
+
+    d = store.airing_detail("ch1", ended, now=now)
+    assert d["past"] is True
+    assert d["airing_now"] is False
+
+
+def test_a_cloud_only_airing_is_not_schedulable():
+    """OTT/FAST airings exist only in the cloud, which carries no device path,
+    no schedule block and no series_path - nothing can record them."""
+    now = time.time()
+    rows, start = _guide(now, airing_path=None, series_path=None,
+                         schedule_state=None, schedule_qualifier=None,
+                         skip_reason=None)
+    store.save_guide(rows, now=now)
+
+    d = store.airing_detail("ch1", start, now=now)
+    assert d["schedulable"] is False
+    assert d["scheduled"] is False
+    assert d["series"] is None
+
+
+def test_any_state_but_none_or_skipped_counts_as_recording():
+    """schedule.state is an open enumeration - name the values that mean *not*
+    recording and treat the rest as recording, so an unseen one is not read as
+    'this is not being recorded' when it is."""
+    now = time.time()
+    rows, start = _guide(now, schedule_state="conflict")
+    store.save_guide(rows, now=now)
+
+    assert store.airing_detail("ch1", start, now=now)["scheduled"] is True
