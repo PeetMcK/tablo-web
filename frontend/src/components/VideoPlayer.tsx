@@ -923,8 +923,20 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   }
 
   return (
+    // `dark`, unconditionally. The player is the one surface that does not
+    // follow the theme: it is a fullscreen media UI sitting on frames we do not
+    // control, and light chrome around video reads as a rendering fault rather
+    // than a theme. Every other player in the category does the same.
+    //
+    // This works because the token blocks in index.css are written as `:root`
+    // and `.dark` — a plain class selector, not `:root.dark`. Putting `dark` on
+    // this subtree redeclares all 104 custom properties for it, and custom
+    // properties inherit, so the entire player resolves to dark values. That
+    // covers the page-palette tokens it uses (bg-fill, accent, danger, shade)
+    // as well as its own player-* family, which pinning the player tokens alone
+    // would have missed. No call site in this file needs to know.
     <div
-      className="fixed inset-0 z-50 bg-media flex items-center justify-center"
+      className="dark fixed inset-0 z-50 bg-media flex items-center justify-center"
       onMouseMove={resetHideTimer}
       onClick={handleSurfaceClick}
     >
