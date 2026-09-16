@@ -205,7 +205,7 @@ function zoneAtEvent(e: React.MouseEvent<HTMLDivElement>): SurfaceZone | null {
 interface PlayerView {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   rootRef: React.RefObject<HTMLDivElement | null>;
-  videoHostRef: React.RefObject<HTMLDivElement | null>;
+  // No host ref here, deliberately. Each stage keeps its own — see `Stage`.
   placeVideo: (host: HTMLDivElement, forPip: boolean) => void;
   barRef: React.RefObject<HTMLDivElement | null>;
   showControls: boolean;
@@ -294,8 +294,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   }
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
-  /** Where the video sits, and returns to after a spell in its own window. */
-  const videoHostRef = useRef<HTMLDivElement>(null);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -1069,11 +1067,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   const togglePictureInPicture = useCallback(async () => {
     const video = videoRef.current;
-    const host = videoHostRef.current;
     const dpip = (window as unknown as { documentPictureInPicture?: {
       requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
     } }).documentPictureInPicture;
-    if (!video || !host || !dpip) return;
+    if (!video || !dpip) return;
 
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
@@ -1333,7 +1330,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * keeps the markup itself identical in both places.
    */
   const view: PlayerView = {
-    videoRef, rootRef, videoHostRef, barRef, placeVideo,
+    videoRef, rootRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
@@ -1388,7 +1385,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
  */
 function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
   const {
-    rootRef, videoHostRef, barRef, placeVideo,
+    rootRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
@@ -1399,6 +1396,19 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
     formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
   } = view;
+
+  /**
+   * Where this stage puts the picture — one host per stage, never shared.
+   *
+   * Sharing a single ref across both stages is what broke pop-in: the two
+   * hosts write to the same ref, the pop-out mounts second and so wins it,
+   * and the tab's stage then reads that ref on its next render and appends
+   * the real element into the *pop-out's* host. Closing the window destroyed
+   * the document with the picture still inside it, which reset the element to
+   * time zero and left hls.js appending into it — a fatal bufferAppendError
+   * at fragment 0, every time.
+   */
+  const videoHostRef = useRef<HTMLDivElement>(null);
 
   /**
    * Whether the pop-out's controls are showing.

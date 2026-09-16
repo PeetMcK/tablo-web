@@ -98,6 +98,34 @@ describe("popping out leaves the playing element alone", () => {
     expect(play).not.toHaveBeenCalled();
   });
 
+  it("keeps the real element in this document once the pop-out is up", async () => {
+    // The stage that hosts the picture is rendered by two roots, and the
+    // element itself must never leave the tab: the pop-out's document is
+    // destroyed when that window closes, and anything still inside it is
+    // reset — currentTime 0, readyState 0 — which leaves hls.js appending
+    // into a dead element and killing the stream with a bufferAppendError.
+    //
+    // The catch is that it does not happen when the pop-out opens. It happens
+    // on the next render, so the assertion has to come after one.
+    const { container } = renderPlayer();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc } = fakePipWindow();
+    const video = container.querySelector("video")!;
+
+    fireEvent.click(screen.getByTitle("Picture in picture"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+
+    // Anything that re-renders the tab's stage will do; playback does this
+    // several times a second on its own.
+    fireEvent.timeUpdate(video);
+    await waitFor(() => expect(video.ownerDocument).toBe(document));
+
+    expect(video.isConnected).toBe(true);
+    expect(pipDoc.body.contains(video)).toBe(false);
+    // Which leaves the pop-out showing a mirror rather than the original.
+    expect(pipDoc.body.querySelector("video")).not.toBe(video);
+  });
+
   it("lets Escape dismiss the pop-out rather than the player", async () => {
     // While the picture is out in its own window, that window is the nearest
     // thing Escape can mean. Closing the player would take the programme too.
