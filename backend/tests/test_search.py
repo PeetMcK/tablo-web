@@ -42,6 +42,35 @@ def test_fts_follows_a_delete():
     assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'broncos'")
 
 
+def test_coverage_excludes_a_sync_older_than_the_retention_window():
+    """`since` must not outlive the airings that back it up.
+
+    `guide_sync` rows are never pruned, but `prune_guide` deletes airings once
+    they are older than GUIDE_RETENTION_DAYS. A sync from outside that window
+    is therefore not evidence of anything still on disk, and must not be
+    reported as the start of trustworthy history.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.store import GUIDE_RETENTION_DAYS
+
+    now = datetime.now(timezone.utc)
+    stale = (now - timedelta(days=GUIDE_RETENTION_DAYS + 5)).isoformat(timespec="seconds")
+    fresh = (now - timedelta(days=GUIDE_RETENTION_DAYS - 5)).isoformat(timespec="seconds")
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO guide_sync(started_at, finished_at, ok) VALUES (?, ?, 1)",
+            (stale, stale),
+        )
+        conn.execute(
+            "INSERT INTO guide_sync(started_at, finished_at, ok) VALUES (?, ?, 1)",
+            (fresh, fresh),
+        )
+
+    cov = search_mod.coverage()
+    assert cov["since"] == fresh
+
+
 def _ch(ident="ch1", **kw):
     base = {
         "identifier": ident, "call_sign": "KPAX", "major": 8, "minor": 1,

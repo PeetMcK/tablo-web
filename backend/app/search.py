@@ -8,8 +8,10 @@ already written in terms of groups of kinds.
 import json
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 from . import db
+from .store import GUIDE_RETENTION_DAYS
 
 MIN_QUERY = 2
 
@@ -54,10 +56,28 @@ def coverage() -> dict:
 
     Without this an empty result cannot be told apart from a period the sync
     never saw - which is the exact confusion this feature exists to remove.
+
+    `guide_sync` itself is never pruned, but the airings a sync recorded are -
+    `store.prune_guide` deletes anything older than GUIDE_RETENTION_DAYS. Left
+    unconstrained, `since` would report the very first sync this install ever
+    ran, long after every airing from back then has been deleted - a confident
+    "since <install date>" standing in for a history that no longer exists.
+    `since` is therefore the earliest successful sync still inside the window
+    that is actually still on disk.
+
+    The cutoff is formatted exactly like `guide_sync.started_at`
+    (`guide_sync._now()`, `isoformat(timespec="seconds")`) so the comparison
+    stays a safe lexicographic one - both are UTC ISO 8601 with a `+00:00`
+    offset, and mismatched fractional-second precision would otherwise sort
+    the wrong way at the boundary.
     """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=GUIDE_RETENTION_DAYS)
+    ).isoformat(timespec="seconds")
     row = db.query_one(
         "SELECT MIN(started_at) AS since, MAX(finished_at) AS last "
-        "FROM guide_sync WHERE ok = 1"
+        "FROM guide_sync WHERE ok = 1 AND started_at >= ?",
+        (cutoff,),
     )
     return {
         "since": row["since"] if row else None,
