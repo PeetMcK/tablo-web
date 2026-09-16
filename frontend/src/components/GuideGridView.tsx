@@ -117,16 +117,50 @@ export function GuideGridView({ onPlay }: Props) {
   }, []);
 
   const HOUR_WIDTH = 400; // px per hour
-  const TOTAL_HOURS = 6;
+  const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 
-  const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => {
-    const d = new Date(startTime + i * 3600 * 1000);
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  });
+  /**
+   * How far the timeline runs, taken from the listings themselves.
+   *
+   * This was a fixed six hours while programmes were positioned from their real
+   * start with no cap, so anything further out was drawn under blank space and
+   * the clock stopped describing the content beneath it. The header has to span
+   * whatever the guide actually holds.
+   */
+  const totalHours = useMemo(() => {
+    let end = startTime + MIN_HOURS * 3600_000;
+    for (const ch of grid) {
+      for (const air of ch.airings ?? []) {
+        const airEnd = new Date(air.start).getTime() + (air.duration || 0) * 1000;
+        if (Number.isFinite(airEnd) && airEnd > end) end = airEnd;
+      }
+    }
+    return Math.ceil((end - startTime) / 3600_000);
+  }, [grid, startTime]);
+
+  /**
+   * One heading per hour, carrying the day when it changes.
+   *
+   * A guide running past midnight shows "12:00 AM" twice over, and the time
+   * alone cannot say which night it belongs to — so the first column of each
+   * day is labelled with the date and marked off.
+   */
+  const hours = useMemo(() => Array.from({ length: totalHours }, (_, i) => {
+    const d = new Date(startTime + i * 3600_000);
+    const prev = i === 0 ? null : new Date(startTime + (i - 1) * 3600_000);
+    const startsDay = prev === null || d.getDate() !== prev.getDate();
+    return {
+      time: d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      day: startsDay
+        ? d.toLocaleDateString([], { weekday: "short", month: "numeric", day: "numeric" })
+        : null,
+      startsDay,
+    };
+  }), [totalHours, startTime]);
 
   // Pixel offset of "now" from the left edge of the timeline
   const nowLeft = ((now - startTime) / 1000 / 3600) * HOUR_WIDTH;
-  const nowVisible = nowLeft >= 0 && nowLeft <= HOUR_WIDTH * TOTAL_HOURS;
+  const nowVisible = nowLeft >= 0 && nowLeft <= HOUR_WIDTH * totalHours;
 
   const filteredGrid = contentFilter === "all" ? grid : grid.filter(ch => channelMatchesFilter(ch, contentFilter));
 
@@ -169,9 +203,18 @@ export function GuideGridView({ onPlay }: Props) {
              ref={registerLane}
              onScroll={e => syncLanes(e.currentTarget)}>
           {hours.map((h, i) => (
-            <div key={i} className="shrink-0 font-mono text-[11px] font-bold text-white/30 flex items-center px-6 border-r border-white/5 h-10"
-                 style={{ width: HOUR_WIDTH }}>
-              {h}
+            <div
+              key={i}
+              className={`shrink-0 font-mono text-[11px] font-bold flex items-center gap-2 px-6 h-10
+                          ${h.startsDay
+                            ? "border-l border-white/20 text-white/50"
+                            : "border-r border-white/5 text-white/30"}`}
+              style={{ width: HOUR_WIDTH }}
+            >
+              {/* The date leads the first column of each day; a stronger left
+                  border makes the boundary visible while scrolling past it. */}
+              {h.day && <span className="text-accent/70">{h.day}</span>}
+              <span>{h.time}</span>
             </div>
           ))}
           {/* Now marker in header */}
@@ -248,6 +291,18 @@ export function GuideGridView({ onPlay }: Props) {
                   </button>
                 );
               })}
+
+              {/* Holds every row to the same scrollable width as the clock.
+                  Programmes are absolutely positioned and contribute nothing
+                  reliable to scroll extent, so a channel whose listings stop
+                  early would scroll a shorter distance than the header and slide
+                  out of step with it at the far end. */}
+              <div
+                className="shrink-0"
+                style={{ width: totalHours * HOUR_WIDTH }}
+                data-timeline-spacer
+                aria-hidden
+              />
 
               {/* Vertical "now" line across the row */}
               {nowVisible && (
