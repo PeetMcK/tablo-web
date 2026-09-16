@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import subprocess
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -317,30 +318,53 @@ def _rewrite_manifest(manifest: str, session_id: str, playlist_url: str) -> str:
 # Status check
 # ---------------------------------------------------------------------------
 
+# FFmpeg rewrites its stats line in place with \r, so `time=` is found by
+# scanning the whole tail rather than by reading lines.
+_TIME_RE = re.compile(r"time=(\d+):(\d\d):(\d\d(?:\.\d+)?)")
+
+
+def encoded_seconds(log_text: str) -> float | None:
+    """Seconds of video FFmpeg has written, from the last stats line it printed.
+
+    None until the first frame is encoded — before that FFmpeg prints a huge
+    negative placeholder time, which the regex declines to match.
+    """
+    matches = _TIME_RE.findall(log_text)
+    if not matches:
+        return None
+    h, m, s = matches[-1]
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
 @router.get("/transcode/status/{session_id}")
 async def transcode_status(session_id: str):
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
     proc = transcode_procs.get(session_id)
     session_dir = TRANSCODE_DIR / session_id
-    
+
     log_content = ""
+    encoded = None
     log_file = session_dir / "ffmpeg.log"
     if log_file.exists():
         try:
+            text = log_file.read_text(errors="ignore")
             # Get last 20 lines of log
-            lines = log_file.read_text().splitlines()
-            log_content = "\n".join(lines[-20:])
+            log_content = "\n".join(text.splitlines()[-20:])
+            encoded = encoded_seconds(text)
         except Exception:
             pass
 
     if not proc:
-        return {"status": "inactive", "log": log_content}
+        return {"status": "inactive", "log": log_content, "encoded_seconds": encoded}
 
     return {
         "status": "active" if proc.poll() is None else "stopped",
         "return_code": proc.returncode,
         "files": [f.name for f in session_dir.glob("*") if f.is_file()],
+        # How much video exists so far. The player shows progress toward having
+        # enough of a lead to start, instead of an unanchored spinner.
+        "encoded_seconds": encoded,
         "log": log_content
     }
 

@@ -6,6 +6,7 @@ import type {
   Channel, Program, Recording, CacheState, EncodingProgress,
 } from "../api/tablo";
 import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
+import { clampSkip, readyRange } from "../lib/playback";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -39,6 +40,14 @@ const LIVE_DVR_SECONDS = 3600;
 
 /** Within this many seconds of the seekable end counts as "at the live edge". */
 const LIVE_EDGE_THRESHOLD = 12;
+
+/**
+ * Encoder lead a live stream needs before playback starts, in seconds.
+ *
+ * Two segments at the backend's HLS_TIME of 6s: hls.js will not start on one.
+ * Used as the denominator of the progress shown while the stream is blocked.
+ */
+const LIVE_LEAD_SECONDS = 12;
 
 /**
  * Seeking into an un-encoded window makes the backend transcode it before
@@ -127,6 +136,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [cachedRanges, setCachedRanges] = useState<[number, number][]>([]);
   /** Progress of the window playback is waiting on, when one is being encoded. */
   const [encodingAt, setEncodingAt] = useState<EncodingProgress | null>(null);
+  /** True while a live channel is served through FFmpeg rather than proxied raw. */
+  const [liveTranscoded, setLiveTranscoded] = useState(false);
+  /** Seconds of live video the encoder has produced, null before its first frame. */
+  const [liveEncoded, setLiveEncoded] = useState<number | null>(null);
   /** Last scrub-preview frame that finished decoding. */
   const [shownPreview, setShownPreview] = useState<string | null>(null);
   // Media listeners are attached once on mount, so they need a live view of the
@@ -173,7 +186,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           // OTA broadcasts are MPEG-2. No browser's MSE implementation decodes
           // MPEG-2 video — hls.js demuxes the container but the video track is
           // unrenderable, leaving audio only. Always transcode OTA to H.264.
-          const transcode = current.channel.kind === "ota" ? true : undefined;
+          //
+          // Anything not known to be OTT counts as a broadcast: a guide row
+          // that arrives without a kind used to fall through to the raw stream,
+          // which parses no fragment and buffers forever. Transcoding an OTT
+          // channel needlessly only costs CPU.
+          const transcode = current.channel.kind === "ott" ? undefined : true;
           const r = await api.startStream(current.channel.identifier, transcode);
           if (cancelled) return;
           log.player(`open live ${current.channel.display_name}`, {
@@ -181,6 +199,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             session: r.session_id, url: r.stream_url,
           });
           setSessionId(r.session_id);
+          setLiveTranscoded(!!r.transcoded);
           load(r.stream_url);
         } else {
           const t0 = performance.now();
@@ -299,6 +318,31 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     return () => clearInterval(id);
   }, [isLive, cacheState, sourceKey]);
 
+  // ------------------------------------------------- live encoder progress
+  /**
+   * Live opens on an encoder that has produced nothing yet: FFmpeg writes its
+   * first segment only after HLS_TIME seconds of video, so the player sits on a
+   * black frame with no idea how long it will last. Polling how much video
+   * exists turns that into a real percentage of the lead it needs.
+   *
+   * Only while blocked — a playing stream has nothing to report.
+   */
+  useEffect(() => {
+    if (!isLive || !liveTranscoded || !sessionId || !(waiting || loading)) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const s = await api.transcodeStatus(sessionId);
+        if (!cancelled) setLiveEncoded(s.encoded_seconds);
+      } catch {
+        /* transient — keep polling */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [isLive, liveTranscoded, sessionId, waiting, loading]);
+
   // Live program progress is wall-clock driven, not stream driven.
   useEffect(() => {
     if (!program) return;
@@ -380,10 +424,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     video.currentTime = target;
   }, [rangeStart, rangeEnd]);
 
+  /**
+   * Jump by `delta`, held inside what is playable right now.
+   *
+   * Live is the whole DVR window, ending at the live edge; a partially cached
+   * recording is the island the playhead stands in. The scrubber is still free
+   * to go anywhere and wait.
+   */
   const skip = useCallback((delta: number) => {
     const video = videoRef.current;
-    if (video) seekTo(video.currentTime + delta);
-  }, [seekTo]);
+    if (!video) return;
+    const from = video.currentTime;
+    const range = readyRange(from, {
+      ranges: cachedRangesRef.current,
+      start: rangeStart,
+      end: rangeEnd,
+      whole: isLive || cacheState === "complete",
+    });
+    seekTo(clampSkip(from, delta, range));
+  }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
 
   const goLive = useCallback(() => seekTo(rangeEnd), [seekTo, rangeEnd]);
 
@@ -606,7 +665,18 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     ? Math.min(99, Math.round(
         (encodingAt.segments_ready / encodingAt.segments_total) * 100))
     : null;
-  const encoding = !isLive && cacheState !== "complete";
+  /**
+   * How much of the lead a live stream needs before it can play, as a percent.
+   *
+   * Playback resumes once the encoder is far enough ahead of the playhead, so
+   * that gap — not wall-clock time — is the honest thing to show while waiting.
+   */
+  const livePct = isLive && liveTranscoded && liveEncoded !== null
+    ? Math.min(100, Math.max(0, Math.round(
+        ((liveEncoded - shownPos) / LIVE_LEAD_SECONDS) * 100)))
+    : null;
+  const waitPct = encodePct ?? livePct;
+  const encoding = isLive ? liveTranscoded : cacheState !== "complete";
   // Drawn from the real encoded ranges. A single bar scaled by percent-complete
   // would be wrong the moment the viewer seeks: jumping an hour in leaves the
   // opening cached and starts a separate island further along.
@@ -674,26 +744,26 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                           min-w-[190px]">
             <div className="flex items-center gap-2.5">
               {/* Only spin when there is nothing real to report. */}
-              {encodePct === null && (
+              {waitPct === null && (
                 <div className="w-4 h-4 rounded-full border-2 border-accent
                                 border-t-transparent animate-spin" />
               )}
               <span className="text-white/80 text-[11px] uppercase tracking-widest">
                 {encoding ? "Transcoding" : "Buffering"}
               </span>
-              {encodePct !== null && (
+              {waitPct !== null && (
                 <span className="ml-auto text-white/50 text-[11px] tabular-nums">
-                  {encodePct}%
+                  {waitPct}%
                 </span>
               )}
             </div>
             {/* Segments of the blocking window land in order, so this is real
                 progress toward playback rather than a decorative animation. */}
-            {encodePct !== null && (
+            {waitPct !== null && (
               <div className="h-1 rounded-full bg-white/15 overflow-hidden">
                 <div
                   className="h-full bg-accent rounded-full transition-[width] duration-300 ease-out"
-                  style={{ width: `${Math.max(4, encodePct)}%` }}
+                  style={{ width: `${Math.max(4, waitPct)}%` }}
                 />
               </div>
             )}
@@ -850,11 +920,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           </div>
 
           <div className="relative flex items-center justify-between">
-            {/* What is playing — centered between the transport groups. Absolute
-                so its width cannot shift the controls either side of it. */}
+            {/* What is playing, on the left. The transport is centered over it
+                absolutely, so a long title cannot push the controls off centre. */}
             <div
-              className="absolute left-1/2 -translate-x-1/2 max-w-[44%] text-center
-                         pointer-events-none select-none"
+              className="max-w-[30%] text-left pointer-events-none select-none"
               // A crisp outline rather than a blurred shadow: over flat white
               // content a soft shadow reads as a smudge. `paint-order: stroke`
               // draws the stroke beneath the fill, so the glyphs keep their
@@ -877,7 +946,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Transport, centered on the frame. Play sits between the two jumps
+                so the hand travels the same distance either way. */}
+            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); skip(-10); }}
+                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass hover:bg-white/10 transition"
+                title="Back 10s (Left arrow)"
+                aria-label="Back 10 seconds"
+              >
+                <RotateCcw className="w-4 h-4" aria-hidden />
+                <span className="text-[10px] font-black tabular-nums">10</span>
+              </button>
+
               <button
                 onClick={(e) => { e.stopPropagation(); togglePlay(); }}
                 className="w-9 h-9 rounded-lg glass flex items-center justify-center hover:bg-white/10 transition"
@@ -889,15 +970,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               </button>
 
               <button
-                onClick={(e) => { e.stopPropagation(); skip(-10); }}
-                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass hover:bg-white/10 transition"
-                title="Back 10s (Left arrow)"
-                aria-label="Back 10 seconds"
-              >
-                <RotateCcw className="w-4 h-4" aria-hidden />
-                <span className="text-[10px] font-black tabular-nums">10</span>
-              </button>
-              <button
                 onClick={(e) => { e.stopPropagation(); skip(30); }}
                 className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass hover:bg-white/10 transition"
                 title="Forward 30s (Right arrow)"
@@ -906,7 +978,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 <RotateCw className="w-4 h-4" aria-hidden />
                 <span className="text-[10px] font-black tabular-nums">30</span>
               </button>
+            </div>
 
+            <div className="flex items-center gap-2">
               {isLive && (
                 <button
                   onClick={(e) => { e.stopPropagation(); if (!atLiveEdge) goLive(); }}
@@ -919,9 +993,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   {atLiveEdge ? "LIVE" : "GO LIVE"}
                 </button>
               )}
-            </div>
 
-            <div className="flex items-center gap-2">
               <button
                 onClick={(e) => { e.stopPropagation(); toggleMute(); }}
                 className="w-9 h-9 rounded-lg glass flex items-center justify-center hover:bg-white/10 transition"

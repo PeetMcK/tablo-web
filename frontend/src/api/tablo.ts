@@ -65,6 +65,14 @@ export interface StreamStart {
   transcoded?: boolean;
 }
 
+export interface TranscodeStatus {
+  status: "active" | "stopped" | "inactive";
+  /** Seconds of video the live encoder has produced, null before its first frame. */
+  encoded_seconds: number | null;
+  files?: string[];
+  log?: string;
+}
+
 export interface Program {
   title: string | null;
   description: string | null;
@@ -336,4 +344,7 @@ export const api = {
 
   stopStream: (sessionId: string) =>
     req<{ ok: boolean }>(`/stream/${sessionId}`, { method: "DELETE" }),
+
+  transcodeStatus: (sessionId: string) =>
+    req<TranscodeStatus>(`/transcode/status/${sessionId}`),
 };
