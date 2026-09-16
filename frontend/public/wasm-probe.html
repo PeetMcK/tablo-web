@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WASM live probe</title>
+<style>
+  body { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px; }
+  pre { white-space: pre-wrap; }
+  .ok { color: #0a7d32; }
+  .no { color: #b3261e; }
+</style>
+<h1>WASM live probe</h1>
+<pre id="out">running…</pre>
+<script type="module">
+const out = document.getElementById("out");
+const lines = [];
+const say = (s) => { lines.push(s); out.textContent = lines.join("\n"); };
+const mark = (label, value) => say(`${value ? "yes" : "no "}  ${label}`);
+
+say("— browser AC-3 support (informational: we decode AC-3 in WASM regardless)");
+for (const type of ['audio/mp4; codecs="ac-3"', 'audio/mp4; codecs="ec-3"', 'video/mp2t; codecs="ac-3"']) {
+  mark(`MSE ${type}`, window.MediaSource?.isTypeSupported(type) ?? false);
+}
+if (window.AudioDecoder) {
+  for (const codec of ["ac-3", "ec-3"]) {
+    try {
+      const { supported } = await AudioDecoder.isConfigSupported({
+        codec, sampleRate: 48000, numberOfChannels: 6,
+      });
+      mark(`WebCodecs ${codec}`, supported);
+    } catch (e) {
+      mark(`WebCodecs ${codec} (threw: ${e.name})`, false);
+    }
+  }
+} else {
+  say("no   WebCodecs AudioDecoder absent");
+}
+
+say("");
+say("— APIs the WASM path requires");
+for (const api of ["OffscreenCanvas", "AudioWorkletNode", "WebAssembly", "WebGL2RenderingContext", "Worker"]) {
+  mark(api, api in window);
+}
+
+// A constructor being present is not the same as a context being obtainable:
+// a machine with GPU acceleration disabled has the class and no context.
+try {
+  const gl = new OffscreenCanvas(16, 16).getContext("webgl2");
+  mark("webgl2 context obtainable", Boolean(gl));
+  if (gl) {
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    say(`     renderer: ${info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)}`);
+    mark("     R8 textures (needed for the Y/U/V planes)", Boolean(gl.R8));
+    say(`     max texture size: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)} (1920 needed)`);
+  }
+} catch (e) {
+  mark(`webgl2 context (threw: ${e.name})`, false);
+}
+
+say("");
+say("— the built decoder actually loading here");
+try {
+  const t0 = performance.now();
+  const factory = await import("/wasm/libav/libav-6.10.9.0-tablo-mpeg2.mjs");
+  const libav = await factory.LibAV({ noworker: true });
+  say(`yes  libav.js ${libav.VER} variant ${libav.CONFIG}, mode ${libav.libavjsMode}, ` +
+      `${Math.round(performance.now() - t0)}ms to load`);
+  libav.terminate?.();
+} catch (e) {
+  say(`no   libav load failed: ${e.message}`);
+}
+</script>

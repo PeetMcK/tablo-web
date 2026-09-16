@@ -99,4 +99,44 @@ ample budget for that.
 
 ## Task 3 — browser probes
 
-(pending)
+Run in the user's own Chrome (M1 Max, ANGLE Metal), via
+`frontend/public/wasm-probe.html`.
+
+**Chrome decodes no AC-3 at all:**
+
+```
+no  MSE audio/mp4; codecs="ac-3"
+no  MSE audio/mp4; codecs="ec-3"
+no  MSE video/mp2t; codecs="ac-3"
+no  WebCodecs ac-3
+no  WebCodecs ec-3
+```
+
+So the WASM AC-3 decoder is not insurance, it is required. The design would
+have needed it even if the browser-AC-3 shortcut had been taken, and the "use
+the browser's AC-3 where present" option considered during design would have
+had no platform to run on.
+
+This also settles an old comment in `VideoPlayer.tsx:376` — "hls.js demuxes the
+container but the video track is unrenderable, leaving audio only". Audio could
+only have survived on a channel whose audio was already AAC, i.e. an OTT one.
+On a real OTA broadcast the raw path yields neither picture nor sound.
+
+**Everything the pipeline needs is present:**
+
+```
+yes OffscreenCanvas, AudioWorkletNode, WebAssembly, WebGL2RenderingContext, Worker
+yes webgl2 context obtainable — ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max)
+yes R8 textures (the Y/U/V planes)
+    max texture size 16384, against the 1920 needed
+```
+
+**The built decoder loads in the browser** in 416ms, in `direct` mode (the probe
+passes `noworker: true`, as the real worker will).
+
+### Device playlist depth — not yet run
+
+Deferred deliberately. It needs a tuner held open against the live device, and
+the ring makes it a sizing curiosity rather than a dependency: retention is
+ours, not the device's. `backend/tools/probe_device_window.py` is written and
+takes the `proxy_url` from a started session.
