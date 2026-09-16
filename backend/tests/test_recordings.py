@@ -885,13 +885,16 @@ def test_the_lookahead_can_still_be_bounded(monkeypatch):
     assert tc.fill_limit(total - 5, total) == total   # never past the end
 
 
-def test_background_encoders_are_not_suspended_on_hardware(tmp_path, monkeypatch):
-    """Suspending prefetch is only worth it when the encoder burns CPU.
+def test_background_encoders_yield_the_device_on_hardware_too(tmp_path, monkeypatch):
+    """The contended resource is the Tablo, which hardware encoding does not free.
 
-    ensure_segment pauses background work on every segment request, and hls.js
-    asks every couple of seconds - so _ondemand was almost never empty and
-    prefetch sat frozen, unable to build any lead. Every segment then arrived
-    "transcoded on demand" with playback riding the encode frontier.
+    This was once gated to software encoders, on the grounds that hardware
+    leaves no CPU to win back. True, and beside the point: the device serves
+    about 10x realtime in total however the frames are encoded, so six streams
+    get about 1.1x each. Measured on one seek - the window the viewer was
+    waiting on took 55.7s at 1.1x while five prefetch streams ran beside it,
+    against 17.5s at 3.4x for the window that had the device largely to itself.
+    Playback consumes at 1x, so it rode the encode frontier the whole way.
     """
     monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
     c = _cache(tmp_path)
@@ -906,11 +909,37 @@ def test_background_encoders_are_not_suspended_on_hardware(tmp_path, monkeypatch
     c._claim_ondemand((66219, 1))
     c._pause_background()
 
-    assert signal.SIGSTOP not in proc.signals
+    assert signal.SIGSTOP in proc.signals
+
+
+def test_background_encoders_resume_once_nobody_is_waiting(tmp_path, monkeypatch):
+    """Suspension must last exactly as long as someone is blocked on a window.
+
+    Pausing is safe only because it always ends: every claim is released in a
+    finally and the wait is bounded, so a suspended encoder cannot be stranded.
+    """
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
+    c = _cache(tmp_path)
+
+    class FakeProc:
+        returncode = None
+        def __init__(self): self.signals = []
+        def send_signal(self, sig): self.signals.append(sig)
+
+    proc = FakeProc()
+    c._procs[(66219, 5)] = (proc, False)
+    c._claim_ondemand((66219, 1))
+    c._pause_background()
+    c._resume_background()                  # still claimed: stays suspended
+    assert signal.SIGCONT not in proc.signals
+
+    c._release_ondemand((66219, 1))
+    c._resume_background()
+    assert signal.SIGCONT in proc.signals
 
 
 def test_background_encoders_still_yield_on_software(tmp_path, monkeypatch):
-    """With libx264 the CPU really is contended, so the old behaviour stands."""
+    """With libx264 the CPU is contended as well, so this is doubly true."""
     monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "libx264")
     c = _cache(tmp_path)
 
@@ -944,3 +973,55 @@ def test_prefetch_follows_a_seek_instead_of_finishing_the_old_batch():
     assert should_retarget(200, filling) is True    # seeked far forward
     assert should_retarget(0, [10, 11, 12]) is True # seeked backwards
     assert should_retarget(5, []) is False          # nothing in flight
+
+
+def test_running_ahead_of_the_playhead_is_not_a_seek_backwards():
+    """Being ahead of the viewer is the goal, not a miss to be corrected.
+
+    ``filling`` skips windows already on disk, so as soon as the fill gets ahead
+    the batch starts past the playhead. Treating that as a backwards seek killed
+    the batch, recomputed an identical one, and killed that too - every two
+    seconds, forever. Observed with the viewer at 17:41 and w17 cached: the fill
+    froze at 9:00 of a 3:55 game while playback rode a lone on-demand w18, its
+    buffer draining from 0:22 to 0:10.
+    """
+    from app.transcode_cache import should_retarget
+
+    ahead = [18, 19, 20]
+    assert should_retarget(17, ahead, here_ready=True) is False
+    # Same shape, but the viewer's own window is missing: they are waiting on a
+    # gap behind the fill, which is a real seek backwards.
+    assert should_retarget(17, ahead, here_ready=False) is True
+    # Running past the batch still retargets however well cached it is.
+    assert should_retarget(99, ahead, here_ready=True) is True
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_revives_prefetch_that_is_not_running(tmp_path):
+    """Prefetch must not depend on /watch being the one to start it.
+
+    It was the only caller, so a backend restart mid-playback left prefetch dead
+    for the rest of the session: the player kept polling /status and pulling
+    segments, each window transcoded on demand one at a time, with no read-ahead
+    and not one line in the log to say the fill was gone.
+    """
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=600)
+    c.heartbeat(66220, 120.0)
+    assert 66220 not in c._prefetch          # the state a restart leaves behind
+
+    c.ensure_prefetch(66220)
+    assert 66220 in c._prefetch
+    await c.stop(66220)                      # cancels before the loop ever runs
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_does_not_revive_a_paused_offline_copy(tmp_path):
+    """Paused means "wanted, but not now" - a poll must not override that."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=600)
+    c.set_pinned(66220, True)
+    c.set_paused(66220, True)
+
+    c.ensure_prefetch(66220)
+    assert 66220 not in c._prefetch

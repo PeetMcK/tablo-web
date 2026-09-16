@@ -158,6 +158,11 @@ async def recording_status(object_id: int, position: float | None = None):
     """
     _require_auth()
     cache.heartbeat(object_id, position)
+    # A poll is proof someone is watching, so it is also the place to notice the
+    # background fill is not running and start it. Without this, prefetch only
+    # ever began at /watch, and anything that ended it - a restart above all -
+    # left playback served entirely by on-demand transcodes.
+    cache.ensure_prefetch(object_id)
     meta = cache.read_meta(object_id)
     return {
         "object_id": object_id,

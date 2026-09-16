@@ -140,22 +140,27 @@ def _profiles() -> dict[str, EncoderProfile]:
     }
 
 
-def _encoder_is_software() -> bool:
-    """True when encoding burns CPU that an on-demand seek would otherwise use."""
-    return video_encoder() not in _HARDWARE_ENCODERS
-
-
-def should_retarget(here: int, filling: list[int]) -> bool:
+def should_retarget(here: int, filling: list[int], here_ready: bool = False) -> bool:
     """True when the playhead has left the windows currently being filled.
 
     A prefetch batch runs the best part of a minute, and the playhead used to be
     re-read only between batches - so seeking away left the fill grinding
     through windows nobody was going to watch. One window past the end is not a
     miss: that is simply where playback is heading next.
+
+    Being *behind* the batch only counts when the viewer's own window is missing,
+    which means they seeked back into a gap and are waiting on it. Otherwise the
+    fill is simply ahead, which is the whole point of prefetching: ``filling``
+    skips windows already on disk, so every batch after the first starts past
+    the playhead. Treating that as a backwards seek killed the batch, recomputed
+    an identical one from the same playhead, and killed that too - a livelock
+    that froze the cache while playback rode a single on-demand window.
     """
     if not filling:
         return False
-    return here < filling[0] or here > filling[-1] + 1
+    if here > filling[-1] + 1:
+        return True
+    return here < filling[0] and not here_ready
 
 
 def fill_limit(first: int, total: int) -> int:
@@ -168,15 +173,6 @@ def fill_limit(first: int, total: int) -> int:
     if LOOKAHEAD_WINDOWS > 0:
         return min(total, first + LOOKAHEAD_WINDOWS)
     return total
-
-
-# Encoders that run on dedicated silicon rather than the CPU.
-_HARDWARE_ENCODERS = frozenset({
-    "h264_videotoolbox", "hevc_videotoolbox",
-    "h264_vaapi", "hevc_vaapi",
-    "h264_nvenc", "hevc_nvenc",
-    "h264_qsv", "hevc_qsv",
-})
 
 
 def deinterlace_filter() -> list[str]:
@@ -1189,23 +1185,32 @@ class TranscodeCache:
             pass
 
     def _pause_background(self) -> None:
-        """SIGSTOP background encoders so an on-demand seek gets the CPU.
+        """SIGSTOP background encoders so the window a viewer waits on gets the device.
 
-        Only worth doing when the encoder is software. This is called for every
-        segment request, and hls.js asks for one every couple of seconds, so
-        `_ondemand` is almost never empty during playback - and
-        `_resume_background` only fires when it empties. Prefetch therefore sat
-        suspended essentially permanently and could never build a lead: every
-        segment of every window arrived "transcoded on demand", about 2s apart,
-        with playback riding the encode frontier the whole way.
+        This was gated to software encoders, reasoning that hardware encoding
+        costs ~2 CPU-seconds per minute of video so there are no cycles to win
+        back. The cycles were never the point. The Tablo serves roughly 10x
+        realtime in total however the frames are encoded, and it is the only
+        source of them, so concurrent windows divide one fixed budget: six
+        streams get about 1.1x each. Playback consumes at 1x, so a viewer whose
+        window is sharing the device rides the encode frontier indefinitely.
+        Measured across one seek - the awaited window took 55.7s at 1.1x beside
+        five prefetch streams; one with the device largely to itself took 17.5s.
+        Suspending an encoder stops it reading from the device, which is exactly
+        the budget the blocked window needs.
 
-        On hardware the encode costs ~2 CPU-seconds per minute of video and the
-        bottleneck is the device, not the CPU, so there are no cycles to win
-        back by freezing the background fill - only progress to lose. The global
-        concurrency cap already bounds how much runs at once.
+        The earlier worry was that this freezes prefetch permanently, since
+        hls.js asks for a segment every couple of seconds and
+        `_resume_background` only fires once `_ondemand` empties. That was a
+        feedback loop rather than a property of pausing: prefetch could never
+        get ahead, so every segment needed an on-demand encode, which kept
+        prefetch suspended. Serving the blocked window at full speed breaks it -
+        the window lands in ~13s, playback gets a full minute of buffer, and
+        nothing claims on-demand again until it runs out. Suspension is also
+        bounded in a way it was not then: every claim is released in a finally
+        and each wait has a timeout, so an encoder cannot be stranded.
         """
-        if _encoder_is_software():
-            self._signal_background(signal.SIGSTOP)
+        self._signal_background(signal.SIGSTOP)
 
     def _resume_background(self) -> None:
         # Always safe to send: a process that was never stopped ignores it, so
@@ -1443,9 +1448,31 @@ class TranscodeCache:
     def start_prefetch(self, object_id: int, path: str, duration: int) -> None:
         if self._prefetch.get(object_id) or self.state(object_id) is CacheState.COMPLETE:
             return
+        print(f"[cache] prefetch for {object_id} starting", flush=True)
         task = asyncio.create_task(self._prefetch_loop(object_id, path, duration))
         self._prefetch[object_id] = task
         task.add_done_callback(lambda _t: self._prefetch.pop(object_id, None))
+
+    def ensure_prefetch(self, object_id: int) -> None:
+        """Start background fill if nothing is running it, from stored metadata.
+
+        ``start_prefetch`` used to be reachable only from ``/watch``, which made
+        that one call a single point of failure for the entire read-ahead. A
+        backend restart mid-playback left the player polling status and fetching
+        segments perfectly happily, every window transcoded on demand one at a
+        time - degraded for the rest of the session, with nothing in the log.
+
+        The heartbeat is the dependable signal that someone is watching, so let
+        it re-establish the fill rather than trusting a single earlier call.
+        """
+        if self._prefetch.get(object_id):
+            return
+        meta = self.read_meta(object_id)
+        # Paused means "wanted offline, just not now"; a poll must not override
+        # that. An unregistered recording has no path to fill from.
+        if meta is None or meta.paused:
+            return
+        self.start_prefetch(object_id, meta.path, meta.source_duration)
 
     async def _prefetch_loop(self, object_id: int, path: str, duration: int) -> None:
         """Keep a bounded lookahead encoded ahead of the playhead.
@@ -1529,7 +1556,8 @@ class TranscodeCache:
                 # 17:30 waiting on an on-demand transcode.
                 if seen and not pinned:
                     here = int(seen[0] // WINDOW_SECONDS)
-                    if should_retarget(here, filling):
+                    if should_retarget(here, filling,
+                                       here_ready=self.window_ready(object_id, here)):
                         print(f"[cache] prefetch for {object_id} re-targeting "
                               f"w{filling[0]}-w{filling[-1]} -> w{here}", flush=True)
                         batch.cancel()
