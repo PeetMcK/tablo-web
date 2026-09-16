@@ -626,7 +626,18 @@ export function ChannelGrid({ onLogout }: Props) {
                   <p className="text-fg font-black tracking-tighter text-xl uppercase mb-1">Building Your Guide</p>
                 </div>
               ) : (
-                <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
+                <div
+                  className="grid gap-4"
+                  style={{
+                    // `min(320px, 100%)`, not a bare 320px: a track floor wider
+                    // than the container does not shrink to fit it, it
+                    // overflows — and one card 20px too wide scrolls the whole
+                    // document sideways, which reads as every page being
+                    // off-centre. The min() lets the single column collapse to
+                    // whatever a 320px-class phone actually has.
+                    gridTemplateColumns: "repeat(auto-fill, minmax(min(320px, 100%), 1fr))",
+                  }}
+                >
                   {filtered.map(ch => (
                     <ChannelCard key={ch.identifier} channel={ch} now={now} onClick={() => setPlaying(ch)} />
                   ))}

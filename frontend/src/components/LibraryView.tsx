@@ -251,7 +251,15 @@ export function LibraryView() {
         <div className="flex items-center justify-end mb-3">{storageLine}</div>
       )}
 
-      <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+      <div
+        className="grid gap-6"
+        style={{
+          // `min(280px, 100%)` — a floor wider than the container overflows
+          // rather than shrinking, and that overflow scrolls the page
+          // sideways. Same guard as the Live grid's.
+          gridTemplateColumns: "repeat(auto-fill, minmax(min(280px, 100%), 1fr))",
+        }}
+      >
         {recordings.length === 0 ? (
           <div className="col-span-full py-48 text-center bg-fill-soft rounded-3xl border border-border-subtle">
             <p className="text-fg-muted font-black tracking-widest uppercase">No Recordings Found</p>
