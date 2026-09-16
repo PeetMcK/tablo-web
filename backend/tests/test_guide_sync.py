@@ -1,8 +1,9 @@
 """The guide mirror is a record of what aired, not a snapshot of the device."""
 
+import asyncio
 import time
 
-from app import db, store
+from app import db, guide_sync, store
 
 
 def _channel(ident: str, airings: list[dict]) -> dict:
@@ -111,3 +112,55 @@ def test_a_current_channel_with_nothing_in_the_window_still_shows_an_empty_row()
     grid = store.load_guide(now=now)
     assert [c["identifier"] for c in grid] == ["ch1"]
     assert grid[0]["airings"] == []
+
+
+def test_a_sync_records_its_coverage():
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 1
+    row = db.query_one("SELECT * FROM guide_sync ORDER BY id DESC LIMIT 1")
+    assert row["ok"] == 1
+    assert row["airings_seen"] == 1
+    assert row["finished_at"]
+
+
+def test_a_failed_sync_is_recorded_and_does_not_raise():
+    """A stale mirror still serves search; returning nothing would be worse."""
+    async def fetch():
+        raise RuntimeError("device unreachable")
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 0
+    row = db.query_one("SELECT * FROM guide_sync ORDER BY id DESC LIMIT 1")
+    assert row["ok"] == 0
+    assert "unreachable" in row["error"]
+
+
+def test_a_failed_sync_does_not_delete_history():
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Kept", int(now - 3600))])], now=now)
+
+    async def fetch():
+        raise RuntimeError("device unreachable")
+
+    asyncio.run(guide_sync.sync_once(fetch))
+    assert db.query("SELECT 1 FROM guide_airing WHERE title = 'Kept'")
+
+
+def test_backfill_index_reindexes_what_is_already_stored():
+    """Migration creates empty index tables; this is what makes search work
+    before the first sync completes, rather than looking like a broken
+    feature until then."""
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Survivor", int(now + 3600))])], now=now)
+    db.execute("DELETE FROM search_doc")
+    assert not db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+
+    indexed = asyncio.run(guide_sync.backfill_index())
+
+    assert indexed == 1
+    assert db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")

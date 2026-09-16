@@ -1,8 +1,10 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import guide_sync
 from . import log_buffer as _log_buffer
 from . import store
 from .routes import auth, channels, iptv, recordings, resume, search, stream
@@ -48,8 +50,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[cache] sweep failed: {e}")
 
+    # Guide history can only be captured going forward, so this starts at boot
+    # rather than waiting for the first interval.
+    async def _fetch_guide():
+        return await state.get_grid_guide(max_airings=15000, concurrency=guide_sync.SYNC_CONCURRENCY)
+
+    guide_task = asyncio.create_task(guide_sync.run_forever(_fetch_guide))
+
     yield
 
+    guide_task.cancel()
     await recordings.cache.shutdown()
     await state.http.aclose()
 

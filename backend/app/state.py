@@ -743,13 +743,18 @@ class AppState:
         ad = data.get("airing_details") or {}
         return path, int(vd.get("duration") or ad.get("duration") or 0)
 
-    async def _build_grid_enrichment(self, max_airings: int = 1000) -> tuple[dict, dict, dict, dict]:
+    async def _build_grid_enrichment(self, max_airings: int = 1000, concurrency: int = 30) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
         Returns (logo_map, path_to_ident, channel_to_airings, cloud_airing_map).
         Results are cached for _GRID_CACHE_TTL seconds so repeated guide loads
         don't re-fetch hundreds of airing detail records from the device.
         The EPG endpoint passes max_airings=15000 and bypasses the cache.
+
+        `concurrency` bounds how many device requests are in flight at once.
+        The background guide sync (up to 8455 airings) passes a value lower
+        than the interactive default so it does not starve a concurrent seek -
+        the Tablo saturates around 10x realtime, and it is shared with playback.
         """
         import time as _time
 
@@ -775,7 +780,7 @@ class AppState:
         else:
             cloud_logos, cloud_airing_map = path_results[2]
 
-        sem = asyncio.Semaphore(30)
+        sem = asyncio.Semaphore(concurrency)
 
         async def fetch_detail(path):
             async with sem:
@@ -861,21 +866,31 @@ class AppState:
             "airings": airings,
         }
 
-    async def get_grid_guide(self) -> list[dict]:
+    async def get_grid_guide(self, max_airings: int = 1000, concurrency: int = 30) -> list[dict]:
         """The grid guide: channels plus their upcoming airings.
 
         Served from the database when it is fresh enough. Previously the only
         cache was in process memory, so every restart paid a cold rebuild of
         hundreds of airing records from the device.
+
+        The stored-guide short-circuit only applies at the default
+        `max_airings`. A caller asking for more (the background guide sync
+        passes 15000) wants a deeper fetch than the grid already cached -
+        serving the stored guide back to it would just hand it its own mirror,
+        and the mirror would never deepen past what the interactive grid path
+        happens to have cached.
         """
-        stored = await self._stored_guide()
-        if stored is not None:
-            return stored
+        if max_airings == 1000:
+            stored = await self._stored_guide()
+            if stored is not None:
+                return stored
 
         if self.active_device is None:
             raise RuntimeError("No active device")
         channels = await self.channels()
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment(
+            max_airings=max_airings, concurrency=concurrency
+        )
         rows = [
             self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
             for c in channels
