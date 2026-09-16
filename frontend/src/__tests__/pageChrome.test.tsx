@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ChannelGrid } from "../components/ChannelGrid";
@@ -67,5 +67,33 @@ describe("Live TV's content filter chips", () => {
 
     expect(pills.className).toMatch(/flex-wrap/);
     expect(pills.className).not.toMatch(/overflow-x-auto/);
+  });
+
+  it("collapses into the same one control at phone width", async () => {
+    // Eight chips do not fit a phone here either, and Live TV is the tab that
+    // opens by default — so it collapses the way the guide's do, into the same
+    // pill-and-popover rather than a second idea of what this control is.
+    renderShell();
+    await screen.findByRole("button", { name: /Movies/ });
+
+    const chips = document.querySelector<HTMLElement>("[data-filter-chips]")!;
+    const menu = document.querySelector<HTMLElement>("[data-filter-menu]")!;
+
+    expect(chips.className).toMatch(/\bhidden\b/);
+    expect(chips.className).toMatch(/\bsm:flex\b/);
+    expect(menu.className).toMatch(/\bsm:hidden\b/);
+  });
+
+  it("filters from that control too", async () => {
+    renderShell();
+    await screen.findByRole("button", { name: /Movies/ });
+    const menu = within(document.querySelector<HTMLElement>("[data-filter-menu]")!);
+
+    fireEvent.click(menu.getByRole("button"));
+    fireEvent.click(menu.getByRole("menuitemradio", { name: /Sports/ }));
+
+    // The trigger names what is in force, which is how the row reports itself
+    // once the chips are gone.
+    expect(menu.getByRole("button", { name: /Sports/ })).toBeInTheDocument();
   });
 });

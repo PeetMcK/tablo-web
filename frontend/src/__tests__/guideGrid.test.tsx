@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { GuideGridView } from "../components/GuideGridView";
 import { api } from "../api/tablo";
 import type { GridChannel } from "../api/tablo";
@@ -900,13 +900,96 @@ describe("the content filter pills", () => {
 
   it("keeps every filter reachable", async () => {
     mockStream(longChannel(24));
-    render(<GuideGridView onPlay={() => {}} />);
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
+    // Scoped to the chips: the collapsed control beside them names whichever
+    // filter is in force, so an unscoped search for "All" finds both.
+    const chips = within(container.querySelector<HTMLElement>("[data-filter-chips]")!);
     for (const label of ["All", "Movies", "Sports", "News", "Reality",
                          "Documentary", "Broadcast", "Streaming"]) {
-      expect(screen.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
+      expect(chips.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
     }
+  });
+});
+
+/**
+ * Three widths, three shapes, in order as the window narrows:
+ *
+ *   wide      chips on one line, NOW and the date jump at the right of it
+ *   narrower  NOW and the date jump drop to their own line under the chips,
+ *             and the chips wrap onto as many lines as they need
+ *   phone     the chips become one pill-and-popover, and all three share a line
+ *
+ * jsdom applies none of this — there is no CSS here — so what these hold is
+ * the class contract that expresses it. The widths themselves were checked in
+ * a real browser.
+ */
+describe("the filter row as the window narrows", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function row() {
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+    return {
+      chips: container.querySelector<HTMLElement>("[data-filter-chips]")!,
+      menu: container.querySelector<HTMLElement>("[data-filter-menu]")!,
+      outer: container.querySelector<HTMLElement>("[data-filter-row]")!,
+      controls: container.querySelector<HTMLElement>("[data-filter-controls]")!,
+    };
+  }
+
+  it("keeps NOW and the date jump against the right edge at every width", async () => {
+    // They are right-aligned at full width because the chips take the room
+    // beside them. Dropping to a line of their own, or onto a phone's single
+    // line, they were left-packed against the filter control — so the pair
+    // moved twice as the window narrowed instead of staying where the eye
+    // last had them.
+    const { controls } = await row();
+
+    // A row: pushed across by the margin. A column: aligned to the far cross
+    // edge, which is the right. Back to a row at xl, where the chips' `flex-1`
+    // does the pushing and `self-auto` restores the top alignment.
+    expect(controls.className).toMatch(/\bml-auto\b/);
+    expect(controls.className).toMatch(/\bsm:self-end\b/);
+    expect(controls.className).toMatch(/\bxl:self-auto\b/);
+  });
+
+  it("hands the chips over to one control at phone width", async () => {
+    const { chips, menu } = await row();
+
+    expect(chips.className).toMatch(/\bhidden\b/);
+    expect(chips.className).toMatch(/\bsm:flex\b/);
+    expect(menu.className).toMatch(/\bsm:hidden\b/);
+  });
+
+  it("wraps the chips rather than scrolling them out of reach", async () => {
+    const { chips } = await row();
+
+    expect(chips.className).toMatch(/flex-wrap/);
+    expect(chips.className).not.toMatch(/overflow-x-auto/);
+  });
+
+  it("puts the jump control under the chips in between, beside them when wide", async () => {
+    const { outer } = await row();
+
+    // Row at phone width, where the three controls fit a line between them;
+    // a column once the chips are a row of their own; a row again when there
+    // is width for chips and controls side by side.
+    expect(outer.className).toMatch(/sm:flex-col/);
+    expect(outer.className).toMatch(/xl:flex-row/);
+  });
+
+  it("filters from the collapsed control too", async () => {
+    // One OTA channel, so asking for Streaming empties the grid — the same
+    // assertion the chips are held to.
+    const { menu } = await row();
+
+    fireEvent.click(within(menu).getByRole("button"));
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Streaming/ }));
+
+    expect(screen.queryByText("Hour 0")).not.toBeInTheDocument();
   });
 });
 

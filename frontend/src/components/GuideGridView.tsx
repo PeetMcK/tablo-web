@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { api, type GridChannel, type Program } from "../api/tablo";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import { ContentFilterMenu } from "./ContentFilterMenu";
 import {
   DATE_GAIN, DRAG_SLOP, GLIDE_DECAY, GLIDE_STOP, MIN_THROW,
   dominantAxis, prefersReducedMotion, throwVelocity, type DragSample,
@@ -609,16 +610,27 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     // content — so a single ancestor without it silently cancels the `flex-1`
     // below and the card goes back to overflowing the page.
     <div className="flex flex-col gap-4 flex-1 min-h-0">
-    {/* Content type filter chips, and the jump control in the space they leave */}
-    {/* `items-start`, so a second row of chips grows downward and leaves the
-        jump control where it was rather than dragging it to the middle. */}
-    <div className="flex items-start gap-2">
+    {/* Content type filters, and the jump control beside or below them.
+
+        Three shapes as the window narrows, in order:
+
+          xl and up  chips on one line, NOW and the date jump at the right end
+          sm to xl   NOW and the jump drop to a line of their own beneath the
+                     chips, which wrap onto as many lines as they need
+          below sm   the chips become one pill-and-popover, and all three
+                     controls share a single line again
+
+        Hence `flex-row sm:flex-col xl:flex-row`, which looks odd written down
+        and is exactly that sequence: a row at phone width because three small
+        controls fit one, a column while the chips need the full width, a row
+        again once there is room for both. */}
+    <div data-filter-row className="flex flex-row sm:flex-col xl:flex-row xl:items-start gap-2">
     {/* Wrapping, not a hidden-scrollbar overflow. As a scroller the eighth
         chip ran under the NOW pill and off the edge with nothing to say it was
         there — 809px of chips in 553px of room at the width this was found at.
         `min-w-0` so the wrapping box may actually be narrower than its
         content, which a flex child refuses by default. */}
-    <div className="flex flex-wrap gap-2 flex-1 min-w-0">
+    <div data-filter-chips className="hidden sm:flex flex-wrap gap-2 xl:flex-1 xl:min-w-0">
       {CONTENT_FILTERS.map(f => (
         <button
           key={f.id}
@@ -639,14 +651,30 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       ))}
     </div>
 
-      {/* No spacer: the chip box above takes the room now, and a `flex-1`
+      {/* The chips, as one control, at the only width they cannot be a row.
+          Shown where they are hidden and hidden where they are shown. */}
+      <div data-filter-menu className="sm:hidden">
+        <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
+      </div>
+
+      {/* Right-aligned at every width. At full width the chips' `flex-1` does
+          that by itself, but on a line of their own — or on a phone's single
+          line beside the collapsed control — the pair sat left, so it moved
+          across the toolbar twice as the window narrowed. `ml-auto` pushes it
+          in a row, `self-end` puts it at the far cross edge in a column, and
+          `xl:self-auto` hands the vertical alignment back to the parent's
+          `items-start` once it is a row again.
+
+          No spacer beside it: the chip box takes the room now, and a `flex-1`
           here would split it with them and wrap the chips early. */}
-      <GuideJump
-        days={jumpRows}
-        label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}
-        onJump={scrollToTime}
-        onNow={() => scrollToTime(Date.now() - NOW_LEAD_MS)}
-      />
+      <div data-filter-controls className="ml-auto sm:ml-0 sm:self-end xl:self-auto shrink-0">
+        <GuideJump
+          days={jumpRows}
+          label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}
+          onJump={scrollToTime}
+          onNow={() => scrollToTime(Date.now() - NOW_LEAD_MS)}
+        />
+      </div>
     </div>
 
     <div className="flex flex-col flex-1 min-h-0 border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">

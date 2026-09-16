@@ -4,6 +4,7 @@ import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
 import { Inbox, Search } from "lucide-react";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import { ContentFilterMenu } from "./ContentFilterMenu";
 import { LibraryView } from "./LibraryView";
 import { GuideGridView, type GuideJumpTarget } from "./GuideGridView";
 import { AppMenu } from "./AppMenu";
@@ -491,7 +492,13 @@ export function ChannelGrid({ onLogout }: Props) {
                   hidden-scrollbar scroller the last of the eight ran off the
                   edge with nothing to say it was there. `mb-4` so the gap
                   below them is the same 16px the top of the page now uses. */}
-              <div className="flex flex-wrap gap-2 mb-4">
+              {/* And below a phone's width they are not a row at all but one
+                  pill-and-popover, the same control the guide collapses to. */}
+              <div data-filter-menu className="sm:hidden mb-4">
+                <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
+              </div>
+
+              <div data-filter-chips className="hidden sm:flex flex-wrap gap-2 mb-4">
                 {CONTENT_FILTERS.map(f => (
                   <button
                     key={f.id}
