@@ -173,6 +173,26 @@ export function LibraryView() {
     if (rec) saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
   }, []);
 
+  /**
+   * The DVR readout, as one node rendered in one of two places.
+   *
+   * Normally it rides the first day heading's rule; with no days it falls back
+   * to a row of its own. Built once here so the two sites cannot drift.
+   */
+  const storageLine = (truncated || storage) ? (
+    <span className="flex items-center gap-4 whitespace-nowrap text-[11px] uppercase tracking-widest text-fg-muted">
+      {truncated && <span>Showing {data!.returned} of {data!.total}</span>}
+      {storage && (
+        <span>
+          {formatBytes(storage.pinned_bytes)} kept
+          {storage.pinned_count > 0 && ` (${storage.pinned_count})`}
+          {" · "}{formatBytes(storage.cache_bytes)} cache
+          {" · "}{formatBytes(storage.free_bytes)} free
+        </span>
+      )}
+    </span>
+  ) : null;
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-48 gap-4">
@@ -213,20 +233,13 @@ export function LibraryView() {
         />
       )}
 
-      {/* The page title is gone — the nav tab already names where you are — so
-          this is the only thing above the grid. Right-aligned to keep it out of
-          the reading path: it is a status readout, not a heading. */}
-      <div className="flex items-center justify-end gap-4 mb-3 text-[11px] uppercase tracking-widest text-fg-muted">
-        {truncated && <span>Showing {data!.returned} of {data!.total}</span>}
-        {storage && (
-          <span>
-            {formatBytes(storage.pinned_bytes)} kept
-            {storage.pinned_count > 0 && ` (${storage.pinned_count})`}
-            {" · "}{formatBytes(storage.cache_bytes)} cache
-            {" · "}{formatBytes(storage.free_bytes)} free
-          </span>
-        )}
-      </div>
+      {/* With no days to hang it on there is no rule to sit on either, so the
+          readout falls back to a row of its own. Without this an empty library
+          would drop it entirely — and an empty library is exactly when "106.9
+          GB free" is worth reading. */}
+      {days.length === 0 && storageLine && (
+        <div className="flex items-center justify-end mb-3">{storageLine}</div>
+      )}
 
       <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
         {recordings.length === 0 ? (
@@ -234,11 +247,19 @@ export function LibraryView() {
             <p className="text-fg-muted font-black tracking-widest uppercase">No Recordings Found</p>
           </div>
         ) : (
-          days.map(({ key, start, items }) => (
+          days.map(({ key, start, items }, dayIndex) => (
             <Fragment key={key}>
               {/* The day these aired, in that weekday's colour. Spans the grid,
-                  so the cards below it read as one evening's recordings. */}
-              <div className="col-span-full flex items-center gap-3 pt-2 first:pt-0">
+                  so the cards below it read as one evening's recordings.
+
+                  The first one also carries the storage readout, at the far end
+                  of the rule. The rule already runs the width of the grid and
+                  fades out on the way, so the right end is space this row was
+                  spending on nothing. It is rendered here rather than owned by
+                  the day group: these are page totals, and they would be a lie
+                  if read as belonging to Monday. `flex-wrap` so it drops to its
+                  own line at phone width instead of crushing the rule. */}
+              <div className="col-span-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-2 first:pt-0">
                 <span
                   className="text-[11px] font-black uppercase tracking-widest whitespace-nowrap"
                   style={{ color: dayTint(start) }}
@@ -246,11 +267,12 @@ export function LibraryView() {
                   {formatDayHeading(start) || "Undated"}
                 </span>
                 <span
-                  className="h-px flex-1 rounded-full"
+                  className="h-px flex-1 min-w-8 rounded-full"
                   style={{
                     background: `linear-gradient(to right, ${dayTint(start, 0.5)}, transparent)`,
                   }}
                 />
+                {dayIndex === 0 && storageLine}
               </div>
 
               {items.map((rec) => {
