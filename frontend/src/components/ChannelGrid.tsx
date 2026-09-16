@@ -195,7 +195,7 @@ export function ChannelGrid({ onLogout }: Props) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875C21 4.254 20.496 3.75 19.875 3.75H4.125C3.504 3.75 3 4.254 3 4.875v11.25c0 .621.504 1.125 1.125 1.125z" />
                 </svg>
               </div>
-              <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo</span>
+              <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
             </div>
 
             {/* Navigation Tabs */}
