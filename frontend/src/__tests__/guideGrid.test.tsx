@@ -837,6 +837,59 @@ describe("dragging across the listings", () => {
   });
 });
 
+describe("the now marker", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * The marker's own layers, inside the guide.
+   *
+   * Scoped to the scroller on purpose: the jump control's NOW pill carries a
+   * dot of the same colour, and it is not part of this.
+   */
+  function marks(container: HTMLElement) {
+    return [...scroller(container).querySelectorAll<HTMLElement>(".bg-danger-solid")];
+  }
+
+  it("stays under the frozen column and the frozen corner", async () => {
+    // Measured in Chrome before this: the header's marker sat at z-30 against
+    // a corner cell at z-20, so the line and its dot drew straight over the
+    // word CHANNEL once the current time scrolled behind the frozen column.
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const corner = container
+      .querySelector<HTMLElement>("[data-guide-header]")!.firstElementChild!;
+    const cornerZ = Number(/z-(\d+)/.exec(corner.className)?.[1]);
+    const columnZ = Number(/z-(\d+)/.exec(
+      container.querySelector<HTMLElement>("[data-channel] button")!.className)?.[1]);
+
+    for (const mark of marks(container)) {
+      const line = mark.closest<HTMLElement>("[class*='z-']")!;
+      const z = Number(/z-(\d+)/.exec(line.className)?.[1]);
+      expect(z).toBeLessThan(cornerZ);
+      expect(z).toBeLessThan(columnZ);
+    }
+  });
+
+  it("is not peeked at through the gap a row border leaves", async () => {
+    // The line lives on the scrolled surface and is covered by the frozen
+    // column — everywhere the column actually paints. A border on the row
+    // itself is outside the column's own box, so the line showed through that
+    // 1px strip as a red dash at every row boundary, all the way across the
+    // frozen column. The border belongs to the cells, which do cover it.
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const row = container.querySelector<HTMLElement>("[data-channel]")!;
+    expect(row.className).not.toMatch(/border-b/);
+    for (const cell of [...row.children] as HTMLElement[]) {
+      expect(cell.className).toMatch(/border-b/);
+    }
+  });
+});
+
 describe("reaching the guide from a keyboard", () => {
   afterEach(() => vi.restoreAllMocks());
 

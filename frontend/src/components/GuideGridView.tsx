@@ -746,7 +746,11 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                 day that is under way. */}
             {nowVisible && (
               <div
-                className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
+                /* Below the frozen corner (z-20), above the hour cells. At
+                   z-30 it drew over the word CHANNEL the moment the current
+                   time scrolled behind the frozen column — the marker has to
+                   disappear under that column, not ride over it. */
+                className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-10"
                 style={{ left: nowLeft }}
               >
                 <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
@@ -766,7 +770,12 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             /* How a jump finds this row's vertical offset. See the jump
                effect above: read, never styled. */
             data-channel={ch.identifier}
-            className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition"
+            /* The row rule is carried by the cells, not by the row. A border
+               here is outside the frozen column's own box, so the now line —
+               which the column is meant to hide — showed through that 1px
+               strip as a red dash at every row boundary, right across the
+               column. The cells paint their own bottom edge and cover it. */
+            className="flex hover:bg-tint/[0.02] transition"
           >
             {/* Channel Info — frozen left, and the tune control.
                 Opaque for the same reason the header is: programmes scroll
@@ -783,7 +792,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             <button
               onClick={() => onPlay(ch)}
               aria-label={`Watch ${channelLabel(ch)}`}
-              className="w-32 shrink-0 p-4 border-r border-border-subtle flex flex-col items-center justify-center gap-1.5
+              className="w-32 shrink-0 p-4 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1.5
                          bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
             >
@@ -797,7 +806,8 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
             {/* Programs Timeline — no longer a scroller, just the surface the
                 absolutely-positioned airings are placed on. */}
-            <div className="shrink-0 py-2 relative h-24" style={{ width: totalHours * HOUR_WIDTH }}>
+            <div className="shrink-0 py-2 relative h-24 border-b border-border-subtle"
+                 style={{ width: totalHours * HOUR_WIDTH }}>
               {placed.length === 0 ? (
                 /* A channel with nothing drawable is still a channel you can
                    watch — several carry no EPG data at all and were, until
