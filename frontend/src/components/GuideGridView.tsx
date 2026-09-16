@@ -40,6 +40,26 @@ const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 const CHANNEL_W = 128;
 
 /**
+ * Height of one channel row, in px. Must match the `h-24` on the timeline cell,
+ * whose own bottom rule is inside that height because Tailwind's box model is
+ * `border-box`.
+ *
+ * Used to work out which rows are in view without measuring any of them: a
+ * measurement per row is a layout read per row, which is the cost this is here
+ * to avoid in the first place.
+ */
+const ROW_HEIGHT = 96;
+
+/**
+ * Rows drawn beyond each edge of the viewport.
+ *
+ * Three is about a third of a screen at the smallest height worth supporting,
+ * so a flick of the wheel reveals rows that were already drawn rather than
+ * painting them as they arrive.
+ */
+const ROW_BUFFER = 3;
+
+/**
  * How far before the live edge "back to now" lands.
  *
  * Scrolling exactly to now pins the red line to the left edge and clips the
@@ -402,6 +422,42 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     setHourAt((held) => (held === hour ? held : hour));
   }, []);
 
+  /**
+   * Which rows get their programme cells drawn.
+   *
+   * A full guide holds about 9,800 cells, and they are not only the scroll's
+   * problem: one step of a window drag-resize measured 12.4ms with all of them
+   * in the DOM against 2.6ms with the off-screen rows' cells taken out. Every
+   * frame of a resize was laying out ten thousand cells nobody could see,
+   * which is why dragging the window was as slow as it could be.
+   *
+   * Quantised to whole rows, the same way `trackHour` is quantised to columns:
+   * a render at most once per row crossed, rather than one per scroll frame.
+   * The row boxes themselves always render, so the guide's height, each row's
+   * `offsetTop` — which is how a jump finds it — and the scroll extent are
+   * unchanged.
+   */
+  const [band, setBand] = useState({ first: 0, last: ROW_BUFFER * 2 });
+  const trackBand = useCallback((el: HTMLDivElement) => {
+    const first = Math.max(0, Math.floor(el.scrollTop / ROW_HEIGHT) - ROW_BUFFER);
+    const last = Math.ceil((el.scrollTop + el.clientHeight) / ROW_HEIGHT) + ROW_BUFFER;
+    setBand((held) =>
+      held.first === first && held.last === last ? held : { first, last });
+  }, []);
+
+  // A resize changes how many rows fit without scrolling a pixel, so the band
+  // has to be recut on it as well - and this is the gesture the whole thing is
+  // for. `setBand` holds its object when nothing moved, so a drag that crosses
+  // no row boundary re-renders nothing.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const recut = () => trackBand(el);
+    recut();
+    window.addEventListener("resize", recut);
+    return () => window.removeEventListener("resize", recut);
+  }, [trackBand]);
+
   // Stable grid start: current hour, zeroed minutes/seconds
   const startTime = useMemo(() => {
     const d = new Date();
@@ -682,7 +738,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           guide. `min-h-0` so it can shrink inside the flex column above it. */}
       <div
         ref={scrollerRef}
-        onScroll={e => trackHour(e.currentTarget)}
+        onScroll={e => { trackHour(e.currentTarget); trackBand(e.currentTarget); }}
         /* Focusable so the guide answers a keyboard at all. A scroll
            container that can hold focus is scrolled by the arrow keys, Page
            Up/Down and Home/End for free — the browser does it, and none of it
@@ -802,8 +858,12 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
       {/* Grid Rows */}
       <div className="flex flex-col">
-        {filteredGrid.map((ch) => {
-          const placed = placeAirings(ch.airings, startTime);
+        {filteredGrid.map((ch, i) => {
+          // Off the band, the row is drawn as an empty box of the right size.
+          // `placeAirings` is skipped with it: that work is per airing, and
+          // there is nothing to place it into.
+          const drawn = i >= band.first && i <= band.last;
+          const placed = drawn ? placeAirings(ch.airings, startTime) : [];
           return (
           <div
             key={ch.identifier}
@@ -848,7 +908,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                 absolutely-positioned airings are placed on. */}
             <div className="shrink-0 py-2 relative h-24 border-b border-border-subtle"
                  style={{ width: totalHours * HOUR_WIDTH }}>
-              {placed.length === 0 ? (
+              {!drawn ? null : placed.length === 0 ? (
                 /* A channel with nothing drawable is still a channel you can
                    watch — several carry no EPG data at all and were, until
                    now, unreachable from the guide entirely. The label is

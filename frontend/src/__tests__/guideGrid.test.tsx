@@ -993,6 +993,81 @@ describe("the filter row as the window narrows", () => {
   });
 });
 
+/**
+ * Programme cells only for the rows anywhere near the viewport.
+ *
+ * A full guide holds about 9,800 of them, and their cost is not confined to
+ * the scrolling: measured in Chrome, one step of a window drag-resize took
+ * 12.4ms with all of them in the DOM and 2.6ms with the off-screen rows'
+ * cells removed — the rows themselves left in place. Resizing the window was
+ * as slow as it could be because every frame of the drag laid out ten thousand
+ * cells nobody could see.
+ *
+ * The row boxes always render, so the guide's height, each row's `offsetTop`
+ * and the scroll extent are exactly what they were.
+ */
+describe("the programme cells the guide bothers to draw", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** jsdom lays nothing out, so the scroller has to be given a height. */
+  function stubViewport(el: HTMLElement, height: number) {
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: height });
+  }
+
+  function channels(n: number): GridChannel[] {
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    return Array.from({ length: n }, (_, i) => ({
+      identifier: `ch${i}`, call_sign: `CH${i}`, major: i + 1, minor: 1,
+      network: "NET", kind: "ota" as const, display_name: `CH${i}`, logo_url: null,
+      airings: [{
+        title: `Row ${i} show`, description: "filler",
+        start: top.toISOString(), duration: 3600, genres: [], kind: null,
+      }],
+    }));
+  }
+
+  it("draws the rows in view and leaves the far ones empty", async () => {
+    mockStream(channels(40));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Row 0 show");
+    const sc = scroller(container);
+    stubViewport(sc, 400);
+    fireEvent.scroll(sc, { target: { scrollTop: 0 } });
+
+    // Every row is still a row: the height and the offsets depend on it.
+    expect(container.querySelectorAll("[data-channel]")).toHaveLength(40);
+    // But a row 30 screens down has nothing drawn in it.
+    expect(screen.queryByText("Row 39 show")).toBeNull();
+  });
+
+  it("draws the rows scrolled to, and drops the ones left behind", async () => {
+    mockStream(channels(40));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Row 0 show");
+    const sc = scroller(container);
+    stubViewport(sc, 400);
+
+    fireEvent.scroll(sc, { target: { scrollTop: 96 * 25 } });
+
+    expect(await screen.findByText("Row 25 show")).toBeInTheDocument();
+    expect(screen.queryByText("Row 0 show")).toBeNull();
+  });
+
+  it("keeps a buffer, so a nudge of the wheel reveals nothing blank", async () => {
+    mockStream(channels(40));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Row 0 show");
+    const sc = scroller(container);
+    stubViewport(sc, 400);
+    fireEvent.scroll(sc, { target: { scrollTop: 0 } });
+
+    // 400px of viewport is between four and five rows; the row after those is
+    // drawn anyway, so it is not being painted as it arrives.
+    expect(screen.getByText("Row 5 show")).toBeInTheDocument();
+  });
+});
+
 describe("the now marker", () => {
   afterEach(() => vi.restoreAllMocks());
 
