@@ -479,10 +479,10 @@ export function ChannelGrid({ onLogout }: Props) {
               </button>
             </nav>
 
-            {/* Phone, closed: the field is an icon. Tapping it expands the row
-                into the field below — the tabs and the clock stand down for as
-                long as it is open, which is the only way all four fit under
-                640px. Above that the field is simply always there. */}
+            {/* Phone, closed: the field is an icon, and it is the last thing in
+                the row — top right, where a phone expects it. Tapping it
+                expands the row into the field below. Above 640px the field is
+                simply always there. */}
             {phone && !searchExpanded && (
               <button
                 onClick={() => setSearchExpanded(true)}
@@ -500,7 +500,10 @@ export function ChannelGrid({ onLogout }: Props) {
                 so the header height stays put across tab switches. The dropdown
                 shows server results for any tab; the Live list below is
                 filtered locally too, since that is instant and free. */}
-            <div className={`relative flex-1 max-w-sm ${phone && !searchExpanded ? "hidden" : ""}`}>
+            {/* `ml-4` while expanded for the same reason the nav carries one:
+                open, the field is what sits next to the mark, and without it
+                the two touched. */}
+            <div className={`relative flex-1 max-w-sm ${searchExpanded ? "ml-4" : ""} ${phone && !searchExpanded ? "hidden" : ""}`}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
               <input
                 ref={searchInputRef}
@@ -555,7 +558,12 @@ export function ChannelGrid({ onLogout }: Props) {
               </button>
             )}
 
-            <div className={`items-center gap-4 ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
+            {/* The clock is the first thing to go on a phone. It is the least
+                of the four — the time is in the status bar an inch above it —
+                and dropping it is what puts the search icon at the top right
+                corner, which is where a hand reaches for it. It comes back at
+                640px, tablet included, where the row has the width for it. */}
+            <div className={`items-center gap-4 ml-4 ${phone || searchExpanded ? "hidden" : "flex"}`}>
               <HeaderClock now={now} />
             </div>
           </div>
