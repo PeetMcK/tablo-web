@@ -8,7 +8,7 @@ import type {
 } from "../api/tablo";
 import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
 import {
-  airingAt, clampSkip, programWindow, readyRange, type LiveAnchor,
+  airingAt, clampSkip, covers, programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
 
 /**
@@ -177,8 +177,30 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   // `now` ticks every 20s, which is what moves the bar on at the top of the
   // hour: the airing covering the clock changes, and everything derived from it
   // follows.
+  //
+  // The airing the player was opened with is the last candidate rather than an
+  // unconditional fallback: it is put through the same "does it cover now"
+  // test, so a channel the mirror knows nothing about keeps it until it ends
+  // and then hands the bar back to the DVR window. Kept unconditionally it
+  // outlived its own broadcast - at 9:05 the bar still read "8:00 PM" and the
+  // title still named the finished show.
+  const openedWith = isLive ? source.program ?? null : null;
+  /**
+   * The wall-clock instant being watched.
+   *
+   * Identical to now at the live edge, and the whole point anywhere else: a
+   * viewer paused or rewound across the top of the hour is still watching the
+   * earlier programme, and the bar has to describe that one. Picked by the
+   * clock instead, the bar re-scaled to a show the viewer was not watching,
+   * stranding the thumb at the far left of it with the wrong title above.
+   *
+   * The real playhead, not `shownPos`: a bar that re-scaled mid-drag would
+   * move the target out from under the pointer.
+   */
+  const watchedMs = anchor ? anchor.wallMs + (position - anchor.media) * 1000 : now;
   const program = isLive
-    ? airingAt(schedule?.airings ?? [], now) ?? source.program ?? null
+    ? airingAt(schedule?.airings ?? [], watchedMs)
+      ?? (covers(openedWith, watchedMs) ? openedWith : null)
     : null;
 
   const title = isLive
@@ -608,12 +630,17 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       commitTimer.current = null;
     }
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    const t = timeAtX(e.clientX);
+    // Held to what exists, exactly as the drag below is. `timeAtX` speaks the
+    // bar's domain, which on a programme bar runs past the live edge into time
+    // that has not been broadcast; without this a click out there threw the
+    // thumb into the future for the length of the commit debounce, and drove
+    // `liveLead` negative, which reads on screen as "Transcoding 0%".
+    const t = Math.min(rangeEnd, Math.max(rangeStart, timeAtX(e.clientX)));
     dragRef.current = { x: e.clientX, base: t };
     setFineFactor(1);
     setScrubAt(t);
     setHoverAt(null);
-  }, [timeAtX]);
+  }, [timeAtX, rangeStart, rangeEnd]);
 
   const onBarPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
@@ -918,14 +945,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 : formatTime(isLive ? position - rangeEnd : position - rangeStart)}
             </span>
 
+            {/* The slider announces the bar's own domain, so the value it
+                reports stays inside the bounds it reports. Against the seekable
+                range a programme bar read out positions well past its own
+                maximum - an hour-long airing on a fifteen-minute buffer
+                announced 3600 out of 900. */}
             <div
               ref={barRef}
               role="slider"
               tabIndex={0}
               aria-label="Seek"
-              aria-valuemin={rangeStart}
-              aria-valuemax={rangeEnd}
-              aria-valuenow={Math.round(shownPos)}
+              aria-valuemin={barStart}
+              aria-valuemax={barEnd}
+              aria-valuenow={Math.round(Math.min(barEnd, Math.max(barStart, shownPos)))}
               aria-valuetext={onProgramBar ? clockAt(shownPos) : formatTime(shownPos - rangeStart)}
               className="relative flex-1 h-5 flex items-center group/bar touch-none cursor-pointer
                          outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded"

@@ -103,18 +103,26 @@ export function programWindow(
 }
 
 /**
- * The airing covering `wallMs`, or null.
+ * Whether an airing is on at `wallMs`.
  *
  * Half-open at the end, so the instant a programme ends belongs to the one
- * starting there — which is what rolls the bar over at the top of the hour.
+ * starting there — which is what rolls the bar over at the top of the hour. An
+ * airing with no usable start or duration is on at no time at all, which is the
+ * signal to fall back to the DVR bar.
+ */
+export function covers(airing: Scheduled | null | undefined, wallMs: number): boolean {
+  const ms = startMs(airing);
+  const duration = airing?.duration ?? 0;
+  if (ms === null || !(duration > 0)) return false;
+  return wallMs >= ms && wallMs < ms + duration * 1000;
+}
+
+/**
+ * The airing covering `wallMs`, or null.
+ *
  * Order is not assumed; the mirror sorts, but a caller need not.
  */
 export function airingAt<T extends Scheduled>(airings: T[], wallMs: number): T | null {
-  for (const airing of airings) {
-    const ms = startMs(airing);
-    const duration = airing.duration ?? 0;
-    if (ms === null || !(duration > 0)) continue;
-    if (wallMs >= ms && wallMs < ms + duration * 1000) return airing;
-  }
+  for (const airing of airings) if (covers(airing, wallMs)) return airing;
   return null;
 }

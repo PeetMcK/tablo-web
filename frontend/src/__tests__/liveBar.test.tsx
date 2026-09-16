@@ -79,9 +79,39 @@ describe("the live bar", () => {
     expect(screen.getByText(clock(endsAt))).toBeInTheDocument();
 
     // 15 minutes into an hour: the played fill covers a quarter of the bar.
+    // Measured with a tolerance, not matched as a string: the anchor is read a
+    // few milliseconds after the airing's start is computed, so the percentage
+    // lands a hair either side of 25 and only sometimes serialises as "25%".
     await waitFor(() => {
-      expect(container.querySelector('[style*="width: 25%"]')).toBeTruthy();
+      const widths = Array.from(container.querySelectorAll<HTMLElement>("[style]"))
+        .map((el) => parseFloat(el.style.width))
+        .filter((w) => !Number.isNaN(w));
+      expect(widths.some((w) => Math.abs(w - 25) < 0.5)).toBe(true);
     });
+  });
+
+  it("describes the programme being watched, not the one now airing", async () => {
+    // Rewound across the top of the hour: the earlier show is what is on
+    // screen, so it is what the bar has to measure.
+    const now = Date.now();
+    const earlier: Program = {
+      title: "PBS News Hour", description: null,
+      start: new Date(now - 70 * 60_000).toISOString(), duration: 3600,
+    };
+    const current: Program = {
+      title: "Finding Your Roots", description: null,
+      start: new Date(now - 10 * 60_000).toISOString(), duration: 1800,
+    };
+    vi.spyOn(api, "channelAirings").mockResolvedValue({ airings: [earlier, current] });
+    stubSeekable(1800);
+
+    const { container } = renderLive(null);
+    // 20 minutes behind the live edge, which lands inside the earlier airing.
+    await playAt(container, 600);
+
+    expect(await screen.findByText("PBS News Hour")).toBeInTheDocument();
+    expect(screen.getByText(clock(new Date(earlier.start)))).toBeInTheDocument();
+    expect(screen.queryByText("Finding Your Roots")).toBeNull();
   });
 
   it("keeps the DVR bar when the channel has no schedule", async () => {

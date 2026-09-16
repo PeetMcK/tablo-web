@@ -503,21 +503,29 @@ def _airing_row(a) -> dict:
     }
 
 
-def channel_airings(identifier: str, now: float | None = None) -> list[dict]:
+def channel_airings(
+    identifier: str, now: float | None = None, limit: int = 32
+) -> list[dict]:
     """What is on this channel now and next, oldest first.
 
     Answers the live player's question: it draws its scrubber over the airing
     being watched, and re-scales to the following one when that ends. Airings
     that have already finished are left out - the DVR window holds none of
     them, so there is nothing the player could show for one.
+
+    Capped, because the mirror is append-only and holds every future airing the
+    device has ever listed - the better part of a fortnight per channel, each
+    carrying a full description. The player fetches this while opening a
+    stream and reads two of them, so shipping the whole schedule would put a
+    sizeable payload in front of a tuner handshake.
     """
     cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
     return [
         _airing_row(a)
         for a in db.query(
             "SELECT * FROM guide_airing WHERE channel_id = ? AND end_epoch >= ? "
-            "ORDER BY start",
-            (str(identifier), cutoff),
+            "ORDER BY start LIMIT ?",
+            (str(identifier), cutoff, limit),
         )
     ]
 

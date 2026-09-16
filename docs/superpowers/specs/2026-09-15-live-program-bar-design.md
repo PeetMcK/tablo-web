@@ -78,9 +78,17 @@ tab carries `current_program` only, one airing deep.
 
 The guide mirror already holds them. A small read-only endpoint —
 `GET /api/channels/{identifier}/airings` — serves the airings for one channel
-from SQLite, and the player picks whichever contains the current wall clock,
-re-picking as the clock passes each boundary. No device round trip, no new sync,
-and the same query answers "what is on next" for any later caller.
+from SQLite, and the player picks whichever contains **the instant being
+watched**, re-picking as the playhead passes each boundary. No device round
+trip, no new sync, and the same query answers "what is on next" for any later
+caller.
+
+The instant being watched, rather than the current time: they are the same at
+the live edge, and only the first is right anywhere else. A viewer who paused
+at 8:55 and came back at 9:10 is still watching the eight o'clock show, and a
+bar that re-scaled to the nine o'clock one would strand the thumb at the far
+left of a programme that is not on screen, under a title naming the wrong
+thing.
 
 When the mirror has nothing for the channel, the player keeps the airing it was
 opened with until that ends, then falls back to the DVR bar below.
