@@ -4,6 +4,7 @@ import json
 import time
 
 from app import db, store
+from app import search as search_mod
 
 
 def test_schema_is_at_version_two():
@@ -167,3 +168,66 @@ def test_reindexing_a_recording_does_not_leave_the_old_title_in_fts():
 
     assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'broncos'")
     assert db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'seahawks'")
+
+
+def _doc(kind, ref, title, body="", channel="8.1 CBS", start=0):
+    with db.write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+            "    channel, start_epoch, duration, target) "
+            "VALUES (?, ?, ?, '', ?, ?, ?, 3600, '{}')",
+            (kind, ref, title, body, channel, start),
+        )
+
+
+def test_a_title_match_outranks_a_description_match():
+    """Every surface truncates, so which results appear IS the feature."""
+    _doc("airing", "a|1", "Broncos at Chiefs", body="afc west")
+    _doc("airing", "a|2", "Cooking Show", body="filmed at the broncos ranch")
+    for i in range(50):
+        _doc("airing", f"f|{i}", f"Filler {i}", body="unrelated")
+
+    items = search_mod.search("broncos", limit=5)["groups"][0]["items"]
+    assert [i["title"] for i in items] == ["Broncos at Chiefs", "Cooking Show"]
+
+
+def test_a_short_query_returns_empty_groups_rather_than_an_error():
+    """Surfaces call on every keystroke; one character must not be a 400."""
+    out = search_mod.search("b")
+    assert out["groups"] == []
+    assert out["query"] == "b"
+
+
+def test_kinds_filters_the_result():
+    _doc("airing", "a|1", "Survivor")
+    _doc("recording", "1", "Survivor")
+    out = search_mod.search("survivor", kinds=["recording"])
+    assert [g["kind"] for g in out["groups"]] == ["recording"]
+
+
+def test_total_counts_beyond_the_limit():
+    for i in range(12):
+        _doc("airing", f"a|{i}", f"Survivor {i}")
+    group = search_mod.search("survivor", limit=3)["groups"][0]
+    assert len(group["items"]) == 3
+    assert group["total"] == 12
+
+
+def test_groups_are_ordered_recording_then_airing_then_channel():
+    _doc("channel", "c1", "Survivor Channel")
+    _doc("airing", "a|1", "Survivor")
+    _doc("recording", "1", "Survivor")
+    out = search_mod.search("survivor")
+    assert [g["kind"] for g in out["groups"]] == ["recording", "airing", "channel"]
+
+
+def test_a_prefix_matches_a_partial_word():
+    _doc("airing", "a|1", "Broncos at Chiefs")
+    assert search_mod.search("bronc")["groups"][0]["items"][0]["title"] == "Broncos at Chiefs"
+
+
+def test_punctuation_in_a_query_does_not_break_fts():
+    """FTS5 MATCH has its own syntax; a bare apostrophe or quote is a syntax error."""
+    _doc("airing", "a|1", "Rick Steves' Europe")
+    out = search_mod.search('steves"')
+    assert out["groups"]
