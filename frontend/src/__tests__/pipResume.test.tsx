@@ -67,7 +67,9 @@ describe("popping out while playing", () => {
   }
 
   function fakePipWindow() {
-    const pipDoc = document.implementation.createHTMLDocument("pip");
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const pipDoc = frame.contentDocument!;
     const w = {
       document: pipDoc,
       close: vi.fn(),
@@ -75,7 +77,7 @@ describe("popping out while playing", () => {
     } as unknown as Window;
     const requestWindow = vi.fn().mockResolvedValue(w);
     (window as unknown as Record<string, unknown>).documentPictureInPicture = { requestWindow };
-    return { pipDoc, requestWindow };
+    return { pipDoc, requestWindow, close: w.close };
   }
 
   it("carries on playing into the pop-out", async () => {
@@ -107,5 +109,33 @@ describe("popping out while playing", () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(play).not.toHaveBeenCalled();
+  });
+
+  it("lets Escape dismiss the pop-out rather than the player", async () => {
+    // While the picture is out in its own window, that window is the nearest
+    // thing Escape can mean. Closing the player would take away a pop-out the
+    // viewer was watching and the programme with it.
+    stubPaused(false);
+    const onClose = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <VideoPlayer
+          source={{ kind: "live", channel: CHANNEL, program: NEWS_HOUR }}
+          onClose={onClose}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc, close } = fakePipWindow();
+    const video = container.querySelector("video")!;
+
+    fireEvent.click(screen.getByTitle("Picture in picture"));
+    await waitFor(() => expect(pipDoc.body.contains(video)).toBe(true));
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    // The window is asked to close; the player is left alone.
+    await waitFor(() => expect(close).toHaveBeenCalled());
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
