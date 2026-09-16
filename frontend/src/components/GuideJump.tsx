@@ -50,7 +50,7 @@ export function GuideJump({ days, label, onJump, onNow }: Props) {
       <button
         onClick={onNow}
         title="Back to what is on now"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-extrabold
+        className="touch-target justify-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-extrabold
                    tracking-wide bg-danger-soft border border-danger/30 text-danger
                    hover:bg-danger/15 transition"
       >
@@ -69,7 +69,7 @@ export function GuideJump({ days, label, onJump, onNow }: Props) {
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold
+        className="touch-target justify-center flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold
                    glass text-fg hover:bg-fill transition"
       >
         <Calendar className="w-3.5 h-3.5 text-accent" strokeWidth={2.5} aria-hidden />
@@ -113,7 +113,7 @@ export function GuideJump({ days, label, onJump, onNow }: Props) {
                       disabled={dead}
                       onClick={() => { onJump(cell.at); setOpen(false); }}
                       aria-label={`${day.label} ${day.date}, ${cell.part.label}`}
-                      className={`h-[34px] rounded-lg text-[10px] font-bold tracking-wide transition
+                      className={`touch-target h-[34px] rounded-lg text-[10px] font-bold tracking-wide transition
                         ${cell.state === "live"
                           ? "bg-accent text-accent-fg font-extrabold shadow-lg shadow-accent-glow"
                           : cell.state === "listed"

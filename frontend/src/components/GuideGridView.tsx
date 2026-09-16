@@ -721,7 +721,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
         <button
           key={f.id}
           onClick={() => setContentFilter(f.id)}
-          className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
+          className={`touch-target shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
             ${contentFilter === f.id
               /* A flat accent rather than the brand ramp: this chip carries a
                  12px bold LABEL, and nothing clears 4.5:1 against both ends of

@@ -50,7 +50,7 @@ export function ContentFilterMenu({ value, onChange }: Props) {
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold
+        className="touch-target justify-center flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold
                    glass text-fg hover:bg-fill transition"
       >
         <active.Icon className="w-3.5 h-3.5 text-accent" strokeWidth={2.5} aria-hidden />
@@ -76,7 +76,7 @@ export function ContentFilterMenu({ value, onChange }: Props) {
                 role="menuitemradio"
                 aria-checked={on}
                 onClick={() => { onChange(f.id); setOpen(false); }}
-                className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-xl
+                className={`touch-target w-full flex items-center gap-2 px-2.5 py-2 rounded-xl
                             text-xs font-bold tracking-wide text-left transition
                   ${on
                     ? "bg-accent text-accent-fg"
