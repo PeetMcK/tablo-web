@@ -272,3 +272,28 @@ def test_an_upcoming_airing_is_not_cross_referenced():
     _doc("airing", "ch1|z", "Future Game", start=int(time.time()) + 86_400)
     item = search_mod.search("future", kinds=["airing"])["groups"][0]["items"][0]
     assert item["recorded"] is None
+
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_search_requires_auth():
+    assert client.get("/api/search?q=broncos").status_code == 401
+
+
+def test_limit_is_clamped_rather_than_rejected(monkeypatch):
+    """A surface asking for too much should get a lot, not an error."""
+    import app.routes.search as route
+
+    # is_authenticated is a read-only @property (`return self.auth is not None`),
+    # so it cannot be set directly on the instance - monkeypatch the underlying
+    # `auth` attribute instead to fake an authenticated session.
+    monkeypatch.setattr(route.state, "auth", object())
+    _doc("airing", "a|1", "Survivor")
+    r = client.get("/api/search?q=survivor&limit=9999")
+    assert r.status_code == 200
+    assert r.json()["groups"][0]["items"]

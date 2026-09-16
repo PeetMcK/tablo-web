@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import log_buffer as _log_buffer
 from . import store
-from .routes import auth, channels, iptv, recordings, resume, stream
+from .routes import auth, channels, iptv, recordings, resume, search, stream
 from .state import state, CONFIG_PATH, _run_sync
 
 _log_buffer.install()
@@ -68,6 +68,7 @@ app.include_router(channels.router)
 app.include_router(iptv.router)
 app.include_router(recordings.router)
 app.include_router(resume.router)
+app.include_router(search.router)
 app.include_router(stream.router, prefix="/api")
 
 @app.get("/api/health")
