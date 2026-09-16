@@ -837,6 +837,36 @@ describe("dragging across the listings", () => {
   });
 });
 
+describe("the content filter pills", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("wraps rather than running off under the jump control", async () => {
+    // They were a horizontal scroller with the scrollbar hidden, so at any
+    // width that could not hold all eight the last of them ran under the NOW
+    // pill and off the edge — measured at 809px of pills in 553px of room,
+    // with nothing to say the rest were there. Eight short pills fit on two
+    // lines at any width worth supporting.
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const pills = screen.getByRole("button", { name: /Movies/ }).parentElement!;
+    expect(pills.className).toMatch(/flex-wrap/);
+    expect(pills.className).not.toMatch(/overflow-x-auto/);
+  });
+
+  it("keeps every filter reachable", async () => {
+    mockStream(longChannel(24));
+    render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    for (const label of ["All", "Movies", "Sports", "News", "Reality",
+                         "Documentary", "Broadcast", "Streaming"]) {
+      expect(screen.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
+    }
+  });
+});
+
 describe("the now marker", () => {
   afterEach(() => vi.restoreAllMocks());
 

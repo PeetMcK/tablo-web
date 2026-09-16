@@ -605,8 +605,15 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     // below and the card goes back to overflowing the page.
     <div className="flex flex-col gap-4 flex-1 min-h-0">
     {/* Content type filter chips, and the jump control in the space they leave */}
-    <div className="flex items-center gap-2">
-    <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+    {/* `items-start`, so a second row of chips grows downward and leaves the
+        jump control where it was rather than dragging it to the middle. */}
+    <div className="flex items-start gap-2">
+    {/* Wrapping, not a hidden-scrollbar overflow. As a scroller the eighth
+        chip ran under the NOW pill and off the edge with nothing to say it was
+        there — 809px of chips in 553px of room at the width this was found at.
+        `min-w-0` so the wrapping box may actually be narrower than its
+        content, which a flex child refuses by default. */}
+    <div className="flex flex-wrap gap-2 flex-1 min-w-0">
       {CONTENT_FILTERS.map(f => (
         <button
           key={f.id}
@@ -627,8 +634,8 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       ))}
     </div>
 
-      <div className="flex-1" />
-
+      {/* No spacer: the chip box above takes the room now, and a `flex-1`
+          here would split it with them and wrap the chips early. */}
       <GuideJump
         days={jumpRows}
         label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}

@@ -478,11 +478,20 @@ export function ChannelGrid({ onLogout }: Props) {
         </header>
 
         {/* Main content */}
-        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 py-10 ${isGuide ? "min-h-0 flex flex-col" : ""}`}>
+        {/* `pt-4`, matching the gap the filter chips leave below themselves.
+            It was `py-10`: 40px of air above the chips against 16px below
+            them, on every page, which read as the controls sitting low in
+            their own band rather than as deliberate room. The foot of the
+            page keeps its 40px — only the top was out. */}
+        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 pt-4 pb-10 ${isGuide ? "min-h-0 flex flex-col" : ""}`}>
           {activeTab === "live" && (
             <>
               {/* Content type filter chips */}
-              <div className="flex gap-2 mb-6 overflow-x-auto pb-1 no-scrollbar">
+              {/* Wrapping, for the reason the guide's chips wrap: as a
+                  hidden-scrollbar scroller the last of the eight ran off the
+                  edge with nothing to say it was there. `mb-4` so the gap
+                  below them is the same 16px the top of the page now uses. */}
+              <div className="flex flex-wrap gap-2 mb-4">
                 {CONTENT_FILTERS.map(f => (
                   <button
                     key={f.id}
