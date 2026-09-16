@@ -3,7 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useSearch } from "../hooks/useSearch";
 import { api } from "../api/tablo";
-import type { SearchResponse } from "../api/tablo";
+import type { SearchResponse, Recording } from "../api/tablo";
 
 // The real VideoPlayer drives hls.js and the `<video>` element for actual
 // playback, which is irrelevant to the tests below — they only care whether
@@ -370,6 +370,52 @@ describe("ChannelGrid search wiring", () => {
     // can and must open it.
     fireEvent.keyDown(document.body, { key: "k", metaKey: true });
     expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+  });
+});
+
+const LIBRARY_RECORDING: Recording = {
+  object_id: 80888, identifier: 80888, path: "/recordings/sports/events/80888",
+  title: "NFL Football", subtitle: null, description: null,
+  start: "2026-09-15T00:15:00Z", duration: 12615, thumbnail: null,
+  width: null, height: null, state: "finished", error: null,
+  watched: false, position: 0, cache_state: "absent", cache_progress: 0,
+  pinned: false, offline_only: false, paused: false, cached_seconds: 0,
+  rate: { mbps: 0, realtime: 0 }, channel: null, scan: null, interlaced: false,
+};
+
+function mockLibraryApis() {
+  vi.spyOn(api, "recordings").mockResolvedValue({
+    recordings: [LIBRARY_RECORDING], returned: 1, total: 1, offline_only: 0,
+  });
+  vi.spyOn(api, "storage").mockResolvedValue({
+    pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+    budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+  });
+}
+
+describe("ChannelGrid library search handoff", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not let a topbar keystroke clobber a playing recording's URL", async () => {
+    // ChannelGrid and LibraryView both write to the one hash. ChannelGrid's
+    // own route-sync effect must not fire on a `filter` change while some
+    // other tab (here Library) owns a deeper route of its own.
+    window.history.replaceState(null, "", "#/library/rec/80888");
+    mockChannelGridApis();
+    mockLibraryApis();
+    vi.spyOn(api, "search").mockResolvedValue(EMPTY);
+    renderChannelGrid();
+
+    await screen.findByTestId("video-player");
+    await waitFor(() => expect(window.location.hash).toBe("#/library/rec/80888"));
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "nfl" } });
+
+    // Give any effect a chance to (wrongly) fire before asserting it did not.
+    await new Promise(r => setTimeout(r, 0));
+    expect(window.location.hash).toBe("#/library/rec/80888");
   });
 });
 

@@ -170,12 +170,31 @@ export function ChannelGrid({ onLogout }: Props) {
       : null;
   const nowPlaying = playing ?? restoredChannel ?? pendingMatch;
 
-  // Keep the URL in step with what is on screen, so a refresh lands here again.
+  // Keep the URL in step with what is on screen, so a refresh lands here
+  // again. Deliberately NOT keyed on `filter`: this effect owns `tab` and
+  // `watch`, and Library owns a deeper route of its own
+  // (`#/library/rec/<id>`, written by LibraryView's own effect) — folding
+  // `filter` in here as a dependency would re-run this on every keystroke
+  // typed in the topbar, on ANY tab, and stomp that deeper route back down
+  // to a bare `#/library` since this component's own `nowPlaying` only ever
+  // tracks a live channel.
   useEffect(() => {
     writeRoute({
       tab: activeTab,
       watch: nowPlaying ? { kind: "live", id: nowPlaying.identifier } : null,
-      q: activeTab === "search" ? filter : undefined,
+    });
+  }, [activeTab, nowPlaying]);
+
+  // The search tab's query string round-trips through the hash too, but only
+  // while that tab is actually showing — writing it unconditionally here
+  // would be the same clobbering bug as above, just for `q` instead of
+  // `watch`.
+  useEffect(() => {
+    if (activeTab !== "search") return;
+    writeRoute({
+      tab: "search",
+      watch: nowPlaying ? { kind: "live", id: nowPlaying.identifier } : null,
+      q: filter,
     });
   }, [activeTab, nowPlaying, filter]);
 
