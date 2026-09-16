@@ -72,3 +72,42 @@ def test_the_grid_still_sees_only_the_future():
     grid = store.load_guide(now=now)
     shown = {a["title"] for ch in grid for a in ch["airings"]}
     assert shown == {"Coming"}
+
+
+def test_a_channel_dropped_from_the_latest_sync_disappears_from_the_grid():
+    """No delete happens - the row is just no longer the freshest sync.
+
+    guide_channel rows are upserted, never deleted, because a channel carries
+    its airing history through the CASCADE on guide_airing. A channel the
+    device stops listing must still vanish from the grid (the old, correct,
+    now-broken-by-append-only behaviour) - that comes from load_guide
+    filtering to the latest sync's stamp, not from removing the row.
+    """
+    now = time.time()
+    store.save_guide([
+        _channel("ch1", [_airing("Keeps", int(now + 3600))]),
+        _channel("ch2", [_airing("Gone", int(now + 3600))]),
+    ], now=now)
+    store.save_guide([_channel("ch1", [_airing("Keeps", int(now + 3600))])], now=now)
+
+    idents = {c["identifier"] for c in store.load_guide(now=now)}
+    assert idents == {"ch1"}
+
+    # ch2 itself was never deleted - only excluded from the grid read.
+    assert db.query("SELECT 1 FROM guide_channel WHERE identifier = 'ch2'")
+    assert db.query("SELECT 1 FROM guide_airing WHERE title = 'Gone'")
+
+
+def test_a_current_channel_with_nothing_in_the_window_still_shows_an_empty_row():
+    """Distinguish 'dropped by the device' from 'nothing airing right now'.
+
+    Both look like an empty-ish result, but only the first should make the
+    channel disappear. A channel still in the latest sync keeps its row even
+    when every one of its airings falls outside the read window.
+    """
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Over", int(now - 7200))])], now=now)
+
+    grid = store.load_guide(now=now)
+    assert [c["identifier"] for c in grid] == ["ch1"]
+    assert grid[0]["airings"] == []

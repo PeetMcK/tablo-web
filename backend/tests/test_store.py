@@ -272,13 +272,20 @@ def test_saving_the_guide_merges_rather_than_replacing():
     because save_guide issued `DELETE FROM guide_channel`, which cascaded to
     guide_airing and destroyed every previously stored airing. The device's
     guide is forward-looking, so that delete was unrecoverable. The mirror is
-    now append-only: a channel or airing missing from a later sync is kept,
-    not dropped. See test_guide_sync.py for the fuller regression coverage.
+    now append-only: a channel or airing missing from a later sync is kept in
+    storage, not dropped.
+
+    `load_guide()` itself only returns the channels from the *latest* sync
+    (ch1 stops appearing there once a second sync omits it) - that is a
+    read-time filter on `guide_synced_at`, covered in test_guide_sync.py, not
+    evidence that ch1's row was deleted. This test checks the storage layer
+    directly to tell the two apart.
     """
     now = _iso(datetime.now(timezone.utc) + timedelta(hours=1))
     store.save_guide([{"identifier": "ch1", "airings": [{"start": now, "duration": 60}]}])
     store.save_guide([{"identifier": "ch2", "airings": [{"start": now, "duration": 60}]}])
-    assert {r["identifier"] for r in store.load_guide()} == {"ch1", "ch2"}
+    idents = {r["identifier"] for r in db.query("SELECT identifier FROM guide_channel")}
+    assert idents == {"ch1", "ch2"}
 
 
 def test_guide_age_reflects_the_last_write():

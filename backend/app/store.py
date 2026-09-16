@@ -298,8 +298,16 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
     what aired, not a snapshot of what the device holds, and the device
     dropping an airing is never a reason to delete our copy. Only
     `prune_guide` removes anything, and only by age.
+
+    Every channel touched in this call is stamped with the same `updated_at`
+    (computed once, not per row - per-row timestamps could differ and would
+    break the comparison below), and that stamp is recorded as
+    `guide_synced_at`. `load_guide` uses it to show only the channels seen in
+    the latest sync, without deleting the ones the device stopped listing -
+    see `load_guide` for why.
     """
     del now  # retained for signature compatibility; pruning is prune_guide's job
+    stamp = _now()
     with db.write() as conn:
         for position, ch in enumerate(rows):
             conn.execute(
@@ -316,7 +324,7 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                 (
                     str(ch.get("identifier")), ch.get("call_sign"), ch.get("major"),
                     ch.get("minor"), ch.get("network"), ch.get("display_name"),
-                    ch.get("logo_url"), ch.get("kind"), position, _now(),
+                    ch.get("logo_url"), ch.get("kind"), position, stamp,
                 ),
             )
             for air in ch.get("airings") or []:
@@ -332,7 +340,8 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                         json.dumps(air.get("genres") or []), air.get("kind"),
                     ),
                 )
-    db.set_setting("guide_updated_at", _now())
+    db.set_setting("guide_updated_at", stamp)
+    db.set_setting("guide_synced_at", stamp)
 
 
 def prune_guide(now: float | None = None) -> int:
@@ -350,9 +359,28 @@ def prune_guide(now: float | None = None) -> int:
 
 
 def load_guide(now: float | None = None) -> list[dict]:
-    """The stored guide, excluding airings that have ended."""
+    """The channels seen in the latest sync, excluding airings that have ended.
+
+    `guide_channel` rows are upserted and never deleted - a channel carries
+    its airing history through the `ON DELETE CASCADE` on `guide_airing`, so
+    removing a row the device stopped listing would destroy exactly the
+    history this store exists to protect (see `save_guide`). To still make a
+    dropped channel disappear from the grid, every channel written in a sync
+    is stamped with that sync's `updated_at`, recorded as `guide_synced_at`;
+    only channels carrying the latest stamp are returned here. A stale
+    channel's row and airings stay on disk - available to the search index -
+    they just stop appearing in this list. A channel that IS in the latest
+    sync but has no airings inside the read window still comes back with an
+    empty `airings` list, exactly as before.
+    """
     cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
-    channels = db.query("SELECT * FROM guide_channel ORDER BY position")
+    synced_at = db.get_setting("guide_synced_at")
+    if not synced_at:
+        return []
+    channels = db.query(
+        "SELECT * FROM guide_channel WHERE updated_at = ? ORDER BY position",
+        (synced_at,),
+    )
     if not channels:
         return []
 
