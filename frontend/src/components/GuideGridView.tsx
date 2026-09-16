@@ -463,11 +463,19 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           through. The frozen row and the frozen column share `surface-sunken`,
           which is the token for exactly this and reads within a point or two of
           what the wash composited to. */}
-      <div ref={headerRef} className="bg-surface-sunken border-b border-border-subtle sticky top-0 z-30">
+      {/* One frozen cell beside both rows rather than one per row: stacked,
+          they drew a divider across the corner that lines up with nothing —
+          the column it heads is not split. So the header is a row of two
+          things, the corner and the stack of dates over hours. */}
+      <div ref={headerRef} className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30">
+        <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-20">
+          <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
+        </div>
+
+        <div className="flex flex-col">
         {/* Day band. One per calendar day, spanning exactly that day's hours,
             so the boundary you scroll across is the real one. */}
         <div className="flex border-b border-border-subtle">
-          <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken sticky left-0 z-10" />
           <div className="flex">
             {days.map((d, i) => (
               <div
@@ -480,7 +488,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                    measured at 580 where 452 was wanted. The band still
                    contains the label, because sticky cannot escape its own
                    containing block. */
-                className={`shrink-0 h-7 flex items-center
+                className={`shrink-0 h-6 flex items-center
                             ${i > 0 ? "border-l border-border-medium" : ""}`}
                 style={{ width: d.hours * HOUR_WIDTH }}
               >
@@ -500,11 +508,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           </div>
         </div>
 
-        <div className="flex">
-          <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-10">
-            <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
-          </div>
-          <div className="flex relative">
+        <div className="flex relative">
             {hours.map((h, i) => (
               <div
                 key={i}
@@ -513,7 +517,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                    11px type, so the pair is fg-secondary / fg-muted rather than
                    the old white/50 and white/30 — white/30 has no token because
                    nothing that faint may hold text. */
-                className={`shrink-0 font-mono text-[11px] font-bold flex items-center gap-2 px-6 h-10
+                className={`shrink-0 font-mono text-[11px] font-bold flex items-center gap-2 px-6 h-8
                             ${h.startsDay
                               ? "border-l border-border-medium text-fg-secondary"
                               : "border-r border-border-subtle text-fg-muted"}`}
@@ -534,7 +538,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                 <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
               </div>
             )}
-          </div>
+        </div>
         </div>
       </div>
 
