@@ -30,24 +30,24 @@ export function SearchResultRow({
       aria-selected={selected}
       onClick={() => onActivate(item)}
       className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition
-                  ${selected ? "bg-accent/20" : "hover:bg-white/5"}`}
+                  ${selected ? "bg-accent-soft" : "hover:bg-fill-soft"}`}
     >
-      <Icon className="w-4 h-4 shrink-0 text-white/30" aria-hidden />
+      <Icon className="w-4 h-4 shrink-0 text-fg-faint" aria-hidden />
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-bold text-white truncate">
+        <p className="text-sm font-bold text-fg truncate">
           {item.title || "Untitled"}
         </p>
-        <p className="text-[11px] text-white/40 truncate">
+        <p className="text-[11px] text-fg-muted truncate">
           {[item.subtitle, when(item.start_epoch)].filter(Boolean).join(" · ")}
         </p>
       </div>
       {item.channel && (
-        <span className="text-[10px] font-bold text-white/30 tabular-nums shrink-0">
+        <span className="text-[10px] font-bold text-fg-muted tabular-nums shrink-0">
           {item.channel}
         </span>
       )}
       {item.recorded && (
-        <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 shrink-0">
+        <span className="flex items-center gap-1 text-[10px] font-bold text-success shrink-0">
           <CheckCircle2 className="w-3 h-3" aria-hidden />
           Recorded
         </span>

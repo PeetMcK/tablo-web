@@ -158,7 +158,7 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-start justify-center pt-[15vh] px-4"
+      className="fixed inset-0 z-[100] bg-scrim backdrop-blur-sm flex items-start justify-center pt-[15vh] px-4"
       onClick={onClose}
     >
       <div
@@ -168,10 +168,10 @@ export function CommandPalette({
         aria-label="Search everything"
         onKeyDown={onKeyDown}
         onClick={e => e.stopPropagation()}
-        className="w-full max-w-xl rounded-2xl border border-white/10 bg-surface-raised shadow-2xl overflow-hidden"
+        className="w-full max-w-xl rounded-2xl border border-border bg-surface-raised shadow-2xl overflow-hidden"
       >
-        <div className="flex items-center gap-3 px-4 border-b border-white/5">
-          <Search className="w-4 h-4 text-white/20" aria-hidden />
+        <div className="flex items-center gap-3 px-4 border-b border-border-subtle">
+          <Search className="w-4 h-4 text-fg-muted" aria-hidden />
           <input
             role="combobox"
             aria-expanded={flat.length > 0}
@@ -180,13 +180,13 @@ export function CommandPalette({
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Search channels, guide and recordings..."
-            className="flex-1 bg-transparent py-4 text-sm placeholder-white/20 focus:outline-none"
+            className="flex-1 bg-transparent py-4 text-sm placeholder-fg-subtle focus:outline-none"
           />
         </div>
         <div id="palette-results" role="listbox" className="p-2 max-h-[50vh] overflow-y-auto">
           {groupOffsets.map(({ group, offset }) => (
             <div key={group.kind} className="mb-2 last:mb-0">
-              <p className="px-3 py-1 text-[10px] font-black uppercase tracking-widest text-white/20">
+              <p className="px-3 py-1 text-[10px] font-black uppercase tracking-widest text-fg-muted">
                 {LABELS[group.kind]}
               </p>
               {group.items.map((item, i) => (
@@ -200,7 +200,7 @@ export function CommandPalette({
             </div>
           ))}
           {data && flat.length === 0 && (
-            <p className="px-3 py-4 text-xs text-white/30">No matches for "{data.query}"</p>
+            <p className="px-3 py-4 text-xs text-fg-muted">No matches for "{data.query}"</p>
           )}
         </div>
       </div>
