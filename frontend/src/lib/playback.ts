@@ -6,6 +6,13 @@
  * `whole` is true when everything between `start` and `end` is available — a
  * live DVR window, or a recording that is fully cached. Otherwise only the
  * cached island containing `t` counts; standing in a gap, nothing does.
+ *
+ * The island is closed at both ends, unlike the half-open ranges elsewhere
+ * here. A playhead resting exactly on a frontier got there by watching the
+ * island up to it and stalling on the window past it — it has not left, and
+ * everything behind it is still warm. Excluding that instant stranded the
+ * viewer: the range collapsed to a point and both skips were pinned until the
+ * encoder finished the next window, a minute of video away.
  */
 export function readyRange(
   t: number,
@@ -17,7 +24,7 @@ export function readyRange(
   },
 ): [number, number] {
   if (whole) return [start, end];
-  const island = ranges.find(([a, b]) => t >= a && t < b);
+  const island = ranges.find(([a, b]) => t >= a && t <= b);
   return island
     ? [Math.max(start, island[0]), Math.min(end, island[1])]
     : [t, t];
