@@ -213,7 +213,10 @@ export function LibraryView() {
         />
       )}
 
-      <div className="flex items-center gap-4 mb-3 text-[11px] uppercase tracking-widest text-fg-muted">
+      {/* The page title is gone — the nav tab already names where you are — so
+          this is the only thing above the grid. Right-aligned to keep it out of
+          the reading path: it is a status readout, not a heading. */}
+      <div className="flex items-center justify-end gap-4 mb-3 text-[11px] uppercase tracking-widest text-fg-muted">
         {truncated && <span>Showing {data!.returned} of {data!.total}</span>}
         {storage && (
           <span>

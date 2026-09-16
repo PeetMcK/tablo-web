@@ -7,7 +7,6 @@ import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
 import { ProfileMenu } from "./ProfileMenu";
-import { PageHeader } from "./PageHeader";
 import { HeaderClock } from "./HeaderClock";
 import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
@@ -295,10 +294,6 @@ export function ChannelGrid({ onLogout }: Props) {
         <main className={`flex-1 max-w-7xl mx-auto w-full px-6 py-10 ${isGuide ? "min-h-0 flex flex-col" : ""}`}>
           {activeTab === "live" && (
             <>
-              <PageHeader
-                title="On Air Now"
-              />
-
               {/* Content type filter chips */}
               <div className="flex gap-2 mb-6 overflow-x-auto pb-1 no-scrollbar">
                 {CONTENT_FILTERS.map(f => (
@@ -343,17 +338,12 @@ export function ChannelGrid({ onLogout }: Props) {
 
           {isGuide && (
             <div className="flex flex-col flex-1 min-h-0">
-               <PageHeader title="Guide" />
                <GuideGridView onPlay={handlePlay} />
             </div>
           )}
 
           {activeTab === "library" && (
             <div className="flex flex-col">
-              <PageHeader
-                title="Recordings"
-                subtitle="Watch and manage your saved content"
-              />
               <LibraryView />
             </div>
           )}
