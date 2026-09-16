@@ -336,6 +336,27 @@
 @layer base {
   html, body, #root { @apply h-full bg-surface text-fg antialiased; }
 
+  /* Keep the scrollbar's 4px whether the page scrolls or not.
+
+     Styling ::-webkit-scrollbar below opts this app out of macOS's overlay
+     scrollbars, so that 4px is real layout width — and the Guide is the one
+     tab that never scrolls the page (it is a viewport with its own inner
+     scroller), so on the Guide the 4px came back and everything centred by
+     `mx-auto` moved half of it. Measured: the header's tabs sat at x=134 on
+     Live and Library against x=136 on the Guide, a 2px jump on every switch
+     between them.
+
+     `overflow-y: scroll` is what actually reserves it: the root has to be a
+     scroll container for the gutter to exist at all, and with `overflow:
+     visible` it is not — measured, `scrollbar-gutter: stable` by itself left
+     the Guide at 1400px against the others' 1396. With both, all three report
+     1396 and the tabs sit at 134 everywhere.
+
+     The track is transparent (below), so the Guide shows a 4px groove with no
+     thumb in it and nothing to see. Where scrollbars ARE overlays and take no
+     width, this reserves nothing and changes nothing. */
+  html { overflow-y: scroll; scrollbar-gutter: stable; }
+
   ::selection { background: var(--selection-bg); }
 
   ::-webkit-scrollbar { width: 4px; }

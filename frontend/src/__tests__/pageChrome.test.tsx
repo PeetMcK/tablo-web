@@ -30,6 +30,14 @@ function renderShell() {
  * opened with twice as much air above its controls as below them. One number
  * for the top of every page, and it is the one the chips already use.
  */
+/*
+ * The tabs not moving between pages is `scrollbar-gutter: stable` in
+ * index.css, and there is no test for it here: jsdom draws no scrollbars and
+ * lays nothing out, so the only honest check is a real browser. Measured in
+ * Chrome — the header's tabs at x=134 on Live and Library, x=136 on the Guide
+ * before the rule, and 134 on all three after it.
+ */
+
 describe("the space under the header", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "#/live");
