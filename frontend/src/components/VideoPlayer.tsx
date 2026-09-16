@@ -68,6 +68,15 @@ const LIVE_DVR_SECONDS = 3600;
 const LIVE_LEAD_SECONDS = 12;
 
 /**
+ * How often a live session says it is still wanted, in milliseconds.
+ *
+ * Well inside the backend's LIVE_IDLE_SECONDS (default 120), which is what
+ * reaps a transcode whose player is gone — several heartbeats have to be missed
+ * before a session that is merely slow is taken for an abandoned one.
+ */
+const KEEPALIVE_MS = 30_000;
+
+/**
  * Seeking into an un-encoded window makes the backend transcode it before
  * responding. A cold window is ~30s on CPU, and landing on its last segment
  * means waiting for the whole thing, so the 20s default is far too tight.
@@ -289,7 +298,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // sits in the middle of the frame in browser chrome rather than ours. It
     // also closes off `requestPictureInPicture`, which is why the pop-out
     // goes through the Document Picture-in-Picture API instead.
-    video.disablePictureInPicture = true;
+    //
+    // Only where that API exists to replace it. Safari implements no Document
+    // Picture-in-Picture, so our own button never renders there; taking the
+    // native one away as well would leave that browser with no
+    // picture-in-picture at all, which is a loss rather than a trade.
+    if ("documentPictureInPicture" in window) video.disablePictureInPicture = true;
     videoRef.current = video;
   }
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
@@ -646,10 +660,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * black frame with no idea how long it will last. Polling how much video
    * exists turns that into a real percentage of the lead it needs.
    *
-   * Only while blocked — a playing stream has nothing to report.
+   * It keeps polling once the picture arrives, a great deal slower, because the
+   * call is also this session's heartbeat. The backend kills a live transcode
+   * nobody has asked about — the tuner it holds is real and a closed laptop
+   * sends no goodbye — and segment fetches alone are the wrong thing for it to
+   * listen to: a player paused on live fills its buffer and then asks for
+   * nothing, while being watched in every sense that matters.
    */
   useEffect(() => {
-    if (!isLive || !liveTranscoded || !sessionId || !(waiting || loading)) return;
+    if (!isLive || !liveTranscoded || !sessionId) return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -660,7 +679,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       }
     };
     tick();
-    const id = setInterval(tick, 1000);
+    const id = setInterval(tick, waiting || loading ? 1000 : KEEPALIVE_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [isLive, liveTranscoded, sessionId, waiting, loading]);
 

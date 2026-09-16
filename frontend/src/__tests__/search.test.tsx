@@ -584,7 +584,10 @@ describe("ChannelGrid guide search handoff", () => {
 
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     // Both halves of the airing's key reach the sheet, which is the whole
-    // reason `channel_id` rides along in the target.
-    expect(detail).toHaveBeenCalledWith("chA", "2026-09-27T17:00:00Z");
+    // reason `channel_id` rides along in the target. Awaited, not asserted
+    // outright: the sheet opens first and asks afterwards, so reading the spy
+    // the moment the dialog appears is a race — and one that was lost once.
+    await waitFor(() =>
+      expect(detail).toHaveBeenCalledWith("chA", "2026-09-27T17:00:00Z"));
   });
 });

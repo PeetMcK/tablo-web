@@ -132,6 +132,17 @@ describe("the player's chrome", () => {
     expect(container.querySelector("video")!.disablePictureInPicture).toBe(true);
   });
 
+  it("leaves the native button alone where there is no pop-out to offer", async () => {
+    // Safari implements no Document Picture-in-Picture, so our own button is
+    // gated away there. Opting out of the browser's button as well would leave
+    // that browser with no picture-in-picture at all — a loss, not a trade.
+    delete (window as unknown as Record<string, unknown>).documentPictureInPicture;
+    const { container } = renderLive();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+
+    expect(container.querySelector("video")!.disablePictureInPicture).toBeFalsy();
+  });
+
   it("offers the pop-out between sound and fullscreen", async () => {
     const { container } = renderLive();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
