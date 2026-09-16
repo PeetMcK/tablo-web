@@ -30,6 +30,12 @@ HLS_TIME = 6
 LIVE_DVR_MINUTES = int(os.environ.get("LIVE_DVR_MINUTES", "60"))
 LIVE_DVR_SEGMENTS = max(6, LIVE_DVR_MINUTES * 60 // HLS_TIME)
 
+# What identifies one of our FFmpeg processes from the outside, once the dict
+# that held it is gone. It has to appear in the command line for `pgrep -f` to
+# find it - see the absolute playlist path in `live_ffmpeg_cmd`.
+SWEEP_MARKER = TRANSCODE_DIR.name
+
+
 # Kill any FFmpeg processes left over from a previous run and wipe stale dirs.
 # After a container restart transcode_procs is empty but old FFmpeg processes
 # may still be alive (or their directories still on disk), which exhaust CPU
@@ -37,7 +43,7 @@ LIVE_DVR_SEGMENTS = max(6, LIVE_DVR_MINUTES * 60 // HLS_TIME)
 def _startup_cleanup():
     try:
         import signal
-        result = subprocess.run(["pgrep", "-f", "tablo_transcode"], capture_output=True, text=True)
+        result = subprocess.run(["pgrep", "-f", SWEEP_MARKER], capture_output=True, text=True)
         for pid in result.stdout.split():
             try:
                 import os; os.kill(int(pid), signal.SIGKILL)
@@ -53,6 +59,24 @@ def _startup_cleanup():
             pass
 
 _startup_cleanup()
+
+
+def shutdown_transcoders():
+    """Kill every live transcoder this process started.
+
+    A live transcode holds a tuner on the device for as long as it runs, and
+    these PIDs live nowhere but the dict above. Exiting without this leaves them
+    reparented to init - still pulling segments, still holding the tuner, with
+    nothing left that knows how to stop them. Two were found that way after a
+    restart, 23 and 10 minutes old.
+    """
+    for session_id, proc in list(transcode_procs.items()):
+        try:
+            proc.kill()
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            pass
+        transcode_procs.pop(session_id, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +410,39 @@ async def transcode_status(session_id: str):
 # Start FFmpeg
 # ---------------------------------------------------------------------------
 
+def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
+    """The live transcode command, run with ``cwd`` set to ``session_dir``.
+
+    The playlist is named by its absolute path while everything else stays
+    relative. That is deliberate and load-bearing: the segment URIs written into
+    the playlist are the `-hls_segment_filename` string, so that one must stay
+    relative, but with every argument relative the command line named the
+    transcode directory nowhere at all - and `_startup_cleanup`, which is how a
+    process orphaned by a crash is ever found again, greps for exactly that.
+    """
+    return [
+        "ffmpeg",
+        "-y",
+        "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+        "-i", input_url,
+        # yadif: deinterlace 1080i OTA broadcast so browsers can render video
+        "-vf", "yadif",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-maxrate", "2000k", "-bufsize", "4000k",
+        "-pix_fmt", "yuv420p", "-g", "60",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+        "-f", "hls",
+        "-hls_time", str(HLS_TIME),
+        # Rolling DVR window rather than a minimal live window, so the player can
+        # pause and rewind within it.
+        "-hls_list_size", str(LIVE_DVR_SEGMENTS),
+        "-hls_segment_filename", "%05d.ts",
+        "-hls_flags", "delete_segments+independent_segments",
+        "-loglevel", "info",
+        str(session_dir / "playlist.m3u8"),
+    ]
+
+
 async def start_transcoder(session_id: str, input_url: str):
     # Evict oldest session if at the cap to prevent CPU exhaustion from zombies
     if len(transcode_procs) >= MAX_TRANSCODE_SESSIONS:
@@ -407,27 +464,7 @@ async def start_transcoder(session_id: str, input_url: str):
 
     log_file = session_dir / "ffmpeg.log"
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-        "-i", input_url,
-        # yadif: deinterlace 1080i OTA broadcast so browsers can render video
-        "-vf", "yadif",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-        "-maxrate", "2000k", "-bufsize", "4000k",
-        "-pix_fmt", "yuv420p", "-g", "60",
-        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-        "-f", "hls",
-        "-hls_time", str(HLS_TIME),
-        # Rolling DVR window rather than a minimal live window, so the player can
-        # pause and rewind within it.
-        "-hls_list_size", str(LIVE_DVR_SEGMENTS),
-        "-hls_segment_filename", "%05d.ts",
-        "-hls_flags", "delete_segments+independent_segments",
-        "-loglevel", "info",
-        "playlist.m3u8"
-    ]
+    cmd = live_ffmpeg_cmd(session_dir, input_url)
 
     with open(log_file, "w") as f:
         f.write(f"Starting FFmpeg for session {session_id}\n")

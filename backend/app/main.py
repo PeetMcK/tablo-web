@@ -62,6 +62,9 @@ async def lifespan(app: FastAPI):
     yield
 
     guide_task.cancel()
+    # Before anything that can block: a live transcode holds a tuner on the
+    # device, and one left running after this process goes keeps holding it.
+    stream.shutdown_transcoders()
     await recordings.cache.shutdown()
     await state.http.aclose()
 
