@@ -1,5 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { api } from "../api/tablo";
+import { useTheme, THEME_LABELS } from "../lib/theme";
+import { ThemeControl } from "./ThemeControl";
 
 interface Props {
   email: string | null;
@@ -10,6 +12,8 @@ export function ProfileMenu({ email, onLogout }: Props) {
   const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const themeLabelId = useId();
+  const { theme, resolvedTheme } = useTheme();
 
   useEffect(() => {
     if (!open) return;
@@ -57,26 +61,41 @@ export function ProfileMenu({ email, onLogout }: Props) {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(v => !v)}
-        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-black text-white/70 hover:text-white transition border border-white/10 hover:border-white/20 bg-white/5 hover:bg-white/10"
+        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-black text-fg-secondary hover:text-fg transition border border-border hover:border-border-medium bg-fill-soft hover:bg-fill"
         title="Account"
       >
         {initials}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-11 w-64 rounded-2xl bg-surface-raised border border-white/10 shadow-2xl shadow-black/60 z-50 overflow-hidden">
+        <div className="absolute right-0 top-11 w-64 rounded-2xl bg-surface-raised border border-border shadow-2xl shadow-shade z-50 overflow-hidden">
           {email && (
-            <div className="px-4 py-3 border-b border-white/5">
-              <p className="text-[10px] font-black text-white/30 uppercase tracking-widest mb-0.5">Signed in as</p>
-              <p className="text-sm font-semibold text-white/80 truncate">{email}</p>
+            <div className="px-4 py-3 border-b border-border-subtle">
+              {/* 10px is nowhere near WCAG's "large text" threshold, so these
+                  section labels are body text and need the fg-muted rung -
+                  fg-faint measured 3.70:1 light / 3.63:1 dark on this card. */}
+              <p className="text-[10px] font-black text-fg-muted uppercase tracking-widest mb-0.5">Signed in as</p>
+              <p className="text-sm font-semibold text-fg-secondary truncate">{email}</p>
             </div>
           )}
+
+          <div className="px-4 py-3 border-b border-border-subtle">
+            <p className="text-[10px] font-black text-fg-muted uppercase tracking-widest mb-1.5" id={themeLabelId}>
+              Appearance
+            </p>
+            <ThemeControl labelledBy={themeLabelId} />
+            <p className="mt-1.5 text-[10px] font-medium text-fg-muted">
+              {theme === "system"
+                ? `Following your system · ${THEME_LABELS[resolvedTheme].toLowerCase()}`
+                : `Always ${THEME_LABELS[theme].toLowerCase()}`}
+            </p>
+          </div>
 
           <div className="p-2">
             <button
               onClick={generateDebugReport}
               disabled={generating}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-white/70 hover:text-white hover:bg-white/5 transition text-left disabled:opacity-50 disabled:cursor-wait"
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-fg-secondary hover:text-fg hover:bg-fill-soft transition text-left disabled:opacity-50 disabled:cursor-wait"
             >
               <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -84,11 +103,11 @@ export function ProfileMenu({ email, onLogout }: Props) {
               {generating ? "Generating…" : "Download Debug Report"}
             </button>
 
-            <div className="my-1 border-t border-white/5" />
+            <div className="my-1 border-t border-border-subtle" />
 
             <button
               onClick={() => { setOpen(false); onLogout(); }}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-red-400/80 hover:text-red-400 hover:bg-red-500/10 transition text-left"
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-danger hover:bg-danger-soft transition text-left"
             >
               <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />

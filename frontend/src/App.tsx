@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, setDirectOrigin } from "./api/tablo";
 import { LoginScreen } from "./components/LoginScreen";
 import { ChannelGrid } from "./components/ChannelGrid";
+import { ThemeControl } from "./components/ThemeControl";
 import { hydrateResume, flushResume } from "./lib/resume";
 
 const qc = new QueryClient();
@@ -43,7 +44,13 @@ function Inner() {
 
   if (authed === null) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="relative min-h-screen flex items-center justify-center bg-surface text-fg">
+        {/* Reachable here too: a slow or unreachable device can leave this
+            screen up for a while, and it is signed-out chrome like the login
+            screen, where ProfileMenu's copy of this control does not exist. */}
+        <div className="absolute top-4 right-4">
+          <ThemeControl label="Appearance" compact />
+        </div>
         <div className="w-8 h-8 rounded-full border-2 border-accent border-t-transparent animate-spin" />
       </div>
     );

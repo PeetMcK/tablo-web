@@ -185,17 +185,23 @@ export function ChannelGrid({ onLogout }: Props) {
 
       <div className="min-h-screen flex flex-col bg-surface">
         {/* Header */}
-        <header className="sticky top-0 z-10 glass border-b border-surface-border">
+        {/* `.glass` carries an all-sides border, which is right for the rounded
+            glass buttons but not for a full-bleed sticky header — it drew
+            hairlines down the viewport edges. Zero the other three explicitly:
+            `.glass` is a components-layer rule, so these utilities win. */}
+        <header className="sticky top-0 z-10 glass border-x-0 border-t-0 border-b border-border">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
             {/* Logo */}
             <div className="flex items-center gap-2.5 mr-6">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent/20"
-                   style={{ background: "linear-gradient(135deg, #5b8af5, #7c5bf5)" }}>
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent-glow
+                              bg-gradient-to-br from-brand-from to-brand-to">
+                <svg className="w-4 h-4 text-accent-fg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875C21 4.254 20.496 3.75 19.875 3.75H4.125C3.504 3.75 3 4.254 3 4.875v11.25c0 .621.504 1.125 1.125 1.125z" />
                 </svg>
               </div>
-              <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo</span>
+              {/* No colour class: the wordmark inherits `text-fg` from <body>,
+                  which is white in dark and ink in light. */}
+              <span className="font-black text-lg tracking-tight uppercase italic">Tablo</span>
             </div>
 
             {/* Navigation Tabs */}
@@ -203,21 +209,21 @@ export function ChannelGrid({ onLogout }: Props) {
               <button 
                 onClick={() => setTab("live")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "live" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
+                           ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Live TV
               </button>
               <button 
                 onClick={() => setTab("grid")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "grid" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
+                           ${activeTab === "grid" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Guide
               </button>
               <button 
                 onClick={() => setTab("library")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "library" ? "bg-accent/15 text-accent" : "text-white/40 hover:text-white/60"}`}
+                           ${activeTab === "library" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Library
               </button>
@@ -226,7 +232,7 @@ export function ChannelGrid({ onLogout }: Props) {
             {/* Search — always mounted. Rendering it only on Live TV changed the
                 header height and shifted the page on every tab switch. */}
             <div className={`relative flex-1 max-w-sm ${activeTab === "live" ? "" : "invisible"}`}>
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" aria-hidden />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
               <input
                 type="text"
                 value={filter}
@@ -234,9 +240,9 @@ export function ChannelGrid({ onLogout }: Props) {
                 placeholder="Search programs, channels..."
                 tabIndex={activeTab === "live" ? 0 : -1}
                 aria-hidden={activeTab !== "live"}
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/5
-                           text-sm placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-accent/40
-                           focus:bg-white/10 transition shadow-inner"
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                           text-sm placeholder-fg-disabled focus:outline-none focus:ring-2 focus:ring-accent
+                           focus:bg-fill transition shadow-inner"
               />
             </div>
 
@@ -264,8 +270,8 @@ export function ChannelGrid({ onLogout }: Props) {
                     onClick={() => setContentFilter(f.id)}
                     className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
                       ${contentFilter === f.id
-                        ? "bg-accent text-white shadow-lg shadow-accent/30"
-                        : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
+                        ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
+                        : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
                       }`}
                   >
                     <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
@@ -275,9 +281,9 @@ export function ChannelGrid({ onLogout }: Props) {
               </div>
 
               {isLoading && !channels.length ? (
-                <div className="flex flex-col items-center justify-center py-48 gap-6 bg-white/5 rounded-3xl border border-white/5 shadow-2xl">
+                <div className="flex flex-col items-center justify-center py-48 gap-6 bg-fill-soft rounded-3xl border border-border-subtle shadow-2xl">
                   <div className="w-12 h-12 rounded-full border-4 border-accent border-t-transparent animate-spin" />
-                  <p className="text-white font-black tracking-tighter text-xl uppercase mb-1">Building Your Guide</p>
+                  <p className="text-fg font-black tracking-tighter text-xl uppercase mb-1">Building Your Guide</p>
                 </div>
               ) : (
                 <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
@@ -285,7 +291,7 @@ export function ChannelGrid({ onLogout }: Props) {
                     <ChannelCard key={ch.identifier} channel={ch} now={now} onClick={() => setPlaying(ch)} />
                   ))}
                   {filtered.length === 0 && channels.length > 0 && (
-                    <div className="col-span-full flex flex-col items-center justify-center py-24 text-white/20">
+                    <div className="col-span-full flex flex-col items-center justify-center py-24 text-fg-muted">
                       <Inbox className="w-12 h-12 mb-3" strokeWidth={1.5} aria-hidden />
                       <p className="text-sm font-bold uppercase tracking-widest">Nothing on right now</p>
                     </div>

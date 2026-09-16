@@ -134,7 +134,7 @@ export function GuideGridView({ onPlay }: Props) {
     return (
       <div className="flex flex-col items-center justify-center py-48 gap-4">
         <div className="w-12 h-12 rounded-full border-4 border-accent border-t-transparent animate-spin" />
-        <p className="text-white/40 text-sm font-medium uppercase tracking-widest">Generating Grid...</p>
+        <p className="text-fg-muted text-sm font-medium uppercase tracking-widest">Generating Grid...</p>
       </div>
     );
   }
@@ -149,8 +149,8 @@ export function GuideGridView({ onPlay }: Props) {
           onClick={() => setContentFilter(f.id)}
           className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
             ${contentFilter === f.id
-              ? "bg-accent text-white shadow-lg shadow-accent/30"
-              : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
+              ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
+              : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
             }`}
         >
           <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
@@ -159,17 +159,17 @@ export function GuideGridView({ onPlay }: Props) {
       ))}
     </div>
 
-    <div className="flex flex-col border border-white/5 rounded-3xl overflow-hidden bg-surface-raised shadow-2xl">
+    <div className="flex flex-col border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">
       {/* Time Header */}
-      <div className="flex bg-black/40 border-b border-white/5 sticky top-0 z-20">
-        <div className="w-32 shrink-0 border-r border-white/5 bg-black/20 flex items-center justify-center">
-          <span className="text-[10px] font-black text-white/20 uppercase tracking-widest">Channel</span>
+      <div className="flex bg-recess border-b border-border-subtle sticky top-0 z-20">
+        <div className="w-32 shrink-0 border-r border-border-subtle bg-recess-soft flex items-center justify-center">
+          <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
         </div>
         <div className="flex flex-1 overflow-x-auto no-scrollbar relative"
              ref={registerLane}
              onScroll={e => syncLanes(e.currentTarget)}>
           {hours.map((h, i) => (
-            <div key={i} className="shrink-0 font-mono text-[11px] font-bold text-white/30 flex items-center px-6 border-r border-white/5 h-10"
+            <div key={i} className="shrink-0 font-mono text-[11px] font-bold text-fg-muted flex items-center px-6 border-r border-border-subtle h-10"
                  style={{ width: HOUR_WIDTH }}>
               {h}
             </div>
@@ -177,10 +177,10 @@ export function GuideGridView({ onPlay }: Props) {
           {/* Now marker in header */}
           {nowVisible && (
             <div
-              className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
+              className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
               style={{ left: nowLeft }}
             >
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1 mt-1" />
+              <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
             </div>
           )}
         </div>
@@ -189,13 +189,13 @@ export function GuideGridView({ onPlay }: Props) {
       {/* Grid Rows */}
       <div className="flex flex-col max-h-[70vh] overflow-y-auto overflow-x-hidden">
         {filteredGrid.map((ch) => (
-          <div key={ch.identifier} className="flex border-b border-white/5 hover:bg-white/[0.02] transition">
+          <div key={ch.identifier} className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition">
             {/* Channel Info */}
-            <div className="w-32 shrink-0 p-4 border-r border-white/5 flex flex-col items-center justify-center gap-1.5 bg-black/10">
-              <div className="w-12 h-10 flex items-center justify-center bg-black/30 rounded border border-white/5 p-1">
+            <div className="w-32 shrink-0 p-4 border-r border-border-subtle flex flex-col items-center justify-center gap-1.5 bg-recess-soft">
+              <div className="w-12 h-10 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
                 <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
               </div>
-              <span className="text-[11px] font-bold text-white/60 tabular-nums">
+              <span className="text-[11px] font-bold text-fg-muted tabular-nums">
                 {ch.major > 0 ? `${ch.major}.${ch.minor}` : "FAST"}
               </span>
             </div>
@@ -230,18 +230,18 @@ export function GuideGridView({ onPlay }: Props) {
                   <button
                     key={i}
                     onClick={() => onPlay(ch)}
-                    className="absolute top-2 bottom-2 bg-white/5 hover:bg-white/10 border-l border-white/10 p-3 flex flex-col text-left group transition-colors rounded-sm overflow-hidden"
+                    className="absolute top-2 bottom-2 bg-fill-soft hover:bg-fill border-l border-border p-3 flex flex-col text-left group transition-colors rounded-sm overflow-hidden"
                     style={{ left, width: width - 4 }}
                   >
-                    <p className="text-[11px] font-bold text-white/80 truncate group-hover:text-accent transition-colors">
+                    <p className="text-[11px] font-bold text-fg-secondary truncate group-hover:text-accent-strong transition-colors">
                       {air.title}
                     </p>
-                    <p className="text-[10px] text-white/20 line-clamp-1 mt-0.5">
+                    <p className="text-[10px] text-fg-muted line-clamp-1 mt-0.5">
                       {air.description || "Live TV Event"}
                     </p>
                     {/* Per-airing progress bar */}
                     {isOnNow && (
-                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
+                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-fill-soft">
                         <div className="h-full bg-accent/70" style={{ width: `${progress}%` }} />
                       </div>
                     )}
@@ -252,7 +252,7 @@ export function GuideGridView({ onPlay }: Props) {
               {/* Vertical "now" line across the row */}
               {nowVisible && (
                 <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
+                  className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
                   style={{ left: nowLeft }}
                 />
               )}

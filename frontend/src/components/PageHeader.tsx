@@ -17,14 +17,14 @@ export function PageHeader({ title, subtitle, now }: Props) {
   return (
     <div className="mb-8 flex items-baseline justify-between gap-6">
       <div className="min-w-0">
-        <h1 className="text-3xl font-black tracking-tight text-white mb-2 uppercase italic">{title}</h1>
-        <p className="text-white/30 text-sm font-medium tracking-wide uppercase">{subtitle}</p>
+        <h1 className="text-3xl font-black tracking-tight text-fg mb-2 uppercase italic">{title}</h1>
+        <p className="text-fg-muted text-sm font-medium tracking-wide uppercase">{subtitle}</p>
       </div>
       <div className="text-right shrink-0">
         <p className="text-2xl font-mono text-accent font-bold tabular-nums">
           {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         </p>
-        <p className="text-[10px] text-white/20 font-black tracking-widest uppercase">
+        <p className="text-[10px] text-fg-muted font-black tracking-widest uppercase">
           {date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
         </p>
       </div>

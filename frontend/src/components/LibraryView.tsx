@@ -141,7 +141,7 @@ export function LibraryView() {
     return (
       <div className="flex flex-col items-center justify-center py-48 gap-4">
         <div className="w-12 h-12 rounded-full border-4 border-accent border-t-transparent animate-spin" />
-        <p className="text-white/40 text-sm font-medium uppercase tracking-widest">Accessing Library...</p>
+        <p className="text-fg-muted text-sm font-medium uppercase tracking-widest">Accessing Library...</p>
       </div>
     );
   }
@@ -149,8 +149,8 @@ export function LibraryView() {
   if (isError) {
     return (
       <div className="flex flex-col items-center justify-center py-48 gap-6 text-center">
-        <p className="text-red-400 font-bold">Failed to load recordings</p>
-        <button onClick={() => refetch()} className="px-6 py-2 rounded-xl glass text-sm hover:bg-white/5 transition">
+        <p className="text-danger font-bold">Failed to load recordings</p>
+        <button onClick={() => refetch()} className="px-6 py-2 rounded-xl glass text-sm hover:bg-fill-soft transition">
           Retry
         </button>
       </div>
@@ -177,7 +177,7 @@ export function LibraryView() {
         />
       )}
 
-      <div className="flex items-center gap-4 mb-3 text-[11px] uppercase tracking-widest text-white/30">
+      <div className="flex items-center gap-4 mb-3 text-[11px] uppercase tracking-widest text-fg-muted">
         {truncated && <span>Showing {data!.returned} of {data!.total}</span>}
         {storage && (
           <span>
@@ -191,8 +191,8 @@ export function LibraryView() {
 
       <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
         {recordings.length === 0 ? (
-          <div className="col-span-full py-48 text-center bg-white/5 rounded-3xl border border-white/5">
-            <p className="text-white/20 font-black tracking-widest uppercase">No Recordings Found</p>
+          <div className="col-span-full py-48 text-center bg-fill-soft rounded-3xl border border-border-subtle">
+            <p className="text-fg-muted font-black tracking-widest uppercase">No Recordings Found</p>
           </div>
         ) : (
           recordings.map((rec) => {
@@ -200,33 +200,33 @@ export function LibraryView() {
             return (
               <div
                 key={rec.object_id}
-                className="group flex flex-col bg-surface-raised border border-surface-border rounded-2xl overflow-hidden hover:border-accent/40 transition shadow-lg"
+                className="group flex flex-col bg-surface-raised border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition shadow-lg"
               >
                 <button
                   onClick={() => playable && setPlaying(rec)}
                   disabled={!playable}
-                  className="aspect-video bg-black/40 relative block w-full disabled:cursor-not-allowed"
+                  className="aspect-video bg-surface-sunken relative block w-full disabled:cursor-not-allowed"
                   aria-label={`Play ${rec.title ?? "recording"}`}
                 >
                   {rec.thumbnail ? (
                     <img src={rec.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white/10 uppercase font-black text-xl italic">
+                    <div className="w-full h-full flex items-center justify-center text-tint/10 uppercase font-black text-xl italic">
                       Tablo
                     </div>
                   )}
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition">
+                  <div className="absolute inset-0 flex items-center justify-center bg-scrim-soft opacity-0 group-hover:opacity-100 transition">
                     <div className="w-14 h-14 rounded-full bg-accent/90 flex items-center justify-center">
-                      <Play className="w-6 h-6 text-white ml-0.5" fill="currentColor" aria-hidden />
+                      <Play className="w-6 h-6 text-accent-fg ml-0.5" fill="currentColor" aria-hidden />
                     </div>
                   </div>
                   {rec.pinned ? (
-                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-emerald-600/90 text-[10px] font-bold text-white uppercase tracking-wider">
+                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-success-solid text-[10px] font-bold text-success-fg uppercase tracking-wider">
                       <CheckCircle2 className="w-3 h-3" aria-hidden />
                       {rec.cache_state === "complete" ? "Cached" : `${Math.round(rec.cache_progress * 100)}%`}
                     </div>
                   ) : rec.cache_state === "complete" ? (
-                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-accent/80 text-[10px] font-bold text-white uppercase tracking-wider">
+                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-accent text-[10px] font-bold text-accent-fg uppercase tracking-wider">
                       Ready
                     </div>
                   ) : rec.cache_progress > 0 ? (
@@ -236,19 +236,19 @@ export function LibraryView() {
                     // means the copy is kept and outlives the Tablo deleting
                     // it, and an incidental cache makes no such promise. The
                     // colour carries the distinction now that both say cached.
-                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-black/80 text-[10px] font-bold text-white/70 uppercase tracking-wider tabular-nums"
+                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider tabular-nums"
                          title="Transcoded so far. Keep it offline to fill in the rest.">
                       {Math.max(1, Math.round(rec.cache_progress * 100))}% cached
                     </div>
                   ) : null}
                   {rec.offline_only && (
-                    <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded bg-black/80 text-[10px] font-bold text-white/70 uppercase tracking-wider"
+                    <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider"
                          title="Kept here — the Tablo no longer has this recording">
                       <CloudOff className="w-3 h-3" aria-hidden />
                       Only here
                     </div>
                   )}
-                  <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-black/80 text-[10px] font-bold text-white tabular-nums">
+                  <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg tabular-nums">
                     {formatDuration(rec.duration)}
                   </div>
 
@@ -257,11 +257,11 @@ export function LibraryView() {
                       not only for kept copies, so the bar and the badge above
                       never disagree about whether there is work on disk. */}
                   {rec.cache_state !== "complete" && rec.cache_progress > 0 && (
-                    <div className="absolute inset-x-0 bottom-0 h-1 bg-black/60">
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60">
                       <div
                         className={`h-full transition-[width] duration-1000 ease-linear
-                                    ${!rec.pinned ? "bg-white/30"
-                                      : rec.paused ? "bg-white/40" : "bg-emerald-400"}`}
+                                    ${!rec.pinned ? "bg-media-fg/30"
+                                      : rec.paused ? "bg-media-fg/40" : "bg-success"}`}
                         style={{ width: `${Math.max(1, rec.cache_progress * 100)}%` }}
                       />
                     </div>
@@ -269,15 +269,15 @@ export function LibraryView() {
                 </button>
 
                 <div className="p-5 flex flex-col gap-1">
-                  <h3 className="font-bold text-white truncate leading-tight">{rec.title || "Untitled Recording"}</h3>
+                  <h3 className="font-bold text-fg truncate leading-tight">{rec.title || "Untitled Recording"}</h3>
                   {rec.subtitle && (
-                    <p className="text-xs font-medium text-accent/70 truncate">{rec.subtitle}</p>
+                    <p className="text-xs font-medium text-accent truncate">{rec.subtitle}</p>
                   )}
                   {(rec.channel || rec.scan) && (
                     <div className="mt-1 flex items-center gap-1.5 text-[10px] font-bold
                                     tracking-wide normal-case">
                       {rec.channel && (
-                        <span className="px-1.5 py-0.5 rounded bg-white/5 text-white/45">
+                        <span className="px-1.5 py-0.5 rounded bg-fill-soft text-fg-subtle">
                           {rec.channel.number && `${rec.channel.number} `}
                           {rec.channel.network || rec.channel.call_sign}
                         </span>
@@ -290,8 +290,8 @@ export function LibraryView() {
                         <span
                           className={`px-1.5 py-0.5 rounded ${
                             rec.interlaced
-                              ? "bg-amber-400/10 text-amber-300/80"
-                              : "bg-white/5 text-white/45"
+                              ? "bg-warning-soft text-warning"
+                              : "bg-fill-soft text-fg-subtle"
                           }`}
                           title={
                             rec.interlaced
@@ -304,29 +304,29 @@ export function LibraryView() {
                       )}
                     </div>
                   )}
-                  <p className="text-xs text-white/40 line-clamp-2 leading-relaxed min-h-[2.5rem]">
+                  <p className="text-xs text-fg-muted line-clamp-2 leading-relaxed min-h-[2.5rem]">
                     {rec.description || "No description available"}
                   </p>
                   {rec.pinned && rec.cache_state !== "complete" && (
                     <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-widest">
                       {rec.paused ? (
-                        <span className="text-white/40">Paused</span>
+                        <span className="text-fg-muted">Paused</span>
                       ) : (
-                        <span className="flex items-center gap-1.5 text-emerald-400">
+                        <span className="flex items-center gap-1.5 text-success">
                           <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
                           Downloading
                         </span>
                       )}
                       {/* normal-case: the units carry meaning here, and the
                           line's uppercasing turns "3h 35m" into "3H 35M". */}
-                      <span className="text-white/35 tabular-nums normal-case">
+                      <span className="text-fg-muted tabular-nums normal-case">
                         {Math.round(rec.cache_progress * 100)}% ·{" "}
                         {formatDuration(rec.cached_seconds)} of {formatDuration(rec.duration)}
                         {!rec.paused && rec.rate?.mbps > 0 && (
                           <>
                             {" · "}
                             <span
-                              className="text-emerald-400/70"
+                              className="text-success"
                               title={`${(rec.rate.mbps / 8).toFixed(1)} MB/s`}
                             >
                               {rec.rate.mbps.toFixed(1)} Mb/s
@@ -340,7 +340,7 @@ export function LibraryView() {
 
                   <div className="mt-4 flex items-center justify-between">
                     <span
-                      className="text-[10px] font-black text-white/20 uppercase tracking-widest"
+                      className="text-[10px] font-black text-fg-muted uppercase tracking-widest"
                       title={new Date(rec.start).toLocaleString()}
                     >
                       {formatAired(rec.start)}
@@ -357,8 +357,8 @@ export function LibraryView() {
                           aria-label={rec.paused
                             ? `Resume download of ${rec.title ?? "recording"}`
                             : `Pause download of ${rec.title ?? "recording"}`}
-                          className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
-                                     text-white/50 hover:bg-white/10 hover:text-white transition disabled:opacity-30"
+                          className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
+                                     text-fg-subtle hover:bg-fill hover:text-fg transition disabled:opacity-30"
                         >
                           {rec.paused
                             ? <Download className="w-4 h-4" aria-hidden />
@@ -374,8 +374,8 @@ export function LibraryView() {
                           download
                           title="Save as a single MP4 file"
                           aria-label={`Save ${rec.title ?? "recording"} as an MP4 file`}
-                          className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
-                                     text-white/50 hover:bg-white/10 hover:text-white transition"
+                          className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
+                                     text-fg-subtle hover:bg-fill hover:text-fg transition"
                         >
                           <FileDown className="w-4 h-4" aria-hidden />
                         </a>
@@ -394,8 +394,8 @@ export function LibraryView() {
                           disabled={control.isPending}
                           title="Delete downloaded copy"
                           aria-label={`Delete downloaded copy of ${rec.title ?? "recording"}`}
-                          className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center
-                                     text-white/40 hover:bg-red-500/20 hover:text-red-300 transition disabled:opacity-30"
+                          className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
+                                     text-fg-faint hover:bg-danger-soft hover:text-danger transition disabled:opacity-30"
                         >
                           <Trash2 className="w-4 h-4" aria-hidden />
                         </button>
@@ -421,8 +421,8 @@ export function LibraryView() {
                         aria-label={rec.pinned ? `Stop keeping ${rec.title ?? "recording"}` : `Keep ${rec.title ?? "recording"} offline`}
                         className={`w-8 h-8 rounded-full flex items-center justify-center transition disabled:opacity-30
                           ${rec.pinned
-                            ? "bg-emerald-600/25 text-emerald-300 hover:bg-emerald-600/40"
-                            : "bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/70"}`}
+                            ? "bg-success-soft text-success hover:bg-success-soft-strong"
+                            : "bg-fill-soft text-fg-faint hover:bg-fill hover:text-fg-secondary"}`}
                       >
                         {keep.isPending && keep.variables?.id === rec.object_id
                           ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
@@ -433,7 +433,7 @@ export function LibraryView() {
                       <button
                         onClick={() => playable && setPlaying(rec)}
                         disabled={!playable}
-                        className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center hover:bg-accent hover:text-white transition text-white/40 disabled:opacity-30 disabled:hover:bg-white/5"
+                        className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center hover:bg-accent hover:text-accent-fg transition text-fg-faint disabled:opacity-30 disabled:hover:bg-fill-soft"
                         aria-label={`Play ${rec.title ?? "recording"}`}
                       >
                         <Play className="w-4 h-4" fill="currentColor" aria-hidden />
