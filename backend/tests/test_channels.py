@@ -179,3 +179,48 @@ def test_the_guide_rebuild_asks_the_device_for_a_fresh_channel_list():
     for method in (AppState.get_grid_guide, AppState.stream_grid_guide_data):
         src = inspect.getsource(method)
         assert "self.channels(refresh=True)" in src, f"{method.__name__} must force a refresh"
+
+
+def test_the_airing_mapping_keeps_the_episode_fields():
+    """These arrive in a record we already fetch and already parse.
+
+    Capturing them costs no extra device request - the previous mapping kept
+    six fields out of the record and dropped the episode object entirely.
+    """
+    from app.state import AppState
+
+    raw = {
+        "path": "/guide/series/episodes/67388",
+        "series_path": "/guide/series/6472",
+        "episode": {"title": "Rags to Riches", "number": 10,
+                    "season_number": 12, "orig_air_date": "2026-09-16",
+                    "description": "Mapping the roots of Kate Burton."},
+        "airing_details": {"datetime": "2026-09-16T08:00Z", "duration": 3600,
+                           "channel_path": "/guide/channels/1", "genres": [],
+                           "show_title": "Finding Your Roots", "event_type": None},
+        "schedule": {"state": "none", "qualifier": "none", "skip_reason": "none"},
+        "series": {},
+    }
+
+    got = AppState._airing_row(raw)
+
+    assert got["title"] == "Finding Your Roots"
+    assert got["episode_title"] == "Rags to Riches"
+    assert got["season_number"] == 12
+    assert got["episode_number"] == 10
+    assert got["airing_path"] == "/guide/series/episodes/67388"
+    assert got["series_path"] == "/guide/series/6472"
+    assert got["schedule_state"] == "none"
+
+
+def test_the_airing_mapping_tolerates_a_bare_record():
+    """Most airings carry no episode object at all."""
+    from app.state import AppState
+
+    got = AppState._airing_row({
+        "airing_details": {"datetime": "2026-09-16T08:00Z", "duration": 3600,
+                           "show_title": "Bare", "channel_path": "/guide/channels/1"},
+    })
+    assert got["title"] == "Bare"
+    assert got["episode_title"] is None
+    assert got["season_number"] is None

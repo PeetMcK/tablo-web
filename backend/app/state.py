@@ -743,6 +743,43 @@ class AppState:
         ad = data.get("airing_details") or {}
         return path, int(vd.get("duration") or ad.get("duration") or 0)
 
+    @staticmethod
+    def _airing_row(a: dict) -> dict:
+        """One guide airing, as the mirror stores it.
+
+        Extracted from the loop in `_build_grid_enrichment` so it can be tested
+        without a device, and widened: the record carries an `episode` object
+        and a `schedule` block that the previous six-field mapping discarded.
+        Both arrive in a response already being fetched, so keeping them costs
+        nothing.
+
+        `airing_path` is the PATCH target for recording management (see
+        docs/tablo-device-api.md). It is captured now so that work needs no
+        migration and no re-sync.
+        """
+        ad = a.get("airing_details") or {}
+        ep = a.get("episode") or {}
+        sched = a.get("schedule") or {}
+        return {
+            "title": ad.get("show_title"),
+            "description": ep.get("description") or (a.get("series") or {}).get("description"),
+            "start": ad.get("datetime"),
+            "duration": ad.get("duration"),
+            "genres": ad.get("genres") or [],
+            "kind": ad.get("event_type"),
+            # Displayed by the show sheet.
+            "episode_title": ep.get("title"),
+            "season_number": ep.get("season_number"),
+            "episode_number": ep.get("number"),
+            "orig_air_date": ep.get("orig_air_date"),
+            "series_path": a.get("series_path"),
+            # Captured, not yet exposed - see docs/tablo-device-api.md.
+            "airing_path": a.get("path"),
+            "schedule_state": sched.get("state"),
+            "schedule_qualifier": sched.get("qualifier"),
+            "skip_reason": sched.get("skip_reason"),
+        }
+
     async def _build_grid_enrichment(self, max_airings: int = 1000, concurrency: int = 30) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
@@ -824,18 +861,10 @@ class AppState:
         for a in airing_details:
             if not a or "airing_details" not in a:
                 continue
-            ad = a["airing_details"]
-            c_path = ad.get("channel_path")
+            c_path = (a["airing_details"] or {}).get("channel_path")
             if not c_path:
                 continue
-            channel_to_airings.setdefault(c_path, []).append({
-                "title": ad.get("show_title"),
-                "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
-                "start": ad.get("datetime"),
-                "duration": ad.get("duration"),
-                "genres": ad.get("genres") or [],
-                "kind": ad.get("event_type"),
-            })
+            channel_to_airings.setdefault(c_path, []).append(AppState._airing_row(a))
 
         result = logo_map, path_to_ident, channel_to_airings, cloud_airing_map_local
         if use_cache:
