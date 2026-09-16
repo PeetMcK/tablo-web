@@ -233,11 +233,44 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   }, [grid, startTime]);
 
   /**
-   * One heading per hour, carrying the day when it changes.
+   * The hour columns grouped into the calendar days they fall in.
    *
    * A guide running past midnight shows "12:00 AM" twice over, and the time
-   * alone cannot say which night it belongs to — so the first column of each
-   * day is labelled with the date and marked off.
+   * alone cannot say which night it belongs to. The day used to be printed in
+   * the first hour column of each day, which said it once and then scrolled
+   * away — leaving most of the guide showing times that named no day at all.
+   * A band per day says it for as long as that day is on screen.
+   *
+   * The first and last bands are usually partial: the guide starts at the top
+   * of the current hour, not at midnight, so `hours` is what each band is
+   * measured in rather than a flat 24.
+   */
+  const days = useMemo(() => {
+    const out: { key: string; label: string; hours: number }[] = [];
+    for (let i = 0; i < totalHours; i++) {
+      const d = new Date(startTime + i * 3600_000);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const last = out[out.length - 1];
+      if (last && last.key === key) {
+        last.hours += 1;
+      } else {
+        out.push({
+          key,
+          label: d.toLocaleDateString([], {
+            weekday: "long", month: "long", day: "numeric",
+          }),
+          hours: 1,
+        });
+      }
+    }
+    return out;
+  }, [totalHours, startTime]);
+
+  /**
+   * One heading per hour, marked where a new day begins.
+   *
+   * The date itself lives in the band above (`days`); what stays here is the
+   * boundary, so the transition is still visible among the times.
    */
   const hours = useMemo(() => Array.from({ length: totalHours }, (_, i) => {
     const d = new Date(startTime + i * 3600_000);
@@ -245,9 +278,6 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     const startsDay = prev === null || d.getDate() !== prev.getDate();
     return {
       time: d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-      day: startsDay
-        ? d.toLocaleDateString([], { weekday: "short", month: "numeric", day: "numeric" })
-        : null,
       startsDay,
     };
   }), [totalHours, startTime]);
@@ -433,43 +463,73 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           through. The frozen row and the frozen column share `surface-sunken`,
           which is the token for exactly this and reads within a point or two of
           what the wash composited to. */}
-      <div ref={headerRef} className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30 relative">
-        <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-10">
-          <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
+      <div ref={headerRef} className="bg-surface-sunken border-b border-border-subtle sticky top-0 z-30">
+        {/* Day band. One per calendar day, spanning exactly that day's hours,
+            so the boundary you scroll across is the real one. */}
+        <div className="flex border-b border-border-subtle">
+          <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken sticky left-0 z-10" />
+          <div className="flex">
+            {days.map((d, i) => (
+              <div
+                key={d.key}
+                className={`shrink-0 h-7 flex items-center overflow-hidden
+                            ${i > 0 ? "border-l border-border-medium" : ""}`}
+                style={{ width: d.hours * HOUR_WIDTH }}
+              >
+                {/* Sticky at the width of the frozen column, so the date stays
+                    read-able for as long as any part of its day is on screen
+                    rather than only at that day's first hour. Sticky is
+                    constrained by its own band, so the label stops at the
+                    boundary instead of sliding over the next day. */}
+                <span
+                  className="sticky px-6 whitespace-nowrap text-[11px] font-bold tracking-wide text-accent"
+                  style={{ left: CHANNEL_W }}
+                >
+                  {d.label}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
+
         <div className="flex relative">
-          {hours.map((h, i) => (
-            <div
-              key={i}
-              /* The day-boundary column is the stronger of the two: a heavier
-                 border and a heavier text rung. Both rungs still have to carry
-                 11px type, so the pair is fg-secondary / fg-muted rather than
-                 the old white/50 and white/30 — white/30 has no token because
-                 nothing that faint may hold text. */
-              className={`shrink-0 font-mono text-[11px] font-bold flex items-center gap-2 px-6 h-10
-                          ${h.startsDay
-                            ? "border-l border-border-medium text-fg-secondary"
-                            : "border-r border-border-subtle text-fg-muted"}`}
-              style={{ width: HOUR_WIDTH }}
-            >
-              {/* The date leads the first column of each day; a stronger left
-                  border makes the boundary visible while scrolling past it.
-                  Full-strength accent, not accent/70: the faded form lands near
-                  3.3:1 on this strip, where the solid token holds ~6:1. */}
-              {h.day && <span className="text-accent">{h.day}</span>}
-              <span>{h.time}</span>
-            </div>
-          ))}
-          {/* Now marker in header */}
-          {nowVisible && (
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
-              style={{ left: nowLeft }}
-            >
-              <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
-            </div>
-          )}
+          <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-10">
+            <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
+          </div>
+          <div className="flex">
+            {hours.map((h, i) => (
+              <div
+                key={i}
+                /* The day-boundary column is the stronger of the two: a heavier
+                   border and a heavier text rung. Both rungs still have to carry
+                   11px type, so the pair is fg-secondary / fg-muted rather than
+                   the old white/50 and white/30 — white/30 has no token because
+                   nothing that faint may hold text. */
+                className={`shrink-0 font-mono text-[11px] font-bold flex items-center gap-2 px-6 h-10
+                            ${h.startsDay
+                              ? "border-l border-border-medium text-fg-secondary"
+                              : "border-r border-border-subtle text-fg-muted"}`}
+                style={{ width: HOUR_WIDTH }}
+              >
+                <span>{h.time}</span>
+              </div>
+            ))}
+          </div>
         </div>
+
+        {/* Now marker, spanning both rows of the header rather than only the
+            hours: the band above is part of the same strip, and a line that
+            stopped short of it would read as two separate markers. Offset by
+            the frozen column because it is positioned against the header as a
+            whole now, in the same surface coordinates the body's line uses. */}
+        {nowVisible && (
+          <div
+            className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
+            style={{ left: CHANNEL_W + nowLeft }}
+          >
+            <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
+          </div>
+        )}
       </div>
 
       {/* Grid Rows */}

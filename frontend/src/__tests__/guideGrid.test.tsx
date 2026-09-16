@@ -93,11 +93,42 @@ describe("GuideGridView timeline extent", () => {
     render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    const tomorrow = new Date();
-    tomorrow.setMinutes(0, 0, 0);
+    const long = (d: Date) =>
+      d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+    const today = new Date();
+    today.setMinutes(0, 0, 0);
+    const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const label = tomorrow.toLocaleDateString([], { weekday: "short", month: "numeric", day: "numeric" });
-    expect(await screen.findByText(label)).toBeInTheDocument();
+
+    // Both days are named, not only the one the guide opens on: the date is a
+    // band per day rather than a label on that day's first hour column.
+    expect(await screen.findByText(long(today))).toBeInTheDocument();
+    expect(await screen.findByText(long(tomorrow))).toBeInTheDocument();
+  });
+
+  it("sizes each day's band to the hours that day actually has", async () => {
+    // The first band is a part-day — the guide opens at the top of the current
+    // hour, not at midnight — so a flat 24 would put every later date under
+    // the wrong columns. 30 hours from an evening start crosses one midnight.
+    const evening = new Date();
+    evening.setHours(20, 0, 0, 0);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(evening);
+    try {
+      mockStream(longChannel(30));
+      render(<GuideGridView onPlay={() => {}} />);
+      await screen.findByText("Hour 0");
+
+      const today = new Date();
+      const label = today.toLocaleDateString([], {
+        weekday: "long", month: "long", day: "numeric",
+      });
+      // 8 PM to midnight is four hours, at 400px each.
+      const band = (await screen.findByText(label)).parentElement!;
+      expect(band.style.width).toBe(`${4 * 400}px`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives every channel the same extent as the clock", async () => {
