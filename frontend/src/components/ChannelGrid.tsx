@@ -407,17 +407,21 @@ export function ChannelGrid({ onLogout }: Props) {
             belongs above every page layer; the player (z-50) and confirm dialog
             (z-60) are still above it, which is right — both are modal. */}
         <header className="sticky top-0 z-40 bg-surface border-b border-border">
-          {/* `gap-1`, the same 4px the tab pills keep between themselves, so
-              the mark reads as the first item in that run rather than a
-              separate block sat off to the left. Nothing downstream goes
+          {/* `gap-1` so the mark reads as the first item in the tab run rather
+              than a separate block sat off to the left. Nothing downstream goes
               short of air: the nav's `mr-auto` opens the whole remaining gap
               before the search field, and the clock brings its own `ml-4`. */}
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-1">
             {/* The mark is also the settings menu — see AppMenu for why. */}
             <AppMenu email={userEmail} onLogout={onLogout} />
 
-            {/* Navigation Tabs */}
-            <nav className="flex items-center gap-1 mr-auto">
+            {/* Navigation Tabs.
+                `ml-4` is measured against the letterforms, not the boxes. Two
+                tab labels sit 36px apart — 16px of pill padding, the 4px gap,
+                16px more padding — but a pill's padding only counts once
+                against the mark, so the flex gap alone left "Live" 20px off it
+                and the mark looked glued on. 16 + 4 + 16 either side. */}
+            <nav className="flex items-center gap-1 mr-auto ml-4">
               <button
                 onClick={() => goToTab("live")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
