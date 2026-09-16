@@ -504,3 +504,136 @@ describe("revealing an airing the search found", () => {
     Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
   });
 });
+
+describe("dragging the guide", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** jsdom has no pointer capture; the component asks for it unconditionally. */
+  function stubCapture() {
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+  }
+
+  /**
+   * Drag from `target`, `moves` steps of (dx, dy).
+   *
+   * Pointer events carry a `button` and a `pointerType`; the component checks
+   * both, and jsdom supplies neither by default.
+   */
+  function drag(
+    target: HTMLElement,
+    opts: { dx?: number; dy?: number; moves?: number },
+  ) {
+    const { dx = 0, dy = 0, moves = 6 } = opts;
+    let x = 400;
+    let y = 300;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+    fireEvent.pointerDown(target, { ...common, clientX: x, clientY: y });
+    for (let i = 0; i < moves; i++) {
+      x += dx;
+      y += dy;
+      fireEvent.pointerMove(target, { ...common, clientX: x, clientY: y });
+    }
+    fireEvent.pointerUp(target, { ...common, clientX: x, clientY: y });
+  }
+
+  function parts(container: HTMLElement) {
+    const sc = scroller(container);
+    const header = container.querySelector<HTMLElement>("[data-guide-header]")!;
+    return {
+      sc,
+      header,
+      dayBand: container.querySelector<HTMLElement>("[data-day-band]")!,
+      hourRow: header.querySelector<HTMLElement>(".relative")!,
+    };
+  }
+
+  it("gears the date band above the hour row", async () => {
+    // A band is a day, so a throw across it covers days; the hours stay
+    // one-to-one for nudging around an evening.
+    stubCapture();
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+    const { sc, dayBand, hourRow } = parts(container);
+
+    sc.scrollLeft = 4000;
+    drag(hourRow, { dx: -20, moves: 6 });
+    const byHours = sc.scrollLeft - 4000;
+
+    sc.scrollLeft = 4000;
+    drag(dayBand, { dx: -20, moves: 6 });
+    const byDate = sc.scrollLeft - 4000;
+
+    expect(byHours).toBe(120);
+    expect(byDate).toBe(120 * 4);
+  });
+
+  it("locks a drag to the axis it committed to", async () => {
+    // A sloppy sideways drag must not drift the channel rows with it.
+    stubCapture();
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+    const { sc } = parts(container);
+    const surface = sc.firstElementChild as HTMLElement;
+
+    sc.scrollLeft = 2000;
+    sc.scrollTop = 200;
+    drag(surface, { dx: -20, dy: -6, moves: 6 });
+    expect(sc.scrollLeft - 2000).toBe(120);
+    expect(sc.scrollTop).toBe(200);
+
+    sc.scrollLeft = 2000;
+    sc.scrollTop = 200;
+    drag(surface, { dx: -6, dy: -20, moves: 6 });
+    expect(sc.scrollLeft).toBe(2000);
+    expect(sc.scrollTop - 200).toBe(120);
+  });
+
+  it("opens a programme on a click but not at the end of a drag", async () => {
+    // The whole reason the threshold exists: the listings are both the thing
+    // you grab and the thing you click.
+    stubCapture();
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "Hour 3", episode_title: null, season_number: null,
+      episode_number: null, description: "filler", start: "2026-09-16T08:00Z",
+      duration: 3600, orig_air_date: null, genres: [], rating: null,
+      image_url: null, airing_now: false,
+      channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
+                 network: "CBS", logo_url: null, kind: "ota" },
+    });
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    const cell = await screen.findByText("Hour 3");
+    const chip = cell.closest("button")!;
+    const { sc } = parts(container);
+    sc.scrollLeft = 2000;
+
+    // Panned across it: the guide moves and the sheet stays shut.
+    drag(chip, { dx: -20, moves: 6 });
+    fireEvent.click(chip);
+    expect(sc.scrollLeft).not.toBe(2000);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // Pressed and released without travelling: that is a click.
+    drag(chip, { dx: 0, moves: 0 });
+    fireEvent.click(chip);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("ignores a touch, which already pans the guide natively", async () => {
+    stubCapture();
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+    const { sc, hourRow } = parts(container);
+
+    sc.scrollLeft = 1000;
+    fireEvent.pointerDown(hourRow, { pointerId: 2, pointerType: "touch", button: 0, clientX: 400, clientY: 300 });
+    fireEvent.pointerMove(hourRow, { pointerId: 2, pointerType: "touch", button: 0, clientX: 200, clientY: 300 });
+    fireEvent.pointerUp(hourRow, { pointerId: 2, pointerType: "touch", button: 0, clientX: 200, clientY: 300 });
+    expect(sc.scrollLeft).toBe(1000);
+  });
+});

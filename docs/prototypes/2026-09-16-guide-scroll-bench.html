@@ -1,0 +1,1056 @@
+<title>Guide Scroll Bench</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;700;900&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground:      #f4f6f9;
+    --surface:     #ffffff;
+    --sunken:      #e9edf3;
+    --raised:      #ffffff;
+    --cell:        #eef1f6;
+    --line:        #d3dae4;
+    --line-strong: #adb8c7;
+    --fg:          #161c26;
+    --fg-2:        #3d4756;
+    --fg-mute:     #6b7688;
+    --fg-faint:    #99a3b3;
+    --accent:      #2f6fa8;
+    --accent-soft: #e2edf7;
+    --now:         #d43a3f;
+    --good:        #3f7d51;
+    --shadow:      0 1px 2px rgba(22,28,38,.06), 0 8px 24px rgba(22,28,38,.06);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #10141b;
+      --surface:     #161c25;
+      --sunken:      #1b222d;
+      --raised:      #161c25;
+      --cell:        #202834;
+      --line:        #2a3340;
+      --line-strong: #3c4857;
+      --fg:          #e7ecf3;
+      --fg-2:        #c2cbd8;
+      --fg-mute:     #8a94a6;
+      --fg-faint:    #667082;
+      --accent:      #5d9fd8;
+      --accent-soft: #1d2b3a;
+      --now:         #e5484d;
+      --good:        #5bbd76;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:      #10141b;
+    --surface:     #161c25;
+    --sunken:      #1b222d;
+    --raised:      #161c25;
+    --cell:        #202834;
+    --line:        #2a3340;
+    --line-strong: #3c4857;
+    --fg:          #e7ecf3;
+    --fg-2:        #c2cbd8;
+    --fg-mute:     #8a94a6;
+    --fg-faint:    #667082;
+    --accent:      #5d9fd8;
+    --accent-soft: #1d2b3a;
+    --now:         #e5484d;
+    --good:        #5bbd76;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--fg);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--fg-mute);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: Chivo, ui-sans-serif, system-ui, sans-serif;
+    font-weight: 900;
+    font-size: clamp(30px, 5vw, 44px);
+    line-height: 1.05;
+    letter-spacing: -.02em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .masthead { display: flex; flex-direction: column; gap: 16px; }
+  .standfirst { max-width: 64ch; margin: 0; color: var(--fg-2); font-size: 17px; }
+
+  .facts { display: flex; flex-wrap: wrap; gap: 10px; }
+  .fact {
+    display: flex; align-items: baseline; gap: 8px;
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: 7px 11px; background: var(--surface);
+  }
+  .fact b {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px; font-weight: 600; color: var(--fg);
+  }
+  .fact span { font-size: 12px; color: var(--fg-mute); }
+
+  /* ---- bench ------------------------------------------------------- */
+
+  .bench { display: flex; flex-direction: column; gap: 14px; }
+  .bench-head { display: flex; flex-direction: column; gap: 6px; }
+  .bench-title { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .bench-title h2 {
+    font-family: Chivo, ui-sans-serif, system-ui, sans-serif;
+    font-weight: 700; font-size: 21px; letter-spacing: -.01em; margin: 0;
+  }
+
+  .tag {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10px; font-weight: 600; letter-spacing: .1em;
+    text-transform: uppercase; padding: 3px 8px; border-radius: 2px;
+    white-space: nowrap;
+  }
+  .tag.shipped  { color: var(--good);   background: color-mix(in srgb, var(--good) 15%, transparent); }
+  .tag.proposal { color: var(--accent); background: var(--accent-soft); }
+
+  .mech { margin: 0; max-width: 72ch; color: var(--fg-2); font-size: 14.5px; }
+  .mech code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .88em; background: var(--sunken); padding: 1px 5px; border-radius: 2px;
+  }
+
+  /* ---- guide ------------------------------------------------------- */
+
+  .guide-frame {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--raised);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .scroller {
+    overflow: auto;
+    max-height: 252px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scroller::-webkit-scrollbar { width: 0; height: 0; }
+  .scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  /* the shipped treatment: time axis keeps a bar, channel axis stays bare */
+  .scroller.timebar { scrollbar-width: thin; }
+  .scroller.timebar::-webkit-scrollbar       { height: 10px; width: 0; }
+  .scroller.timebar::-webkit-scrollbar-track { background: var(--sunken); }
+  .scroller.timebar::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+  .scroller.timebar::-webkit-scrollbar-thumb:hover { background: var(--fg-mute); background-clip: padding-box; }
+
+  .surface { position: relative; }
+
+  .ghead {
+    display: flex; position: sticky; top: 0; z-index: 30;
+    background: var(--sunken); border-bottom: 1px solid var(--line);
+  }
+  .corner {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+    position: sticky; left: 0; z-index: 20;
+    background: var(--sunken); border-right: 1px solid var(--line);
+  }
+  .corner span {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 9px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--fg-mute);
+  }
+  .ghead-stack { display: flex; flex-direction: column; }
+
+  .dayband { display: flex; border-bottom: 1px solid var(--line); }
+  .day { flex: 0 0 auto; height: 24px; display: flex; align-items: center; }
+  .day + .day { border-left: 1px solid var(--line-strong); }
+  .day b {
+    position: sticky; padding-inline: 14px; white-space: nowrap;
+    font-size: 11px; font-weight: 600; color: var(--accent);
+  }
+
+  .hourrow { display: flex; position: relative; }
+  .hour {
+    flex: 0 0 auto; height: 32px; display: flex; align-items: center;
+    padding-inline: 14px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; font-weight: 600; color: var(--fg-mute);
+    border-right: 1px solid var(--line);
+  }
+  .hour.dayfirst { border-left: 1px solid var(--line-strong); border-right: 0; color: var(--fg-2); }
+
+  .grow { display: flex; }
+  .grow + .grow { border-top: 1px solid var(--line); }
+  .chcell {
+    flex: 0 0 auto; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px;
+    position: sticky; left: 0; z-index: 20;
+    background: var(--sunken); border-right: 1px solid var(--line);
+  }
+  .chcell b {
+    font-family: Chivo, ui-sans-serif, sans-serif;
+    font-size: 11px; font-weight: 700; color: var(--fg-2);
+  }
+  .chcell span {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; font-weight: 600; color: var(--fg-mute);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .lane { flex: 0 0 auto; position: relative; }
+  .air {
+    position: absolute; top: 4px; bottom: 4px;
+    background: var(--cell); border-left: 1px solid var(--line);
+    border-radius: 2px; padding: 6px 9px; overflow: hidden;
+  }
+  .air b {
+    display: block; font-size: 11.5px; font-weight: 600; color: var(--fg-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .air span {
+    display: block; font-size: 10.5px; color: var(--fg-faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  .nowline {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: var(--now); z-index: 10; pointer-events: none;
+  }
+  .nowline i {
+    display: block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--now); margin-left: -3.5px;
+  }
+
+  /* ---- header rails ------------------------------------------------ */
+  /* Pinned to the frame at the header's own height, so they sit in the strip
+     rather than over the listings. The left rail starts where the timeline
+     starts, not where the frame does: the frozen channel column is not its
+     to cover. */
+
+  .rail {
+    position: absolute;
+    top: 0;
+    z-index: 40;
+    width: 22px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-inline: 1px solid var(--line);
+    background: var(--sunken);
+    color: var(--fg-mute);
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease;
+  }
+  .rail:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+  .rail:active:not(:disabled) { background: var(--accent); color: var(--surface); }
+  .rail:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .rail:disabled { color: var(--fg-faint); opacity: .45; cursor: default; }
+  .rail.next { right: 0; border-right: 0; }
+
+  /* the hover-only variant: present but silent until the pointer is in the
+     guide, so the resting grid is exactly what ships today */
+  .quiet .rail { opacity: 0; transition: opacity .14s ease, background .12s ease, color .12s ease; }
+  .quiet:hover .rail,
+  .quiet:focus-within .rail { opacity: 1; }
+  .quiet .rail:disabled { opacity: 0; }
+  .quiet:hover .rail:disabled,
+  .quiet:focus-within .rail:disabled { opacity: .3; }
+
+  /* The header strip as a grab handle. `user-select` off because a drag
+     across text otherwise selects the hour labels instead of moving them. */
+  .ghead.draggable {
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .ghead.dragging { cursor: grabbing; }
+
+  /* On the geared strip the two rows do different jobs, so they stop
+     looking like one surface on hover. */
+  .geared .dayband { cursor: grab; }
+  .geared .hourrow { cursor: grab; }
+  .geared.dragging .dayband,
+  .geared.dragging .hourrow { cursor: grabbing; }
+  .geared .dayband:hover,
+  .geared .hourrow:hover { background: var(--accent-soft); }
+
+  /* Listings you can take hold of. The chips still open on a click, so the
+     cursor stays a grab rather than a pointer only while a drag is live. */
+  .grabbable .lane { cursor: grab; }
+  .grabbable.panning .lane,
+  .grabbable.panning .air { cursor: grabbing; }
+  .grabbable.panning { user-select: none; -webkit-user-select: none; }
+
+  /* Stand-in for the show sheet, so a click can be seen to still work. */
+  .peek {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    max-width: calc(100% - 24px);
+    padding: 10px 12px 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .peek div { min-width: 0; }
+  .peek b {
+    display: block; font-size: 13px; font-weight: 600; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .peek span {
+    display: block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px; color: var(--fg-mute);
+  }
+  .peek button {
+    flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
+    border: 1px solid var(--line); border-radius: 3px;
+    background: var(--sunken); color: var(--fg-mute);
+    font-size: 13px; line-height: 1; cursor: pointer;
+  }
+  .peek button:hover { color: var(--fg); border-color: var(--line-strong); }
+  .peek button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---- readout ----------------------------------------------------- */
+
+  .readout {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px; color: var(--fg-mute);
+  }
+  .readout b { color: var(--fg-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .readout .hint { color: var(--fg-faint); margin-left: auto; }
+  @media (max-width: 620px) { .readout .hint { margin-left: 0; } }
+
+  /* ---- ruled out --------------------------------------------------- */
+
+  .ruled {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .ruled > div { background: var(--surface); padding: 16px 18px; }
+  .ruled h3 {
+    font-family: Chivo, sans-serif; font-size: 15px; font-weight: 700;
+    margin: 0 0 6px;
+  }
+  .ruled p { margin: 0; font-size: 13.5px; color: var(--fg-2); }
+  .ruled .why {
+    display: block; margin-top: 8px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--now);
+  }
+
+  h2.section {
+    font-family: Chivo, sans-serif; font-weight: 700; font-size: 21px;
+    margin: 0 0 12px; letter-spacing: -.01em;
+  }
+
+  footer.note {
+    border-top: 1px solid var(--line); padding-top: 20px;
+    color: var(--fg-mute); font-size: 13px; max-width: 72ch;
+  }
+  footer.note b { color: var(--fg-2); }
+  footer.note p + p { margin-bottom: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">tablo-web &middot; guide grid</p>
+    <h1>Moving the guide without a horizontal wheel</h1>
+    <p class="standfirst">
+      The time scrollbar is in and deployed. What is still open is whether the
+      guide also wants a nudge control, and where it would live &mdash; so the
+      chevrons are back, rebuilt as rails inside the header strip rather than
+      buttons floating over the listings.
+    </p>
+    <div class="facts" id="facts"></div>
+  </header>
+
+  <section class="bench" data-variant="timebar">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Time scrollbar</h2>
+        <span class="tag shipped">shipped</span>
+      </div>
+      <p class="mech">
+        The horizontal bar is back under the listings; the vertical one stays
+        hidden. A plain wheel still only moves channels, but now there is
+        something to drag, and the bar's thumb is the first thing the guide has
+        ever shown about how much of a fortnight sits off to the right.
+        Firefox gets a thin bar on both axes &mdash; <code>scrollbar-width</code>
+        takes no axis argument.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section class="bench" data-variant="rails">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Header rails</h2>
+        <span class="tag proposal">mockup</span>
+      </div>
+      <p class="mech">
+        Chevrons as thin rails in the header strip, the full height of the date
+        and hour rows. The left rail begins where the timeline begins &mdash;
+        the frozen channel column is not its to cover &mdash; and the right one
+        sits against the frame edge. They page by a screenful less an hour, and
+        grey out at the ends of the guide. Nothing overlaps a programme, and the
+        listings keep every pixel they have.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section class="bench" data-variant="rails-geared">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Two-speed strip</h2>
+        <span class="tag proposal">mockup</span>
+      </div>
+      <p class="mech">
+        The same rails and the same drag, geared to the row you grabbed. The
+        hour row moves the guide one-for-one, for nudging around an evening.
+        The date band moves it four times as far, because a band <em>is</em> a
+        day &mdash; a throw across it should cover days. The cost is honest:
+        geared, the listings no longer track your pointer, so the date band
+        slides faster than the hand holding it.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section class="bench" data-variant="geared-bare">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Two-speed strip, no rails</h2>
+        <span class="tag proposal">mockup</span>
+      </div>
+      <p class="mech">
+        The gearing on its own: grab the hours to nudge, grab the date to cover
+        days, and nothing is added to the guide at all. This one also keeps the
+        scrollbar that shipped, because that is the pairing a release would
+        actually make &mdash; a bar for the person who never thinks to drag a
+        header, and the strip for the person who does. The whole case against
+        it is that second person has to discover it unaided.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section class="bench" data-variant="grab-body">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Grab the listings too</h2>
+        <span class="tag proposal">mockup</span>
+      </div>
+      <p class="mech">
+        The two-speed strip, plus the listings themselves as a drag surface at
+        one-to-one in both directions, with the same throw. A programme still
+        opens on a click &mdash; what separates the two is four pixels of
+        travel: move less than that and it is a click, more and it is a pan and
+        the chip does not open. Click one to see the stand-in sheet; then drag
+        from the middle of a chip and watch it stay shut.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section class="bench" data-variant="grab-locked">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Grab the listings, axis locked</h2>
+        <span class="tag proposal">mockup</span>
+      </div>
+      <p class="mech">
+        The same drag, committed to one direction. Whichever way you had
+        travelled furthest at the moment you crossed the four-pixel threshold
+        is the axis you get, and it holds for the rest of the gesture &mdash;
+        re-deciding mid-drag would swap the axis under your hand every time a
+        stroke wandered. The throw is locked with it, so a sideways flick never
+        drifts the channel rows. Drag diagonally and compare with the bench
+        above.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section class="bench" data-variant="rails-quiet">
+    <div class="bench-head">
+      <div class="bench-title">
+        <h2>Header rails, on approach</h2>
+        <span class="tag proposal">mockup</span>
+      </div>
+      <p class="mech">
+        The same rails, invisible until the pointer is inside the guide. At rest
+        the grid is exactly what ships today, which is the argument for it; the
+        argument against is that a control nobody has seen is a control nobody
+        knows about, and the scrollbar already covers the person who never
+        hovers. Point at the grid below.
+      </p>
+    </div>
+    <div class="guide-frame"></div>
+    <div class="readout"></div>
+  </section>
+
+  <section>
+    <h2 class="section">Ruled out</h2>
+    <div class="ruled">
+      <div>
+        <h3>Floating chevrons</h3>
+        <p>
+          Round buttons centred over the listings, the first cut of this idea.
+          They covered programmes, moved with nothing, and the back one parked
+          itself on top of the channel column.
+        </p>
+        <span class="why">god awful &mdash; your words</span>
+      </div>
+      <div>
+        <h3>Wheel over the clock</h3>
+        <p>
+          Pointing at the header made a plain wheel move time. It works, and it
+          is invisible: the axis you get depends on a pointer position nobody
+          tracks, and no other application behaves this way.
+        </p>
+        <span class="why">too non-standard to surface</span>
+      </div>
+      <div>
+        <h3>Still open: arrow keys</h3>
+        <p>
+          The scroller takes no focus, so &larr; &rarr; and Page Up / Down do
+          nothing. One <code>tabindex</code> fixes it, it conflicts with none of
+          the above, and it is the only option here that answers someone who
+          never touches a mouse.
+        </p>
+        <span class="why" style="color: var(--accent)">not built yet</span>
+      </div>
+    </div>
+  </section>
+
+  <footer class="note">
+    <p>
+      Every grid above is live: drag, hover and click them. Listings are your own
+      guide mirror read at build time &mdash; 10 channels, 327 airings, 30 hours
+      from the top of the hour. Hour columns are narrowed from the app's 400px so
+      more than one fits here; the date band, frozen channel column and red now
+      line are the shipped layout.
+    </p>
+  </footer>
+</div>
+
+<script id="guide-data" type="application/json">{"start": "2026-09-16T16:00:00Z", "channels": [{"identifier": "S79600_007_01", "call_sign": "K32EUD1", "major": 7, "minor": 1, "network": "PBS", "airings": [{"start": "2026-09-16T16:30Z", "duration": 1800, "title": "Phoebe & Jay", "description": "Phoebe, Jay, Grandma Annie and Pete create the family's first recipe for Sunday greens; Phoebe and Jay are exc"}, {"start": "2026-09-16T17:00Z", "duration": 1800, "title": "Sesame Street", "description": "Cinderella needs to tell time for the ball, but her clock is broken, so Nina, Abby and Rudy wonder what tool t"}, {"start": "2026-09-16T17:30Z", "duration": 1800, "title": "Work It Out Wombats!", "description": "Sammy plans a surprise Carnaval for his dad while Quique plans a surprise treat for his son; Malik performs a "}, {"start": "2026-09-16T18:00Z", "duration": 1800, "title": "Donkey Hodie", "description": "Donkey hosts Gator's game show for a day; Donkey joins the Balance Ball team but feels uncomfortable doing som"}, {"start": "2026-09-16T18:30Z", "duration": 1800, "title": "Molly of Denali", "description": "Grandpa Nat, Molly and friends go on a hot air balloon adventure in Rutan Hill, New Jersey."}, {"start": "2026-09-16T19:00Z", "duration": 1800, "title": "Elinor Wonders Why", "description": "While delivering chocolates, the kids learn that warmer temperatures can melt treats; the kids help Mr. Raccoo"}, {"start": "2026-09-16T19:30Z", "duration": 1800, "title": "Odd Squad", "description": "The members of Soundcheck go missing; all of Odd Squad gets a case of the jinx."}, {"start": "2026-09-16T20:00Z", "duration": 1800, "title": "Wild Kratts", "description": "The monarch butterfly's 2,000-mile migration."}, {"start": "2026-09-16T20:30Z", "duration": 1800, "title": "Sit and Be Fit", "description": "Stretching and strengthening the abdominal and back muscles helps protect the spine from injury."}, {"start": "2026-09-16T21:00Z", "duration": 1800, "title": "Refresh Quest", "description": "Exploring unique destinations that aim to uplift and inspire; host Jeremy Maupin."}, {"start": "2026-09-16T21:30Z", "duration": 1800, "title": "Quilting Arts", "description": "Pop Art style pet portraits; pre-building layers on a silicone mat before adhering it to a background."}, {"start": "2026-09-16T22:00Z", "duration": 3600, "title": "First Civilizations", "description": "The Middle East, site of the world's first villages, towns and cities, was the birthplace of civilization, as "}, {"start": "2026-09-16T23:00Z", "duration": 3600, "title": "History Detectives", "description": "A box of cartoon drawings and cels tells a story of the early days of animation; why a regional governor signe"}, {"start": "2026-09-17T00:00Z", "duration": 1800, "title": "BBC News America", "description": "Live news program produced out of BBC's Washington, D.C. bureau; host Sumi Somaskanda."}, {"start": "2026-09-17T00:30Z", "duration": 1800, "title": "Hometowns", "description": "Ozark Mountain charm blends with university energy in Fayetteville, Ark., a city rich in music, food and tradi"}, {"start": "2026-09-17T01:00Z", "duration": 3600, "title": "PBS News Hour", "description": "Co-anchors Amna Nawaz and Geoff Bennett and correspondents offer in-depth analysis of current events."}, {"start": "2026-09-17T02:00Z", "duration": 3600, "title": "Big Cats 24/7", "description": "The lion pride males are injured and the mothers with cubs are left vulnerable after an attack; Xudum, the fem"}, {"start": "2026-09-17T03:00Z", "duration": 3600, "title": "NOVA", "description": "The decades-long scientific quest that led to a life-saving treatment for cystic fibrosis."}, {"start": "2026-09-17T04:00Z", "duration": 3600, "title": "Ages of Ice", "description": "Tracking how the polar world is transforming, from scaling jagged peaks to descending deep into the ice sheet."}, {"start": "2026-09-17T05:00Z", "duration": 1800, "title": "Eons: Life and Death on Pangea", "description": "Life starts to rebound after the Permian Period ends; survivors of the Permian Period are replaced by new ecos"}, {"start": "2026-09-17T05:30Z", "duration": 1800, "title": "Weathered: Earth's Extremes", "description": "Exploring the impacts of climate change on ocean currents in Florida; electrification; nature's role in achiev"}, {"start": "2026-09-17T06:00Z", "duration": 3600, "title": "Amanpour and Company", "description": "Christiane Amanpour leads discussions about world issues and interviews with global leaders."}, {"start": "2026-09-17T07:00Z", "duration": 3600, "title": "PBS News Hour", "description": "Co-anchors Amna Nawaz and Geoff Bennett and correspondents offer in-depth analysis of current events."}, {"start": "2026-09-17T08:00Z", "duration": 3600, "title": "NOVA", "description": "The decades-long scientific quest that led to a life-saving treatment for cystic fibrosis."}, {"start": "2026-09-17T09:00Z", "duration": 3600, "title": "Ages of Ice", "description": "Tracking how the polar world is transforming, from scaling jagged peaks to descending deep into the ice sheet."}, {"start": "2026-09-17T10:00Z", "duration": 3600, "title": "Big Pacific", "description": "Exploring the mysterious depths of the Pacific Ocean."}, {"start": "2026-09-17T11:00Z", "duration": 3600, "title": "Butch Cassidy & The Sundance Kid: American Experience", "description": "Robert Leroy Parker and Harry Alonzo Longabaugh, better known as Butch Cassidy and the Sundance Kid, form the "}, {"start": "2026-09-17T12:00Z", "duration": 1800, "title": "Classical Stretch: By Essentrics", "description": "An all-standing workout tones and strengthens every muscle in the body."}, {"start": "2026-09-17T12:30Z", "duration": 1800, "title": "Sit and Be Fit", "description": "Exercises that improve spinal flexibility, wrist strengthening and warming the joints with self-massage; a gen"}, {"start": "2026-09-17T13:00Z", "duration": 1800, "title": "Arthur", "description": "Buster wants to go to outer space; George is determined to walk from Crown City to Elwood City to raise money "}, {"start": "2026-09-17T13:30Z", "duration": 1800, "title": "Odd Squad", "description": "Orli has taken on too many things at once, in addition to helping Orwell keep HQ running; The Oddness Monster "}, {"start": "2026-09-17T14:00Z", "duration": 1800, "title": "Wild Kratts", "description": "The gang travels deep into Uganda's tropical forests to uncover the true nature of the chimpanzee; Chris encou"}, {"start": "2026-09-17T14:30Z", "duration": 1800, "title": "Weather Hunters", "description": "After a groundhog predicts more winter weather, Benny is convinced he will have snow on his birthday so he pla"}, {"start": "2026-09-17T15:00Z", "duration": 1800, "title": "Lyla in the Loop", "description": "Luke plays doctor with Stu as a nurse and Lyla pretends to be different patients; Lyla, Everett, Luke and Stu "}, {"start": "2026-09-17T15:30Z", "duration": 1800, "title": "Carl the Collector", "description": "Lotta needs time to recharge after school; Forrest and Lotta team up for the Student Super Chef competition at"}, {"start": "2026-09-17T16:00Z", "duration": 1800, "title": "Daniel Tiger's Neighborhood", "description": "Mom teaches Daniel how to use words to express his feelings; Katerina gets upset playing train at school."}, {"start": "2026-09-17T16:30Z", "duration": 1800, "title": "Phoebe & Jay", "description": "Phoebe and Jay learn how to sort items; Phoebe and Jay learn how to make food labels, so everyone can particip"}, {"start": "2026-09-17T17:00Z", "duration": 1800, "title": "Sesame Street", "description": "Cookie Monster tries to bake a new cookie for Elmo; Abby and Grover solve a puzzle of their own."}, {"start": "2026-09-17T17:30Z", "duration": 1800, "title": "Work It Out Wombats!", "description": "Wombats look for unicorns on the moon; Louisa commands the moon to change its shape."}, {"start": "2026-09-17T18:00Z", "duration": 1800, "title": "Donkey Hodie", "description": "Donkey wonders if she and her cousin can have fun together since they don't like doing the same things anymore"}, {"start": "2026-09-17T18:30Z", "duration": 1800, "title": "Molly of Denali", "description": "A routine science expedition with Grandpa Nat and Nina becomes a rescue mission; Molly and Mom join Randall an"}, {"start": "2026-09-17T19:00Z", "duration": 1800, "title": "Elinor Wonders Why", "description": "The kids make their own instruments so they can participate in Se\u00f1or Tapir's concert; when Elinor's dad falls "}, {"start": "2026-09-17T19:30Z", "duration": 1800, "title": "Odd Squad", "description": "Orli has taken on too many things at once, in addition to helping Orwell keep HQ running; The Oddness Monster "}, {"start": "2026-09-17T20:00Z", "duration": 1800, "title": "Wild Kratts", "description": "The gang travels deep into Uganda's tropical forests to uncover the true nature of the chimpanzee; Chris encou"}, {"start": "2026-09-17T20:30Z", "duration": 1800, "title": "Sit and Be Fit", "description": "Warmup exercises using a large ball; using a small ball for finger flexibility."}, {"start": "2026-09-17T21:00Z", "duration": 1800, "title": "Ask This Old House", "description": "Replacing vintage ceramic toothbrush and soap holders; repairing a water-damaged ceiling crack matching the or"}, {"start": "2026-09-17T21:30Z", "duration": 1800, "title": "Best of Sewing With Nancy", "description": "Making no-hassle 1/2-square triangle quilt blocks featured in the box quilt, shadow play, Godey design, square"}, {"start": "2026-09-17T22:00Z", "duration": 3600, "title": "Big Cats 24/7", "description": "The lion pride males are injured and the mothers with cubs are left vulnerable after an attack; Xudum, the fem"}]}, {"identifier": "S84522_007_02", "call_sign": "K08PRD2", "major": 7, "minor": 2, "network": "WORLD", "airings": [{"start": "2026-09-16T16:00Z", "duration": 3600, "title": "Amanpour and Company", "description": "Christiane Amanpour leads discussions about world issues and interviews with global leaders."}, {"start": "2026-09-16T17:00Z", "duration": 1800, "title": "To the Contrary With Bonnie Erb\u00e9", "description": "News analysis of issues and policy affecting the U.S."}, {"start": "2026-09-16T17:30Z", "duration": 1800, "title": "Switch On", "description": "From a houseboat family in Vietnam to solar nonprofits and innovative start-ups, a look at what it takes to pl"}, {"start": "2026-09-16T18:00Z", "duration": 1800, "title": "Roadtrip Nation: Learning Reimagined", "description": "Three young people \u2014 Aliyah, Billie and Maximiliano \u2014 set out to discover what is possible in the world of edu"}, {"start": "2026-09-16T18:30Z", "duration": 1800, "title": "Roadtrip Nation: Learning Reimagined", "description": "Three young people \u2014 Aliyah, Billie and Maximiliano \u2014 set out to discover what is possible in the world of edu"}, {"start": "2026-09-16T19:00Z", "duration": 1800, "title": "Roadtrip Nation: Rethinking Higher Ed", "description": "The roadtrippers set out to explore all the ways they can use postsecondary education to achieve their career "}, {"start": "2026-09-16T19:30Z", "duration": 1800, "title": "Roadtrip Nation: Rethinking Higher Ed", "description": "The roadtrippers meet people who have taken unorthodox paths to success, and learn that college is still one o"}, {"start": "2026-09-16T20:00Z", "duration": 3600, "title": "Roadtrip Nation: Degree of Impact", "description": "Crystal, Jason and Kylie talk to professionals with doctoral degrees who make a direct impact on their communi"}, {"start": "2026-09-16T21:00Z", "duration": 1800, "title": "DW News", "description": "Presenting a round-up of the most recent news and developments from across the world."}, {"start": "2026-09-16T21:30Z", "duration": 1800, "title": "BBC World News America", "description": "A detailed look into news stories from around the world from the BBC news desk in Washington, D.C."}, {"start": "2026-09-16T22:00Z", "duration": 1800, "title": "France 24", "description": "Live feed from leading 24/7 international news and current affairs channel based in Paris, providing key infor"}, {"start": "2026-09-16T22:30Z", "duration": 1800, "title": "NHK Newsline", "description": "This daily news program, produced by Japanese public broadcaster NHK, focuses on headlines and current events "}, {"start": "2026-09-16T23:00Z", "duration": 3600, "title": "Independent Lens", "description": "Artist Rashaad Newsome prepares a monumental showcase which honors Black and queer creativity, resistance and "}, {"start": "2026-09-17T00:00Z", "duration": 7200, "title": "Independent Lens", "description": "The philosophical, cultural and political forces driving the global artificial intelligence boom."}, {"start": "2026-09-17T02:00Z", "duration": 3600, "title": "PBS News Hour", "description": "Co-anchors Amna Nawaz and Geoff Bennett and correspondents offer in-depth analysis of current events."}, {"start": "2026-09-17T03:00Z", "duration": 1800, "title": "The Day", "description": "A daily news summary from Europe with anchor Brent Goff."}, {"start": "2026-09-17T03:30Z", "duration": 1800, "title": "BBC News", "description": "News. Reporting on the day's international news from London and from BBC correspondents around the world."}, {"start": "2026-09-17T04:00Z", "duration": 3600, "title": "Independent Lens", "description": "Artist Rashaad Newsome prepares a monumental showcase which honors Black and queer creativity, resistance and "}, {"start": "2026-09-17T05:00Z", "duration": 7200, "title": "Independent Lens", "description": "The philosophical, cultural and political forces driving the global artificial intelligence boom."}, {"start": "2026-09-17T07:00Z", "duration": 3600, "title": "PBS News Hour", "description": "Co-anchors Amna Nawaz and Geoff Bennett and correspondents offer in-depth analysis of current events."}, {"start": "2026-09-17T08:00Z", "duration": 3600, "title": "Amanpour and Company", "description": "Christiane Amanpour leads discussions about world issues and interviews with global leaders."}, {"start": "2026-09-17T09:00Z", "duration": 1800, "title": "Live From the LBJ Library With Mark Updegrove", "description": "Lawyer and voting rights activist Stacey Abrams discusses the decades-long effort to dismantle the Voting Righ"}, {"start": "2026-09-17T09:30Z", "duration": 1800, "title": "Live From the LBJ Library With Mark Updegrove", "description": "Celebrating America's 250th birthday with moments from the show that shed light on the American experience; wi"}, {"start": "2026-09-17T10:00Z", "duration": 1800, "title": "BBC News", "description": "News. Reporting on the day's international news from London and from BBC correspondents around the world."}, {"start": "2026-09-17T10:30Z", "duration": 1800, "title": "Story in the Public Square", "description": "AI ethicist Carissa V\u00e9liz."}, {"start": "2026-09-17T11:00Z", "duration": 1680, "title": "Newsroom Tokyo", "description": "We introduce the renewed NEWSROOM TOKYO featuring its team of new anchors and highlighting its appeal through "}, {"start": "2026-09-17T11:28Z", "duration": 900, "title": "Direct Talk", "description": "Direct and in-depth interviews exploring the minds and motivations of the leaders, visionaries, artists and en"}, {"start": "2026-09-17T11:43Z", "duration": 1020, "title": "Short Program", "description": "A selection of acclaimed programs from NHK's domestic channels, dubbed into English."}, {"start": "2026-09-17T12:00Z", "duration": 3600, "title": "Independent Lens", "description": "Artist Rashaad Newsome prepares a monumental showcase which honors Black and queer creativity, resistance and "}, {"start": "2026-09-17T13:00Z", "duration": 7200, "title": "Independent Lens", "description": "The philosophical, cultural and political forces driving the global artificial intelligence boom."}, {"start": "2026-09-17T15:00Z", "duration": 1800, "title": "Live From the LBJ Library With Mark Updegrove", "description": "Lawyer and voting rights activist Stacey Abrams discusses the decades-long effort to dismantle the Voting Righ"}, {"start": "2026-09-17T15:30Z", "duration": 1800, "title": "Live From the LBJ Library With Mark Updegrove", "description": "Celebrating America's 250th birthday with moments from the show that shed light on the American experience; wi"}, {"start": "2026-09-17T16:00Z", "duration": 3600, "title": "Amanpour and Company", "description": "Christiane Amanpour leads discussions about world issues and interviews with global leaders."}, {"start": "2026-09-17T17:00Z", "duration": 1800, "title": "Story in the Public Square", "description": "AI ethicist Carissa V\u00e9liz."}, {"start": "2026-09-17T17:30Z", "duration": 1800, "title": "Horizons From PBS News", "description": "Science, health, technology and environment experts and professionals address issues such as artificial intell"}, {"start": "2026-09-17T18:00Z", "duration": 1800, "title": "Roadtrip Nation: Education's Future", "description": "Three teachers explore how families can be partners in supporting their children's education."}, {"start": "2026-09-17T18:30Z", "duration": 1800, "title": "Roadtrip Nation: Education's Future", "description": "How educators do community-based work to engage families in learning, fight against inequities and create a mo"}, {"start": "2026-09-17T19:00Z", "duration": 1800, "title": "Roadtrip Nation: Education's Future", "description": "Educators explain that fostering a student's sense of belonging is just as important as how they do on standar"}, {"start": "2026-09-17T19:30Z", "duration": 1800, "title": "Roadtrip Nation: Education's Future", "description": "Efforts by teachers and educational professionals to revamp how student success is encouraged and tracked."}, {"start": "2026-09-17T20:00Z", "duration": 3600, "title": "Big Dreams in Umatilla", "description": "Following a robotics team in Umatilla, Ore., through the 2016 season."}, {"start": "2026-09-17T21:00Z", "duration": 1800, "title": "DW News", "description": "Presenting a round-up of the most recent news and developments from across the world."}, {"start": "2026-09-17T21:30Z", "duration": 1800, "title": "BBC World News America", "description": "A detailed look into news stories from around the world from the BBC news desk in Washington, D.C."}, {"start": "2026-09-17T22:00Z", "duration": 1800, "title": "France 24", "description": "Live feed from leading 24/7 international news and current affairs channel based in Paris, providing key infor"}]}, {"identifier": "S84523_007_03", "call_sign": "K08PRD3", "major": 7, "minor": 3, "network": "CREATE", "airings": [{"start": "2026-09-16T16:30Z", "duration": 1800, "title": "America's Test Kitchen From Cook's Illustrated", "description": "Smoky pulled pork on a gas grill; salad spinners; braised greens with bacon and onion."}, {"start": "2026-09-16T17:00Z", "duration": 1800, "title": "Bare Feet With Mickela Mallozzi", "description": "Dancing with some of the \"Riverdance\" cast in Dublin; the 160-year-old Matchmaking Festival in Lisdoonvarna, C"}, {"start": "2026-09-16T17:30Z", "duration": 1800, "title": "Joy of Painting With Nicholas Hankins: Bob Ross' Unfinished Season", "description": "A summer scene with lush foliage, billowy clouds and the cool clear waters of a lazy stream."}, {"start": "2026-09-16T18:00Z", "duration": 1800, "title": "This Old House", "description": "Mark McCullough matches new stone to the old on the porch; heath buries electrical underground; Kevin, Molly a"}, {"start": "2026-09-16T18:30Z", "duration": 1800, "title": "Healing Yoga: Yoga for Real People With Real Problems", "description": "Gentle yoga practice that focuses on bringing people out of grief."}, {"start": "2026-09-16T19:00Z", "duration": 1800, "title": "Bare Feet With Mickela Mallozzi", "description": "Dancing with some of the \"Riverdance\" cast in Dublin; the 160-year-old Matchmaking Festival in Lisdoonvarna, C"}, {"start": "2026-09-16T19:30Z", "duration": 1800, "title": "America's Test Kitchen From Cook's Illustrated", "description": "Test cook Keith Dresser makes host Julia Collin Davison pan-seared swordfish steaks with caper-currant relish;"}, {"start": "2026-09-16T20:00Z", "duration": 1800, "title": "Cook's Country", "description": "Honey-glazed pork shoulder; exploring the world of sheep milk cheese; the Welsh tradition of celebrating the l"}, {"start": "2026-09-16T20:30Z", "duration": 1800, "title": "America's Test Kitchen From Cook's Illustrated", "description": "Smoky pulled pork on a gas grill; salad spinners; braised greens with bacon and onion."}, {"start": "2026-09-16T21:00Z", "duration": 1800, "title": "View Finders", "description": "Two photographers journey to iconic locations and talk to experts about their ecological, cultural and histori"}, {"start": "2026-09-16T21:30Z", "duration": 1800, "title": "Samantha Brown's Places to Love", "description": "Authentic Mexican carnitas; San Antonio River Walk; the Mission Reach project; Mission Concepcion; Mexican mic"}, {"start": "2026-09-16T22:00Z", "duration": 1800, "title": "Rick Steves' Europe", "description": "Straddling the Danube River is the Hungarian city of Budapest, with its bridges, mineral baths, old coffeehous"}, {"start": "2026-09-16T22:30Z", "duration": 1800, "title": "Food. Curated.", "description": "The growth of vegetable-forward entrepreneurs Woldy Kusina, Allwell Greens and Cadence."}, {"start": "2026-09-16T23:00Z", "duration": 1800, "title": "Lidia's Kitchen", "description": "Steamed broccoli, cannellini and egg salad; skillet tuna with eggplant and zucchini in puttanesca sauce."}, {"start": "2026-09-16T23:30Z", "duration": 1800, "title": "Cook's Country", "description": "Boneless rib roast with Yorkshire pudding and jus; black tea; Lighthouse Inn potatoes."}, {"start": "2026-09-17T00:00Z", "duration": 1800, "title": "Simply Ming", "description": "Gin and tonic with anise, cloves and cinnamon; steak frites made with flat iron steaks, served with fries and "}, {"start": "2026-09-17T00:30Z", "duration": 1800, "title": "Food. Curated.", "description": "The growth of vegetable-forward entrepreneurs Woldy Kusina, Allwell Greens and Cadence."}, {"start": "2026-09-17T01:00Z", "duration": 1800, "title": "Lucky Chow", "description": "Asian food entrepreneurs throughout New York pursue projects driven by their personal passions, from growing t"}, {"start": "2026-09-17T01:30Z", "duration": 1800, "title": "Bare Feet in NYC With Mickela Mallozzi", "description": "Spanning three blocks in Manhattan's East Village, residents of Little Ukraine celebrate Pierogi Day and enjoy"}, {"start": "2026-09-17T02:00Z", "duration": 1800, "title": "Rick Steves' Europe", "description": "Straddling the Danube River is the Hungarian city of Budapest, with its bridges, mineral baths, old coffeehous"}, {"start": "2026-09-17T02:30Z", "duration": 1800, "title": "Samantha Brown's Places to Love", "description": "Authentic Mexican carnitas; San Antonio River Walk; the Mission Reach project; Mission Concepcion; Mexican mic"}, {"start": "2026-09-17T03:00Z", "duration": 1800, "title": "View Finders", "description": "Two photographers journey to iconic locations and talk to experts about their ecological, cultural and histori"}, {"start": "2026-09-17T03:30Z", "duration": 1800, "title": "The Best of the Joy of Painting", "description": "A secluded country creek."}, {"start": "2026-09-17T04:00Z", "duration": 1800, "title": "Food. Curated.", "description": "The growth of vegetable-forward entrepreneurs Woldy Kusina, Allwell Greens and Cadence."}, {"start": "2026-09-17T04:30Z", "duration": 1800, "title": "Simply Ming", "description": "Gin and tonic with anise, cloves and cinnamon; steak frites made with flat iron steaks, served with fries and "}, {"start": "2026-09-17T05:00Z", "duration": 1800, "title": "Lidia's Kitchen", "description": "Steamed broccoli, cannellini and egg salad; skillet tuna with eggplant and zucchini in puttanesca sauce."}, {"start": "2026-09-17T05:30Z", "duration": 1800, "title": "Cook's Country", "description": "Boneless rib roast with Yorkshire pudding and jus; black tea; Lighthouse Inn potatoes."}, {"start": "2026-09-17T06:00Z", "duration": 1800, "title": "Lucky Chow", "description": "Asian food entrepreneurs throughout New York pursue projects driven by their personal passions, from growing t"}, {"start": "2026-09-17T06:30Z", "duration": 1800, "title": "Bare Feet in NYC With Mickela Mallozzi", "description": "Spanning three blocks in Manhattan's East Village, residents of Little Ukraine celebrate Pierogi Day and enjoy"}, {"start": "2026-09-17T07:00Z", "duration": 1800, "title": "Cook's Country", "description": "Honey-glazed pork shoulder; exploring the world of sheep milk cheese; the Welsh tradition of celebrating the l"}, {"start": "2026-09-17T07:30Z", "duration": 1800, "title": "America's Test Kitchen From Cook's Illustrated", "description": "Smoky pulled pork on a gas grill; salad spinners; braised greens with bacon and onion."}, {"start": "2026-09-17T08:00Z", "duration": 1800, "title": "This Old House", "description": "Mark McCullough matches new stone to the old on the porch; heath buries electrical underground; Kevin, Molly a"}, {"start": "2026-09-17T08:30Z", "duration": 1800, "title": "Healing Yoga: Yoga for Real People With Real Problems", "description": "Gentle yoga practice that focuses on bringing people out of grief."}, {"start": "2026-09-17T09:00Z", "duration": 1800, "title": "Rick Steves' Europe", "description": "Straddling the Danube River is the Hungarian city of Budapest, with its bridges, mineral baths, old coffeehous"}, {"start": "2026-09-17T09:30Z", "duration": 1800, "title": "The Best of the Joy of Painting", "description": "A secluded country creek."}, {"start": "2026-09-17T10:00Z", "duration": 1800, "title": "Start Up", "description": "The Blok Climbing Co., a premier destination for bouldering in northern Texas."}, {"start": "2026-09-17T10:30Z", "duration": 1800, "title": "Yoga in Practice", "description": "Considering life's complicated journey."}, {"start": "2026-09-17T11:00Z", "duration": 1800, "title": "Family Travel With Colleen Kelly", "description": "Exploring Galveston Island; La King's Confectionery; Katie's Seafood Market; jet skiing in the ocean; Historic"}, {"start": "2026-09-17T11:30Z", "duration": 1800, "title": "Quilting Arts", "description": "A start-to-finish tutorial on English paper piecing and way to incorporate it into projects; quilt artist Davi"}, {"start": "2026-09-17T12:00Z", "duration": 1800, "title": "This Old House", "description": "Rounded-top windows are installed; easy-install roof shingles go down; Roger takes Kevin fishing; Tommy adds a"}, {"start": "2026-09-17T12:30Z", "duration": 1800, "title": "Yoga in Practice", "description": "Considering life's complicated journey."}, {"start": "2026-09-17T13:00Z", "duration": 1800, "title": "The Farmer and the Foodie", "description": "New Roots brings fresh vegetables and fruits to those who may not have access to them; a Kentucky farmer who h"}, {"start": "2026-09-17T13:30Z", "duration": 1800, "title": "Christopher Kimball's Milk Street Television", "description": "A layered chicken, salsa verde and tortilla casserole; pork in Veracruz sauce, a skillet dish of thinly-sliced"}, {"start": "2026-09-17T14:00Z", "duration": 1800, "title": "Outside: Beyond the Lens", "description": "A West Coast-East Coast adventure shows off the charms of California's Big Sur region; Key West, Fla."}, {"start": "2026-09-17T14:30Z", "duration": 1800, "title": "Joseph Rosendo's Steppin' Out", "description": "How modern and ancient festivals open a window into a people's soul."}, {"start": "2026-09-17T15:00Z", "duration": 1800, "title": "Rick Steves' Europe", "description": "The best of Portugal features Lisbon's Fado singers and ornate architecture, and the Algarve's windy Cape Sagr"}, {"start": "2026-09-17T15:30Z", "duration": 1800, "title": "The Best of the Joy of Painting", "description": "Windy waves rush to crash upon the rocks under stormy skies."}, {"start": "2026-09-17T16:00Z", "duration": 1800, "title": "The Farmer and the Foodie", "description": "New Roots brings fresh vegetables and fruits to those who may not have access to them; a Kentucky farmer who h"}, {"start": "2026-09-17T16:30Z", "duration": 1800, "title": "Christopher Kimball's Milk Street Television", "description": "A layered chicken, salsa verde and tortilla casserole; pork in Veracruz sauce, a skillet dish of thinly-sliced"}, {"start": "2026-09-17T17:00Z", "duration": 1800, "title": "Family Travel With Colleen Kelly", "description": "Exploring Galveston Island; La King's Confectionery; Katie's Seafood Market; jet skiing in the ocean; Historic"}, {"start": "2026-09-17T17:30Z", "duration": 1800, "title": "Quilting Arts", "description": "A start-to-finish tutorial on English paper piecing and way to incorporate it into projects; quilt artist Davi"}, {"start": "2026-09-17T18:00Z", "duration": 1800, "title": "This Old House", "description": "Rounded-top windows are installed; easy-install roof shingles go down; Roger takes Kevin fishing; Tommy adds a"}, {"start": "2026-09-17T18:30Z", "duration": 1800, "title": "Yoga in Practice", "description": "Considering life's complicated journey."}, {"start": "2026-09-17T19:00Z", "duration": 1800, "title": "Family Travel With Colleen Kelly", "description": "Exploring Galveston Island; La King's Confectionery; Katie's Seafood Market; jet skiing in the ocean; Historic"}, {"start": "2026-09-17T19:30Z", "duration": 1800, "title": "Cook's Country", "description": "Sausage rag\u00f9; fettuccine tasting; fluffy baked polenta with red sauce."}, {"start": "2026-09-17T20:00Z", "duration": 1800, "title": "The Farmer and the Foodie", "description": "New Roots brings fresh vegetables and fruits to those who may not have access to them; a Kentucky farmer who h"}, {"start": "2026-09-17T20:30Z", "duration": 1800, "title": "Christopher Kimball's Milk Street Television", "description": "A layered chicken, salsa verde and tortilla casserole; pork in Veracruz sauce, a skillet dish of thinly-sliced"}, {"start": "2026-09-17T21:00Z", "duration": 1800, "title": "Outside: Beyond the Lens", "description": "A West Coast-East Coast adventure shows off the charms of California's Big Sur region; Key West, Fla."}, {"start": "2026-09-17T21:30Z", "duration": 1800, "title": "Joseph Rosendo's Steppin' Out", "description": "How modern and ancient festivals open a window into a people's soul."}, {"start": "2026-09-17T22:00Z", "duration": 1800, "title": "Rick Steves' Europe", "description": "The best of Portugal features Lisbon's Fado singers and ornate architecture, and the Algarve's windy Cape Sagr"}]}, {"identifier": "S999006535_007_04", "call_sign": "KIDS", "major": 7, "minor": 4, "network": "KIDS", "airings": []}, {"identifier": "S999025627_007_99", "call_sign": "KPAXFAST", "major": 7, "minor": 99, "network": "LOCALFAST", "airings": []}, {"identifier": "S34654_008_01", "call_sign": "KPAXDT1", "major": 8, "minor": 1, "network": "CBS", "airings": [{"start": "2026-09-16T16:00Z", "duration": 3600, "title": "Let's Make a Deal", "description": "Costumed contestants compete for cash and prizes."}, {"start": "2026-09-16T17:00Z", "duration": 3600, "title": "The Young and the Restless", "description": "Drama revolves around three families in Genoa City."}, {"start": "2026-09-16T18:00Z", "duration": 1800, "title": "KPAX Noon News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-16T18:30Z", "duration": 1800, "title": "The Bold and the Beautiful", "description": "Set in the glamorous world of the Los Angeles fashion scene, this soap opera focuses on the wealthy and powerf"}, {"start": "2026-09-16T19:00Z", "duration": 3600, "title": "Beyond the Gates", "description": "The Duprees, a powerful and prestigious multi-generational family that is the very definition of Black royalty"}, {"start": "2026-09-16T20:00Z", "duration": 1800, "title": "America's Funniest Home Videos", "description": "Amateur videographers submit videos of their kids, pets, friends and families in funny situations to earn thou"}, {"start": "2026-09-16T20:30Z", "duration": 1800, "title": "America's Funniest Home Videos", "description": "Amateur videographers submit videos of their kids, pets, friends and families in funny situations to earn thou"}, {"start": "2026-09-16T21:00Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-16T21:30Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-16T22:00Z", "duration": 1800, "title": "Jeopardy!", "description": "The Emmy-winning quiz show features a unique answer-and-question format."}, {"start": "2026-09-16T22:30Z", "duration": 1800, "title": "MTN 4:30 News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-16T23:00Z", "duration": 1800, "title": "CBS Evening News", "description": "Tony Dokoupil shares the day's most important stories, delivering context and depth to bring greater understan"}, {"start": "2026-09-16T23:30Z", "duration": 1800, "title": "KPAX 5:30 News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T00:00Z", "duration": 1800, "title": "Jeopardy!", "description": "The Emmy-winning quiz show features a unique answer-and-question format."}, {"start": "2026-09-17T00:30Z", "duration": 1800, "title": "Wheel of Fortune", "description": "In a classic game-show version of \"Hangman,\" contestants solve word puzzles for cash and prizes."}, {"start": "2026-09-17T01:00Z", "duration": 7200, "title": "Big Brother", "description": "The houseguests compete to win the power of veto; during the veto meeting, the winner of the competition can k"}, {"start": "2026-09-17T03:00Z", "duration": 3600, "title": "NCIS", "description": "When a petty officer's death is connected to a blackmail investigation, the team is forced to work with Specia"}, {"start": "2026-09-17T04:00Z", "duration": 2100, "title": "KPAX 10:00 News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T04:35Z", "duration": 1800, "title": "Comics Unleashed With Byron Allen", "description": "Kristi McHugh; Brian Kiley; Na'im Lynn; Eric Schwartz."}, {"start": "2026-09-17T05:05Z", "duration": 1920, "title": "Comics Unleashed With Byron Allen", "description": "Lisa Alvarado; Margaret Cho; Tammy Pescatelli; Sheryl Underwood."}, {"start": "2026-09-17T05:37Z", "duration": 1800, "title": "Funny You Should Ask", "description": "Jon Lovitz; Raven-Symon\u00e9; Howie Mandel; Byron Allen; Whitney Cummings; Jeff Ross."}, {"start": "2026-09-17T06:07Z", "duration": 1800, "title": "Funny You Should Ask", "description": "Jon Lovitz; Jack\u00e9e Harry; Bill Engvall; Byron Allen; Caroline Rhea; Jeff Ross."}, {"start": "2026-09-17T06:37Z", "duration": 13980, "title": "CBS News Roundup", "description": "The headlines one needs to know overnight... plus, a roundup of MoneyWatch, health, consumer and up-to-the-min"}, {"start": "2026-09-17T10:30Z", "duration": 1800, "title": "CBS News Mornings", "description": "CBS News Mornings broadcasts on weekdays and offers viewers up-to-date news, comprehensive weather forecasts, "}, {"start": "2026-09-17T11:00Z", "duration": 1800, "title": "Montana This Morning", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T11:30Z", "duration": 1800, "title": "Montana This Morning", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T12:00Z", "duration": 1800, "title": "Montana This Morning", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T12:30Z", "duration": 1800, "title": "Montana This Morning", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T13:00Z", "duration": 7200, "title": "CBS Mornings", "description": "Reporting on international news stories, interviews, and in-depth pieces, covering topics from news, sports, c"}, {"start": "2026-09-17T15:00Z", "duration": 3600, "title": "The Price Is Right", "description": "Participants must guess the prices of different types of items, ranging from vehicles to electronic appliances"}, {"start": "2026-09-17T16:00Z", "duration": 3600, "title": "Let's Make a Deal", "description": "Costumed contestants compete for cash and prizes."}, {"start": "2026-09-17T17:00Z", "duration": 3600, "title": "The Young and the Restless", "description": "Drama revolves around three families in Genoa City."}, {"start": "2026-09-17T18:00Z", "duration": 1800, "title": "KPAX Noon News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T18:30Z", "duration": 1800, "title": "The Bold and the Beautiful", "description": "Set in the glamorous world of the Los Angeles fashion scene, this soap opera focuses on the wealthy and powerf"}, {"start": "2026-09-17T19:00Z", "duration": 3600, "title": "Beyond the Gates", "description": "The Duprees, a powerful and prestigious multi-generational family that is the very definition of Black royalty"}, {"start": "2026-09-17T20:00Z", "duration": 1800, "title": "America's Funniest Home Videos", "description": "Amateur videographers submit videos of their kids, pets, friends and families in funny situations to earn thou"}, {"start": "2026-09-17T20:30Z", "duration": 1800, "title": "America's Funniest Home Videos", "description": "Amateur videographers submit videos of their kids, pets, friends and families in funny situations to earn thou"}, {"start": "2026-09-17T21:00Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-17T21:30Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-17T22:00Z", "duration": 1800, "title": "Jeopardy!", "description": "The Emmy-winning quiz show features a unique answer-and-question format."}]}, {"identifier": "S52647_008_02", "call_sign": "KPAXDT2", "major": 8, "minor": 2, "network": "INDEPENDENT", "airings": [{"start": "2026-09-16T16:00Z", "duration": 3600, "title": "The Jason Show", "description": "\"The Jason Show\" is a lively, fast-paced talk show, hosted by Jason Matheson, serving up a mix of pop culture,"}, {"start": "2026-09-16T17:00Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-16T17:30Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-16T18:00Z", "duration": 1800, "title": "The Noon News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-16T18:30Z", "duration": 1800, "title": "ES.TV", "description": "Jake Johnson; Sadie Sink; Himesh Patel; Oona Chaplin; Francisco Ramos; Jessie Reyez and Muni Long."}, {"start": "2026-09-16T19:00Z", "duration": 1800, "title": "Business First With Angela Miles", "description": "An entertaining daily business news show giving everyday Americans an edge in the stock market straight from t"}, {"start": "2026-09-16T19:30Z", "duration": 1800, "title": "Bob Hearts Abishola", "description": "After Bob takes a step back from his busy work life, he decides to buy a boat to enjoy during his free time; a"}, {"start": "2026-09-16T20:00Z", "duration": 3600, "title": "The Listener", "description": "Toby Logan, a 25-year-old paramedic, uses his secret telepathic ability to help people in crisis. Until now, T"}, {"start": "2026-09-16T21:00Z", "duration": 3600, "title": "Suits", "description": "An old foe backs the firm into a corner; Samantha and Alex try to broker a peace between clients."}, {"start": "2026-09-16T22:00Z", "duration": 1800, "title": "Two and a Half Men", "description": "Charlie realizes Jake's classmates know the words to all of his jingles, and he is inspired to craft the fourt"}, {"start": "2026-09-16T22:30Z", "duration": 1800, "title": "Two and a Half Men", "description": "Alan takes Charlie's suggestion of a jog on the beach to cure his insomnia; Jake pleads with Charlie not to da"}, {"start": "2026-09-16T23:00Z", "duration": 1800, "title": "Extra", "description": "Inside the entertainment newsgathering process, as reporters coast-to-coast break headlines, advance the stori"}, {"start": "2026-09-16T23:30Z", "duration": 1800, "title": "KPAX 5:30 News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T00:00Z", "duration": 1800, "title": "Front Office Sports Tonight", "description": "Host Matt Iseman goes beyond the field of play to break down the most important cultural, entertainment and bu"}, {"start": "2026-09-17T00:30Z", "duration": 1800, "title": "Grizzly Insider", "description": ""}, {"start": "2026-09-17T01:00Z", "duration": 1800, "title": "The Conners", "description": "Desperate for more income, Becky seeks a bartending position at Casita Bonita, causing major concern for Dan d"}, {"start": "2026-09-17T01:30Z", "duration": 1800, "title": "The Conners", "description": "Halloween brings nothing but horror for Jackie after she uncovers a shocking secret when trying to reopen the "}, {"start": "2026-09-17T02:00Z", "duration": 3600, "title": "Compton Magic", "description": ""}, {"start": "2026-09-17T03:00Z", "duration": 3600, "title": "Compton Magic", "description": ""}, {"start": "2026-09-17T04:00Z", "duration": 3600, "title": "Compton Magic", "description": ""}, {"start": "2026-09-17T05:00Z", "duration": 1800, "title": "Bob Hearts Abishola", "description": "With Abishola only helping part-time, Bob, Douglas and Christina struggle to take care of Dottie."}, {"start": "2026-09-17T05:30Z", "duration": 1800, "title": "In Depth With Graham Bensinger", "description": "Actor Henry Winkler discusses the role that made him famous, but also nearly derailed his career; he reflects "}, {"start": "2026-09-17T06:00Z", "duration": 3600, "title": "Hudson & Rex", "description": "Hudson & Rex is an action-packed one-hour police procedural drama focused on the partnership between a dedicat"}, {"start": "2026-09-17T07:00Z", "duration": 3600, "title": "Makeshift Project Podcast", "description": ""}, {"start": "2026-09-17T08:00Z", "duration": 3600, "title": "All-Round Champion", "description": "It's the ultimate event for 10 of the best young athletes in North America \u2014 instead of competing in their own"}, {"start": "2026-09-17T09:00Z", "duration": 3600, "title": "Bonanza", "description": "Ben Cartwright is the patriarch of an all-male Nevada ranching family. Set during and after the Civil War, \"Bo"}, {"start": "2026-09-17T10:00Z", "duration": 1800, "title": "The Rifleman", "description": "Lucas McCain raises a son while battling desperados in New Mexico."}, {"start": "2026-09-17T10:30Z", "duration": 1800, "title": "The Rifleman", "description": "Lucas McCain raises a son while battling desperados in New Mexico."}, {"start": "2026-09-17T11:00Z", "duration": 7200, "title": "Montana This Morning", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T13:00Z", "duration": 7200, "title": "Morning Rush", "description": "Alex Livingston, Rob Nelson, Jay Strubberg and Lindsay Tuchman bring the stories that will be talked about thr"}, {"start": "2026-09-17T15:00Z", "duration": 3600, "title": "Morning Rush", "description": "Alex Livingston, Rob Nelson, Jay Strubberg and Lindsay Tuchman bring the stories that will be talked about thr"}, {"start": "2026-09-17T16:00Z", "duration": 3600, "title": "The Jason Show", "description": "\"The Jason Show\" is a lively, fast-paced talk show, hosted by Jason Matheson, serving up a mix of pop culture,"}, {"start": "2026-09-17T17:00Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-17T17:30Z", "duration": 1800, "title": "The Drew Barrymore Show", "description": "Drew Barrymore presents human-interest stories, celebrity guests, lifestyle segments and field pieces, all dri"}, {"start": "2026-09-17T18:00Z", "duration": 1800, "title": "The Noon News", "description": "Stay informed with the latest breaking news and headlines."}, {"start": "2026-09-17T18:30Z", "duration": 1800, "title": "ES.TV", "description": "Tom Holland; Mary Steenburgen; filmmaker Benny Safdie; Jessica Chastain; comic Reggie Jr; singer Dasha."}, {"start": "2026-09-17T19:00Z", "duration": 1800, "title": "Business First With Angela Miles", "description": "An entertaining daily business news show giving everyday Americans an edge in the stock market straight from t"}, {"start": "2026-09-17T19:30Z", "duration": 1800, "title": "Bob Hearts Abishola", "description": "Having spurned her family when she quit MaxDot, Christina turns to Abishola when she's fired from Toesey Woesi"}, {"start": "2026-09-17T20:00Z", "duration": 3600, "title": "The Listener", "description": "Toby Logan, a 25-year-old paramedic, uses his secret telepathic ability to help people in crisis. Until now, T"}, {"start": "2026-09-17T21:00Z", "duration": 3600, "title": "Suits", "description": "When Harvey and Zane can't stay on the sidelines, Donna does what's best for the firm."}, {"start": "2026-09-17T22:00Z", "duration": 1800, "title": "Two and a Half Men", "description": "Jake and Evelyn befriend one of Charlie's one-night stands, causing her to stay longer than expected."}]}, {"identifier": "S102027_008_03", "call_sign": "KPAXDT3", "major": 8, "minor": 3, "network": "GRIT", "airings": [{"start": "2026-09-16T16:30Z", "duration": 1800, "title": "The Lone Ranger", "description": "The Lone Ranger and Tonto track a $1 million gold shipment to a trio of bandits."}, {"start": "2026-09-16T17:00Z", "duration": 1800, "title": "Tombstone Territory", "description": "A ditch digger gets buried in a cave while digging for silver under Tombstone's main street."}, {"start": "2026-09-16T17:30Z", "duration": 1800, "title": "Tombstone Territory", "description": "Sheriff Hollister must persuade the sole survivor of an attack on a Mexican pack train to let him deal with th"}, {"start": "2026-09-16T18:00Z", "duration": 1800, "title": "Death Valley Days", "description": "After being robbed of a large sum of money, an embittered prospector denies his wife a purple silk dress that "}, {"start": "2026-09-16T18:30Z", "duration": 1800, "title": "Death Valley Days", "description": "A young widow from the east offers serious competition to the proprietor of a Nevada cafe when she opens a riv"}, {"start": "2026-09-16T19:00Z", "duration": 1800, "title": "Zane Grey Theatre", "description": "A bandit's carefully planned bank robbery takes a deadly turn."}, {"start": "2026-09-16T19:30Z", "duration": 1800, "title": "Zane Grey Theatre", "description": "A woman returning to her childhood home is greeted by her bitter father, who rejects her."}, {"start": "2026-09-16T20:00Z", "duration": 1800, "title": "Bat Masterson", "description": "Bat discovers that the newspaper reporter who characterized him as a notorious gunman is a woman named Jo Hart"}, {"start": "2026-09-16T20:30Z", "duration": 1800, "title": "Bat Masterson", "description": "Bat is deputized as a federal officer in order to escort a murder suspect to Fort Smith for trial."}, {"start": "2026-09-16T21:00Z", "duration": 1800, "title": "Tales of Wells Fargo", "description": "Attackers strike while Hardie attempts to deliver a golden owl to its wealthy purchaser."}, {"start": "2026-09-16T21:30Z", "duration": 1800, "title": "Tales of Wells Fargo", "description": "Jim gets a promotion but is disinclined toward office work, so he decides to hunt down the outlaw Johnny Reno "}, {"start": "2026-09-16T22:00Z", "duration": 1800, "title": "Tales of Wells Fargo", "description": "Hardie investigates the disappearance of a Wells Fargo agent sent to stake a claim in Oklahoma."}, {"start": "2026-09-16T22:30Z", "duration": 1800, "title": "Tales of Wells Fargo", "description": "The Wells Fargo team is tasked with protecting a shipment of jade in San Francisco."}, {"start": "2026-09-16T23:00Z", "duration": 1800, "title": "Wanted: Dead or Alive", "description": "Josh woos a beautiful Indian princess in competition with an Apache."}, {"start": "2026-09-16T23:30Z", "duration": 1800, "title": "Wanted: Dead or Alive", "description": "Josh almost comes a cropper when hunting for a fugitive charged with murder."}, {"start": "2026-09-17T00:00Z", "duration": 10800, "title": "The Man Who Shot Liberty Valance", "description": ""}, {"start": "2026-09-17T03:00Z", "duration": 9000, "title": "The Shootist", "description": ""}, {"start": "2026-09-17T05:30Z", "duration": 5400, "title": "The Hanged Man", "description": ""}, {"start": "2026-09-17T07:00Z", "duration": 1800, "title": "The Aging Brain", "description": "Learn what's behind mental decline with age, and how to improve memory, focus and concentration with NeuroQ's "}, {"start": "2026-09-17T07:30Z", "duration": 1800, "title": "Overwhelmed with IRS Debt? Keys to Resolving Tax Debt", "description": "See how one company is changing people's lives by helping them put their tax problems to rest."}, {"start": "2026-09-17T08:00Z", "duration": 1800, "title": "Inogen Portable Oxygen - No More Tanks!", "description": "Regain independence and enjoy greater mobility with the compact design and long-lasting battery of portable ox"}, {"start": "2026-09-17T08:30Z", "duration": 1800, "title": "CSN Mint Exclusive 1776-2026 Franklin Half Dollar Overstrike", "description": "Celebrate America's 250th with a Daniel Carr Franklin Half Dollar overstrike exclusively from CSN, struck over"}, {"start": "2026-09-17T09:00Z", "duration": 1800, "title": "Bathroom Makeover", "description": "Transform your bath affordably in just one day!"}, {"start": "2026-09-17T09:30Z", "duration": 1800, "title": "Interested in Gold? Learn More!", "description": "Gold has been the best long-term asset class for thousands of years; find out how you can protect your financi"}, {"start": "2026-09-17T10:00Z", "duration": 7200, "title": "Cariboo Trail", "description": ""}, {"start": "2026-09-17T12:00Z", "duration": 7200, "title": "The Desperadoes", "description": ""}, {"start": "2026-09-17T14:00Z", "duration": 9000, "title": "Badman's Territory", "description": ""}, {"start": "2026-09-17T16:30Z", "duration": 9000, "title": "Grey Owl", "description": ""}, {"start": "2026-09-17T19:00Z", "duration": 9000, "title": "Tom Horn", "description": ""}, {"start": "2026-09-17T21:30Z", "duration": 9000, "title": "The Shakiest Gun in the West", "description": ""}]}, {"identifier": "S109970_008_04", "call_sign": "KPAXDT4", "major": 8, "minor": 4, "network": "ION", "airings": [{"start": "2026-09-16T16:00Z", "duration": 3600, "title": "Law & Order: Special Victims Unit", "description": "Benson must disclose the secrets of her past to help a rape victim recall the details of one terrible, traumat"}, {"start": "2026-09-16T17:00Z", "duration": 3600, "title": "Law & Order: Special Victims Unit", "description": "The cops get tangled in an elaborate online hoax that leads to the rape of a popular social media star; Benson"}, {"start": "2026-09-16T18:00Z", "duration": 3300, "title": "Blue Bloods", "description": "Jamie and his new intel team officer infiltrate a high-tech car smuggling ring; Frank faces off against the ci"}, {"start": "2026-09-16T18:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Jamie learns that Eddie's close friend Tracey may be using the restaurant she owns as a drug front; Erin is ac"}, {"start": "2026-09-16T19:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Frank clashes with the team when one of the members becomes the focus of a departmental investigation; Jamie a"}, {"start": "2026-09-16T20:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Danny and Baez investigate a case of grand larceny tied to feuding crime families; Frank clashes with Mayor Ch"}, {"start": "2026-09-16T21:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Jamie partners with the FDNY to find the arsonist responsible for a massive fire at an NYPD evidence storage f"}, {"start": "2026-09-16T22:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Frank worries his longtime friend is hiding his true reason for returning to the city; Baez and her daughter a"}, {"start": "2026-09-16T23:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Danny and Baez team up with Danny's old partner to find a copycat killer emulating a criminal's murders from a"}, {"start": "2026-09-17T00:55Z", "duration": 3600, "title": "Blue Bloods", "description": "Jaime goes undercover with a deadly human trafficking ring; Danny and Baez investigate a homicide connected to"}, {"start": "2026-09-17T01:55Z", "duration": 3900, "title": "Blue Bloods", "description": "Danny and Baez join forces with Danny's old partner when a serial killer reappears; Eddie faces backlash when "}, {"start": "2026-09-17T03:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Frank grapples with the personal loss of his best friend and how best to help Tess Ross, the daughter of his b"}, {"start": "2026-09-17T04:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Danny reunites with a troublesome teenager from a past case when the youth finds herself in danger; Frank face"}, {"start": "2026-09-17T05:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Erin is designated to lead a federal investigation into corrupt horse racing; Jamie investigates a drug traffi"}, {"start": "2026-09-17T06:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Danny and Baez investigate a homicide involving voodoo with the help of Baez's old partner; Eddie and a fellow"}, {"start": "2026-09-17T07:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Jamie works to bust scammers who are defrauding the elderly; Danny and Baez investigate a series of mysterious"}, {"start": "2026-09-17T08:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Danny and Baez are on edge when Sam Evans, a serial killer who once targeted Baez and her daughter, is release"}, {"start": "2026-09-17T09:00Z", "duration": 3600, "title": "Blue Bloods", "description": "Danny gets involved when Sean becomes the latest victim in a series of robberies on Sean's college campus; Eri"}, {"start": "2026-09-17T10:00Z", "duration": 1800, "title": "Inogen Portable Oxygen - No More Tanks!", "description": "Regain independence and enjoy greater mobility with the compact design and long-lasting battery of portable ox"}, {"start": "2026-09-17T10:30Z", "duration": 1800, "title": "Joint Relief Revolution", "description": "Join Connie Craig-Carroll and health visionary Ken Meares as they uncover OmegaXL, the groundbreaking natural "}, {"start": "2026-09-17T11:00Z", "duration": 1800, "title": "CSN Mint: 1776-2026 Proof Silver American Eagle in Original U.S. Mint Packaging", "description": "Join CSN Mint for the historic 2026-W Proof Silver Eagle, featuring the first-ever 1776-2026 dual date, Libert"}, {"start": "2026-09-17T11:30Z", "duration": 1800, "title": "Through the Bible With Les Feldick", "description": "Les Feldick, an Oklahoma farmer and rancher with a special gift for teaching the Bible; his simple and nondeno"}, {"start": "2026-09-17T12:00Z", "duration": 1800, "title": "Natural Blood Pressure Management", "description": "Cardiologist Dr. Ernst von Schwarz, M.D. shows how to manage your blood pressure naturally and help protect yo"}, {"start": "2026-09-17T12:30Z", "duration": 1800, "title": "Paid Programming", "description": "Paid programming."}, {"start": "2026-09-17T13:00Z", "duration": 3600, "title": "NCIS", "description": "During an investigation, Abby is trapped in a pharmaceutical lab when armed men enter the building and take ho"}, {"start": "2026-09-17T14:00Z", "duration": 3600, "title": "NCIS", "description": "When a petty officer is murdered, the crime matches a local serial killer's method of operation; Delilah and M"}, {"start": "2026-09-17T15:00Z", "duration": 3600, "title": "NCIS", "description": "A murder forces Ducky to disclose his participation in a secret society devoted to solving cold cases."}, {"start": "2026-09-17T16:00Z", "duration": 3300, "title": "NCIS", "description": "Insurgents in Sudan attack volunteer doctors \u2014 including the man married to DiNozzo's ex-girlfriend, Jeanne Be"}, {"start": "2026-09-17T16:55Z", "duration": 3600, "title": "FBI", "description": "A car crash results in the death of a photographer; Maggie sympathizes with his widow when she notices similar"}, {"start": "2026-09-17T17:55Z", "duration": 3600, "title": "FBI", "description": "After an altercation with a student, teacher Patrick Miller goes missing, leading the team to investigate ever"}, {"start": "2026-09-17T18:55Z", "duration": 3600, "title": "FBI", "description": "A former kidnapping victim is linked to a series of murders that includes the daughter of an NYPD detective; K"}, {"start": "2026-09-17T19:55Z", "duration": 3600, "title": "FBI", "description": "After a businessman with a history of harassment claims against him is killed, the team suspects the killer ma"}, {"start": "2026-09-17T20:55Z", "duration": 3600, "title": "FBI", "description": "A bank holdup leads the team to a safe deposit box, the contents of which have the potential to destroy nation"}, {"start": "2026-09-17T21:55Z", "duration": 3600, "title": "FBI", "description": "The son of a retired FBI agent is kidnapped, and the team must investigate if it's an act of revenge; Isobel m"}]}, {"identifier": "S125355_008_05", "call_sign": "KPAXDT5", "major": 8, "minor": 5, "network": "COURT", "airings": [{"start": "2026-09-16T16:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T17:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T18:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T19:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T20:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T21:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T22:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-16T23:00Z", "duration": 3600, "title": "48 Hours", "description": "When a woman disappears, no one reports her missing for months until she misses an appointment with her hairdr"}, {"start": "2026-09-17T00:00Z", "duration": 3600, "title": "VPI: Vinnie Politan Investigates", "description": "Vinnie Politan takes a deep dive into the true-crime stories that are captivating the world over."}, {"start": "2026-09-17T01:00Z", "duration": 3600, "title": "Accomplice to Murder, With Vinnie Politan", "description": "Investigators compared the gruesome scene of Earl and Terry Robertson's death to that of the Charles Manson mu"}, {"start": "2026-09-17T02:00Z", "duration": 3600, "title": "Prime Crime", "description": "A police officer's party becomes a real-life murder mystery when an officer's body turns up."}, {"start": "2026-09-17T03:00Z", "duration": 3600, "title": "Prime Crime", "description": "When a young girl's disappearance goes unnoticed for two years, suspicion surrounds her father."}, {"start": "2026-09-17T04:00Z", "duration": 3600, "title": "VPI: Vinnie Politan Investigates", "description": "Vinnie Politan takes a deep dive into the true-crime stories that are captivating the world over."}, {"start": "2026-09-17T05:00Z", "duration": 3600, "title": "Accomplice to Murder, With Vinnie Politan", "description": "Investigators compared the gruesome scene of Earl and Terry Robertson's death to that of the Charles Manson mu"}, {"start": "2026-09-17T06:00Z", "duration": 3600, "title": "Prime Crime", "description": "A police officer's party becomes a real-life murder mystery when an officer's body turns up."}, {"start": "2026-09-17T07:00Z", "duration": 3600, "title": "Prime Crime", "description": "When a young girl's disappearance goes unnoticed for two years, suspicion surrounds her father."}, {"start": "2026-09-17T08:00Z", "duration": 3600, "title": "Victim to Verdict", "description": "When Lori Vallow's children go missing, she heads to Hawaii to marry cult leader Chad Daybell, leaving behind "}, {"start": "2026-09-17T09:00Z", "duration": 3600, "title": "Victim to Verdict", "description": "A Sunday afternoon movie date turns deadly when a confrontation over a cell phone and a bag of popcorn ends wi"}, {"start": "2026-09-17T10:00Z", "duration": 3600, "title": "Someone They Knew with Tamron Hall", "description": "HS football coach Ed Thomas is a legend in Parkersburg, Iowa, who had mentored multiple players into the NFL, "}, {"start": "2026-09-17T11:00Z", "duration": 3600, "title": "Someone They Knew with Tamron Hall", "description": "On the surface the Carters seemed like a happy family of Iowa farmers, but when they discover Shirley Carter s"}, {"start": "2026-09-17T12:00Z", "duration": 3600, "title": "VPI: Vinnie Politan Investigates", "description": "Vinnie Politan takes a deep dive into the true-crime stories that are captivating the world over."}, {"start": "2026-09-17T13:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T14:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T15:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T16:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T17:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T18:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T19:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T20:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T21:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}, {"start": "2026-09-17T22:00Z", "duration": 3600, "title": "Court TV Live", "description": "Gavel-to-gavel coverage and legal analysis of the nation's most compelling trials."}]}]}</script>
+<script>
+(function () {
+  "use strict";
+
+  var DATA    = JSON.parse(document.getElementById("guide-data").textContent);
+  var HOUR_W  = 240;   // narrowed from the app's 400 so a few hours fit here
+  var CH_W    = 84;
+  var ROW_H   = 46;
+  var HOURS   = 30;
+  var HEAD_H  = 57;    // day band 24 + its border + hour row 32
+  var RAIL_W  = 22;
+  var OVERLAP = HOUR_W;
+
+  var START = new Date(DATA.start);
+  var SMOOTH = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "auto" : "smooth";
+
+  function fmtHour(d) {
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  function fmtDay(d) {
+    return d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  }
+
+  function dayBands() {
+    var out = [];
+    for (var i = 0; i < HOURS; i++) {
+      var d = new Date(START.getTime() + i * 3600000);
+      var key = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+      var last = out[out.length - 1];
+      if (last && last.key === key) last.hours += 1;
+      else out.push({ key: key, label: fmtDay(d), hours: 1 });
+    }
+    return out;
+  }
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function buildGuide(frame, variant) {
+    var sc = el("div", "scroller");
+    sc.tabIndex = 0;
+    sc.setAttribute("role", "region");
+    sc.setAttribute("aria-label", "Programme guide");
+    if (variant === "timebar" || variant === "geared-bare" || variant === "grab-body" ||
+        variant === "grab-locked") sc.classList.add("timebar");
+
+    var surface = el("div", "surface");
+    surface.style.width = (CH_W + HOURS * HOUR_W) + "px";
+
+    var head = el("div", "ghead");
+    var corner = el("div", "corner");
+    corner.style.width = CH_W + "px";
+    corner.appendChild(el("span", null, "Channel"));
+    head.appendChild(corner);
+
+    var stack = el("div", "ghead-stack");
+    // A permanent left rail stands exactly where the date pins itself, so the
+    // label clears it. The on-approach variant keeps the date at the column
+    // edge and lets the rail cover it while the pointer is in - which is the
+    // moment you are reaching for the rail rather than reading the date.
+    var labelLeft = (variant === "rails" || variant === "rails-geared")
+      ? CH_W + RAIL_W : CH_W;
+    var band = el("div", "dayband");
+    dayBands().forEach(function (d) {
+      var b = el("div", "day");
+      b.style.width = (d.hours * HOUR_W) + "px";
+      var lab = el("b", null, d.label);
+      lab.style.left = labelLeft + "px";
+      b.appendChild(lab);
+      band.appendChild(b);
+    });
+    stack.appendChild(band);
+
+    var hourRow = el("div", "hourrow");
+    for (var i = 0; i < HOURS; i++) {
+      var d = new Date(START.getTime() + i * 3600000);
+      var prev = i === 0 ? null : new Date(START.getTime() + (i - 1) * 3600000);
+      var first = prev === null || d.getDate() !== prev.getDate();
+      var h = el("div", "hour" + (first ? " dayfirst" : ""), fmtHour(d));
+      h.style.width = HOUR_W + "px";
+      hourRow.appendChild(h);
+    }
+    stack.appendChild(hourRow);
+    head.appendChild(stack);
+    surface.appendChild(head);
+
+    DATA.channels.forEach(function (ch) {
+      var row = el("div", "grow");
+      var cell = el("div", "chcell");
+      cell.style.width = CH_W + "px";
+      cell.style.height = ROW_H + "px";
+      cell.appendChild(el("b", null, ch.call_sign));
+      cell.appendChild(el("span", null, ch.major + "." + ch.minor));
+      row.appendChild(cell);
+
+      var lane = el("div", "lane");
+      lane.style.width = (HOURS * HOUR_W) + "px";
+      lane.style.height = ROW_H + "px";
+
+      ch.airings.forEach(function (a) {
+        var s = new Date(a.start).getTime();
+        var left = ((s - START.getTime()) / 3600000) * HOUR_W;
+        var width = (a.duration / 3600) * HOUR_W;
+        if (left + width < 0) return;
+        if (left < 0) { width += left; left = 0; }
+        if (width < 16) return;
+        var box = el("div", "air");
+        box.dataset.title = a.title || "Live TV Event";
+        box.dataset.when = ch.call_sign + " " + ch.major + "." + ch.minor + "  " +
+          new Date(a.start).toLocaleDateString([], { weekday: "short" }) + " " +
+          fmtHour(new Date(a.start));
+        box.style.left = left + "px";
+        box.style.width = (width - 3) + "px";
+        box.appendChild(el("b", null, a.title || "Live TV Event"));
+        box.appendChild(el("span", null, a.description || "Live TV Event"));
+        lane.appendChild(box);
+      });
+      row.appendChild(lane);
+      surface.appendChild(row);
+    });
+
+    var nowLeft = ((Date.now() - START.getTime()) / 3600000) * HOUR_W;
+    if (nowLeft >= 0 && nowLeft <= HOURS * HOUR_W) {
+      var line = el("div", "nowline");
+      line.style.left = (CH_W + nowLeft) + "px";
+      line.appendChild(el("i"));
+      surface.appendChild(line);
+    }
+
+    sc.appendChild(surface);
+    frame.appendChild(sc);
+    return sc;
+  }
+
+  function addRails(frame, sc, quiet) {
+    if (quiet) frame.classList.add("quiet");
+
+    function page(dir) {
+      var step = Math.max(HOUR_W, sc.clientWidth - CH_W - OVERLAP);
+      sc.scrollTo({ left: sc.scrollLeft + dir * step, behavior: SMOOTH });
+    }
+
+    var prev = el("button", "rail prev", "\u2039");
+    var next = el("button", "rail next", "\u203a");
+    prev.type = next.type = "button";
+    prev.setAttribute("aria-label", "Earlier");
+    next.setAttribute("aria-label", "Later");
+    // The rails stand in the header strip, so they take its height exactly,
+    // and the back one starts where the timeline does rather than where the
+    // frame does - the frozen channel column is not its to cover.
+    prev.style.height = next.style.height = HEAD_H + "px";
+    prev.style.left = CH_W + "px";
+    prev.addEventListener("click", function () { page(-1); });
+    next.addEventListener("click", function () { page(1); });
+    frame.appendChild(prev);
+    frame.appendChild(next);
+
+    function sync() {
+      var max = sc.scrollWidth - sc.clientWidth;
+      prev.disabled = sc.scrollLeft <= 1;
+      next.disabled = sc.scrollLeft >= max - 1;
+    }
+    sc.addEventListener("scroll", sync);
+    window.addEventListener("resize", sync);
+    sync();
+  }
+
+  /* Drag the header strip, and let it carry on when released.
+     Mouse and pen only: a touch already pans the scroller natively, and
+     hijacking it would replace a good gesture with a worse one. */
+  var DATE_GAIN = 4;   // a band is a day, so a throw across it covers days
+
+  function addHeaderDrag(sc, geared) {
+    var head = sc.querySelector(".ghead");
+    head.classList.add("draggable");
+    if (geared) head.classList.add("geared");
+    var gain = 1;
+
+    var down = false, moved = false, startX = 0, startLeft = 0;
+    var samples = [];
+    var raf = null;
+
+    function stopGlide() {
+      if (raf !== null) { cancelAnimationFrame(raf); raf = null; }
+    }
+
+    head.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "touch" || e.button !== 0) return;
+      stopGlide();
+      down = true;
+      moved = false;
+      startX = e.clientX;
+      startLeft = sc.scrollLeft;
+      // Which row was grabbed decides the gearing, and it is fixed for the
+      // whole gesture: re-reading it mid-drag would change ratio under the
+      // hand whenever the pointer strayed a row.
+      gain = geared && e.target.closest(".dayband") ? DATE_GAIN : 1;
+      if (geared) sc.dataset.gear = gain;
+      samples = [{ t: performance.now(), x: e.clientX }];
+      head.setPointerCapture(e.pointerId);
+      head.classList.add("dragging");
+      e.preventDefault();
+    });
+
+    head.addEventListener("pointermove", function (e) {
+      if (!down) return;
+      var dx = e.clientX - startX;
+      if (Math.abs(dx) > 2) moved = true;
+      sc.scrollLeft = startLeft - dx * gain;
+      samples.push({ t: performance.now(), x: e.clientX });
+      if (samples.length > 12) samples.shift();
+    });
+
+    function release(e) {
+      if (!down) return;
+      down = false;
+      head.classList.remove("dragging");
+      if (head.hasPointerCapture(e.pointerId)) head.releasePointerCapture(e.pointerId);
+      if (!moved || SMOOTH === "auto") return;   // reduced motion: stop dead
+
+      // Only the last ~90ms decides the throw: the newest sample, against the
+      // oldest one still inside that window. Measuring across the whole drag
+      // reads a slow reposition ending in a flick as barely moving - and if
+      // moves arrive sparsely, as they do on a busy main thread, it reads
+      // every throw as barely moving. Nothing recent enough means no throw,
+      // which is right: a pointer that has been still is not being flung.
+      var last = samples[samples.length - 1];
+      // Held still before letting go: that is a place, not a throw. Measured
+      // against the release, not between samples - the gap between the last
+      // two moves says nothing about the pause that followed them.
+      if (performance.now() - last.t > 90) return;
+      var first = last;
+      for (var i = samples.length - 2; i >= 0; i--) {
+        if (last.t - samples[i].t > 90) break;
+        first = samples[i];
+      }
+      var span = last.t - first.t;
+      if (span <= 0) return;
+      var v = ((last.x - first.x) / span) * gain;   // px per ms, geared
+      if (Math.abs(v) < 0.05) return;
+
+      var prev = performance.now();
+      raf = requestAnimationFrame(function glide(ts) {
+        var step = ts - prev;
+        prev = ts;
+        if (step > 0) {
+          var was = sc.scrollLeft;
+          sc.scrollLeft -= v * step;
+          // Clamped at either end: the guide has run out, so stop rather than
+          // grind against the edge for the rest of the decay.
+          if (sc.scrollLeft === was) { raf = null; return; }
+          // Exponential decay per millisecond, so the glide lasts about the
+          // same time whatever the frame rate: 0.995^600 is roughly 5% left.
+          v *= Math.pow(0.995, step);
+        }
+        if (Math.abs(v) < 0.02) { raf = null; return; }
+        raf = requestAnimationFrame(glide);
+      });
+    }
+
+    head.addEventListener("pointerup", release);
+    head.addEventListener("pointercancel", release);
+    // A new grab always beats a glide in progress.
+    head.addEventListener("pointerdown", stopGlide);
+  }
+
+  var DRAG_SLOP = 4;   // travel that separates a click from a pan
+
+  /* The listings as a drag surface, without taking the click away from the
+     chips. Both axes at one-to-one: this is the content itself moving, so any
+     gearing here would be the guide sliding out from under the pointer. */
+  function addBodyDrag(sc, frame, onOpen, lockAxis) {
+    var surface = sc.querySelector(".surface");
+    sc.classList.add("grabbable");
+
+    var g = null;      // the live gesture
+    var raf = null;
+
+    function stopGlide() {
+      if (raf !== null) { cancelAnimationFrame(raf); raf = null; }
+    }
+
+    surface.addEventListener("pointerdown", function (e) {
+      // The header is its own surface with its own gearing.
+      if (e.target.closest(".ghead")) return;
+      if (e.pointerType === "touch" || e.button !== 0) return;
+      stopGlide();
+      g = {
+        id: e.pointerId,
+        x: e.clientX, y: e.clientY,
+        left: sc.scrollLeft, top: sc.scrollTop,
+        moved: false,
+        samples: [{ t: performance.now(), x: e.clientX, y: e.clientY }]
+      };
+      surface.setPointerCapture(e.pointerId);
+    });
+
+    surface.addEventListener("pointermove", function (e) {
+      if (!g || g.id !== e.pointerId) return;
+      var dx = e.clientX - g.x, dy = e.clientY - g.y;
+      if (!g.moved && Math.abs(dx) + Math.abs(dy) > DRAG_SLOP) {
+        g.moved = true;
+        // The axis is settled once, at the threshold, and held for the whole
+        // gesture. Re-deciding it per move would flip the lock under the hand
+        // on any stroke that wandered.
+        g.axis = !lockAxis ? "both" : (Math.abs(dx) >= Math.abs(dy) ? "x" : "y");
+        sc.classList.add("panning");
+      }
+      if (!g.moved) return;
+      if (g.axis !== "y") sc.scrollLeft = g.left - dx;
+      if (g.axis !== "x") sc.scrollTop  = g.top  - dy;
+      g.samples.push({ t: performance.now(), x: e.clientX, y: e.clientY });
+      if (g.samples.length > 12) g.samples.shift();
+    });
+
+    function release(e) {
+      if (!g || g.id !== e.pointerId) return;
+      var gesture = g;
+      g = null;
+      sc.classList.remove("panning");
+      if (surface.hasPointerCapture(e.pointerId)) surface.releasePointerCapture(e.pointerId);
+
+      if (!gesture.moved) {
+        // Under the threshold, so this was a click after all.
+        var chip = e.target.closest(".air");
+        if (chip) onOpen(chip);
+        return;
+      }
+      if (SMOOTH === "auto") return;
+
+      var last = gesture.samples[gesture.samples.length - 1];
+      if (performance.now() - last.t > 90) return;
+      var first = last;
+      for (var i = gesture.samples.length - 2; i >= 0; i--) {
+        if (last.t - gesture.samples[i].t > 90) break;
+        first = gesture.samples[i];
+      }
+      var span = last.t - first.t;
+      if (span <= 0) return;
+      var vx = gesture.axis === "y" ? 0 : (last.x - first.x) / span;
+      var vy = gesture.axis === "x" ? 0 : (last.y - first.y) / span;
+      if (Math.abs(vx) < 0.05 && Math.abs(vy) < 0.05) return;
+
+      var prev = performance.now();
+      raf = requestAnimationFrame(function glide(ts) {
+        var step = ts - prev;
+        prev = ts;
+        if (step > 0) {
+          var wasX = sc.scrollLeft, wasY = sc.scrollTop;
+          sc.scrollLeft -= vx * step;
+          sc.scrollTop  -= vy * step;
+          if (sc.scrollLeft === wasX) vx = 0;
+          if (sc.scrollTop === wasY) vy = 0;
+          var decay = Math.pow(0.995, step);
+          vx *= decay;
+          vy *= decay;
+        }
+        if (Math.abs(vx) < 0.02 && Math.abs(vy) < 0.02) { raf = null; return; }
+        raf = requestAnimationFrame(glide);
+      });
+    }
+
+    surface.addEventListener("pointerup", release);
+    surface.addEventListener("pointercancel", release);
+  }
+
+  /* Stands in for the show sheet: enough to prove a click still lands. */
+  function makePeek(frame) {
+    var panel = null;
+    return function open(chip) {
+      if (panel) panel.remove();
+      panel = el("div", "peek");
+      var text = el("div");
+      text.appendChild(el("b", null, chip.dataset.title || "Live TV Event"));
+      text.appendChild(el("span", null, chip.dataset.when || ""));
+      var close = el("button", null, "\u00d7");
+      close.type = "button";
+      close.setAttribute("aria-label", "Close");
+      close.addEventListener("click", function () { panel.remove(); panel = null; });
+      panel.appendChild(text);
+      panel.appendChild(close);
+      frame.appendChild(panel);
+    };
+  }
+
+  function wireReadout(sc, node, hint) {
+    var edge = el("span"), pos = el("span"), tip = el("span", "hint", hint);
+    node.appendChild(edge);
+    node.appendChild(pos);
+    node.appendChild(tip);
+
+    function paint() {
+      var max = Math.max(1, sc.scrollWidth - sc.clientWidth);
+      var at = new Date(START.getTime() + (sc.scrollLeft / HOUR_W) * 3600000);
+      edge.innerHTML = "left edge <b>" +
+        at.toLocaleDateString([], { weekday: "short" }) + " " + fmtHour(at) + "</b>";
+      pos.innerHTML = "scrolled <b>" + Math.round((sc.scrollLeft / max) * 100) +
+        "%</b> of 30 hours" +
+        (sc.dataset.gear ? " &middot; gear <b>\u00d7" + sc.dataset.gear + "</b>" : "");
+    }
+    sc.addEventListener("scroll", paint);
+    window.addEventListener("resize", paint);
+    paint();
+  }
+
+  var HINTS = {
+    "timebar":     "try: drag the bar under the listings",
+    "rails":       "try: drag the clock and let go mid-throw",
+    "rails-geared": "try: the same throw from the date row, then the hour row",
+    "geared-bare": "try: the date row, then the bar under the listings",
+    "grab-body":   "try: click a programme, then drag one",
+    "grab-locked": "try: a deliberately sloppy sideways drag",
+    "rails-quiet": "try: move the pointer in, then out again"
+  };
+
+  document.querySelectorAll(".bench").forEach(function (bench) {
+    var variant = bench.dataset.variant;
+    var frame = bench.querySelector(".guide-frame");
+    var sc = buildGuide(frame, variant);
+    if (variant === "rails")       { addRails(frame, sc, false); addHeaderDrag(sc, false); }
+    if (variant === "rails-geared") {
+      addRails(frame, sc, false);
+      addHeaderDrag(sc, true);
+    }
+    if (variant === "geared-bare") addHeaderDrag(sc, true);
+    if (variant === "grab-body") {
+      addHeaderDrag(sc, true);
+      addBodyDrag(sc, frame, makePeek(frame), false);
+    }
+    if (variant === "grab-locked") {
+      addHeaderDrag(sc, true);
+      addBodyDrag(sc, frame, makePeek(frame), true);
+    }
+    if (variant === "rails-quiet") addRails(frame, sc, true);
+    wireReadout(sc, bench.querySelector(".readout"), HINTS[variant]);
+    var nowLeft = ((Date.now() - START.getTime()) / 3600000) * HOUR_W;
+    sc.scrollLeft = Math.max(0, nowLeft - HOUR_W * 0.25);
+  });
+
+  var airings = DATA.channels.reduce(function (n, c) { return n + c.airings.length; }, 0);
+  [[DATA.channels.length, "channels"],
+   [airings, "airings"],
+   [HOURS + "h", "of listings"],
+   [fmtDay(START), "grid opens"]
+  ].forEach(function (f) {
+    var n = el("div", "fact");
+    n.appendChild(el("b", null, String(f[0])));
+    n.appendChild(el("span", null, f[1]));
+    document.getElementById("facts").appendChild(n);
+  });
+})();
+</script>
