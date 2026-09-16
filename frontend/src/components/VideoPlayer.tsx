@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize } from "lucide-react";
+import {
+  X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
+  PictureInPicture2,
+} from "lucide-react";
 import { usePlayer } from "../hooks/usePlayer";
 import { api, previewUrl } from "../api/tablo";
 import type {
@@ -175,6 +178,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const videoRef = useRef<HTMLVideoElement>(null);
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
+  /** Where the video sits, and returns to after a spell in its own window. */
+  const videoHostRef = useRef<HTMLDivElement>(null);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -852,6 +857,64 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   }, []);
 
   /**
+   * Pop the picture out into its own always-on-top window, and back.
+   *
+   * The browser already offered this, as a floating button of its own in the
+   * middle of the frame — browser chrome rather than ours, and a moving target
+   * to hit. The only way a page can take that button away is
+   * `disablePictureInPicture`, which also closes the ordinary
+   * `requestPictureInPicture` door, so the pop-out goes through the Document
+   * Picture-in-Picture API: it hands back an empty always-on-top window and
+   * the page furnishes it.
+   *
+   * What we put in it is the video element itself, moved. Re-rendering it
+   * there instead would build a second element, and the stream is attached to
+   * this one — hls.js feeds it through a MediaSource, so a fresh element would
+   * start over from nothing. Moving keeps the buffer, the playhead and the
+   * attachment; the window is furnished with the picture and nothing else,
+   * which is what the browser's own version showed too.
+   */
+  const pipWindow = useRef<Window | null>(null);
+
+  const togglePictureInPicture = useCallback(async () => {
+    const video = videoRef.current;
+    const host = videoHostRef.current;
+    const dpip = (window as unknown as { documentPictureInPicture?: {
+      requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
+    } }).documentPictureInPicture;
+    if (!video || !host || !dpip) return;
+
+    if (pipWindow.current) { pipWindow.current.close(); return; }
+
+    try {
+      // Proportioned to the picture so the window opens without letterboxing.
+      const w = await dpip.requestWindow({
+        width: 480,
+        height: Math.round(480 * (video.videoHeight / (video.videoWidth || 16 / 9) || 9 / 16)),
+      });
+      pipWindow.current = w;
+      w.document.body.style.cssText = "margin:0;background:#000;overflow:hidden";
+      video.style.cssText = "width:100vw;height:100vh;object-fit:contain";
+      w.document.body.append(video);
+
+      // Closing is the viewer's, not ours: the window has its own close
+      // button, and the tab needs its picture back whichever way it goes.
+      w.addEventListener("pagehide", () => {
+        video.style.cssText = "";
+        host.append(video);
+        pipWindow.current = null;
+      }, { once: true });
+    } catch (e) {
+      // Refused for want of a user gesture, or not implemented here after all.
+      log.warn("picture-in-picture rejected", e);
+    }
+  }, []);
+
+  // A player torn down while popped out would leave the window orphaned,
+  // holding a video element that no longer belongs to anything.
+  useEffect(() => () => pipWindow.current?.close(), []);
+
+  /**
    * Click zones across the video surface: left two fifths rewind, middle fifth
    * toggles play, right two fifths skip forward. Deliberately invisible — no
    * overlay or icon feedback.
@@ -1040,7 +1103,24 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       {/* No autoPlay attribute: usePlayer starts playback explicitly. Leaving it
           on let the browser resume by itself whenever the element received data
           after a stall, so pause would not stick and playback could jump. */}
-      <video ref={videoRef} className="w-full h-full object-contain" playsInline />
+      {/* The video lives alone inside a host of its own so that picture-in-
+          picture can physically move it into another window and put it back.
+          React owns this host's children and never inserts a sibling beside
+          the video, so while the element is away there is no reference node
+          for a later render to trip over. */}
+      <div ref={videoHostRef} className="w-full h-full">
+        <video
+          ref={videoRef}
+          className="w-full h-full object-contain"
+          playsInline
+          // Suppresses the browser's own floating picture-in-picture button,
+          // which sits in the middle of the frame in browser chrome rather
+          // than ours and is the reason the control below exists. It also
+          // disables `requestPictureInPicture`, so the pop-out goes through
+          // the Document Picture-in-Picture API instead.
+          disablePictureInPicture
+        />
+      </div>
 
       {/* A blocking sheet, not a see-through veil: it carries text and a button,
           so it uses the player's own panel rather than a scrim. In light that is
@@ -1428,6 +1508,20 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   ? <VolumeX className="w-4 h-4" aria-hidden />
                   : <Volume2 className="w-4 h-4" aria-hidden />}
               </button>
+
+              {/* Only where the API exists. Safari has no Document
+                  Picture-in-Picture, so the button would promise nothing
+                  there — better absent than dead. */}
+              {"documentPictureInPicture" in window && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
+                  className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                  title="Picture in picture"
+                  aria-label="Picture in picture"
+                >
+                  <PictureInPicture2 className="w-4 h-4" aria-hidden />
+                </button>
+              )}
 
               <button
                 onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
