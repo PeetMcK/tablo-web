@@ -748,7 +748,15 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       </div>
     </div>
 
-    <div className="flex flex-col flex-1 min-h-0 border border-border-subtle rounded-3xl overflow-hidden bg-surface-raised shadow-2xl shadow-shade">
+    {/* On a phone the grid is the page, so it stops being a card: it breaks
+        back out of the page's own `px-6` with `-mx-6`, drops the rounding and
+        the side borders that would draw a frame around something touching both
+        edges, and keeps only the rules above and below it. Every pixel of that
+        inset was timeline on the one screen that can least afford to lose it.
+        The `-mx-6` is tied to main's `px-6` — move one and move the other. */}
+    <div className="flex flex-col flex-1 min-h-0 -mx-6 sm:mx-0 border-y sm:border
+                    border-border-subtle rounded-none sm:rounded-3xl overflow-hidden
+                    bg-surface-raised shadow-2xl shadow-shade">
       {/* The single scroller. Both axes, and the only scroll position in the
           guide. `min-h-0` so it can shrink inside the flex column above it. */}
       <div

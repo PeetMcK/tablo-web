@@ -50,6 +50,17 @@ describe("the space under the header", () => {
     renderShell();
     expect(document.querySelector("main")!.className).toMatch(/\bpb-10\b/);
   });
+
+  it("drops that foot under the guide on a phone", async () => {
+    // The grid runs to both edges there, so a band of page under it would be
+    // the one side still framed.
+    window.history.replaceState(null, "", "#/grid");
+    renderShell();
+
+    const main = document.querySelector("main")!.className;
+    expect(main).toMatch(/\bpb-0\b/);
+    expect(main).toMatch(/\bsm:pb-10\b/);
+  });
 });
 
 describe("Live TV's content filter chips", () => {
