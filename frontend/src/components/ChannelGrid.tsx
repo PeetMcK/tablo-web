@@ -407,7 +407,12 @@ export function ChannelGrid({ onLogout }: Props) {
             belongs above every page layer; the player (z-50) and confirm dialog
             (z-60) are still above it, which is right — both are modal. */}
         <header className="sticky top-0 z-40 bg-surface border-b border-border">
-          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
+          {/* `gap-1`, the same 4px the tab pills keep between themselves, so
+              the mark reads as the first item in that run rather than a
+              separate block sat off to the left. Nothing downstream goes
+              short of air: the nav's `mr-auto` opens the whole remaining gap
+              before the search field, and the clock brings its own `ml-4`. */}
+          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-1">
             {/* The mark is also the settings menu — see AppMenu for why. */}
             <AppMenu email={userEmail} onLogout={onLogout} />
 
@@ -418,7 +423,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
-                Live TV
+                Live
               </button>
               <button
                 onClick={() => goToTab("grid")}

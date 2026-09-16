@@ -40,15 +40,26 @@ const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 const CHANNEL_W = 128;
 
 /**
- * Height of one channel row, in px. Must match the `h-24` on the timeline cell,
- * whose own bottom rule is inside that height because Tailwind's box model is
- * `border-box`.
+ * Height of one channel row, in px — and it is a measurement, not a taste.
  *
- * Used to work out which rows are in view without measuring any of them: a
- * measurement per row is a layout read per row, which is the cost this is here
- * to avoid in the first place.
+ * An airing cell never grows: it is a title on one line and a description
+ * clamped to one more, always. So the row is exactly what that content needs:
+ * the cell's own 12px padding top and bottom, a 16.5px title line, the 2px
+ * gap, and a 15px description line — 57.5 — inside the 8px the timeline
+ * insets its cells by at either end. Anything taller is dead space under every
+ * cell in the guide, which is what this used to be (`h-24`, 96px, ~22 of it
+ * empty).
+ *
+ * The frozen channel tile has to fit inside the same number, which is why its
+ * padding and logo box are as tight as they are — if it outgrows this, flex
+ * stretches the row and the gap comes straight back.
+ *
+ * It is also how the band of drawn rows below is worked out, without measuring
+ * a single row — a measurement per row is a layout read per row, which is the
+ * cost that band exists to avoid. So this number and the rendered row height
+ * have to remain the same number.
  */
-const ROW_HEIGHT = 96;
+const ROW_H = 74;
 
 /**
  * Rows drawn beyond each edge of the viewport.
@@ -439,8 +450,8 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
    */
   const [band, setBand] = useState({ first: 0, last: ROW_BUFFER * 2 });
   const trackBand = useCallback((el: HTMLDivElement) => {
-    const first = Math.max(0, Math.floor(el.scrollTop / ROW_HEIGHT) - ROW_BUFFER);
-    const last = Math.ceil((el.scrollTop + el.clientHeight) / ROW_HEIGHT) + ROW_BUFFER;
+    const first = Math.max(0, Math.floor(el.scrollTop / ROW_H) - ROW_BUFFER);
+    const last = Math.ceil((el.scrollTop + el.clientHeight) / ROW_H) + ROW_BUFFER;
     setBand((held) =>
       held.first === first && held.last === last ? held : { first, last });
   }, []);
@@ -892,11 +903,11 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             <button
               onClick={() => onPlay(ch)}
               aria-label={`Watch ${channelLabel(ch)}`}
-              className="w-32 shrink-0 p-4 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1.5
+              className="w-32 shrink-0 p-2 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1
                          bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
             >
-              <div className="w-12 h-10 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
+              <div className="w-12 h-9 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
                 <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
               </div>
               <span className="text-[11px] font-bold text-fg-muted tabular-nums">
@@ -906,8 +917,9 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
             {/* Programs Timeline — no longer a scroller, just the surface the
                 absolutely-positioned airings are placed on. */}
-            <div className="shrink-0 py-2 relative h-24 border-b border-border-subtle"
-                 style={{ width: totalHours * HOUR_WIDTH }}>
+            <div data-timeline
+                 className="shrink-0 py-2 relative border-b border-border-subtle"
+                 style={{ width: totalHours * HOUR_WIDTH, height: ROW_H }}>
               {!drawn ? null : placed.length === 0 ? (
                 /* A channel with nothing drawable is still a channel you can
                    watch — several carry no EPG data at all and were, until

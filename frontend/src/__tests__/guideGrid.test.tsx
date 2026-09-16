@@ -50,7 +50,7 @@ function scroller(container: HTMLElement): HTMLElement {
 
 /** The timeline surface of each channel row — sized, no longer scrollable. */
 function timelines(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(".h-24"));
+  return Array.from(container.querySelectorAll<HTMLElement>("[data-timeline]"));
 }
 
 /** Channel whose listings run `hours` past the top of the current hour. */
@@ -1009,6 +1009,9 @@ describe("the filter row as the window narrows", () => {
 describe("the programme cells the guide bothers to draw", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  /** The component's own `ROW_H`. Scrolling by rows means knowing it. */
+  const ROW_H = 74;
+
   /** jsdom lays nothing out, so the scroller has to be given a height. */
   function stubViewport(el: HTMLElement, height: number) {
     Object.defineProperty(el, "clientHeight", { configurable: true, value: height });
@@ -1048,7 +1051,7 @@ describe("the programme cells the guide bothers to draw", () => {
     const sc = scroller(container);
     stubViewport(sc, 400);
 
-    fireEvent.scroll(sc, { target: { scrollTop: 96 * 25 } });
+    fireEvent.scroll(sc, { target: { scrollTop: ROW_H * 25 } });
 
     expect(await screen.findByText("Row 25 show")).toBeInTheDocument();
     expect(screen.queryByText("Row 0 show")).toBeNull();
