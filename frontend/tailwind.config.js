@@ -68,16 +68,41 @@ export default {
         },
 
         // ---- Brand --------------------------------------------------------
+        // The accent IS the brand blue. The brand ships two shades - the swatch
+        // #478cc9 and its companion #2c6296 - and only one of them carries text
+        // on a pale ground, so `--c-accent` resolves to the companion in light
+        // and the swatch in dark. One name, no `dark:` at the call site.
         accent: {
           DEFAULT: rgb("c-accent"),
-          fg: rgb("c-accent-fg"), // text/icons on an accent fill
+          fg: rgb("c-accent-fg"), // text/icons on an accent fill (AA in both themes)
           soft: rgba("c-accent-soft"), // tinted accent background
           strong: rgb("c-accent-strong"), // text/icons ON an accent-soft fill
           glow: rgba("c-accent-glow"), // shadow/ring glow
         },
+        // The brand ramp, for the mark and the .accent-gradient utilities in
+        // index.css. Both stops are the brand's own in BOTH themes - it is a
+        // mark, not a themed surface. `brand-fg` is white and clears the 3:1
+        // graphic bar against both stops, not the 4.5:1 text bar; a label wants
+        // a flat `bg-accent text-accent-fg`.
         brand: {
-          from: rgb("c-brand-from"), // gradient start (blue)
-          to: rgb("c-brand-to"), // gradient end (violet)
+          from: rgb("c-brand-from"), // #478cc9, the brand swatch
+          to: rgb("c-brand-to"), // #2c6296, the brand shade
+          fg: rgb("c-brand-fg"), // marks and icons on the ramp
+        },
+
+        // ---- Weekday headings ---------------------------------------------
+        // One colour per `Date.getDay()`, Sunday first; see lib/format.ts.
+        // Dark keeps the pastels the feature shipped with, light drops them to
+        // a lightness that can carry 11px type on a pale page. For the dynamic
+        // lookup, read the variable directly: `rgb(var(--c-day-${d.getDay()}))`.
+        day: {
+          0: rgb("c-day-0"), // violet
+          1: rgb("c-day-1"), // blue
+          2: rgb("c-day-2"), // cyan
+          3: rgb("c-day-3"), // green
+          4: rgb("c-day-4"), // amber
+          5: rgb("c-day-5"), // orange
+          6: rgb("c-day-6"), // pink
         },
 
         // ---- Status -------------------------------------------------------
@@ -134,8 +159,16 @@ export default {
           buffered: rgba("c-player-buffered"), // buffered ahead
         },
       },
+      // Opaque, NOT rgb()-with-<alpha-value>. Tailwind copies this entry
+      // verbatim into the `*, ::before, ::after` defaults block, where there is
+      // no utility to substitute the placeholder - so the `<alpha-value>` form
+      // emitted `--tw-ring-offset-color: rgb(var(--c-bg) / <alpha-value>)`, an
+      // invalid colour. Every `ring-*` utility feeds that variable into its
+      // `box-shadow`, which made the whole shadow invalid at computed-value
+      // time and dropped the focus ring on every control that did not name its
+      // own offset colour. A ring offset is never translucent anyway.
       ringOffsetColor: {
-        DEFAULT: rgb("c-bg"),
+        DEFAULT: "rgb(var(--c-bg))",
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],

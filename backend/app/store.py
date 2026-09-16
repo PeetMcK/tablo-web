@@ -8,6 +8,7 @@ go through ``state._run_sync``.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -262,6 +263,16 @@ def migrate_recordings(cache_root: Path) -> int:
 # Guide
 # ---------------------------------------------------------------------------
 
+# How long an airing is kept after it ends.
+#
+# A constant with an env override rather than a stored setting - it becomes a
+# real setting when there is a screen to put it on. Generous on purpose: at
+# ~267 bytes an airing this is roughly 7 MB, so keeping too much costs nothing
+# and keeping too little cannot be undone, because the device's guide is
+# forward-looking and history is only ever captured as it happens.
+GUIDE_RETENTION_DAYS = int(os.environ.get("TABLO_GUIDE_RETENTION_DAYS", "31"))
+
+
 def _end_epoch(start: str | None, duration) -> int:
     if not start:
         return 0
@@ -272,62 +283,276 @@ def _end_epoch(start: str | None, duration) -> int:
     return int(ts.timestamp() + (int(duration or 0)))
 
 
-def save_guide(rows: list[dict], now: float | None = None) -> None:
-    """Replace the stored guide, dropping airings that have already ended.
+def _start_epoch(start: str | None) -> int:
+    """The airing's start as a Unix epoch. `_end_epoch` with no duration."""
+    return _end_epoch(start, 0)
 
-    The grid renders forward from the current hour, so a finished airing can
-    never be displayed again. Pruning on write is what keeps the table from
-    growing without bound - at ~267 bytes per airing the concern is tidiness
-    rather than space.
+
+# ---------------------------------------------------------------------------
+# Search index
+# ---------------------------------------------------------------------------
+
+def channel_label(ch: dict) -> str:
+    """How a station is written on screen, e.g. "8.1 CBS"."""
+    major, minor = ch.get("major"), ch.get("minor")
+    number = f"{major}.{minor}" if major else ""
+    name = ch.get("network") or ch.get("call_sign") or ""
+    return " ".join(p for p in (number, name) if p)
+
+
+def index_channel(conn, ch: dict) -> None:
+    """Put a channel in the search index.
+
+    Takes an open connection so it joins the caller's transaction: the index
+    and the row it describes must land together or not at all.
+
+    An explicit `ON CONFLICT ... DO UPDATE`, not `INSERT OR REPLACE`: REPLACE
+    conflict resolution only fires SQLite's delete triggers when
+    `PRAGMA recursive_triggers` is on, which it is not here (and would have to
+    be set on every thread-local connection to help). With it off, `search_fts`
+    never sees the old row deleted - the new terms are added beside the old
+    ones instead of replacing them, so a search index grows stale and unbounded
+    while `search_doc` itself looks correct. The `ON CONFLICT DO UPDATE` form
+    fires an `UPDATE`, which `search_doc_au` (added in Task 1) already handles.
     """
-    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    ident = str(ch.get("identifier"))
+    conn.execute(
+        "INSERT INTO search_doc(kind, ref, title, subtitle, body, "
+        "    channel, start_epoch, duration, target) "
+        "VALUES ('channel', ?, ?, ?, ?, ?, NULL, 0, ?) "
+        "ON CONFLICT(kind, ref) DO UPDATE SET "
+        "  title=excluded.title, subtitle=excluded.subtitle, body=excluded.body, "
+        "  channel=excluded.channel, start_epoch=excluded.start_epoch, "
+        "  duration=excluded.duration, target=excluded.target",
+        (
+            ident,
+            ch.get("display_name") or ch.get("call_sign"),
+            channel_label(ch),
+            " ".join(str(p) for p in (ch.get("network"), ch.get("call_sign")) if p),
+            channel_label(ch),
+            json.dumps({"tab": "live", "watch": ident}),
+        ),
+    )
+
+
+def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
+    """Put one airing in the search index, keyed the same way as guide_airing.
+
+    Uses `ON CONFLICT DO UPDATE`, not `INSERT OR REPLACE` - see the note on
+    `index_channel` for why the latter silently corrupts `search_fts` here.
+    """
+    genres = air.get("genres") or []
+    body = " ".join(
+        str(p) for p in (air.get("description"), *genres, label) if p
+    )
+    conn.execute(
+        "INSERT INTO search_doc(kind, ref, title, subtitle, body, "
+        "    channel, start_epoch, duration, target) "
+        "VALUES ('airing', ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(kind, ref) DO UPDATE SET "
+        "  title=excluded.title, subtitle=excluded.subtitle, body=excluded.body, "
+        "  channel=excluded.channel, start_epoch=excluded.start_epoch, "
+        "  duration=excluded.duration, target=excluded.target",
+        (
+            f"{channel_id}|{air.get('start')}",
+            air.get("title"),
+            air.get("subtitle") or "",
+            body,
+            label,
+            _start_epoch(air.get("start")),
+            int(air.get("duration") or 0),
+            json.dumps({"tab": "grid", "at": air.get("start")}),
+        ),
+    )
+
+
+def index_recordings(items: list[dict]) -> None:
+    """Index the library from a device listing.
+
+    Called on every listing rather than on a write, because the device holds
+    the library and we only mirror the handful we have transcoded. Cheap: an
+    upsert per recording, and there are rarely more than a few dozen.
+
+    Uses `ON CONFLICT DO UPDATE`, not `INSERT OR REPLACE` - see the note on
+    `index_channel` for why the latter silently corrupts `search_fts` here.
+    This is the writer that reindexes most often (every listing), so it is
+    the one where that bug would bite hardest.
+    """
+    if not items:
+        return
     with db.write() as conn:
-        conn.execute("DELETE FROM guide_channel", ())
-        for position, ch in enumerate(rows):
+        for rec in items:
+            ch = rec.get("channel") or {}
+            label = " ".join(
+                str(p) for p in (ch.get("number"), ch.get("network") or ch.get("call_sign")) if p
+            )
             conn.execute(
-                "INSERT INTO guide_channel(identifier, call_sign, major, minor, network, "
-                "                          display_name, logo_url, kind, position, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO search_doc(kind, ref, title, subtitle, body, "
+                "    channel, start_epoch, duration, target) "
+                "VALUES ('recording', ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(kind, ref) DO UPDATE SET "
+                "  title=excluded.title, subtitle=excluded.subtitle, body=excluded.body, "
+                "  channel=excluded.channel, start_epoch=excluded.start_epoch, "
+                "  duration=excluded.duration, target=excluded.target",
                 (
-                    str(ch.get("identifier")),
-                    ch.get("call_sign"),
-                    ch.get("major"),
-                    ch.get("minor"),
-                    ch.get("network"),
-                    ch.get("display_name"),
-                    ch.get("logo_url"),
-                    ch.get("kind"),
-                    position,
-                    _now(),
+                    str(rec.get("object_id")),
+                    rec.get("title"),
+                    rec.get("subtitle") or "",
+                    " ".join(str(p) for p in (rec.get("description"), label) if p),
+                    label,
+                    _start_epoch(rec.get("start")),
+                    int(rec.get("duration") or 0),
+                    json.dumps({"tab": "library", "watch": int(rec.get("object_id"))}),
                 ),
             )
+
+
+def save_guide(rows: list[dict], now: float | None = None) -> None:
+    """Merge the guide into the mirror, keeping everything already stored.
+
+    Append-only by design. This used to issue `DELETE FROM guide_channel`,
+    and `guide_airing` references it `ON DELETE CASCADE`, so every save
+    destroyed every airing and rebuilt only what the device currently lists.
+    Combined with a skip for airings that had already ended, nothing that had
+    aired survived anywhere.
+
+    That is unrecoverable rather than merely lossy: the device's
+    `/guide/airings` is forward-looking, so once a programme airs it falls off
+    and no later request can bring it back. The mirror is therefore a record of
+    what aired, not a snapshot of what the device holds, and the device
+    dropping an airing is never a reason to delete our copy. Only
+    `prune_guide` removes anything, and only by age.
+
+    Every channel touched in this call is stamped with the same `updated_at`
+    (computed once, not per row - per-row timestamps could differ and would
+    break the comparison below), and that stamp is recorded as
+    `guide_synced_at`. `load_guide` uses it to show only the channels seen in
+    the latest sync, without deleting the ones the device stopped listing -
+    see `load_guide` for why.
+    """
+    del now  # retained for signature compatibility; pruning is prune_guide's job
+    stamp = _now()
+    with db.write() as conn:
+        for position, ch in enumerate(rows):
+            conn.execute(
+                "INSERT INTO guide_channel(identifier, call_sign, major, minor, "
+                "                          network, display_name, logo_url, kind, "
+                "                          position, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(identifier) DO UPDATE SET "
+                "  call_sign=excluded.call_sign, major=excluded.major, "
+                "  minor=excluded.minor, network=excluded.network, "
+                "  display_name=excluded.display_name, logo_url=excluded.logo_url, "
+                "  kind=excluded.kind, position=excluded.position, "
+                "  updated_at=excluded.updated_at",
+                (
+                    str(ch.get("identifier")), ch.get("call_sign"), ch.get("major"),
+                    ch.get("minor"), ch.get("network"), ch.get("display_name"),
+                    ch.get("logo_url"), ch.get("kind"), position, stamp,
+                ),
+            )
+            index_channel(conn, ch)
+            label = channel_label(ch)
             for air in ch.get("airings") or []:
                 end = _end_epoch(air.get("start"), air.get("duration"))
-                if end and end < cutoff:
-                    continue
                 conn.execute(
                     "INSERT OR REPLACE INTO guide_airing(channel_id, start, duration, "
                     "    end_epoch, title, subtitle, description, genres, kind) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
-                        str(ch.get("identifier")),
-                        air.get("start"),
-                        int(air.get("duration") or 0),
-                        end,
-                        air.get("title"),
-                        air.get("subtitle"),
-                        air.get("description"),
-                        json.dumps(air.get("genres") or []),
-                        air.get("kind"),
+                        str(ch.get("identifier")), air.get("start"),
+                        int(air.get("duration") or 0), end, air.get("title"),
+                        air.get("subtitle"), air.get("description"),
+                        json.dumps(air.get("genres") or []), air.get("kind"),
                     ),
                 )
-    db.set_setting("guide_updated_at", _now())
+                index_airing(conn, str(ch.get("identifier")), label, air)
+    db.set_setting("guide_updated_at", stamp)
+    db.set_setting("guide_synced_at", stamp)
+
+
+def prune_guide(now: float | None = None) -> int:
+    """Drop airings that ended more than GUIDE_RETENTION_DAYS ago.
+
+    The only thing that removes guide rows. Age is the sole criterion - an
+    airing missing from the device is kept, because that is the normal state of
+    everything in the past.
+    """
+    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    cutoff -= GUIDE_RETENTION_DAYS * 86_400
+    with db.write() as conn:
+        conn.execute(
+            "DELETE FROM search_doc WHERE kind = 'airing' AND ref IN ("
+            "  SELECT channel_id || '|' || start FROM guide_airing WHERE end_epoch < ?)",
+            (cutoff,),
+        )
+        cur = conn.execute("DELETE FROM guide_airing WHERE end_epoch < ?", (cutoff,))
+        return cur.rowcount
+
+
+def _airing_row(a) -> dict:
+    """A stored airing as the guide and the player both expect it."""
+    return {
+        "start": a["start"],
+        "duration": a["duration"],
+        "title": a["title"],
+        "subtitle": a["subtitle"],
+        "description": a["description"],
+        "genres": json.loads(a["genres"]) if a["genres"] else [],
+        "kind": a["kind"],
+    }
+
+
+def channel_airings(
+    identifier: str, now: float | None = None, limit: int = 32
+) -> list[dict]:
+    """What is on this channel now and next, oldest first.
+
+    Answers the live player's question: it draws its scrubber over the airing
+    being watched, and re-scales to the following one when that ends. Airings
+    that have already finished are left out - the DVR window holds none of
+    them, so there is nothing the player could show for one.
+
+    Capped, because the mirror is append-only and holds every future airing the
+    device has ever listed - the better part of a fortnight per channel, each
+    carrying a full description. The player fetches this while opening a
+    stream and reads two of them, so shipping the whole schedule would put a
+    sizeable payload in front of a tuner handshake.
+    """
+    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    return [
+        _airing_row(a)
+        for a in db.query(
+            "SELECT * FROM guide_airing WHERE channel_id = ? AND end_epoch >= ? "
+            "ORDER BY start LIMIT ?",
+            (str(identifier), cutoff, limit),
+        )
+    ]
 
 
 def load_guide(now: float | None = None) -> list[dict]:
-    """The stored guide, excluding airings that have ended."""
+    """The channels seen in the latest sync, excluding airings that have ended.
+
+    `guide_channel` rows are upserted and never deleted - a channel carries
+    its airing history through the `ON DELETE CASCADE` on `guide_airing`, so
+    removing a row the device stopped listing would destroy exactly the
+    history this store exists to protect (see `save_guide`). To still make a
+    dropped channel disappear from the grid, every channel written in a sync
+    is stamped with that sync's `updated_at`, recorded as `guide_synced_at`;
+    only channels carrying the latest stamp are returned here. A stale
+    channel's row and airings stay on disk - available to the search index -
+    they just stop appearing in this list. A channel that IS in the latest
+    sync but has no airings inside the read window still comes back with an
+    empty `airings` list, exactly as before.
+    """
     cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
-    channels = db.query("SELECT * FROM guide_channel ORDER BY position")
+    synced_at = db.get_setting("guide_synced_at")
+    if not synced_at:
+        return []
+    channels = db.query(
+        "SELECT * FROM guide_channel WHERE updated_at = ? ORDER BY position",
+        (synced_at,),
+    )
     if not channels:
         return []
 
@@ -335,15 +560,7 @@ def load_guide(now: float | None = None) -> list[dict]:
     for a in db.query(
         "SELECT * FROM guide_airing WHERE end_epoch >= ? ORDER BY start", (cutoff,)
     ):
-        by_channel.setdefault(a["channel_id"], []).append({
-            "start": a["start"],
-            "duration": a["duration"],
-            "title": a["title"],
-            "subtitle": a["subtitle"],
-            "description": a["description"],
-            "genres": json.loads(a["genres"]) if a["genres"] else [],
-            "kind": a["kind"],
-        })
+        by_channel.setdefault(a["channel_id"], []).append(_airing_row(a))
 
     return [{
         "identifier": c["identifier"],

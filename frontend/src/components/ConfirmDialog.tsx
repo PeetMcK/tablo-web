@@ -71,7 +71,13 @@ export function ConfirmDialog({ confirmation, onClose }: Props) {
           </button>
           {/* `outline-none` makes the ring the only focus indicator, so it has to
               carry 3:1 on its own. At /50 it washed out to ~2.1:1 against the
-              dialog; the full token measures 5.1:1 (accent) and 6.0:1 (danger). */}
+              dialog; the full token measures 5.1:1 (accent) and 6.0:1 (danger).
+
+              The affirmative action is a flat `bg-accent`, not the brand gradient:
+              no foreground clears 4.5:1 against both ramp stops (white is 3.58:1 at
+              #478cc9, ink 3.04:1 at #2c6296), and this button carries a text label.
+              Flat accent measures 6.37:1 light / 5.40:1 dark. The gradient stays
+              where it backs an icon or nothing. */}
           <button
             ref={confirmRef}
             onClick={() => { onConfirm(); onClose(); }}

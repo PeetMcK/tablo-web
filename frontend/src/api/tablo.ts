@@ -65,6 +65,14 @@ export interface StreamStart {
   transcoded?: boolean;
 }
 
+export interface TranscodeStatus {
+  status: "active" | "stopped" | "inactive";
+  /** Seconds of video the live encoder has produced, null before its first frame. */
+  encoded_seconds: number | null;
+  files?: string[];
+  log?: string;
+}
+
 export interface Program {
   title: string | null;
   description: string | null;
@@ -198,6 +206,44 @@ export interface EncodingProgress {
   segments_total: number;
 }
 
+export type SearchKind = "channel" | "airing" | "recording";
+
+/** What activating a result does. Mirrors the backend's `target`. */
+export interface SearchTarget {
+  tab: "live" | "grid" | "library";
+  /** Channel identifier or recording object_id, when the result is playable. */
+  watch?: string | number;
+  /** ISO start, for a guide result. */
+  at?: string;
+}
+
+export interface SearchItem {
+  kind: SearchKind;
+  ref: string;
+  title: string | null;
+  subtitle: string | null;
+  channel: string | null;
+  start_epoch: number | null;
+  duration: number;
+  target: SearchTarget;
+  /** For a past airing: the recording of it, if there is one. */
+  recorded: { object_id: number } | null;
+}
+
+export interface SearchGroup {
+  kind: SearchKind;
+  /** Full match count, which may exceed `items.length`. */
+  total: number;
+  items: SearchItem[];
+}
+
+export interface SearchResponse {
+  query: string;
+  /** How far back guide history can be trusted. */
+  coverage: { since: string | null; last_sync: string | null };
+  groups: SearchGroup[];
+}
+
 async function* ndjsonStream<T>(path: string, signal?: AbortSignal): AsyncGenerator<T> {
   const res = await fetch(BASE + path, { signal });
   if (!res.ok || !res.body) throw new Error(res.statusText);
@@ -268,6 +314,10 @@ export const api = {
   
   guideGrid: () => req<GridChannel[]>("/channels/guide-grid"),
 
+  /** What is on one channel now and next, from the guide mirror. */
+  channelAirings: (identifier: string) =>
+    req<{ airings: Program[] }>(`/channels/${encodeURIComponent(identifier)}/airings`),
+
   /** @deprecated Use `recordings()` — this returns the unenriched legacy shape. */
   library: () => req<Recording[]>("/channels/library"),
 
@@ -336,4 +386,14 @@ export const api = {
 
   stopStream: (sessionId: string) =>
     req<{ ok: boolean }>(`/stream/${sessionId}`, { method: "DELETE" }),
+
+  transcodeStatus: (sessionId: string) =>
+    req<TranscodeStatus>(`/transcode/status/${sessionId}`),
+
+  search: (q: string, opts?: { limit?: number; kinds?: SearchKind[] }) => {
+    const p = new URLSearchParams({ q });
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    if (opts?.kinds?.length) p.set("kinds", opts.kinds.join(","));
+    return req<SearchResponse>(`/search?${p}`);
+  },
 };

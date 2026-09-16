@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"
+     fill="none" stroke="currentColor" stroke-width="2.5"
+     stroke-linecap="round" stroke-linejoin="round"
+     role="img" aria-label="TV">
+  <!-- Screen: a stadium — a rect whose corner radius is exactly half its height,
+       so the left and right ends are full semicircles, matching the brand mark. -->
+  <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5"/>
+  <!-- Pedestal stand, in place of the antenna. -->
+  <path d="M12 15.75v5.25"/>
+  <path d="M8 21h8"/>
+</svg>

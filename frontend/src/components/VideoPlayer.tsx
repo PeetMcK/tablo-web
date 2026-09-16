@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize } from "lucide-react";
 import { usePlayer } from "../hooks/usePlayer";
 import { api, previewUrl } from "../api/tablo";
@@ -6,6 +7,9 @@ import type {
   Channel, Program, Recording, CacheState, EncodingProgress,
 } from "../api/tablo";
 import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
+import {
+  airingAt, clampSkip, covers, programWindow, readyRange, type LiveAnchor,
+} from "../lib/playback";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -39,6 +43,14 @@ const LIVE_DVR_SECONDS = 3600;
 
 /** Within this many seconds of the seekable end counts as "at the live edge". */
 const LIVE_EDGE_THRESHOLD = 12;
+
+/**
+ * Encoder lead a live stream needs before playback starts, in seconds.
+ *
+ * Two segments at the backend's HLS_TIME of 6s: hls.js will not start on one.
+ * Used as the denominator of the progress shown while the stream is blocked.
+ */
+const LIVE_LEAD_SECONDS = 12;
 
 /**
  * Seeking into an un-encoded window makes the backend transcode it before
@@ -203,6 +215,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [cachedRanges, setCachedRanges] = useState<[number, number][]>([]);
   /** Progress of the window playback is waiting on, when one is being encoded. */
   const [encodingAt, setEncodingAt] = useState<EncodingProgress | null>(null);
+  /**
+   * Ties this session's media clock to the wall clock, so the bar can be drawn
+   * over a broadcast schedule. Set once, from the first playlist that exists.
+   */
+  const [anchor, setAnchor] = useState<LiveAnchor | null>(null);
+  /** True while a live channel is served through FFmpeg rather than proxied raw. */
+  const [liveTranscoded, setLiveTranscoded] = useState(false);
+  /** Seconds of live video the encoder has produced, null before its first frame. */
+  const [liveEncoded, setLiveEncoded] = useState<number | null>(null);
   /** Last scrub-preview frame that finished decoding. */
   const [shownPreview, setShownPreview] = useState<string | null>(null);
   // Media listeners are attached once on mount, so they need a live view of the
@@ -214,7 +235,49 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const onPositionRef = useRef(onPosition);
 
   const combinedError = apiError || playerError;
-  const program = isLive ? source.program ?? null : null;
+
+  /**
+   * The channel's schedule, so the bar can re-scale when one show ends and the
+   * next begins. Read from the stored guide, so it costs no device round trip;
+   * a channel the mirror has never seen comes back empty and the airing the
+   * player was opened with carries on.
+   */
+  const { data: schedule } = useQuery({
+    queryKey: ["channel-airings", isLive ? source.channel.identifier : null],
+    queryFn: () => api.channelAirings((source as { channel: Channel }).channel.identifier),
+    enabled: isLive,
+    staleTime: 5 * 60_000,
+    refetchInterval: 10 * 60_000,
+  });
+
+  // `now` ticks every 20s, which is what moves the bar on at the top of the
+  // hour: the airing covering the clock changes, and everything derived from it
+  // follows.
+  //
+  // The airing the player was opened with is the last candidate rather than an
+  // unconditional fallback: it is put through the same "does it cover now"
+  // test, so a channel the mirror knows nothing about keeps it until it ends
+  // and then hands the bar back to the DVR window. Kept unconditionally it
+  // outlived its own broadcast - at 9:05 the bar still read "8:00 PM" and the
+  // title still named the finished show.
+  const openedWith = isLive ? source.program ?? null : null;
+  /**
+   * The wall-clock instant being watched.
+   *
+   * Identical to now at the live edge, and the whole point anywhere else: a
+   * viewer paused or rewound across the top of the hour is still watching the
+   * earlier programme, and the bar has to describe that one. Picked by the
+   * clock instead, the bar re-scaled to a show the viewer was not watching,
+   * stranding the thumb at the far left of it with the wrong title above.
+   *
+   * The real playhead, not `shownPos`: a bar that re-scaled mid-drag would
+   * move the target out from under the pointer.
+   */
+  const watchedMs = anchor ? anchor.wallMs + (position - anchor.media) * 1000 : now;
+  const program = isLive
+    ? airingAt(schedule?.airings ?? [], watchedMs)
+      ?? (covers(openedWith, watchedMs) ? openedWith : null)
+    : null;
 
   const title = isLive
     ? (program?.title || source.channel.display_name)
@@ -225,6 +288,35 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   const atLiveEdge = isLive && rangeEnd - position < LIVE_EDGE_THRESHOLD;
 
+  /**
+   * What the bar is drawn over, in media seconds.
+   *
+   * For live with a known airing this is the airing itself — 8:00 to 9:00 —
+   * so the playhead reads as a position inside the programme rather than
+   * against a buffer that grows a second per second.
+   *
+   * Everything below stays in media seconds. Only what the bar is scaled by
+   * changes; what playback may *reach* is still `[rangeStart, rangeEnd]`.
+   */
+  const liveWindow = isLive ? programWindow(program, anchor) : null;
+  const barStart = liveWindow ? liveWindow[0] : rangeStart;
+  // An airing that runs long must not push the live edge off its own bar.
+  const barEnd = liveWindow ? Math.max(liveWindow[1], rangeEnd) : rangeEnd;
+  /** True when the bar spans a broadcast, so its ends are clock times. */
+  const onProgramBar = Boolean(liveWindow && anchor);
+
+  /**
+   * A point on the media timeline, written as the clock time it airs at.
+   *
+   * Only meaningful on a programme bar - elsewhere there is no wall clock to
+   * map onto, and the label falls back to elapsed time.
+   */
+  const clockAt = (mediaSeconds: number): string =>
+    anchor
+      ? new Date(anchor.wallMs + (mediaSeconds - anchor.media) * 1000)
+          .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : "";
+
   // The parent builds `source` as an object literal, so it is a new reference on
   // every one of its renders. Keying the start effect on the object would tear
   // the player down and reload it from the beginning whenever the parent
@@ -233,15 +325,48 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     ? `live:${source.channel.identifier}`
     : `rec:${source.recording.object_id}`;
   const sourceRef = useRef(source);
+
+  /**
+   * Everything tied to one stream, cleared when a different one opens.
+   *
+   * A new source means a new encoder and a new media clock: carried over, the
+   * old numbers showed the incoming channel as fully transcoded before it had
+   * produced a frame, and would place its programme an arbitrary distance from
+   * where the bar thinks zero is. Done during render rather than in an effect —
+   * React's own prescription for state that follows a prop, and the effect
+   * version cost a second render on every open.
+   */
   // Declared before the start effect so the ref is current by the time it runs.
   useEffect(() => { sourceRef.current = source; });
   useEffect(() => { onPositionRef.current = onPosition; }, [onPosition]);
   useEffect(() => { cachedRangesRef.current = cachedRanges; }, [cachedRanges]);
 
+  // A new source means a new encoder, so the previous one's numbers must not
+  // carry over — they showed the incoming channel as fully transcoded before it
+  // had produced a frame.
+  //
+  // Reset during render rather than from the start effect below. Setting state
+  // in an effect body queues a second render with the stale values already
+  // painted, and React flags it (`react-hooks/set-state-in-effect`) because
+  // that cascade is exactly what made this player tear itself down and reload
+  // on earlier occasions. Comparing the key here is React's documented way to
+  // adjust state when a prop changes: the re-render happens before anything
+  // reaches the screen.
+  // The anchor goes with them: it ties a media clock to the wall clock, and a
+  // new stream has a new media clock, so keeping the old one would place the
+  // incoming channel's programme an arbitrary distance from where the bar
+  // thinks zero is.
+  const [renderedSource, setRenderedSource] = useState(sourceKey);
+  if (renderedSource !== sourceKey) {
+    setRenderedSource(sourceKey);
+    setLiveTranscoded(false);
+    setLiveEncoded(null);
+    setAnchor(null);
+  }
+
   // ---------------------------------------------------------------- start
   useEffect(() => {
     let cancelled = false;
-
     const current = sourceRef.current;
     const start = async () => {
       try {
@@ -249,7 +374,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           // OTA broadcasts are MPEG-2. No browser's MSE implementation decodes
           // MPEG-2 video — hls.js demuxes the container but the video track is
           // unrenderable, leaving audio only. Always transcode OTA to H.264.
-          const transcode = current.channel.kind === "ota" ? true : undefined;
+          //
+          // Anything not known to be OTT counts as a broadcast: a guide row
+          // that arrives without a kind used to fall through to the raw stream,
+          // which parses no fragment and buffers forever. Transcoding an OTT
+          // channel needlessly only costs CPU.
+          const transcode = current.channel.kind === "ott" ? undefined : true;
           const r = await api.startStream(current.channel.identifier, transcode);
           if (cancelled) return;
           log.player(`open live ${current.channel.display_name}`, {
@@ -257,6 +387,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             session: r.session_id, url: r.stream_url,
           });
           setSessionId(r.session_id);
+          setLiveTranscoded(!!r.transcoded);
           load(r.stream_url);
         } else {
           const t0 = performance.now();
@@ -375,12 +506,40 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     return () => clearInterval(id);
   }, [isLive, cacheState, sourceKey]);
 
-  // Live program progress is wall-clock driven, not stream driven.
+  // ------------------------------------------------- live encoder progress
+  /**
+   * Live opens on an encoder that has produced nothing yet: FFmpeg writes its
+   * first segment only after HLS_TIME seconds of video, so the player sits on a
+   * black frame with no idea how long it will last. Polling how much video
+   * exists turns that into a real percentage of the lead it needs.
+   *
+   * Only while blocked — a playing stream has nothing to report.
+   */
   useEffect(() => {
-    if (!program) return;
+    if (!isLive || !liveTranscoded || !sessionId || !(waiting || loading)) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const s = await api.transcodeStatus(sessionId);
+        if (!cancelled) setLiveEncoded(s.encoded_seconds);
+      } catch {
+        /* transient — keep polling */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [isLive, liveTranscoded, sessionId, waiting, loading]);
+
+  // Live program progress is wall-clock driven, not stream driven. Runs for any
+  // live source, not only one that already has an airing: this tick is also
+  // what picks the airing up when the schedule arrives, and what hands the bar
+  // over to the next show at the top of the hour.
+  useEffect(() => {
+    if (!isLive) return;
     const id = setInterval(() => setNow(Date.now()), 20_000);
     return () => clearInterval(id);
-  }, [program]);
+  }, [isLive]);
 
   // ------------------------------------------------------------ transport
   useEffect(() => {
@@ -399,6 +558,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       if (sk.length > 0) {
         setRangeStart(sk.start(0));
         setRangeEnd(sk.end(sk.length - 1));
+        // The one reading that ties this session's media clock to the wall
+        // clock. Taken when a playlist first exists and never again — the live
+        // edge is now, so the two can be converted from here on. Keeping the
+        // first reading rather than the latest is what holds the bar still;
+        // re-anchoring would slide the programme under the playhead.
+        setAnchor((held) => held ?? { wallMs: Date.now(), media: sk.end(sk.length - 1) });
       } else if (Number.isFinite(video.duration)) {
         setRangeStart(0);
         setRangeEnd(video.duration);
@@ -456,10 +621,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     video.currentTime = target;
   }, [rangeStart, rangeEnd]);
 
+  /**
+   * Jump by `delta`, held inside what is playable right now.
+   *
+   * Live is the whole DVR window, ending at the live edge; a partially cached
+   * recording is the island the playhead stands in. The scrubber is still free
+   * to go anywhere and wait.
+   */
   const skip = useCallback((delta: number) => {
     const video = videoRef.current;
-    if (video) seekTo(video.currentTime + delta);
-  }, [seekTo]);
+    if (!video) return;
+    const from = video.currentTime;
+    const range = readyRange(from, {
+      ranges: cachedRangesRef.current,
+      start: rangeStart,
+      end: rangeEnd,
+      whole: isLive || cacheState === "complete",
+    });
+    seekTo(clampSkip(from, delta, range));
+  }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
 
   const goLive = useCallback(() => seekTo(rangeEnd), [seekTo, rangeEnd]);
 
@@ -473,11 +653,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   /** Time under a clientX, clamped to the seekable range. */
   const timeAtX = useCallback((clientX: number) => {
     const el = barRef.current;
-    if (!el) return rangeStart;
+    if (!el) return barStart;
     const r = el.getBoundingClientRect();
     const f = Math.min(1, Math.max(0, (clientX - r.left) / Math.max(1, r.width)));
-    return rangeStart + f * (rangeEnd - rangeStart);
-  }, [rangeStart, rangeEnd]);
+    // The bar's own domain, which on live is the airing. What comes back is a
+    // wish, not a destination: `seekTo` clamps it to what exists, so a pointer
+    // in the part of the hour that has not been broadcast snaps to the live
+    // edge rather than seeking into nothing.
+    return barStart + f * (barEnd - barStart);
+  }, [barStart, barEnd]);
 
   /**
    * Vertical distance from the bar slows the drag, the way long-form players do
@@ -522,12 +706,17 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       commitTimer.current = null;
     }
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    const t = timeAtX(e.clientX);
+    // Held to what exists, exactly as the drag below is. `timeAtX` speaks the
+    // bar's domain, which on a programme bar runs past the live edge into time
+    // that has not been broadcast; without this a click out there threw the
+    // thumb into the future for the length of the commit debounce, and drove
+    // `liveLead` negative, which reads on screen as "Transcoding 0%".
+    const t = Math.min(rangeEnd, Math.max(rangeStart, timeAtX(e.clientX)));
     dragRef.current = { x: e.clientX, base: t };
     setFineFactor(1);
     setScrubAt(t);
     setHoverAt(null);
-  }, [timeAtX]);
+  }, [timeAtX, rangeStart, rangeEnd]);
 
   const onBarPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
@@ -541,12 +730,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     const dy = e.clientY - (r.top + r.height / 2);
     const f = factorForY(dy);
     setFineFactor(f);
-    const perPx = (rangeEnd - rangeStart) / Math.max(1, r.width);
+    const perPx = (barEnd - barStart) / Math.max(1, r.width);
     const t = drag.base + (e.clientX - drag.x) * perPx * f;
     const target = Math.min(rangeEnd, Math.max(rangeStart, t));
     setScrubAt(target);
     previewSeek(target);
-  }, [timeAtX, rangeStart, rangeEnd, previewSeek]);
+    // The clamp stays on what exists, never on the bar's wider domain.
+  }, [timeAtX, rangeStart, rangeEnd, barStart, barEnd, previewSeek]);
 
   /**
    * Seek once, shortly after release, rather than on every pointer move.
@@ -669,10 +859,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     return () => window.removeEventListener("keydown", handler);
   }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer]);
 
-  const span = Math.max(1, rangeEnd - rangeStart);
+  const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
   const shownPos = scrubAt ?? pendingSeek ?? position;
-  const pct = Math.min(100, Math.max(0, ((shownPos - rangeStart) / span) * 100));
+  const pct = Math.min(100, Math.max(0, ((shownPos - barStart) / span) * 100));
   const scrubbing = scrubAt !== null;
   /**
    * Percent of the blocking window that exists, or null when there is nothing
@@ -682,7 +872,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     ? Math.min(99, Math.round(
         (encodingAt.segments_ready / encodingAt.segments_total) * 100))
     : null;
-  const encoding = !isLive && cacheState !== "complete";
+  /**
+   * How much of the lead a live stream needs before it can play, as a percent.
+   *
+   * Playback resumes once there is enough video ahead of the playhead, so that
+   * gap — not wall-clock time — is the honest thing to show while waiting.
+   *
+   * Two different measures of it, because neither covers both cases. Before the
+   * first playlist there is no timeline to measure against, so the lead is
+   * everything FFmpeg has encoded. Once a playlist exists the frontier is read
+   * from the timeline itself: FFmpeg's clock counts from the start of the
+   * session, which after an hour of sliding window is no longer the same origin
+   * as the player's, and subtracting across the two would read a stall as 100%.
+   */
+  const liveLead = rangeEnd > 0 ? rangeEnd - shownPos : liveEncoded;
+  const livePct = isLive && liveTranscoded && liveLead !== null
+    ? Math.min(100, Math.max(0, Math.round((liveLead / LIVE_LEAD_SECONDS) * 100)))
+    : null;
+  const waitPct = encodePct ?? livePct;
+  const encoding = isLive ? liveTranscoded : cacheState !== "complete";
   // Drawn from the real encoded ranges. A single bar scaled by percent-complete
   // would be wrong the moment the viewer seeks: jumping an hour in leaves the
   // opening cached and starts a separate island further along.
@@ -699,8 +907,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    */
   const readyBands = (isLive ? [[rangeStart, rangeEnd] as [number, number]] : cachedRanges)
     .map(([from, to]) => {
-      const a = ((from - rangeStart) / span) * 100;
-      const b = ((to - rangeStart) / span) * 100;
+      // Clipped to the bar: on live, the DVR window can reach back before the
+      // airing began, and that part belongs to the previous programme.
+      const a = ((Math.max(from, barStart) - barStart) / span) * 100;
+      const b = ((Math.min(to, barEnd) - barStart) / span) * 100;
       return { key: `c${from}`, left: a, width: b - a };
     })
     .filter(x => x.width > 0);
@@ -754,7 +964,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                           min-w-[190px]">
             <div className="flex items-center gap-2.5">
               {/* Only spin when there is nothing real to report. */}
-              {encodePct === null && (
+              {waitPct === null && (
                 <div className="w-4 h-4 rounded-full border-2 border-accent
                                 border-t-transparent animate-spin" />
               )}
@@ -765,19 +975,21 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   rung below `muted`, and thinning it with an opacity modifier
                   put an 11px readout at 2.9:1 on the light panel. The label
                   beside it is already set apart by its tracking and case. */}
-              {encodePct !== null && (
+              {waitPct !== null && (
                 <span className="ml-auto text-player-fg-muted text-[11px] tabular-nums">
-                  {encodePct}%
+                  {waitPct}%
                 </span>
               )}
             </div>
             {/* Segments of the blocking window land in order, so this is real
-                progress toward playback rather than a decorative animation. */}
-            {encodePct !== null && (
+                progress toward playback rather than a decorative animation.
+                On live it is the encoder's lead instead, which fills the same
+                way and means the same thing: how close playback is to starting. */}
+            {waitPct !== null && (
               <div className="h-1 rounded-full bg-player-track overflow-hidden">
                 <div
-                  className="h-full bg-accent rounded-full transition-[width] duration-300 ease-out"
-                  style={{ width: `${Math.max(4, encodePct)}%` }}
+                  className="accent-gradient-x h-full rounded-full transition-[width] duration-300 ease-out"
+                  style={{ width: `${Math.max(4, waitPct)}%` }}
                 />
               </div>
             )}
@@ -824,18 +1036,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               className="text-[11px] tabular-nums text-player-fg-muted w-16 text-right shrink-0"
               style={SCRIM_HALO}
             >
-              {formatTime(isLive ? position - rangeEnd : position - rangeStart)}
+              {onProgramBar
+                ? clockAt(barStart)
+                : formatTime(isLive ? position - rangeEnd : position - rangeStart)}
             </span>
 
+            {/* The slider announces the bar's own domain, so the value it
+                reports stays inside the bounds it reports. Against the seekable
+                range a programme bar read out positions well past its own
+                maximum - an hour-long airing on a fifteen-minute buffer
+                announced 3600 out of 900. */}
             <div
               ref={barRef}
               role="slider"
               tabIndex={0}
               aria-label="Seek"
-              aria-valuemin={rangeStart}
-              aria-valuemax={rangeEnd}
-              aria-valuenow={Math.round(shownPos)}
-              aria-valuetext={formatTime(shownPos - rangeStart)}
+              aria-valuemin={barStart}
+              aria-valuemax={barEnd}
+              aria-valuenow={Math.round(Math.min(barEnd, Math.max(barStart, shownPos)))}
+              aria-valuetext={onProgramBar ? clockAt(shownPos) : formatTime(shownPos - rangeStart)}
               // The focus ring has to read on video we do not control, and at
               // `ring-accent/60` it did not: the accent diluted into whatever
               // was behind it, measuring 1.2-2.5:1 in light and 1.3-2.8:1 in
@@ -890,7 +1109,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 return width > 0 ? (
                   <div
                     key={`w${b.key}`}
-                    className="absolute h-1.5 rounded-full bg-accent"
+                    className="accent-gradient-x absolute h-1.5 rounded-full"
                     style={{ left: `${b.left}%`, width: `${width}%` }}
                   />
                 ) : null;
@@ -907,7 +1126,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   // opacity modifier was never buying anything a quieter token
                   // could not. Now 6.5:1 worst case light, 7.4:1 dark.
                   style={{
-                    left: `${((hoverAt - rangeStart) / span) * 100}%`,
+                    left: `${((hoverAt - barStart) / span) * 100}%`,
                     ...MEDIA_OUTLINE_THIN,
                   }}
                 />
@@ -939,7 +1158,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   className="absolute -translate-x-1/2 pointer-events-none
                              flex flex-col items-center gap-1 w-40"
                   style={{
-                    left: `${scrubbing ? pct : ((hoverAt! - rangeStart) / span) * 100}%`,
+                    left: `${scrubbing ? pct : ((hoverAt! - barStart) / span) * 100}%`,
                     bottom: "calc(100% + 10px)",
                   }}
                 >
@@ -958,7 +1177,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   )}
                   <div className="px-2 py-1 rounded-md bg-player-panel-strong text-[11px]
                                   tabular-nums text-player-fg whitespace-nowrap shadow-lg">
-                    {formatTime((scrubbing ? shownPos : hoverAt!) - rangeStart)}
+                    {onProgramBar
+                      ? clockAt(scrubbing ? shownPos : hoverAt!)
+                      : formatTime((scrubbing ? shownPos : hoverAt!) - rangeStart)}
                     {scrubbing && fineFactor < 1 && (
                       <span className="ml-1.5 text-accent">1/{Math.round(1 / fineFactor)}</span>
                     )}
@@ -971,16 +1192,17 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               className="text-[11px] tabular-nums text-player-fg-muted w-16 shrink-0"
               style={SCRIM_HALO}
             >
-              {isLive ? "LIVE" : formatTime(rangeEnd - rangeStart)}
+              {onProgramBar
+                ? clockAt(barEnd)
+                : isLive ? "LIVE" : formatTime(rangeEnd - rangeStart)}
             </span>
           </div>
 
           <div className="relative flex items-center justify-between">
-            {/* What is playing — centered between the transport groups. Absolute
-                so its width cannot shift the controls either side of it. */}
+            {/* What is playing, on the left. The transport is centered over it
+                absolutely, so a long title cannot push the controls off centre. */}
             <div
-              className="absolute left-1/2 -translate-x-1/2 max-w-[44%] text-center
-                         pointer-events-none select-none"
+              className="max-w-[30%] text-left pointer-events-none select-none"
               // A crisp outline rather than a blurred shadow: over flat white
               // content a soft shadow reads as a smudge. `paint-order: stroke`
               // draws the stroke beneath the fill, so the glyphs keep their
@@ -1010,7 +1232,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Transport, centered on the frame. Play sits between the two jumps
+                so the hand travels the same distance either way. */}
+            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); skip(-10); }}
+                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
+                title="Back 10s (Left arrow)"
+                aria-label="Back 10 seconds"
+              >
+                <RotateCcw className="w-4 h-4" aria-hidden />
+                <span className="text-[10px] font-black tabular-nums">10</span>
+              </button>
+
               <button
                 onClick={(e) => { e.stopPropagation(); togglePlay(); }}
                 className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
@@ -1022,15 +1256,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               </button>
 
               <button
-                onClick={(e) => { e.stopPropagation(); skip(-10); }}
-                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
-                title="Back 10s (Left arrow)"
-                aria-label="Back 10 seconds"
-              >
-                <RotateCcw className="w-4 h-4" aria-hidden />
-                <span className="text-[10px] font-black tabular-nums">10</span>
-              </button>
-              <button
                 onClick={(e) => { e.stopPropagation(); skip(30); }}
                 className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
                 title="Forward 30s (Right arrow)"
@@ -1039,7 +1264,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 <RotateCw className="w-4 h-4" aria-hidden />
                 <span className="text-[10px] font-black tabular-nums">30</span>
               </button>
+            </div>
 
+            <div className="flex items-center gap-2">
               {isLive && (
                 <button
                   onClick={(e) => { e.stopPropagation(); if (!atLiveEdge) goLive(); }}
@@ -1065,9 +1292,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   {atLiveEdge ? "LIVE" : "GO LIVE"}
                 </button>
               )}
-            </div>
 
-            <div className="flex items-center gap-2">
               <button
                 onClick={(e) => { e.stopPropagation(); toggleMute(); }}
                 className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"

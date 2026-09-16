@@ -193,15 +193,27 @@ export function ChannelGrid({ onLogout }: Props) {
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
             {/* Logo */}
             <div className="flex items-center gap-2.5 mr-6">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent-glow
-                              bg-gradient-to-br from-brand-from to-brand-to">
-                <svg className="w-4 h-4 text-accent-fg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875C21 4.254 20.496 3.75 19.875 3.75H4.125C3.504 3.75 3 4.254 3 4.875v11.25c0 .621.504 1.125 1.125 1.125z" />
+              {/* The brand ramp, via `.accent-gradient` — both stops are the
+                  brand's own in either theme, since a mark is not a themed
+                  surface. `shadow-accent-glow` is the token form of the old
+                  shadow-accent/20. */}
+              <div className="accent-gradient w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent-glow">
+                {/* `text-brand-fg`, not `text-accent-fg`: accent-fg is ink in
+                    dark (it labels flat accent fills), which would vanish into
+                    the ramp. brand-fg is white in both themes and clears the
+                    3:1 graphic bar at the worst stop. */}
+                <svg className="w-5 h-5 text-brand-fg" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                     strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                  {/* Stadium screen: corner radius is half the height, so both ends
+                      are true semicircles — the brand mark, wearing a TV stand. */}
+                  <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5" />
+                  <path d="M12 15.75v5.25" />
+                  <path d="M8 21h8" />
                 </svg>
               </div>
               {/* No colour class: the wordmark inherits `text-fg` from <body>,
                   which is white in dark and ink in light. */}
-              <span className="font-black text-lg tracking-tight uppercase italic">Tablo</span>
+              <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
             </div>
 
             {/* Navigation Tabs */}
@@ -241,7 +253,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 tabIndex={activeTab === "live" ? 0 : -1}
                 aria-hidden={activeTab !== "live"}
                 className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
-                           text-sm placeholder-fg-disabled focus:outline-none focus:ring-2 focus:ring-accent
+                           text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
                            focus:bg-fill transition shadow-inner"
               />
             </div>
@@ -270,6 +282,9 @@ export function ChannelGrid({ onLogout }: Props) {
                     onClick={() => setContentFilter(f.id)}
                     className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
                       ${contentFilter === f.id
+                        /* Flat accent, not the ramp — see GuideGridView's copy
+                           of this chip: no foreground clears 4.5:1 against both
+                           brand stops, and this one carries a label. */
                         ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
                         : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
                       }`}

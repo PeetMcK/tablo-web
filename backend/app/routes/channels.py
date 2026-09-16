@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from .. import store
 from ..log_buffer import recent_logs
-from ..state import state
+from ..state import _run_sync, state
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
@@ -124,6 +125,20 @@ async def get_library():
         return await state.get_recordings()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Library error: {e}")
+
+
+@router.get("/{identifier}/airings")
+async def channel_airings(identifier: str):
+    """What is on this channel now and next.
+
+    Read from the guide mirror, never from the device: the live player calls
+    this while opening a stream, and a device round trip would put a tuner
+    handshake behind a guide fetch. A channel the mirror has never seen comes
+    back empty, and the player keeps the airing it was opened with.
+    """
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"airings": await _run_sync(store.channel_airings, identifier)}
 
 
 @router.get("", response_model=list[ChannelOut])

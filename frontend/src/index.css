@@ -12,7 +12,7 @@
    with ink, and the two need very different numbers to read the same.
 
    `:root` holds the light theme, `.dark` the dark one. The dark values are the
-   exact colours the app shipped with - #0d0d14 / #13131e / #1a1a28 / #5b8af5
+   exact colours the app shipped with - #0d0d14 / #13131e / #1a1a28 / #478cc9
    and the white-alpha text ladder composited over the page background - so
    dark is a pure refactor.
 
@@ -65,15 +65,29 @@
   --c-border-medium: 22 24 29;      --c-border-medium-a: 0.22;
   --c-border-strong: 22 24 29;      --c-border-strong-a: 0.50;  /* 3.0:1 */
 
-  /* Brand - deepened so it clears AA as text and as an icon on white */
-  --c-accent: 51 102 221;           /* #3366dd  5.1:1 on white, 4.7:1 on page */
-  --c-accent-fg: 255 255 255;       /* white on #3366dd is 5.1:1              */
-  --c-accent-soft: 51 102 221;      --c-accent-soft-a: 0.12;
-  --c-accent-glow: 51 102 221;      --c-accent-glow-a: 0.22;
-  --c-accent-strong: 36 72 156;     /* #24489c - 7.4:1 on the accent-soft chip */
+  /* Brand.
 
-  --c-brand-from: 51 102 221;       /* #3366dd */
-  --c-brand-to: 99 61 219;          /* #633ddb - white on it is 6.5:1 */
+     The accent is the brand blue. The brand ships two shades - the swatch
+     #478cc9 and its companion #2c6296 - and only one of them can carry text on
+     a white-ish page: the swatch measures 3.58:1 on white, the companion
+     6.37:1. So light takes the companion and dark takes the swatch. It stays
+     ONE token, `accent`, that call sites never have to think about; the theme
+     picks the shade that can actually be read. */
+  --c-accent: 44 98 150;            /* #2c6296  5.85:1 on page, 6.37:1 on a white card */
+  --c-accent-fg: 255 255 255;       /* white on #2c6296 is 6.37:1 */
+  --c-accent-soft: 44 98 150;       --c-accent-soft-a: 0.12;
+  --c-accent-glow: 44 98 150;       --c-accent-glow-a: 0.22;
+  --c-accent-strong: 31 74 115;     /* #1f4a73 - 6.55:1 on the worst accent-soft chip */
+
+  /* The brand ramp. Both stops are the brand's own, in BOTH themes - this is a
+     mark, not a themed surface, so it does not flip. `brand-fg` is what goes ON
+     it: white measures 3.58:1 against the light stop and 6.37:1 against the
+     deep one, which clears the 3:1 bar for marks, icons and bars but NOT the
+     4.5:1 bar for body text. Put a LABEL on a flat `bg-accent text-accent-fg`
+     instead; see the .accent-gradient note at the foot of this file. */
+  --c-brand-from: 71 140 201;       /* #478cc9 the brand swatch */
+  --c-brand-to: 44 98 150;          /* #2c6296 the brand shade  */
+  --c-brand-fg: 255 255 255;        /* marks and icons on the ramp - 3.58:1 worst stop */
 
   /* Status - each DEFAULT is the text/icon weight and clears AA on white */
   --c-danger: 192 32 43;            /* #c0202b  6.0:1 */
@@ -107,6 +121,23 @@
      amber is what buys the headroom: 5.7:1 on a white card, 4.9:1 at the
      worst nesting (over surface-sunken). */
   --c-warning-soft: 154 103 0;      --c-warning-soft-a: 0.12;
+
+  /* Weekday headings in the library - one colour per `Date.getDay()`, Sunday
+     first, so a day always looks the same wherever it lands in the list. Red is
+     deliberately absent: it means destructive here.
+
+     These are set at the same hues the dark theme uses but at a lightness that
+     can carry 11px uppercase type on a pale ground. Dark's pastels measure
+     1.5-3.0:1 on #f6f5f2 - every one of them fails - so light needs its own
+     rung. Each value below clears 4.5:1 against the WORST ground a heading can
+     land on (page, white card, or sunken well); the page figure is quoted. */
+  --c-day-0: 109 40 217;            /* #6d28d9 violet  6.52:1 */
+  --c-day-1: 29 78 216;             /* #1d4ed8 blue    6.15:1 */
+  --c-day-2: 11 111 138;            /* #0b6f8a cyan    5.27:1 */
+  --c-day-3: 11 113 72;             /* #0b7148 green   5.55:1 */
+  --c-day-4: 138 90 0;              /* #8a5a00 amber   5.44:1 */
+  --c-day-5: 180 64 10;             /* #b4400a orange  5.24:1 */
+  --c-day-6: 184 26 94;             /* #b81a5e pink    5.75:1 */
 
   /* Depth */
   --c-scrim: 15 17 21;              --c-scrim-a: 0.45;
@@ -158,7 +189,7 @@
   --scrollbar-thumb: rgb(22 24 29 / 0.22);
   --glow-ring-a: 0.65;
   --glow-spread-a: 0.18;
-  --selection-bg: rgb(51 102 221 / 0.22);
+  --selection-bg: rgb(44 98 150 / 0.22);
 }
 
 .dark {
@@ -198,15 +229,24 @@
   --c-border-medium: 255 255 255;   --c-border-medium-a: 0.20;  /* the old white/20 */
   --c-border-strong: 255 255 255;   --c-border-strong-a: 0.40;  /* 3.7:1 */
 
-  /* Brand */
-  --c-accent: 91 138 245;           /* #5b8af5 */
-  --c-accent-fg: 255 255 255;
-  --c-accent-soft: 91 138 245;      --c-accent-soft-a: 0.15;
-  --c-accent-glow: 91 138 245;      --c-accent-glow-a: 0.25;
-  --c-accent-strong: 157 186 255;   /* #9dbaff - 7.0:1 on the accent-soft chip */
+  /* Brand - the swatch itself, which is legible on a near-black page */
+  --c-accent: 71 140 201;           /* #478cc9  5.40:1 on page, 4.80:1 on overlay */
+  /* NOT white. `accent-fg` carries button labels - the filter chips, the
+     library's Ready badge, the confirm button - and white on #478cc9 is only
+     3.58:1. No LIGHTER colour can do better; white is already the ceiling. So
+     the fix has to go the other way, and the fill stays the brand swatch as
+     decided. Ink on the swatch measures 5.40:1. This is the same move the
+     palette already makes for `--c-warning-fg` (ink on amber), and it is the
+     standard dark-theme pattern: a bright primary fill takes a dark label. */
+  --c-accent-fg: 13 13 20;          /* #0d0d14 on #478cc9 is 5.40:1 */
+  --c-accent-soft: 71 140 201;      --c-accent-soft-a: 0.15;
+  --c-accent-glow: 71 140 201;      --c-accent-glow-a: 0.25;
+  --c-accent-strong: 147 197 234;   /* #93c5ea - 7.69:1 on the worst accent-soft chip */
 
-  --c-brand-from: 91 138 245;       /* #5b8af5 */
-  --c-brand-to: 124 91 245;         /* #7c5bf5 */
+  /* Same two brand stops as light - the ramp is a mark, not a themed surface. */
+  --c-brand-from: 71 140 201;       /* #478cc9 */
+  --c-brand-to: 44 98 150;          /* #2c6296 */
+  --c-brand-fg: 255 255 255;        /* marks and icons on the ramp - 3.58:1 worst stop */
 
   /* Status - the tailwind palette entries the components already used */
   --c-danger: 248 113 113;          /* red-400     */
@@ -219,7 +259,11 @@
   --c-danger-soft: 239 68 68;       --c-danger-soft-a: 0.12;
 
   --c-success: 52 211 153;          /* emerald-400 */
-  --c-success-solid: 5 150 105;     /* emerald-600 */
+  /* emerald-700, not emerald-600. This fill carries the library's "Cached / NN%"
+     badge, and white on emerald-600 is 3.77:1. Same treatment danger-solid got
+     above, for the same reason - a solid fill that hosts a label has to clear
+     4.5:1, not the 3:1 a plain swatch would. emerald-700 takes it to 5.6:1. */
+  --c-success-solid: 4 120 87;      /* emerald-700 */
   --c-success-fg: 255 255 255;
   --c-success-soft: 5 150 105;      --c-success-soft-a: 0.25;
   /* was bg-emerald-600/40 */
@@ -229,6 +273,16 @@
   --c-warning-solid: 251 191 36;    /* amber-400   */
   --c-warning-fg: 13 13 20;         /* ink on amber */
   --c-warning-soft: 251 191 36;     --c-warning-soft-a: 0.10;
+
+  /* Weekday headings - the values the feature shipped with, unchanged. Each
+     one measures 5.6-11.6:1 on the page and on a raised card. */
+  --c-day-0: 167 139 250;           /* #a78bfa violet   7.11:1 */
+  --c-day-1: 91 138 245;            /* #5b8af5 blue     5.90:1 */
+  --c-day-2: 34 211 238;            /* #22d3ee cyan    10.71:1 */
+  --c-day-3: 52 211 153;            /* #34d399 green   10.07:1 */
+  --c-day-4: 251 191 36;            /* #fbbf24 amber   11.60:1 */
+  --c-day-5: 251 146 60;            /* #fb923c orange   8.55:1 */
+  --c-day-6: 244 114 182;           /* #f472b6 pink     7.31:1 */
 
   /* Depth */
   --c-scrim: 0 0 0;                 --c-scrim-a: 0.70;
@@ -267,7 +321,7 @@
   --scrollbar-thumb: rgb(255 255 255 / 0.10);
   --glow-ring-a: 0.5;
   --glow-spread-a: 0.2;
-  --selection-bg: rgb(91 138 245 / 0.35);
+  --selection-bg: rgb(71 140 201 / 0.35);
 }
 
 @tailwind base;
@@ -307,6 +361,30 @@
     backdrop-filter: blur(20px);
     border: 1px solid var(--glass-border);
   }
+
+  /* The brand gradient, in one place: the brand swatch (as the highlight)
+     running into its deeper companion. Filled surfaces that used to be a flat
+     bg-accent take one of these instead - the 135deg version for anything
+     roughly square, the -x version for bars, where a diagonal ramp across 3px
+     of height reads as a flat colour anyway.
+
+     The stops are `rgb(var(--c-brand-*))` and NOT `theme(colors.brand.from)`.
+     Every colour in the config is `rgb(var(--token) / <alpha-value>)`, so a
+     theme() call here would inline the literal string `<alpha-value>` - an
+     invalid gradient stop, which browsers drop silently, leaving no background
+     at all. Referencing the variable directly is the only form that works.
+
+     These are a GRAPHIC surface. Content on them takes `text-brand-fg` (white),
+     which measures 3.58:1 against the light stop: fine for a mark, an icon or a
+     bar, short of the 4.5:1 body-text bar. A gradient fill that carries a LABEL
+     wants a flat `bg-accent text-accent-fg` instead - 6.37:1 light, 5.40:1
+     dark. */
+  .accent-gradient {
+    background-image: linear-gradient(135deg, rgb(var(--c-brand-from)), rgb(var(--c-brand-to)));
+  }
+  .accent-gradient-x {
+    background-image: linear-gradient(to right, rgb(var(--c-brand-from)), rgb(var(--c-brand-to)));
+  }
 }
 
 @layer utilities {
@@ -320,6 +398,10 @@
   }
   .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; }
 
+  /* The ring and spread are the accent, so this now glows the brand swatch in
+     dark - the same rgba(71,140,201,0.5)/0.2 the hardcoded rule spelled out -
+     and the brand shade in light, where a swatch-bright halo on a pale card
+     would read as a smudge. */
   .channel-glow {
     box-shadow:
       0 0 0 1px rgb(var(--c-accent) / var(--glow-ring-a)),

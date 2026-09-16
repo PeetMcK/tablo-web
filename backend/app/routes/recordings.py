@@ -6,7 +6,8 @@ import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from ..state import state
+from .. import store
+from ..state import _run_sync, state
 from ..transcode_cache import (
     CacheFull,
     CacheState,
@@ -75,6 +76,13 @@ async def list_recordings():
 
     merged = items + orphans
     merged.sort(key=lambda r: r.get("start") or "", reverse=True)
+
+    # Feed the search index from the listing: the device owns the library, so
+    # this is the only moment we reliably see all of it.
+    try:
+        await _run_sync(store.index_recordings, merged)
+    except Exception as e:  # noqa: BLE001 - indexing must never break the library
+        print(f"[search] indexing recordings failed: {e}", flush=True)
 
     return {
         "recordings": merged,

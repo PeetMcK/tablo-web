@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
 import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
 import { parseRoute, writeRoute } from "../lib/route";
-import { formatAired } from "../lib/format";
+import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
 
@@ -24,13 +24,6 @@ function formatBytes(n: number): string {
 }
 
 /**
- * When the recording started, as `9/13/2026 2:25 PM`.
- *
- * The date alone was ambiguous on days with several games on the same channel -
- * three of these start within hours of each other - so the kickoff time is what
- * actually distinguishes them.
- */
-/**
  * Runtime as `3h 35m`.
  *
  * Lowercase deliberately, and rendered without the uppercasing applied to the
@@ -41,6 +34,26 @@ function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.round((seconds % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/**
+ * The heading colour for the day `iso` falls on, as a live token reference.
+ *
+ * Deliberately not `dayColor` from lib/format, which returns a fixed hex tuned
+ * for the dark page — every one of those pastels drops under 3:1 on the light
+ * one. `--c-day-0`…`--c-day-6` carry a legible rung per theme, so the heading
+ * reads the variable and follows the theme with no second code path and no
+ * `dark:` variant. Indexed by `Date.getDay()`, Sunday first, as the tokens are.
+ *
+ * `alpha` is passed through the slash form rather than concatenated as hex
+ * digits: `rgb(...)` has no two-character alpha suffix to append.
+ */
+function dayTint(iso: string, alpha?: number): string {
+  const d = new Date(iso);
+  const day = Number.isNaN(d.getTime()) ? 0 : d.getDay();
+  return alpha === undefined
+    ? `rgb(var(--c-day-${day}))`
+    : `rgb(var(--c-day-${day}) / ${alpha})`;
 }
 
 export function LibraryView() {
@@ -97,6 +110,29 @@ export function LibraryView() {
 
   const recordings = useMemo(() => data?.recordings ?? [], [data]);
   const truncated = data ? data.total > data.returned : false;
+
+  /**
+   * The recordings split into the days they aired on, newest day first.
+   *
+   * A flat wall of cards gave no sense of when anything was recorded; the
+   * heading rows are the only place the date is read at a glance.
+   */
+  const days = useMemo(() => {
+    // The heading is rendered from a real timestamp, not from the key: a key is
+    // a bare `2026-09-14`, which Date parses as UTC midnight and would name the
+    // day before for anyone west of UTC — the very slip the key exists to avoid.
+    const byDay = new Map<string, { start: string; items: Recording[] }>();
+    for (const rec of recordings) {
+      const start = rec.start ?? "";
+      const key = dayKey(start);
+      const bucket = byDay.get(key);
+      if (bucket) bucket.items.push(rec);
+      else byDay.set(key, { start, items: [rec] });
+    }
+    return [...byDay.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([key, group]) => ({ key, ...group }));
+  }, [recordings]);
 
   // A recording named in the URL reopens as soon as the list contains it.
   // Derived rather than assigned from an effect, which would cascade renders.
@@ -195,7 +231,26 @@ export function LibraryView() {
             <p className="text-fg-muted font-black tracking-widest uppercase">No Recordings Found</p>
           </div>
         ) : (
-          recordings.map((rec) => {
+          days.map(({ key, start, items }) => (
+            <Fragment key={key}>
+              {/* The day these aired, in that weekday's colour. Spans the grid,
+                  so the cards below it read as one evening's recordings. */}
+              <div className="col-span-full flex items-center gap-3 pt-2 first:pt-0">
+                <span
+                  className="text-[11px] font-black uppercase tracking-widest whitespace-nowrap"
+                  style={{ color: dayTint(start) }}
+                >
+                  {formatDayHeading(start) || "Undated"}
+                </span>
+                <span
+                  className="h-px flex-1 rounded-full"
+                  style={{
+                    background: `linear-gradient(to right, ${dayTint(start, 0.5)}, transparent)`,
+                  }}
+                />
+              </div>
+
+              {items.map((rec) => {
             const playable = isPlayable(rec);
             return (
               <div
@@ -216,8 +271,8 @@ export function LibraryView() {
                     </div>
                   )}
                   <div className="absolute inset-0 flex items-center justify-center bg-scrim-soft opacity-0 group-hover:opacity-100 transition">
-                    <div className="w-14 h-14 rounded-full bg-accent/90 flex items-center justify-center">
-                      <Play className="w-6 h-6 text-accent-fg ml-0.5" fill="currentColor" aria-hidden />
+                    <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center">
+                      <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
                     </div>
                   </div>
                   {rec.pinned ? (
@@ -383,17 +438,17 @@ export function LibraryView() {
                       {rec.cache_state !== "absent" && (
                         <button
                           onClick={() => setConfirmation({
-                            title: `Delete the downloaded copy of "${rec.title ?? "this recording"}"?`,
+                            title: `Delete the cached video of "${rec.title ?? "this recording"}"?`,
                             body: rec.offline_only
                               ? "The Tablo no longer has this recording. Deleting it here removes the only copy."
-                              : "It can be downloaded again from the Tablo.",
-                            confirmLabel: "Delete copy",
+                              : "It can be cached again from the Tablo.",
+                            confirmLabel: "Delete cache",
                             danger: true,
                             onConfirm: () => control.mutate({ id: rec.object_id, action: "delete" }),
                           })}
                           disabled={control.isPending}
-                          title="Delete downloaded copy"
-                          aria-label={`Delete downloaded copy of ${rec.title ?? "recording"}`}
+                          title="Delete cached video"
+                          aria-label={`Delete cached video of ${rec.title ?? "recording"}`}
                           className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
                                      text-fg-faint hover:bg-danger-soft hover:text-danger transition disabled:opacity-30"
                         >
@@ -410,7 +465,7 @@ export function LibraryView() {
                             title: `Stop keeping "${rec.title ?? "this recording"}" offline?`,
                             body: rec.offline_only
                               ? "The Tablo no longer has this recording, so the copy cannot be remade once it is reclaimed."
-                              : "The downloaded copy stays until space is needed, then it is reclaimed automatically.",
+                              : "The cached video stays until space is needed, then it is reclaimed automatically.",
                             confirmLabel: "Stop keeping",
                             danger: rec.offline_only,
                             onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
@@ -443,7 +498,9 @@ export function LibraryView() {
                 </div>
               </div>
             );
-          })
+              })}
+            </Fragment>
+          ))
         )}
       </div>
     </>
