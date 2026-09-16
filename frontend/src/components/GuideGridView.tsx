@@ -225,6 +225,37 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   // and a flag left standing would eat the next real one.
   const panned = useRef(false);
 
+  /**
+   * How a live drag keeps text from selecting under it.
+   *
+   * Not `user-select`, which is what this was. That property inherits, so
+   * putting it on the scroller invalidates the computed style of every node
+   * beneath it — 30,932 of them in a real guide, measured at 136ms to apply
+   * and 117ms to take away, synchronously inside the pointer handler. A drag
+   * across the listings therefore hitched for an eighth of a second as it took
+   * hold and again as it let go. (Dragging the hour header never did, because
+   * that gesture commits its axis at pointerdown and never reaches the branch
+   * below — which is exactly the difference that was visible.)
+   *
+   * Refusing `selectstart` costs nothing and says the same thing: no selection
+   * may begin while the guide is being dragged. One listener, no style
+   * invalidation, no layout.
+   */
+  const refuse = useRef<((e: Event) => void) | null>(null);
+  const refuseSelections = useCallback(() => {
+    if (refuse.current) return;
+    refuse.current = (e: Event) => e.preventDefault();
+    document.addEventListener("selectstart", refuse.current);
+  }, []);
+  const allowSelections = useCallback(() => {
+    if (!refuse.current) return;
+    document.removeEventListener("selectstart", refuse.current);
+    refuse.current = null;
+  }, []);
+  // A guide unmounted mid-drag would leave that listener on the document,
+  // refusing every selection on the page with nothing left to lift it.
+  useEffect(() => allowSelections, [allowSelections]);
+
   const stopGlide = useCallback(() => {
     if (glide.current !== null) {
       cancelAnimationFrame(glide.current);
@@ -321,7 +352,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       // Dragging across text selects it, and a pan that paints the listings
       // blue as it goes reads as broken. Only while a drag is live, so a
       // programme title can still be selected and copied at rest.
-      el.classList.add("select-none");
+      refuseSelections();
       // Now that this is a drag and not a click, take the pointer: the
       // gesture has to survive leaving the guide, and there is no longer a
       // click for the capture to steal.
@@ -333,13 +364,13 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
     g.samples.push({ t: performance.now(), x: e.clientX, y: e.clientY });
     if (g.samples.length > 12) g.samples.shift();
-  }, []);
+  }, [refuseSelections]);
 
   const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const g = grab.current;
     if (!g || g.id !== e.pointerId) return;
     grab.current = null;
-    scrollerRef.current?.classList.remove("select-none");
+    allowSelections();
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
@@ -354,7 +385,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     const vy = g.axis === "y" ? v.y : 0;
     if (Math.abs(vx) < MIN_THROW && Math.abs(vy) < MIN_THROW) return;
     throwGuide(vx, vy);
-  }, [throwGuide]);
+  }, [throwGuide, allowSelections]);
 
   // The jump control names where the guide is, which needs a render to change -
   // but this runs on every scroll frame, and re-rendering the guide per frame

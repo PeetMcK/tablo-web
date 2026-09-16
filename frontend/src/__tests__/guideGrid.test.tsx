@@ -752,6 +752,13 @@ describe("a throw still in flight", () => {
 describe("dragging across the listings", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  /** Whether a selection would be allowed to begin right now. */
+  function selectionRefused(surface: HTMLElement) {
+    const ev = new Event("selectstart", { bubbles: true, cancelable: true });
+    surface.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  }
+
   it("suppresses text selection only while the drag is live", async () => {
     // Without this a pan paints the programme titles blue as it travels,
     // which reads as the guide breaking rather than moving. At rest the text
@@ -767,18 +774,66 @@ describe("dragging across the listings", () => {
     const surface = sc.firstElementChild as HTMLElement;
     const common = { pointerId: 1, pointerType: "mouse", button: 0 };
 
-    expect(sc.classList.contains("select-none")).toBe(false);
+    expect(selectionRefused(surface)).toBe(false);
 
     fireEvent.pointerDown(surface, { ...common, clientX: 400, clientY: 300 });
     // Still under the threshold: this may yet be a click, so nothing changes.
     fireEvent.pointerMove(surface, { ...common, clientX: 398, clientY: 300 });
-    expect(sc.classList.contains("select-none")).toBe(false);
+    expect(selectionRefused(surface)).toBe(false);
 
     fireEvent.pointerMove(surface, { ...common, clientX: 340, clientY: 300 });
-    expect(sc.classList.contains("select-none")).toBe(true);
+    expect(selectionRefused(surface)).toBe(true);
 
     fireEvent.pointerUp(surface, { ...common, clientX: 340, clientY: 300 });
-    expect(sc.classList.contains("select-none")).toBe(false);
+    expect(selectionRefused(surface)).toBe(false);
+  });
+
+  it("suppresses it without touching an inherited property on the scroller", async () => {
+    // `user-select` inherits, so flipping a class that carries it on the
+    // scroller invalidates computed style for every node beneath — 30,932 of
+    // them in a real guide. Measured in Chrome: 136ms to add the class and
+    // 117ms to take it off, both synchronous, one at each end of every drag
+    // across the listings. The header never paid it because a header drag
+    // commits its axis at pointerdown and never reaches this branch, which is
+    // why dragging the hours felt fine while dragging the rows did not.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const sc = scroller(container);
+    const surface = sc.firstElementChild as HTMLElement;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+    const before = sc.className;
+
+    fireEvent.pointerDown(surface, { ...common, clientX: 400, clientY: 300 });
+    fireEvent.pointerMove(surface, { ...common, clientX: 340, clientY: 300 });
+
+    expect(selectionRefused(surface)).toBe(true);
+    expect(sc.className).toBe(before);
+  });
+
+  it("stops refusing selections once the guide is gone", async () => {
+    // The listener outlives the gesture if the component is torn down
+    // mid-drag, and a document-level handler nobody owns would refuse every
+    // selection on the page from then on.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+    mockStream(longChannel(24));
+    const { container, unmount } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const sc = scroller(container);
+    const surface = sc.firstElementChild as HTMLElement;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+    fireEvent.pointerDown(surface, { ...common, clientX: 400, clientY: 300 });
+    fireEvent.pointerMove(surface, { ...common, clientX: 340, clientY: 300 });
+    unmount();
+
+    expect(selectionRefused(document.body)).toBe(false);
   });
 });
 
