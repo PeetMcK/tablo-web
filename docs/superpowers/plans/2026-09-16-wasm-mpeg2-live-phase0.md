@@ -134,6 +134,34 @@ yes R8 textures (the Y/U/V planes)
 **The built decoder loads in the browser** in 416ms, in `direct` mode (the probe
 passes `noworker: true`, as the real worker will).
 
+### The video path, verified in Chrome
+
+Before any device was involved, the whole video path was run in the browser
+against the committed fixture — decode in the worker, planes uploaded as `R8`
+textures, both fields drawn through the deinterlace shader — from
+`frontend/probe.html` (`vite dev`, not part of the production build).
+
+It works: 25 frames decoded, 1920x1080, `interlaced=true tff=true`, 6 fields
+presented, a correct picture on the canvas with correct colour.
+
+It also found three bugs that no unit test could have, all in production code:
+
+1. **The worker handled messages concurrently.** Every segment posted while the
+   2.5 MB of wasm was still instantiating arrived before the decoder existed
+   and was dropped — a decoder that opened successfully and then decoded
+   nothing at all. Messages are now handled one at a time, in order.
+2. **The decoder returned output from `push()` rather than emitting it.** Frames
+   only reached the page when the *next* segment arrived: six seconds of added
+   latency per frame on this device, and nothing at all at the end of a stream.
+   Output is now pushed through a callback as it is decoded.
+3. **avformat's default probe reads 5 MB, or waits for EOF.** On a live feed
+   that is seconds of black before the first frame — against the ~12s encoder
+   lead this project exists to remove. Bounded to 512 KB and half a second.
+
+The first two are exactly the class of bug the test suite cannot reach: both
+are about *when* things happen across a worker boundary, and both were invisible
+to every test that passed.
+
 ### Device playlist depth — not yet run
 
 Deferred deliberately. It needs a tuner held open against the live device, and
