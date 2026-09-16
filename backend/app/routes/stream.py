@@ -522,40 +522,58 @@ def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
     ]
 
 
-async def start_transcoder(session_id: str, input_url: str):
-    # Evict oldest session if at the cap to prevent CPU exhaustion from zombies
-    if len(transcode_procs) >= MAX_TRANSCODE_SESSIONS:
-        oldest_id, oldest_proc = next(iter(transcode_procs.items()))
-        try:
-            oldest_proc.kill()
-            oldest_proc.wait(timeout=2)
-        except Exception:
-            pass
-        transcode_procs.pop(oldest_id, None)
-        import shutil
-        try:
-            shutil.rmtree(TRANSCODE_DIR / oldest_id)
-        except Exception:
-            pass
+def _evict_transcoder(session_id: str, proc: subprocess.Popen) -> None:
+    """Kill an evicted session and delete what it left behind.
 
-    session_dir = TRANSCODE_DIR / session_id
-    session_dir.mkdir(exist_ok=True, parents=True)
+    Blocking, and deliberately so — `wait` gives FFmpeg up to two seconds to
+    die, and `rmtree` walks a directory of segments. Called from a thread.
+    """
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+    try:
+        shutil.rmtree(TRANSCODE_DIR / session_id)
+    except Exception:
+        pass
 
+
+def _spawn_transcoder(
+    session_dir: Path, cmd: list[str], session_id: str, input_url: str
+) -> subprocess.Popen:
+    """Open the session's log and start FFmpeg against it.
+
+    Both halves block — `open` touches the filesystem and `Popen` forks and
+    execs — which is why this is a plain function called from a thread rather
+    than part of the coroutine. The handle is closed as soon as the child has
+    it; the child keeps its own copy of the descriptor.
+    """
     log_file = session_dir / "ffmpeg.log"
-
-    cmd = live_ffmpeg_cmd(session_dir, input_url)
-
     with open(log_file, "w") as f:
         f.write(f"Starting FFmpeg for session {session_id}\n")
         f.write(f"Input: {input_url}\n")
         f.write(f"Command: {' '.join(cmd)}\n\n")
         f.flush()
-        
-        proc = subprocess.Popen(
-            cmd,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            cwd=session_dir
-        )
+        return subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=session_dir)
+
+
+async def start_transcoder(session_id: str, input_url: str):
+    # Evict oldest session if at the cap to prevent CPU exhaustion from zombies.
+    # Dropped from the registry before the kill, so a second request arriving
+    # mid-eviction picks a different victim rather than this one again.
+    if len(transcode_procs) >= MAX_TRANSCODE_SESSIONS:
+        oldest_id, oldest_proc = next(iter(transcode_procs.items()))
+        transcode_procs.pop(oldest_id, None)
+        await asyncio.to_thread(_evict_transcoder, oldest_id, oldest_proc)
+
+    session_dir = TRANSCODE_DIR / session_id
+    session_dir.mkdir(exist_ok=True, parents=True)
+
+    cmd = live_ffmpeg_cmd(session_dir, input_url)
+
+    # Off the loop: this same process is serving segments to a player holding a
+    # few seconds of buffer, so a fork/exec stall here is a stall there.
+    proc = await asyncio.to_thread(_spawn_transcoder, session_dir, cmd, session_id, input_url)
 
     transcode_procs[session_id] = proc
