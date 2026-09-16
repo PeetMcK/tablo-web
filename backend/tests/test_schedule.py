@@ -3,8 +3,37 @@
 import asyncio
 import time
 
+import pytest
+from fastapi.testclient import TestClient
+
 from app import db, store
+from app.main import app
+from app.routes import schedule as schedule_routes
 from app.state import AppState
+from app.state import state as app_state
+
+client = TestClient(app)
+
+
+@pytest.fixture
+def authed(monkeypatch):
+    monkeypatch.setattr(type(app_state), "is_authenticated",
+                        property(lambda self: True))
+
+
+def _device_airing(state_value):
+    """A device airing record, as PATCH returns it."""
+    return {
+        "path": "/guide/series/episodes/67388",
+        "series_path": "/guide/series/6472",
+        "episode": {"title": "Rags to Riches", "number": 10,
+                    "season_number": 12, "orig_air_date": None},
+        "airing_details": {"datetime": "2026-09-16T08:00Z", "duration": 3600,
+                           "channel_path": "/guide/channels/1", "genres": [],
+                           "show_title": "Finding Your Roots"},
+        "schedule": {"state": state_value, "qualifier": "single",
+                     "skip_reason": None},
+    }
 
 
 def _guide(now, **over):
@@ -201,3 +230,87 @@ def test_any_state_but_none_or_skipped_counts_as_recording():
     store.save_guide(rows, now=now)
 
     assert store.airing_detail("ch1", start, now=now)["scheduled"] is True
+
+
+def test_scheduling_an_airing_patches_the_device_and_the_mirror(authed, monkeypatch):
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+    sent = {}
+
+    async def fake_patch(path, payload):
+        sent.update(path=path, payload=payload)
+        return 200, _device_airing("scheduled")
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+
+    resp = client.put("/api/schedule/airing",
+                      json={"channel": "ch1", "start": start, "scheduled": True})
+
+    assert resp.status_code == 200
+    assert sent == {"path": "/guide/series/episodes/67388",
+                    "payload": {"scheduled": True}}
+    assert resp.json()["scheduled"] is True
+    assert store.airing_detail("ch1", start, now=now)["schedule_state"] == "scheduled"
+
+
+def test_an_unknown_airing_is_a_404(authed):
+    resp = client.put("/api/schedule/airing",
+                      json={"channel": "ch1", "start": "2026-01-01T00:00:00Z",
+                            "scheduled": True})
+    assert resp.status_code == 404
+
+
+def test_a_cloud_airing_is_refused_without_touching_the_device(authed, monkeypatch):
+    now = time.time()
+    rows, start = _guide(now, airing_path=None)
+    store.save_guide(rows, now=now)
+
+    async def fake_patch(path, payload):
+        raise AssertionError("the device must not be asked")
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+
+    resp = client.put("/api/schedule/airing",
+                      json={"channel": "ch1", "start": start, "scheduled": True})
+    assert resp.status_code == 409
+    assert "cloud" in resp.json()["detail"].lower()
+
+
+def test_a_device_refusal_is_reported_in_the_devices_own_words(authed, monkeypatch):
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+
+    async def fake_patch(path, payload):
+        return 400, {"error": {"code": "invalid_patch_document",
+                               "description": "Invalid parameter value",
+                               "details": {"scheduled": None}}}
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+
+    resp = client.put("/api/schedule/airing",
+                      json={"channel": "ch1", "start": start, "scheduled": True})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid parameter value"
+
+
+def test_an_unreachable_device_is_a_502(authed, monkeypatch):
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+
+    async def fake_patch(path, payload):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+
+    resp = client.put("/api/schedule/airing",
+                      json={"channel": "ch1", "start": start, "scheduled": True})
+    assert resp.status_code == 502
+
+
+def test_scheduling_requires_auth():
+    resp = client.put("/api/schedule/airing",
+                      json={"channel": "ch1", "start": "x", "scheduled": True})
+    assert resp.status_code == 401
