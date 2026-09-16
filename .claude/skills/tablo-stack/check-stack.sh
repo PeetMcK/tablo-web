@@ -63,6 +63,20 @@ else
       note "are looking at is served by the container backend: a different"
       note "database, and no hardware encoding. See SKILL.md: Putting it right." ;;
   esac
+
+# ------------------------------------------------------- is it the built image
+# `docker compose up -d` after a build often reports "Running" and changes
+# nothing: the tag is the same, the service config is the same, so compose sees
+# no reason to recreate - and the container keeps serving the image it started
+# with. The build succeeds, the page looks fine, and the change is not there.
+  running_image=$(docker inspect "$FRONTEND" --format '{{.Image}}' 2>/dev/null)
+  tagged_image=$(docker image inspect tablo-web-frontend:local --format '{{.Id}}' 2>/dev/null)
+  if [ -n "$tagged_image" ] && [ "$running_image" != "$tagged_image" ]; then
+    bad "frontend container is older than the image that was last built"
+    note "recreate it: docker compose up -d --force-recreate frontend"
+  elif [ -n "$tagged_image" ]; then
+    ok "frontend runs the image that was last built"
+  fi
 fi
 
 # --------------------------------------------------------- the stray container

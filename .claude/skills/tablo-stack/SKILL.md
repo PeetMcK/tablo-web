@@ -107,12 +107,21 @@ serves whatever was built, so editing files or pulling `main` changes nothing
 until you rebuild:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.override.yml \
-  -f docker-compose.native.yml build frontend
-docker compose -f docker-compose.yml -f docker-compose.override.yml \
-  -f docker-compose.native.yml up -d frontend
+docker compose build frontend
+docker compose up -d --force-recreate frontend
 .claude/skills/tablo-stack/check-stack.sh
 ```
+
+`--force-recreate` is not belt and braces. The image tag does not change between
+builds and neither does the service config, so a plain `up -d` after a build
+routinely prints `Container tablo-web-frontend-1  Running` and leaves the old
+container in place, still serving the previous image. The build succeeded, the
+page loads, and your change is simply not there — which sends you looking for a
+bug in code that was never shipped. The checker compares the running container's
+image against the one last built, so it catches this even if the habit slips.
+
+(Without `.env`, spell out `-f docker-compose.yml -f docker-compose.override.yml
+-f docker-compose.native.yml` on both commands.)
 
 To confirm the new build is the one being served, the bundle name changes:
 
