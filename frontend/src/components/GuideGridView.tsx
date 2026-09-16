@@ -33,11 +33,15 @@ interface Props {
 const HOUR_WIDTH = 400; // px per hour
 const MIN_HOURS = 6;    // floor, so a thin guide still looks like a timeline
 /**
- * Width of the frozen channel column, in px. Must match the `w-32` on the
+ * Width of the frozen channel column, in px. Must match the `w-20` on the
  * column itself: the scrolled surface is sized from it, and the "now" line is
  * offset by it, so the two drift apart if only one changes.
+ *
+ * 80, not the 128 it was: the column holds a 48px logo tile and a four-digit
+ * channel number, and everything past about 64px of that was margin the guide
+ * could not spare — every pixel here is a pixel of timeline.
  */
-const CHANNEL_W = 128;
+const CHANNEL_W = 80;
 
 /**
  * Height of one channel row, in px — and it is a measurement, not a taste.
@@ -789,7 +793,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
         data-guide-header
         className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30"
       >
-        <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-20">
+        <div className="w-20 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-20">
           <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
         </div>
 
@@ -903,7 +907,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             <button
               onClick={() => onPlay(ch)}
               aria-label={`Watch ${channelLabel(ch)}`}
-              className="w-32 shrink-0 p-2 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1
+              className="w-20 shrink-0 p-2 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1
                          bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
             >
