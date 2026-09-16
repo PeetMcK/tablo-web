@@ -25,6 +25,15 @@ export interface PlayerOptions {
    */
   fragLoadingTimeOut?: number;
   /**
+   * Seconds to keep buffered ahead of the playhead.
+   *
+   * hls.js defaults to 30s, which is tuned for streaming over a network you do
+   * not control. A cached recording is served off local disk in 20-50ms per
+   * segment, so holding far more costs almost nothing and makes playback
+   * immune to a window that takes a moment to encode.
+   */
+  maxBufferLength?: number;
+  /**
    * Whether to begin playing once the manifest is ready.
    *
    * False when restoring after a refresh: a reload carries no user activation,
@@ -37,7 +46,7 @@ export interface PlayerOptions {
 export function usePlayer(
   videoRef: React.RefObject<HTMLVideoElement | null>,
   { backBufferLength = 90, startPosition = -1, fragLoadingTimeOut = 20000,
-    autoplay = true }: PlayerOptions = {},
+    maxBufferLength = 30, autoplay = true }: PlayerOptions = {},
 ) {
   const hlsRef = useRef<Hls | null>(null);
   const nativeErrorHandler = useRef<(() => void) | null>(null);
@@ -70,8 +79,17 @@ export function usePlayer(
     if (!forceNative && Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
+        // Only meaningful for LL-HLS live edges, and it holds the buffer short
+        // to chase latency - the opposite of what a recording wants.
+        lowLatencyMode: maxBufferLength <= 30,
         backBufferLength,
+        maxBufferLength,
+        // hls.js stops at whichever of length or size it reaches first, and the
+        // 60 MB default is the binding one at 1080p60 - roughly 90s of video,
+        // so a generous length alone would have done nothing.
+        maxBufferSize: Math.max(60, maxBufferLength * 4) * 1000 * 1000,
+        // The ceiling hls.js is allowed to grow to on a healthy connection.
+        maxMaxBufferLength: Math.max(600, maxBufferLength * 2),
         startPosition,
         manifestLoadingTimeOut: 20000,
         manifestLoadingMaxRetry: 10,
@@ -85,7 +103,9 @@ export function usePlayer(
         }
       });
       
-      log.hls("attach", { url, backBufferLength, startPosition, fragLoadingTimeOut });
+      log.hls("attach", {
+        url, backBufferLength, maxBufferLength, startPosition, fragLoadingTimeOut,
+      });
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_e, d) => {
         log.hls(`manifest parsed — ${d.levels.length} level(s)`, {
@@ -177,7 +197,7 @@ export function usePlayer(
     } else {
       setError("HLS not supported in this browser");
     }
-  }, [videoRef, backBufferLength, startPosition, fragLoadingTimeOut, autoplay]);
+  }, [videoRef, backBufferLength, startPosition, fragLoadingTimeOut, autoplay, maxBufferLength]);
 
   const destroy = useCallback(() => {
     const video = videoRef.current;

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize } from "lucide-react";
 import { usePlayer } from "../hooks/usePlayer";
-import { api } from "../api/tablo";
-import type { Channel, Program, Recording, CacheState } from "../api/tablo";
+import { api, previewUrl } from "../api/tablo";
+import type {
+  Channel, Program, Recording, CacheState, EncodingProgress,
+} from "../api/tablo";
 import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
 
 /**
@@ -24,6 +26,14 @@ interface Props {
   onPosition?: (seconds: number) => void;
 }
 
+/**
+ * How long to wait after releasing the scrubber before actually seeking.
+ *
+ * Long enough that a fumbled release can be corrected, short enough not to feel
+ * like lag. Only matters on cold regions, where the seek commits an encoder.
+ */
+const COMMIT_DEBOUNCE_MS = 280;
+
 /** Must not exceed the backend's LIVE_DVR_MINUTES window (default 60). */
 const LIVE_DVR_SECONDS = 3600;
 
@@ -36,6 +46,17 @@ const LIVE_EDGE_THRESHOLD = 12;
  * means waiting for the whole thing, so the 20s default is far too tight.
  */
 const RECORDING_FRAG_TIMEOUT = 120_000;
+
+/**
+ * How far ahead to buffer a recording.
+ *
+ * hls.js defaults to 30s, tuned for a network you do not control. These
+ * segments come off local disk in 20-50ms, so a deep buffer is nearly free and
+ * covers any window that takes a moment to encode. Kept to a few minutes rather
+ * than the whole recording: on a partially cached one, pulling far ahead would
+ * demand cold windows the viewer may never reach.
+ */
+const RECORDING_BUFFER_SECONDS = 180;
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -70,6 +91,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     startPosition: isLive ? -1 : openAt,
     autoplay: openPlaying,
     fragLoadingTimeOut: isLive ? undefined : RECORDING_FRAG_TIMEOUT,
+    maxBufferLength: isLive ? undefined : RECORDING_BUFFER_SECONDS,
   });
 
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -84,13 +106,29 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   // Rendering the real position during a drag made the thumb fight the pointer.
   const [scrubAt, setScrubAt] = useState<number | null>(null);
   const [hoverAt, setHoverAt] = useState<number | null>(null);
+  /**
+   * Where playback has been told to go but has not arrived yet.
+   *
+   * Seeking into an un-encoded region waits on a transcode. Falling straight
+   * back to the video's currentTime meanwhile snapped the playhead back to
+   * where the scrub started, so the bar disagreed with what was about to play.
+   */
+  const [pendingSeek, setPendingSeek] = useState<number | null>(null);
   const [fineFactor, setFineFactor] = useState(1);
   const barRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; base: number } | null>(null);
+  /** Throttles preview seeks during a drag. */
+  const lastPreviewRef = useRef(0);
+  /** Pending commit, so a re-grab can replace it instead of queueing another. */
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rangeStart, setRangeStart] = useState(0);
   const [rangeEnd, setRangeEnd] = useState(0);
   const [cacheState, setCacheState] = useState<CacheState | null>(null);
   const [cachedRanges, setCachedRanges] = useState<[number, number][]>([]);
+  /** Progress of the window playback is waiting on, when one is being encoded. */
+  const [encodingAt, setEncodingAt] = useState<EncodingProgress | null>(null);
+  /** Last scrub-preview frame that finished decoding. */
+  const [shownPreview, setShownPreview] = useState<string | null>(null);
   // Media listeners are attached once on mount, so they need a live view of the
   // ranges rather than the value captured in that first closure.
   const cachedRangesRef = useRef<[number, number][]>([]);
@@ -200,6 +238,33 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     };
   }, [isLive, sourceKey]);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Scrub preview target. Declared here rather than beside the other
+  // render-time values because the preloading effect below depends on it.
+  // Live has no stored thumbnail pack; recordings do.
+  const previewId = isLive ? null : source.recording.object_id;
+  const previewAt = scrubAt ?? hoverAt;
+  const previewSrc = previewId !== null && previewAt !== null
+    ? previewUrl(previewId, previewAt)
+    : null;
+
+  /**
+   * Hold the last frame that finished decoding.
+   *
+   * Pointing an <img> straight at the moving URL blanks it on every change, and
+   * keying it by src was worse still - React remounted the element each time.
+   * Decoding off-screen first and swapping only on success means the strip
+   * never goes empty, and a timestamp with no stored frame simply leaves the
+   * previous one up instead of flashing a broken image.
+   */
+  useEffect(() => {
+    if (!previewSrc) return;
+    let live = true;
+    const img = new Image();
+    img.onload = () => { if (live) setShownPreview(previewSrc); };
+    img.src = previewSrc;
+    return () => { live = false; };
+  }, [previewSrc]);
+
   // ------------------------------------------------- transcode progress poll
   useEffect(() => {
     if (isLive || cacheState === "complete") return;
@@ -225,6 +290,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           error: s.error,
         });
         setCachedRanges(s.cached_ranges ?? []);
+        setEncodingAt(s.encoding ?? null);
         if (s.state === "complete") clearInterval(id);
       } catch {
         /* transient - keep polling */
@@ -247,6 +313,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
     const sync = () => {
       setPosition(video.currentTime);
+      // Arrived (or the player moved on its own) — stop overriding the bar.
+      setPendingSeek((want) =>
+        want !== null && Math.abs(video.currentTime - want) < 1.5 ? null : want,
+      );
       onPositionRef.current?.(video.currentTime);
       setPaused(video.paused);
       const sk = video.seekable;
@@ -305,7 +375,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const seekTo = useCallback((t: number) => {
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = Math.max(rangeStart, Math.min(t, rangeEnd));
+    const target = Math.max(rangeStart, Math.min(t, rangeEnd));
+    setPendingSeek(target);
+    video.currentTime = target;
   }, [rangeStart, rangeEnd]);
 
   const skip = useCallback((delta: number) => {
@@ -343,8 +415,36 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     return 0.04;
   };
 
+  /**
+   * Show the frame under the playhead while dragging, where that is free.
+   *
+   * Seeking on every pointer move is exactly what the commit-on-release design
+   * avoids: on a cold region each intermediate position would start its own
+   * window transcode. Inside an already-encoded region there is no such cost -
+   * cached segments serve from disk in 22-55ms - so the preview is limited to
+   * those, and a drag across uncached territory simply shows the last frame it
+   * could reach until release.
+   */
+  const previewSeek = useCallback((t: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const cached = isLive || cachedRanges.some(([a, b]) => t >= a && t <= b);
+    if (!cached) return;
+    // A seek per pointer event would queue faster than they can complete.
+    const now = performance.now();
+    if (now - lastPreviewRef.current < 120) return;
+    if (Math.abs(video.currentTime - t) < 0.5) return;
+    lastPreviewRef.current = now;
+    video.currentTime = t;
+  }, [cachedRanges, isLive]);
+
   const onBarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
+    // Supersede a commit that has not fired yet.
+    if (commitTimer.current) {
+      clearTimeout(commitTimer.current);
+      commitTimer.current = null;
+    }
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     const t = timeAtX(e.clientX);
     dragRef.current = { x: e.clientX, base: t };
@@ -367,16 +467,29 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     setFineFactor(f);
     const perPx = (rangeEnd - rangeStart) / Math.max(1, r.width);
     const t = drag.base + (e.clientX - drag.x) * perPx * f;
-    setScrubAt(Math.min(rangeEnd, Math.max(rangeStart, t)));
-  }, [timeAtX, rangeStart, rangeEnd]);
+    const target = Math.min(rangeEnd, Math.max(rangeStart, t));
+    setScrubAt(target);
+    previewSeek(target);
+  }, [timeAtX, rangeStart, rangeEnd, previewSeek]);
 
-  // Seek once, on release, rather than on every pointer move: scrubbing a
-  // 3.5 hour timeline would otherwise start a transcode per intermediate point.
+  /**
+   * Seek once, shortly after release, rather than on every pointer move.
+   *
+   * Scrubbing a 3.5 hour timeline would otherwise start a transcode per
+   * intermediate point. The short delay matters as much: landing on a cold spot
+   * commits the encoder to it, so releasing a few pixels off and grabbing again
+   * used to mean waiting out a transcode of somewhere you did not want. Within
+   * the window a re-grab simply replaces the target.
+   */
   const commitScrub = useCallback(() => {
-    setScrubAt((at) => {
-      if (at !== null) seekTo(at);
-      return null;
-    });
+    if (commitTimer.current) clearTimeout(commitTimer.current);
+    commitTimer.current = setTimeout(() => {
+      commitTimer.current = null;
+      setScrubAt((at) => {
+        if (at !== null) seekTo(at);
+        return null;
+      });
+    }, COMMIT_DEBOUNCE_MS);
   }, [seekTo]);
 
   const onBarPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -481,9 +594,18 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer]);
 
   const span = Math.max(1, rangeEnd - rangeStart);
-  const shownPos = scrubAt ?? position;
+  // Priority: the live drag, then a seek in flight, then where playback is.
+  const shownPos = scrubAt ?? pendingSeek ?? position;
   const pct = Math.min(100, Math.max(0, ((shownPos - rangeStart) / span) * 100));
   const scrubbing = scrubAt !== null;
+  /**
+   * Percent of the blocking window that exists, or null when there is nothing
+   * real to show - a stall with no encode behind it keeps the spinner.
+   */
+  const encodePct = encodingAt && encodingAt.segments_total > 0
+    ? Math.min(99, Math.round(
+        (encodingAt.segments_ready / encodingAt.segments_total) * 100))
+    : null;
   const encoding = !isLive && cacheState !== "complete";
   // Drawn from the real encoded ranges. A single bar scaled by percent-complete
   // would be wrong the moment the viewer seeks: jumping an hour in leaves the
@@ -500,18 +622,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * across the bar instead of growing in place.
    */
   const readyBands = (isLive ? [[rangeStart, rangeEnd] as [number, number]] : cachedRanges)
-    .flatMap(([from, to]) => {
+    .map(([from, to]) => {
       const a = ((from - rangeStart) / span) * 100;
       const b = ((to - rangeStart) / span) * 100;
-      const out: { key: string; left: number; width: number; played: boolean }[] = [];
-      if (a < pct) {
-        out.push({ key: `p${from}`, left: a, width: Math.min(b, pct) - a, played: true });
-      }
-      if (b > pct) {
-        out.push({ key: `f${from}`, left: Math.max(a, pct), width: b - Math.max(a, pct), played: false });
-      }
-      return out.filter(x => x.width > 0);
-    });
+      return { key: `c${from}`, left: a, width: b - a };
+    })
+    .filter(x => x.width > 0);
 
   let programRemaining = 0;
   if (program) {
@@ -554,10 +670,32 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           backend finishes it. Say so rather than showing a frozen frame. */}
       {waiting && !loading && !combinedError && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-black/60 backdrop-blur-sm">
-            <div className="w-4 h-4 rounded-full border-2 border-accent border-t-transparent animate-spin" />
-            {encoding && (
-              <span className="text-white/80 text-[11px] uppercase tracking-widest">Transcoding</span>
+          <div className="flex flex-col gap-2 px-4 py-3 rounded-2xl bg-black/65 backdrop-blur-sm
+                          min-w-[190px]">
+            <div className="flex items-center gap-2.5">
+              {/* Only spin when there is nothing real to report. */}
+              {encodePct === null && (
+                <div className="w-4 h-4 rounded-full border-2 border-accent
+                                border-t-transparent animate-spin" />
+              )}
+              <span className="text-white/80 text-[11px] uppercase tracking-widest">
+                {encoding ? "Transcoding" : "Buffering"}
+              </span>
+              {encodePct !== null && (
+                <span className="ml-auto text-white/50 text-[11px] tabular-nums">
+                  {encodePct}%
+                </span>
+              )}
+            </div>
+            {/* Segments of the blocking window land in order, so this is real
+                progress toward playback rather than a decorative animation. */}
+            {encodePct !== null && (
+              <div className="h-1 rounded-full bg-white/15 overflow-hidden">
+                <div
+                  className="h-full bg-accent rounded-full transition-[width] duration-300 ease-out"
+                  style={{ width: `${Math.max(4, encodePct)}%` }}
+                />
+              </div>
             )}
           </div>
         </div>
@@ -623,15 +761,32 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 style={{ width: `${pct}%` }}
               />
 
-              {/* Transcoded: solid accent behind the playhead, white ahead of it */}
+              {/* Transcoded extent. This is the only thing that grows on its
+                  own, so it is the only thing that eases - it advances in
+                  window-sized jumps as encoding completes, and easing hides
+                  the step. */}
               {readyBands.map((b) => (
                 <div
                   key={b.key}
-                  className={`absolute h-1.5 rounded-full ${scrubbing ? "" : "transition-[width,left] duration-[2800ms] ease-linear"}
-                              ${b.played ? "bg-accent" : "bg-white/50"}`}
+                  className={`absolute h-1.5 rounded-full bg-white/50
+                              ${scrubbing ? "" : "transition-[width,left] duration-[2800ms] ease-linear"}`}
                   style={{ left: `${b.left}%`, width: `${b.width}%` }}
                 />
               ))}
+
+              {/* The watched part of it, drawn over the top. Its right edge is
+                  the playhead, so it must track exactly - easing this made the
+                  fill visibly lag behind where playback actually was. */}
+              {readyBands.map((b) => {
+                const width = Math.min(b.left + b.width, pct) - b.left;
+                return width > 0 ? (
+                  <div
+                    key={`w${b.key}`}
+                    className="absolute h-1.5 rounded-full bg-accent"
+                    style={{ left: `${b.left}%`, width: `${width}%` }}
+                  />
+                ) : null;
+              })}
 
               {/* Hover target, before committing to it */}
               {hoverAt !== null && !scrubbing && (
@@ -652,17 +807,39 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               {/* Readout: follows the drag, or previews the hover target. At ~10
                   seconds per pixel on a long recording the bar alone cannot be
                   aimed, so the number is the actual control surface. */}
+              {/* w-40 is fixed on purpose, not shrink-to-fit: an absolutely
+                  positioned box with no width narrows as it nears its
+                  container's right edge, which made the thumbnail visibly
+                  shrink as it was dragged rightwards. */}
               {(scrubbing || hoverAt !== null) && (
                 <div
-                  className="absolute -top-8 -translate-x-1/2 px-2 py-1 rounded-md
-                             bg-black/90 text-[11px] tabular-nums text-white
-                             pointer-events-none whitespace-nowrap shadow-lg"
-                  style={{ left: `${scrubbing ? pct : ((hoverAt! - rangeStart) / span) * 100}%` }}
+                  className="absolute -translate-x-1/2 pointer-events-none
+                             flex flex-col items-center gap-1 w-40"
+                  style={{
+                    left: `${scrubbing ? pct : ((hoverAt! - rangeStart) / span) * 100}%`,
+                    bottom: "calc(100% + 10px)",
+                  }}
                 >
-                  {formatTime((scrubbing ? shownPos : hoverAt!) - rangeStart)}
-                  {scrubbing && fineFactor < 1 && (
-                    <span className="ml-1.5 text-accent">1/{Math.round(1 / fineFactor)}</span>
+                  {/* The device renders these itself and serves them as a BIF
+                      pack, so this works over un-encoded stretches too - which
+                      is the whole point, since those are the places you cannot
+                      preview by seeking. */}
+                  {shownPreview && previewAt !== null && (
+                    <img
+                      src={shownPreview}
+                      alt=""
+                      draggable={false}
+                      className="w-full aspect-video object-cover rounded-md
+                                 border border-white/15 shadow-xl bg-black/60"
+                    />
                   )}
+                  <div className="px-2 py-1 rounded-md bg-black/90 text-[11px]
+                                  tabular-nums text-white whitespace-nowrap shadow-lg">
+                    {formatTime((scrubbing ? shownPos : hoverAt!) - rangeStart)}
+                    {scrubbing && fineFactor < 1 && (
+                      <span className="ml-1.5 text-accent">1/{Math.round(1 / fineFactor)}</span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
