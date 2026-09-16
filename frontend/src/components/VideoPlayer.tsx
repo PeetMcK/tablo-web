@@ -85,6 +85,14 @@ const RECORDING_FRAG_TIMEOUT = 120_000;
 const RECORDING_BUFFER_SECONDS = 180;
 
 /**
+ * How far up from the bottom of a pop-out window summons the transport.
+ *
+ * Generous enough to catch a pointer on its way down without being so tall
+ * that half a small window counts as the control area.
+ */
+const PIP_BAR_REACH = 96;
+
+/**
  * Legibility halo for chrome that sits bare on the gradient scrim.
  *
  * The scrim only reaches full strength at the very edge of the frame: at the
@@ -188,6 +196,7 @@ interface PlayerView {
   onClose: () => void;
   waiting: boolean;
   waitPct: number | null;
+  poppedOut: boolean;
   togglePictureInPicture: () => void;
   enterFullscreen: () => void;
   paused: boolean;
@@ -1212,7 +1221,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     videoRef, rootRef, videoHostRef, barRef,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
-    togglePictureInPicture, enterFullscreen,
+    poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
@@ -1260,7 +1269,7 @@ function Stage({ view }: { view: PlayerView }) {
     videoRef, rootRef, videoHostRef, barRef,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
-    togglePictureInPicture, enterFullscreen,
+    poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
@@ -1268,6 +1277,30 @@ function Stage({ view }: { view: PlayerView }) {
     onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
     formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
   } = view;
+
+  /**
+   * Whether the pop-out's controls are showing.
+   *
+   * A window of a few hundred pixels is nearly all picture, and chrome that
+   * appears because the pointer moved anywhere in it would be up almost
+   * permanently. So there it is the bottom strip alone that summons the
+   * transport, and the rest of the frame leaves the programme alone. Local to
+   * the stage because it is presentation and nothing outside needs it.
+   */
+  const [barHover, setBarHover] = useState(false);
+  const chromeUp = poppedOut ? barHover : showControls;
+
+  /**
+   * Read from the pointer's height, not from entering and leaving a strip.
+   *
+   * A strip would sit under the transport it summons, so the controls
+   * appearing on top of it would fire its own mouseleave and take them away
+   * again. Measuring against the frame cannot contradict itself that way.
+   */
+  const trackBottomHover = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setBarHover(rect.height > 0 && rect.bottom - e.clientY <= PIP_BAR_REACH);
+  }, []);
 
   // Whichever root mounted this stage, the one video element belongs in its
   // host. Done here rather than in VideoPlayer so it cannot race the second
@@ -1299,7 +1332,8 @@ function Stage({ view }: { view: PlayerView }) {
       // programme. Any movement brings both back.
       className={`dark fixed inset-0 z-50 bg-media flex items-center justify-center
         ${showControls ? "" : "cursor-none"}`}
-      onMouseMove={resetHideTimer}
+      onMouseMove={poppedOut ? trackBottomHover : resetHideTimer}
+      onMouseLeave={poppedOut ? () => setBarHover(false) : undefined}
       onClick={handleSurfaceClick}
     >
       {/* An empty host. The video element is not rendered here — it is made
@@ -1380,8 +1414,9 @@ function Stage({ view }: { view: PlayerView }) {
       )}
 
       <div
-        className={`absolute inset-0 flex flex-col justify-between p-6 transition-opacity duration-300 pointer-events-none
-          ${showControls ? "opacity-100" : "opacity-0"}`}
+        className={`absolute inset-0 flex flex-col justify-between transition-opacity duration-300 pointer-events-none
+          ${poppedOut ? "p-2" : "p-6"}
+          ${chromeUp ? "opacity-100" : "opacity-0"}`}
         style={{
           // Sized in pixels to the two bands that actually hold content — the
           // title block and the transport — rather than as a percentage, which
@@ -1391,24 +1426,36 @@ function Stage({ view }: { view: PlayerView }) {
           // controls legible over arbitrary video, so in light it lays down a
           // near-white plate for the ink chrome exactly as dark lays down a
           // black one for the white chrome.
-          background:
-            "linear-gradient(to bottom," +
-            " rgb(var(--c-player-scrim) / var(--c-player-scrim-soft-a)) 0," +
-            " rgb(var(--c-player-scrim) / 0) 88px," +
-            " rgb(var(--c-player-scrim) / 0) calc(100% - 132px)," +
-            " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)",
+          //
+          // Popped out there is nothing along the top to make legible — no
+          // close button, no title — so the wash there would only be a shadow
+          // over the picture.
+          background: poppedOut
+            ? "linear-gradient(to bottom," +
+              " rgb(var(--c-player-scrim) / 0) calc(100% - 96px)," +
+              " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)"
+            : "linear-gradient(to bottom," +
+              " rgb(var(--c-player-scrim) / var(--c-player-scrim-soft-a)) 0," +
+              " rgb(var(--c-player-scrim) / 0) 88px," +
+              " rgb(var(--c-player-scrim) / 0) calc(100% - 132px)," +
+              " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)",
         }}
       >
-        {/* Top bar — just the close affordance; the title sits under the bar */}
-        <div className="flex items-start justify-end pointer-events-auto">
-          <button
-            onClick={onClose}
-            className="w-10 h-10 shrink-0 rounded-full glass text-player-fg flex items-center justify-center hover:bg-fill transition"
-            title="Close (Esc)"
-          >
-            <X className="w-5 h-5" aria-hidden style={SCRIM_HALO_ICON} />
-          </button>
-        </div>
+        {/* Top bar — just the close affordance; the title sits under the bar.
+            Not in a pop-out: that window has its own close button, and ours
+            would only sit over the picture offering to shut the whole player
+            when all the viewer wanted was the window gone. */}
+        {!poppedOut && (
+          <div className="flex items-start justify-end pointer-events-auto">
+            <button
+              onClick={onClose}
+              className="w-10 h-10 shrink-0 rounded-full glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+              title="Close (Esc)"
+            >
+              <X className="w-5 h-5" aria-hidden style={SCRIM_HALO_ICON} />
+            </button>
+          </div>
+        )}
 
         {/* Bottom: scrubber + transport. Resting the cursor anywhere in here
             holds the chrome up — see `cursorOnTransport`. */}
@@ -1632,17 +1679,19 @@ function Stage({ view }: { view: PlayerView }) {
             <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
               <button
                 onClick={(e) => { e.stopPropagation(); skip(-10); }}
-                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
+                className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"}`}
                 title="Back 10s (Left arrow)"
                 aria-label="Back 10 seconds"
               >
                 <RotateCcw className="w-4 h-4" aria-hidden />
-                <span className="text-[10px] font-black tabular-nums">10</span>
+                {!poppedOut && <span className="text-[10px] font-black tabular-nums">10</span>}
               </button>
 
               <button
                 onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
                 title={paused ? "Play (Space)" : "Pause (Space)"}
               >
                 {paused
@@ -1652,12 +1701,13 @@ function Stage({ view }: { view: PlayerView }) {
 
               <button
                 onClick={(e) => { e.stopPropagation(); skip(30); }}
-                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
+                className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"}`}
                 title="Forward 30s (Right arrow)"
                 aria-label="Forward 30 seconds"
               >
                 <RotateCw className="w-4 h-4" aria-hidden />
-                <span className="text-[10px] font-black tabular-nums">30</span>
+                {!poppedOut && <span className="text-[10px] font-black tabular-nums">30</span>}
               </button>
             </div>
 
@@ -1690,7 +1740,8 @@ function Stage({ view }: { view: PlayerView }) {
 
               <button
                 onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
                 title={muted ? "Unmute (M)" : "Mute (M)"}
               >
                 {muted
@@ -1704,7 +1755,8 @@ function Stage({ view }: { view: PlayerView }) {
               {"documentPictureInPicture" in window && (
                 <button
                   onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
-                  className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                  className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
                   title="Picture in picture"
                   aria-label="Picture in picture"
                 >
@@ -1714,7 +1766,8 @@ function Stage({ view }: { view: PlayerView }) {
 
               <button
                 onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
-                className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
                 title="Fullscreen (F)"
               >
                 <Maximize className="w-4 h-4" aria-hidden />
