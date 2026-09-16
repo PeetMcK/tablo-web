@@ -230,3 +230,57 @@ describe("ChannelGrid search wiring", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 });
+
+import { CommandPalette } from "../components/CommandPalette";
+
+function palette(onActivate = vi.fn()) {
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <CommandPalette open onClose={() => {}} onActivate={onActivate} />
+    </QueryClientProvider>,
+  );
+  return onActivate;
+}
+
+describe("CommandPalette", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("moves the selection with the arrow keys and activates with Enter", async () => {
+    vi.spyOn(api, "search").mockResolvedValue({
+      ...EMPTY,
+      groups: [{
+        kind: "airing", total: 2,
+        items: [ITEM, { ...ITEM, ref: "ch1|y", title: "Second" }],
+      }],
+    });
+    const onActivate = palette();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "broncos" } });
+    await screen.findByText("Broncos at Chiefs");
+
+    const dialog = screen.getByRole("dialog");
+    fireEvent.keyDown(dialog, { key: "ArrowDown" });
+    fireEvent.keyDown(dialog, { key: "Enter" });
+
+    expect(onActivate).toHaveBeenCalledWith(expect.objectContaining({ title: "Second" }));
+  });
+
+  it("closes on Escape", () => {
+    const onClose = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CommandPalette open onClose={onClose} onActivate={() => {}} />
+      </QueryClientProvider>,
+    );
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("renders nothing when closed", () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CommandPalette open={false} onClose={() => {}} onActivate={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});

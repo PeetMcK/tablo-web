@@ -9,6 +9,7 @@ import { GuideGridView } from "./GuideGridView";
 import { ProfileMenu } from "./ProfileMenu";
 import { PageHeader } from "./PageHeader";
 import { SearchDropdown } from "./SearchDropdown";
+import { CommandPalette } from "./CommandPalette";
 import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
 function useGuideStream(enabled: boolean) {
@@ -111,10 +112,25 @@ export function ChannelGrid({ onLogout }: Props) {
   const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
+  }, []);
+
+  // Cmd-K / Ctrl-K from anywhere, including while watching. A window
+  // listener rather than something scoped to a focused element: the whole
+  // point is that it works no matter what has focus, including the player.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -190,6 +206,14 @@ export function ChannelGrid({ onLogout }: Props) {
 
   const closeSearch = useCallback(() => setSearchOpen(false), []);
 
+  // The palette activates through the very same path as the topbar dropdown
+  // (`handleSearchActivate`) rather than a second, parallel one - it only
+  // adds closing itself on top.
+  const handlePaletteActivate = useCallback((item: SearchItem) => {
+    setPaletteOpen(false);
+    handleSearchActivate(item);
+  }, [handleSearchActivate]);
+
   const filtered = channels.filter(ch => {
     if (!matchesContentFilter(ch, contentFilter)) return false;
     if (!filter) return true;
@@ -220,6 +244,12 @@ export function ChannelGrid({ onLogout }: Props) {
 
   return (
     <>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onActivate={handlePaletteActivate}
+      />
+
       {nowPlaying && (
         <VideoPlayer
           key={nowPlaying.identifier}
