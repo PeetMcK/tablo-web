@@ -1,6 +1,7 @@
 """Tests for recording listing, projection, and the windowed transcode cache."""
 
 import asyncio
+import signal
 import time
 from collections import deque
 
@@ -438,10 +439,19 @@ def test_on_demand_windows_are_bounded(tmp_path):
     for w in range(20):
         c._claim_ondemand((80888, w))
 
-    assert len(c._ondemand) == MAX_ONDEMAND_WINDOWS
-    # The newest claims survive; a viewer is only ever in one place.
+    # Within one recording the tighter per-recording cap applies: a viewer is
+    # only ever in one place, and anything older is somewhere they have left.
     assert list(c._ondemand) == [(80888, w) for w in range(16, 20)]
     assert killed == [(80888, w) for w in range(16)]
+
+
+def test_the_global_cap_bounds_windows_across_recordings(tmp_path):
+    """Several recordings at once still cannot exceed the global budget."""
+    c = _cache(tmp_path)
+    c._kill_window = lambda _k: None  # type: ignore[method-assign]
+    for oid in (1, 2, 3, 4, 5):
+        c._claim_ondemand((oid, 0))
+    assert len(c._ondemand) <= MAX_ONDEMAND_WINDOWS
 
 
 def test_evicted_waiter_is_released_not_left_pending(tmp_path):
@@ -692,3 +702,245 @@ def test_a_re_registered_pinned_copy_is_still_exempt_from_eviction(tmp_path):
 
     assert c.read_meta(80888) is not None
     assert c.state(80888) is not CacheState.ABSENT
+
+
+def test_a_window_a_viewer_waits_on_is_never_suspended(tmp_path):
+    """Prefetch and a viewer race for the same window.
+
+    If prefetch claims it first, the viewer's request attaches to that existing
+    job - and going by the spawn-time flag suspended the very window being
+    awaited. A cold open sat frozen for the whole segment timeout, returned 503,
+    and took 53s to start playing.
+    """
+    c = _cache(tmp_path)
+
+    class FakeProc:
+        returncode = None
+        def __init__(self): self.signals = []
+        def send_signal(self, sig): self.signals.append(sig)
+
+    waited, background = FakeProc(), FakeProc()
+    # Both were started by prefetch, so both carry is_ondemand=False.
+    c._procs[(80888, 0)] = (waited, False)
+    c._procs[(80888, 5)] = (background, False)
+
+    c._claim_ondemand((80888, 0))
+    c._pause_background()
+
+    assert signal.SIGSTOP not in waited.signals
+    assert signal.SIGSTOP in background.signals
+
+
+def test_claiming_a_suspended_window_wakes_it(tmp_path):
+    """Skipping it in the suspend pass is not enough if it is already stopped."""
+    c = _cache(tmp_path)
+
+    class FakeProc:
+        returncode = None
+        def __init__(self): self.signals = []
+        def send_signal(self, sig): self.signals.append(sig)
+
+    proc = FakeProc()
+    c._procs[(80888, 0)] = (proc, False)
+    c._pause_background()                  # suspended as background work
+    assert signal.SIGSTOP in proc.signals
+
+    c._claim_ondemand((80888, 0))          # a viewer now needs it
+    assert signal.SIGCONT in proc.signals
+
+
+def test_a_prefetch_window_does_not_suspend_itself_when_demanded(tmp_path, monkeypatch):
+    """The same race, at the moment the process starts.
+
+    Prefetch spawns the window with on_demand=False. If a viewer claimed it in
+    between, the spawn-time check suspended it immediately - so it produced
+    nothing and the request timed out at 25s. Measured after the fix: the same
+    cold open serves its first segment in 3.1s.
+    """
+    c = _cache(tmp_path)
+    _register(c, oid=66219, duration=120)
+    c._claim_ondemand((66219, 0))          # a viewer is waiting on window 0
+
+    sent = []
+
+    class P0:
+        returncode = 0
+        def send_signal(self, sig): sent.append(sig)
+        async def wait(self): return 0
+
+    async def fake_session(path):
+        return {"playlist_url": "http://device/pl.m3u8"}
+
+    async def fake_exec(*cmd, cwd=None, **kw):
+        from pathlib import Path as _P
+        for n in range(segments_in_window(120, 0)):
+            (_P(cwd) / f"seg_{n:02d}.ts").write_bytes(b"x")
+        return P0()
+
+    c._start_session = fake_session
+    real = asyncio.create_subprocess_exec
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    try:
+        asyncio.run(c._encode_window(66219, 0, "/r/66219", 120, on_demand=False))
+    finally:
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", real)
+
+    assert signal.SIGSTOP not in sent
+
+
+def test_scrubbing_away_abandons_the_previous_target(tmp_path):
+    """A mis-aimed scrub must not hold the encoder at a place nobody wants."""
+    c = _cache(tmp_path)
+    killed = []
+    c._kill_window = killed.append  # type: ignore[method-assign]
+
+    for w in (10, 20, 30, 40, 90):
+        c._claim_ondemand((66220, w))
+
+    # The oldest target is abandoned; recent ones survive so clicking around
+    # does not kill work still wanted.
+    assert list(c._ondemand) == [(66220, 20), (66220, 30), (66220, 40), (66220, 90)]
+    assert killed == [(66220, 10)]
+
+
+def test_two_windows_per_recording_survive_for_normal_playback(tmp_path):
+    """Playback holds the current window and the one it is rolling into."""
+    c = _cache(tmp_path)
+    c._kill_window = lambda _k: None  # type: ignore[method-assign]
+    c._claim_ondemand((66220, 10))
+    c._claim_ondemand((66220, 11))
+    assert list(c._ondemand) == [(66220, 10), (66220, 11)]
+
+
+def test_a_couple_of_clicks_do_not_trip_the_cap(tmp_path):
+    """Two seeks cost a window or two each; they must not evict each other."""
+    c = _cache(tmp_path)
+    killed = []
+    c._kill_window = killed.append  # type: ignore[method-assign]
+    for w in (50, 51, 120, 121):
+        c._claim_ondemand((66220, w))
+    assert killed == []
+
+
+def test_the_per_recording_cap_does_not_evict_other_recordings(tmp_path):
+    c = _cache(tmp_path)
+    c._kill_window = lambda _k: None  # type: ignore[method-assign]
+    c._claim_ondemand((66220, 1))
+    c._claim_ondemand((80888, 1))
+    c._claim_ondemand((80888, 2))
+    assert (66220, 1) in c._ondemand
+
+
+def test_encoding_progress_counts_finished_segments(tmp_path):
+    """Real progress toward playback, not a decorative spinner."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=120)
+    c._claim_ondemand((66220, 0))
+    wd = c.window_dir(66220, 0)
+    wd.mkdir(parents=True, exist_ok=True)
+    (wd / "index.m3u8").write_text("#EXTM3U\nseg_00.ts\nseg_01.ts\nseg_02.ts\n")
+
+    p = c.encoding_progress(66220)
+    assert p["window"] == 0
+    assert p["segments_ready"] == 3
+    assert p["segments_total"] == segments_in_window(120, 0)
+
+
+def test_encoding_progress_is_complete_once_the_window_is_done(tmp_path):
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=120)
+    c._claim_ondemand((66220, 0))
+    _mark_done(c, 66220, 0)
+    p = c.encoding_progress(66220)
+    assert p["segments_ready"] == p["segments_total"]
+
+
+def test_no_encoding_progress_when_nothing_is_on_demand(tmp_path):
+    """A stall with no encode behind it must not claim to be transcoding."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=120)
+    assert c.encoding_progress(66220) is None
+
+
+def test_watching_fills_to_the_end_of_the_recording_by_default(monkeypatch):
+    """Twenty minutes of watching should encode the rest of the game to disk.
+
+    The 30-window cap existed because eager filling once pinned every core - but
+    that was libx264 at 780% CPU. On hardware the same fill costs ~78% and is
+    bound by the device, so the idle watchdog is what prevents a runaway now.
+    """
+    import app.transcode_cache as tc
+    monkeypatch.setattr(tc, "LOOKAHEAD_WINDOWS", 0)
+    total = window_count(GAME)
+    assert tc.fill_limit(0, total) == total
+    assert tc.fill_limit(100, total) == total
+
+
+def test_the_lookahead_can_still_be_bounded(monkeypatch):
+    """Kept as an escape hatch for a machine that cannot afford the full fill."""
+    import app.transcode_cache as tc
+    monkeypatch.setattr(tc, "LOOKAHEAD_WINDOWS", 30)
+    total = window_count(GAME)
+    assert tc.fill_limit(0, total) == 30
+    assert tc.fill_limit(total - 5, total) == total   # never past the end
+
+
+def test_background_encoders_are_not_suspended_on_hardware(tmp_path, monkeypatch):
+    """Suspending prefetch is only worth it when the encoder burns CPU.
+
+    ensure_segment pauses background work on every segment request, and hls.js
+    asks every couple of seconds - so _ondemand was almost never empty and
+    prefetch sat frozen, unable to build any lead. Every segment then arrived
+    "transcoded on demand" with playback riding the encode frontier.
+    """
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
+    c = _cache(tmp_path)
+
+    class FakeProc:
+        returncode = None
+        def __init__(self): self.signals = []
+        def send_signal(self, sig): self.signals.append(sig)
+
+    proc = FakeProc()
+    c._procs[(66219, 5)] = (proc, False)
+    c._claim_ondemand((66219, 1))
+    c._pause_background()
+
+    assert signal.SIGSTOP not in proc.signals
+
+
+def test_background_encoders_still_yield_on_software(tmp_path, monkeypatch):
+    """With libx264 the CPU really is contended, so the old behaviour stands."""
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "libx264")
+    c = _cache(tmp_path)
+
+    class FakeProc:
+        returncode = None
+        def __init__(self): self.signals = []
+        def send_signal(self, sig): self.signals.append(sig)
+
+    proc = FakeProc()
+    c._procs[(66219, 5)] = (proc, False)
+    c._claim_ondemand((66219, 1))
+    c._pause_background()
+
+    assert signal.SIGSTOP in proc.signals
+
+
+def test_prefetch_follows_a_seek_instead_of_finishing_the_old_batch():
+    """Seeking away must abandon the batch, not grind through it.
+
+    A batch runs the best part of a minute and the playhead used to be re-read
+    only between batches. Observed: the fill working through 0:00-8:00 while the
+    viewer sat at 17:30 waiting on an on-demand transcode - the cached bar grew
+    steadily, nowhere near the playhead.
+    """
+    from app.transcode_cache import should_retarget
+
+    filling = [0, 1, 2, 3, 4, 5]
+    assert should_retarget(3, filling) is False     # still inside the batch
+    assert should_retarget(6, filling) is False     # next window along
+    assert should_retarget(17, filling) is True     # seeked forward
+    assert should_retarget(200, filling) is True    # seeked far forward
+    assert should_retarget(0, [10, 11, 12]) is True # seeked backwards
+    assert should_retarget(5, []) is False          # nothing in flight

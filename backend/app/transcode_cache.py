@@ -23,11 +23,15 @@ of work is a 60s window rather than a single segment.
 from __future__ import annotations
 
 import asyncio
+import bisect
+import contextlib
 import math
 import os
 import shutil
 import signal
+import struct
 import time
+import urllib.request
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -136,6 +140,45 @@ def _profiles() -> dict[str, EncoderProfile]:
     }
 
 
+def _encoder_is_software() -> bool:
+    """True when encoding burns CPU that an on-demand seek would otherwise use."""
+    return video_encoder() not in _HARDWARE_ENCODERS
+
+
+def should_retarget(here: int, filling: list[int]) -> bool:
+    """True when the playhead has left the windows currently being filled.
+
+    A prefetch batch runs the best part of a minute, and the playhead used to be
+    re-read only between batches - so seeking away left the fill grinding
+    through windows nobody was going to watch. One window past the end is not a
+    miss: that is simply where playback is heading next.
+    """
+    if not filling:
+        return False
+    return here < filling[0] or here > filling[-1] + 1
+
+
+def fill_limit(first: int, total: int) -> int:
+    """Last window prefetch should reach, given the playhead is in ``first``.
+
+    Defaults to the end of the recording: prefetch runs at roughly 10x realtime,
+    so twenty minutes of watching encodes the rest of a three-hour game and
+    every later seek lands in cache instead of waiting on a transcode.
+    """
+    if LOOKAHEAD_WINDOWS > 0:
+        return min(total, first + LOOKAHEAD_WINDOWS)
+    return total
+
+
+# Encoders that run on dedicated silicon rather than the CPU.
+_HARDWARE_ENCODERS = frozenset({
+    "h264_videotoolbox", "hevc_videotoolbox",
+    "h264_vaapi", "hevc_vaapi",
+    "h264_nvenc", "hevc_nvenc",
+    "h264_qsv", "hevc_qsv",
+})
+
+
 def deinterlace_filter() -> list[str]:
     """Deinterlacing, applied before any encoder-specific filtering.
 
@@ -204,7 +247,19 @@ SEGMENT_WAIT_TIMEOUT = 25
 # device session, which saturated the host and starved every request past its
 # timeout. A viewer can only be in one place, so anything beyond the newest few
 # requests is a client storm; the oldest is dropped to make room.
-MAX_ONDEMAND_WINDOWS = int(os.environ.get("TRANSCODE_MAX_ONDEMAND", "4"))
+MAX_ONDEMAND_WINDOWS = int(os.environ.get("TRANSCODE_MAX_ONDEMAND", "8"))
+
+# And per recording. Scrubbing away from a cold spot has to abandon it at once,
+# or the encoder stays busy with somewhere the viewer has already left and the
+# new target queues behind it. Two, so ordinary playback can hold the window it
+# is in plus the one it is about to reach.
+# Two was too tight: a seek costs a window or two on its own, so a couple of
+# clicks tripped the cap and killed work the viewer still wanted. Four abandons
+# a genuinely stale scrub target while leaving room to click around.
+MAX_ONDEMAND_PER_RECORDING = int(os.environ.get("TRANSCODE_MAX_ONDEMAND_PER_REC", "4"))
+
+# How long a background fill defers to a viewer's request before going ahead.
+ONDEMAND_YIELD_SECONDS = float(os.environ.get("TRANSCODE_ONDEMAND_YIELD", "6"))
 
 # Seconds decoded before the window's real start and then discarded.
 #
@@ -215,13 +270,34 @@ MAX_ONDEMAND_WINDOWS = int(os.environ.get("TRANSCODE_MAX_ONDEMAND", "4"))
 # early and discarding the difference gives the decoder a clean run-up.
 SEEK_PREROLL = 3.0
 
-# Windows to keep encoded ahead of the playhead while watching. Filling the
-# whole recording eagerly pinned every core long after playback stopped.
-LOOKAHEAD_WINDOWS = int(os.environ.get("TRANSCODE_LOOKAHEAD_WINDOWS", "30"))
+# Windows to keep encoded ahead of the playhead while watching. 0 means the
+# rest of the recording.
+#
+# This was capped at 30 because filling eagerly once pinned every core long
+# after playback stopped - but that was libx264 at 780% of 1000%. On hardware
+# the same fill costs ~78%, and the encoder is bound by the device rather than
+# the CPU, so there is nothing left to protect by stopping early. What actually
+# prevents a runaway is the idle watchdog below plus release-on-close, both of
+# which still apply.
+#
+# The point of filling the whole thing: prefetch runs at roughly 10x realtime,
+# so twenty minutes of watching encodes the rest of a three-hour game, and every
+# seek after that lands in cache instead of waiting on a transcode.
+LOOKAHEAD_WINDOWS = int(os.environ.get("TRANSCODE_LOOKAHEAD_WINDOWS", "0"))
 
 # Prefetch stops if the viewer has not checked in for this long, so closing the
 # tab cannot leave encoders running.
 WATCH_IDLE_TIMEOUT = 45
+
+# BIF is Roku's scrub-preview format, which the Tablo already serves.
+_BIF_MAGIC = b"\x89BIF\r\n\x1a\n"
+_BIF_SENTINEL = 0xFFFFFFFF
+
+
+def _http_get(url: str, timeout: int = 120) -> bytes:
+    with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 - device URL
+        return r.read()
+
 
 # Completed windows kept for the throughput readout. Each covers WINDOW_SECONDS
 # of output, so six is roughly the last minute of encoding - long enough to ride
@@ -323,6 +399,8 @@ class TranscodeCache:
         # output seconds). Sampled per completed window rather than by polling
         # the directory, which is an rglob over every segment.
         self._rate: dict[int, deque[tuple[float, int, float, float]]] = {}
+        # Parsed BIF indices, so a scrub does not re-read the header per frame.
+        self._bif_cache: dict[int, list[tuple[int, int, int]]] = {}
         # Shared across every prefetch loop. Created lazily: there is no running
         # event loop at import time.
         self._prefetch_slots: asyncio.Semaphore | None = None
@@ -496,6 +574,140 @@ class TranscodeCache:
                     out.append(seg)
         return out
 
+    # ------------------------------------------------------------------
+    # Scrub-preview thumbnails
+    # ------------------------------------------------------------------
+
+    def bif_path(self, object_id: int) -> Path:
+        return self.dir_for(object_id) / "preview.bif"
+
+    async def fetch_bif(self, object_id: int, path: str) -> bool:
+        """Pull the device's thumbnail pack and keep it beside the recording.
+
+        The Tablo already renders scrub previews for its own apps and serves
+        them as BIF - a JPEG sprite with a millisecond index, one frame every
+        ~10s. There is nothing to generate: 13 MB and about two seconds for a
+        3.5h recording, against 6.9 GB of video.
+
+        Stored rather than proxied per request so a kept offline copy still has
+        previews once the Tablo has deleted the recording, which is the same
+        promise the video itself makes.
+        """
+        dest = self.bif_path(object_id)
+        if dest.exists():
+            return True
+        try:
+            session = await self._start_session(path)
+            url = session.get("bif_url_hd") or session.get("bif_url_sd")
+            if not url:
+                return False
+            data = await asyncio.to_thread(_http_get, url)
+            if not data.startswith(_BIF_MAGIC):
+                print(f"[cache] {object_id} bif: unexpected format", flush=True)
+                return False
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_suffix(".bif.part")
+            tmp.write_bytes(data)
+            tmp.replace(dest)
+            frames = struct.unpack("<I", data[12:16])[0]
+            print(f"[cache] {object_id} bif: {frames} frames, "
+                  f"{len(data) / 1024**2:.1f} MB", flush=True)
+            return True
+        except Exception as e:  # noqa: BLE001 - previews are a nicety
+            print(f"[cache] {object_id} bif failed: {e}", flush=True)
+            return False
+
+    def _bif_index(self, object_id: int) -> list[tuple[int, int, int]]:
+        """(timestamp_ms, offset, length) per frame, cached in memory.
+
+        The header's ``interval`` field reads 1 on this device, which cannot be
+        literal for 1290 frames across 3.5 hours, so the per-frame timestamps in
+        the index are used instead. The final entry is a 0xFFFFFFFF sentinel
+        whose offset marks end-of-file, which is what gives the last frame its
+        length.
+        """
+        cached = self._bif_cache.get(object_id)
+        if cached is not None:
+            return cached
+
+        path = self.bif_path(object_id)
+        if not path.exists():
+            return []
+        try:
+            data = path.read_bytes()
+            if not data.startswith(_BIF_MAGIC):
+                return []
+            count = struct.unpack("<I", data[12:16])[0]
+            raw = [
+                struct.unpack("<II", data[64 + i * 8: 72 + i * 8])
+                for i in range(count + 1)
+            ]
+            index = [
+                (raw[i][0], raw[i][1], raw[i + 1][1] - raw[i][1])
+                for i in range(count)
+                if raw[i][0] != _BIF_SENTINEL
+            ]
+        except (OSError, struct.error, IndexError):
+            index = []
+        self._bif_cache[object_id] = index
+        return index
+
+    def preview_frame(self, object_id: int, seconds: float) -> bytes | None:
+        """The stored thumbnail at or just before ``seconds``."""
+        index = self._bif_index(object_id)
+        if not index:
+            return None
+        target = max(0, int(seconds * 1000))
+        # Frames are ordered, so take the last one at or before the target.
+        pos = bisect.bisect_right(index, target, key=lambda e: e[0]) - 1
+        ts, offset, length = index[max(0, pos)]
+        try:
+            with open(self.bif_path(object_id), "rb") as f:
+                f.seek(offset)
+                return f.read(length)
+        except OSError:
+            return None
+
+    def encoding_progress(self, object_id: int) -> dict | None:
+        """How far along the window a viewer is currently waiting on is.
+
+        The wait before playback resumes is one window being encoded, and its
+        segments appear in order, so the count of finished segments is real
+        progress rather than an animation. A spinner could only say "something
+        is happening"; this can say how much longer.
+
+        Returns None when nothing is being encoded on demand for this recording.
+        """
+        keys = [k for k in self._ondemand if k[0] == object_id]
+        if not keys:
+            return None
+        # The newest claim is where the viewer actually is.
+        _, w = keys[-1]
+        meta = self.read_meta(object_id)
+        if meta is None or not meta.source_duration:
+            return None
+        total = segments_in_window(meta.source_duration, w)
+        wd = self.window_dir(object_id, w)
+        ready = 0
+        if (wd / ".done").exists():
+            ready = total
+        else:
+            index = wd / "index.m3u8"
+            if index.exists():
+                try:
+                    ready = index.read_text().count(".ts")
+                except OSError:
+                    ready = 0
+        return {
+            "window": w,
+            "start": w * WINDOW_SECONDS,
+            "segments_ready": min(ready, total),
+            "segments_total": total,
+        }
+
+    def preview_available(self, object_id: int) -> bool:
+        return self.bif_path(object_id).exists()
+
     def export_path(self, object_id: int) -> Path:
         return self.dir_for(object_id) / "export.mp4"
 
@@ -511,14 +723,21 @@ class TranscodeCache:
 
         The segments are already H.264/AAC, so nothing is re-encoded.
 
-        MPEG-TS is fed in by byte concatenation rather than through the concat
-        demuxer. Each window was muxed with ``-output_ts_offset``, so its
-        timestamps are already absolute; the demuxer would shift them again and
-        the result fails to mux with non-monotonic DTS.
+        FFmpeg reads the same VOD playlist the player uses, rather than the
+        segment bytes concatenated together. Each window carries absolute
+        timestamps from ``-output_ts_offset``, and feeding that stream to the
+        MPEG-TS demuxer produced a file ffmpeg could read but strict players
+        could not: QuickTime stopped after the first segment even though the
+        header claimed the full 3h35m. The HLS demuxer understands what those
+        timestamps mean and rebases them, giving ``start_time=0`` and an exact
+        duration.
         """
         segments = self.segment_files(object_id)
         if not segments:
             raise FileNotFoundError(f"nothing cached for {object_id}")
+        playlist = self.build_playlist(object_id)
+        if not playlist:
+            raise FileNotFoundError(f"no playlist for {object_id}")
 
         out = self.export_path(object_id)
         async with self._lock(object_id):
@@ -529,17 +748,29 @@ class TranscodeCache:
             tmp = out.with_suffix(".mp4.part")
             tmp.unlink(missing_ok=True)
             self._check_disk(sum(s.stat().st_size for s in segments))
-            await self._remux(segments, tmp)
+
+            # The playlist's segment URIs are relative, so it has to sit beside
+            # the window directories it names.
+            index = self.dir_for(object_id) / "export.m3u8"
+            index.write_text(playlist)
+            try:
+                await self._remux(index, tmp)
+            finally:
+                index.unlink(missing_ok=True)
             tmp.replace(out)
         return out
 
-    async def _remux(self, segments: list[Path], dest: Path) -> None:
+    async def _remux(self, index: Path, dest: Path) -> None:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             # The TS carries absolute timestamps from the window offsets; let
             # FFmpeg rebuild presentation stamps rather than trusting the seam.
-            "-fflags", "+genpts",
-            "-i", "pipe:0",
+            # Local segments only. 'file' is the whole whitelist on purpose:
+            # the playlist is ours, but the demuxer must not be able to reach
+            # the network on the strength of a URI.
+            "-protocol_whitelist", "file",
+            "-allowed_extensions", "ALL",
+            "-i", str(index),
             "-c", "copy",
             # The segments carry AAC in ADTS framing, which is how MPEG-TS
             # holds it; MP4 needs the raw form with the config in the sample
@@ -552,26 +783,16 @@ class TranscodeCache:
             # seek immediately instead of reading the whole file first.
             "-movflags", "+faststart",
             "-f", "mp4", str(dest),
-            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
 
         try:
-            for seg in segments:
-                # Off the event loop: 2153 blocking reads on it would stall
-                # everything else the server is doing during the export.
-                data = await asyncio.to_thread(seg.read_bytes)
-                proc.stdin.write(data)
-                await proc.stdin.drain()
-            proc.stdin.close()
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # ffmpeg died; the return code below reports why
+            err = (await proc.stderr.read()).decode(errors="replace")
         except asyncio.CancelledError:
             proc.kill()
             raise
 
-        err = (await proc.stderr.read()).decode(errors="replace")
         rc = await proc.wait()
         if rc != 0 or not dest.exists():
             dest.unlink(missing_ok=True)
@@ -834,6 +1055,10 @@ class TranscodeCache:
 
         self.heartbeat(object_id, 0.0)
         self.start_prefetch(object_id, path, source_duration)
+        # Fetched in the background so opening a recording is not delayed by it;
+        # the scrubber falls back to no preview until it lands.
+        if not self.preview_available(object_id):
+            asyncio.create_task(self.fetch_bif(object_id, path))
         return meta
 
     # ------------------------------------------------------------------
@@ -841,8 +1066,20 @@ class TranscodeCache:
     # ------------------------------------------------------------------
 
     def _signal_background(self, sig: int) -> None:
-        for (proc, is_ondemand) in list(self._procs.values()):
-            if is_ondemand or getattr(proc, "returncode", 0) is not None:
+        """Suspend or resume every encoder nobody is waiting on.
+
+        Membership of ``_ondemand`` decides this, not the flag the process was
+        started with. Prefetch and a viewer race for the same window: if
+        prefetch claims it a moment first, the viewer's request attaches to that
+        existing job, and going by the spawn-time flag would suspend the very
+        window being awaited. That is exactly what happened - a cold open sat
+        frozen for the full segment timeout, returned 503, and took 53s to
+        start playing.
+        """
+        for key, (proc, is_ondemand) in list(self._procs.items()):
+            if is_ondemand or key in self._ondemand:
+                continue
+            if getattr(proc, "returncode", 0) is not None:
                 continue
             try:
                 proc.send_signal(sig)
@@ -894,9 +1131,36 @@ class TranscodeCache:
         if key in self._ondemand:
             return
         self._ondemand[key] = None
-        while len(self._ondemand) > MAX_ONDEMAND_WINDOWS:
-            oldest = next(iter(self._ondemand))
-            if oldest == key:  # never evict the request being served
+        # It may already be suspended as background work from an earlier claim
+        # on some other window. Skipping it in _signal_background only stops it
+        # being suspended again; something has to actually wake it.
+        entry = self._procs.get(key)
+        if entry and getattr(entry[0], "returncode", 0) is None:
+            with contextlib.suppress(Exception):
+                entry[0].send_signal(signal.SIGCONT)
+        self._evict_ondemand(
+            key,
+            lambda: len(self._ondemand) > MAX_ONDEMAND_WINDOWS,
+            lambda k: True,
+        )
+        # Scrubbing away from a cold spot must abandon it at once. Otherwise the
+        # encoder stays committed to a place the viewer has left, and the next
+        # target queues behind work nobody wants any more - which is what made a
+        # mis-aimed scrub feel like being stuck there until it finished.
+        # Two per recording, so normal playback can still hold the current window
+        # and the one it is about to roll into.
+        self._evict_ondemand(
+            key,
+            lambda: sum(1 for k in self._ondemand if k[0] == key[0])
+            > MAX_ONDEMAND_PER_RECORDING,
+            lambda k: k[0] == key[0],
+        )
+
+    def _evict_ondemand(self, keep, over_limit, matches) -> None:
+        """Drop the oldest matching claims, oldest first, while over the limit."""
+        while over_limit():
+            oldest = next((k for k in self._ondemand if matches(k) and k != keep), None)
+            if oldest is None:
                 break
             self._release_ondemand(oldest)
             self._kill_window(oldest)
@@ -925,10 +1189,27 @@ class TranscodeCache:
             pass
 
     def _pause_background(self) -> None:
-        """SIGSTOP background encoders so an on-demand seek gets the CPU."""
-        self._signal_background(signal.SIGSTOP)
+        """SIGSTOP background encoders so an on-demand seek gets the CPU.
+
+        Only worth doing when the encoder is software. This is called for every
+        segment request, and hls.js asks for one every couple of seconds, so
+        `_ondemand` is almost never empty during playback - and
+        `_resume_background` only fires when it empties. Prefetch therefore sat
+        suspended essentially permanently and could never build a lead: every
+        segment of every window arrived "transcoded on demand", about 2s apart,
+        with playback riding the encode frontier the whole way.
+
+        On hardware the encode costs ~2 CPU-seconds per minute of video and the
+        bottleneck is the device, not the CPU, so there are no cycles to win
+        back by freezing the background fill - only progress to lose. The global
+        concurrency cap already bounds how much runs at once.
+        """
+        if _encoder_is_software():
+            self._signal_background(signal.SIGSTOP)
 
     def _resume_background(self) -> None:
+        # Always safe to send: a process that was never stopped ignores it, so
+        # this still recovers anything suspended before the encoder changed.
         if not self._ondemand:
             self._signal_background(signal.SIGCONT)
 
@@ -1105,8 +1386,14 @@ class TranscodeCache:
                 *cmd, cwd=str(wd), stdout=log, stderr=asyncio.subprocess.STDOUT
             )
             self._procs[(object_id, w)] = (proc, on_demand)
-            # A background window started before the seek arrived must also yield.
-            if self._ondemand and not on_demand:
+            # A background window started before the seek arrived must also yield
+            # - unless it is the window being waited on. Prefetch and a viewer
+            # race for the same window, and if prefetch wins by a fraction the
+            # request attaches to this job while `on_demand` stays False. Going
+            # by that flag alone made the window suspend itself the moment it
+            # started, so it produced nothing, the wait timed out at 25s, and a
+            # cold open took 53s and two 503s to begin playing.
+            if self._ondemand and not on_demand and (object_id, w) not in self._ondemand:
                 try:
                     proc.send_signal(signal.SIGSTOP)
                 except Exception:  # noqa: BLE001
@@ -1175,8 +1462,16 @@ class TranscodeCache:
         loop = asyncio.get_event_loop()
 
         async def fill(w: int) -> None:
-            while self._ondemand:
+            # Yield to a waiting viewer, but not forever. This used to wait on
+            # `_ondemand` emptying entirely, so a single claim that lingered -
+            # or a viewer clicking around - stopped the background fill
+            # completely: a recording could sit paused for minutes and cache
+            # nothing. Waiting a bounded moment keeps seeks responsive without
+            # letting them starve the fill.
+            waited = 0.0
+            while self._ondemand and waited < ONDEMAND_YIELD_SECONDS:
                 await asyncio.sleep(0.5)
+                waited += 0.5
             async with sem:
                 if self.window_ready(object_id, w):
                     return
@@ -1201,7 +1496,7 @@ class TranscodeCache:
                     print(f"[cache] prefetch for {object_id} idle - stopping")
                     return
                 first = int(seen[0] // WINDOW_SECONDS)
-                last = min(total, first + LOOKAHEAD_WINDOWS)
+                last = fill_limit(first, total)
             else:
                 first, last = 0, total
 
@@ -1212,10 +1507,12 @@ class TranscodeCache:
                 await asyncio.sleep(2)           # caught up; wait for playhead
                 continue
 
-            batch = asyncio.gather(*(fill(w) for w in todo[:PREFETCH_CONCURRENCY]))
+            filling = todo[:PREFETCH_CONCURRENCY]
+            batch = asyncio.gather(*(fill(w) for w in filling))
             # Checking for an idle viewer only between batches was too slow: a
             # batch runs for about a minute, so encoders kept a full machine busy
             # long after the tab closed. Poll while it runs instead.
+            retarget = False
             while not batch.done():
                 await asyncio.sleep(2)
                 seen = self._watch.get(object_id)
@@ -1225,10 +1522,28 @@ class TranscodeCache:
                     batch.cancel()
                     self._kill_procs(object_id)
                     return
-            try:
+                # Follow the viewer. A batch runs for the best part of a minute,
+                # and the playhead was only re-read between batches - so seeking
+                # away left the fill grinding through windows nobody was going
+                # to watch. Observed filling 0:00-8:00 while the viewer sat at
+                # 17:30 waiting on an on-demand transcode.
+                if seen and not pinned:
+                    here = int(seen[0] // WINDOW_SECONDS)
+                    if should_retarget(here, filling):
+                        print(f"[cache] prefetch for {object_id} re-targeting "
+                              f"w{filling[0]}-w{filling[-1]} -> w{here}", flush=True)
+                        batch.cancel()
+                        # Drop only what this batch owns, and never the window
+                        # the viewer is now waiting on.
+                        for w in filling:
+                            if (object_id, w) not in self._ondemand:
+                                self._kill_window((object_id, w))
+                        retarget = True
+                        break
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await batch
-            except asyncio.CancelledError:
-                return
+            if retarget:
+                continue
 
     async def stop(self, object_id: int) -> None:
         """Halt all work for a recording, leaving encoded windows on disk.
