@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { api, type GuideChannel, type GridChannel } from "../api/tablo";
+import { api, type GuideChannel, type GridChannel, type SearchItem } from "../api/tablo";
 import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
 import { Inbox, Search } from "lucide-react";
@@ -8,6 +8,7 @@ import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
 import { ProfileMenu } from "./ProfileMenu";
 import { PageHeader } from "./PageHeader";
+import { SearchDropdown } from "./SearchDropdown";
 import { parseRoute, writeRoute, type Tab } from "../lib/route";
 
 function useGuideStream(enabled: boolean) {
@@ -90,6 +91,7 @@ export function ChannelGrid({ onLogout }: Props) {
   const [initialRoute] = useState(parseRoute);
   const [playing, setPlaying] = useState<GuideChannel | null>(null);
   const [filter, setFilter] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   const [activeTab, setTab] = useState<Tab>(initialRoute.tab);
   // Set once the user closes the restored stream, so it does not reopen.
@@ -123,12 +125,37 @@ export function ChannelGrid({ onLogout }: Props) {
     writeRoute({
       tab: activeTab,
       watch: nowPlaying ? { kind: "live", id: nowPlaying.identifier } : null,
+      q: activeTab === "search" ? filter : undefined,
     });
-  }, [activeTab, nowPlaying]);
+  }, [activeTab, nowPlaying, filter]);
 
   const closePlayer = useCallback(() => {
     setPlaying(null);
     setRestoreDone(true);
+  }, []);
+
+  // Activating a search result routes via its `target` rather than a second,
+  // parallel navigation path. For Live TV this plays the channel directly when
+  // it is already in hand; for Library it hands off through the same hash the
+  // page reads on mount (see `initialRoute` above and in LibraryView) since
+  // that panel remounts fresh on every tab switch.
+  const handleSearchActivate = useCallback((item: SearchItem) => {
+    const { tab, watch } = item.target;
+    setSearchFocused(false);
+    setFilter("");
+
+    if (tab === "live" && typeof watch === "string") {
+      const ch = channels.find(c => c.identifier === watch);
+      if (ch) setPlaying(ch);
+    } else if (tab === "library" && typeof watch === "number") {
+      writeRoute({ tab: "library", watch: { kind: "recording", id: watch } });
+    }
+    setTab(tab);
+  }, [channels]);
+
+  const handleSearchSeeAll = useCallback(() => {
+    setSearchFocused(false);
+    setTab("search");
   }, []);
 
   const filtered = channels.filter(ch => {
@@ -223,21 +250,34 @@ export function ChannelGrid({ onLogout }: Props) {
               </button>
             </nav>
 
-            {/* Search — always mounted. Rendering it only on Live TV changed the
-                header height and shifted the page on every tab switch. */}
-            <div className={`relative flex-1 max-w-sm ${activeTab === "live" ? "" : "invisible"}`}>
+            {/* Search — global, not just a Live TV filter. Always mounted so the
+                header height stays put across tab switches. The dropdown shows
+                server results for any tab; the Live TV list below is filtered
+                locally too, since that is instant and free. */}
+            <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" aria-hidden />
               <input
                 type="text"
                 value={filter}
                 onChange={e => setFilter(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
                 placeholder="Search programs, channels..."
-                tabIndex={activeTab === "live" ? 0 : -1}
-                aria-hidden={activeTab !== "live"}
                 className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/5
                            text-sm placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-accent/40
                            focus:bg-white/10 transition shadow-inner"
               />
+              {searchFocused && filter.trim().length >= 2 && (
+                // Keeps the input focused through the click so `onBlur` above
+                // does not dismiss the dropdown before `onActivate` fires.
+                <div onMouseDown={e => e.preventDefault()}>
+                  <SearchDropdown
+                    query={filter}
+                    onActivate={handleSearchActivate}
+                    onSeeAll={handleSearchSeeAll}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-4 ml-4">

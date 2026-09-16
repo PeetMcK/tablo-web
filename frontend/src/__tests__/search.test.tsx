@@ -109,3 +109,50 @@ describe("search route", () => {
     });
   });
 });
+
+import { SearchDropdown } from "../components/SearchDropdown";
+
+const GROUPED: SearchResponse = {
+  query: "broncos",
+  coverage: { since: "2026-09-01T00:00:00Z", last_sync: "2026-09-15T18:00:00Z" },
+  groups: [
+    { kind: "recording", total: 1, items: [{ ...ITEM, kind: "recording", ref: "1" }] },
+    { kind: "airing", total: 7, items: [ITEM] },
+  ],
+};
+
+describe("SearchDropdown", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("groups results by kind", async () => {
+    vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SearchDropdown query="broncos" onActivate={() => {}} onSeeAll={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/recordings/i)).toBeInTheDocument();
+    expect(await screen.findByText(/guide/i)).toBeInTheDocument();
+  });
+
+  it("offers the rest when a group is truncated", async () => {
+    vi.spyOn(api, "search").mockResolvedValue(GROUPED);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SearchDropdown query="broncos" onActivate={() => {}} onSeeAll={() => {}} />
+      </QueryClientProvider>,
+    );
+    // 7 matched, 1 shown.
+    expect(await screen.findByText(/6 more/i)).toBeInTheDocument();
+  });
+
+  it("says nothing was found rather than showing an empty box", async () => {
+    vi.spyOn(api, "search").mockResolvedValue({ ...EMPTY, query: "zzzz" });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SearchDropdown query="zzzz" onActivate={() => {}} onSeeAll={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/no matches/i)).toBeInTheDocument();
+  });
+});
