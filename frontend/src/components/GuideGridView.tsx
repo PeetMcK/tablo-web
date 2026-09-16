@@ -295,7 +295,14 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       axis: header ? "x" : null,
       samples: [{ t: performance.now(), x: e.clientX, y: e.clientY }],
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    // Capture the pointer only where there is nothing to click. Capturing it
+    // over the listings broke opening a programme entirely: the browser
+    // retargets the compatibility mouse events - `click` among them - to the
+    // capture element, so every click landed on this surface instead of the
+    // button under the finger, and no sheet ever opened. Over the listings
+    // capture is taken at the moment a drag commits instead (see the move
+    // handler), which is after any click has been decided against.
+    if (header) e.currentTarget.setPointerCapture(e.pointerId);
   }, [stopGlide]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -311,6 +318,10 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       // Committed, and committed once: see `dominantAxis`.
       g.axis = dominantAxis(dx, dy);
       panned.current = true;
+      // Now that this is a drag and not a click, take the pointer: the
+      // gesture has to survive leaving the guide, and there is no longer a
+      // click for the capture to steal.
+      e.currentTarget.setPointerCapture(e.pointerId);
     }
 
     if (g.axis === "x") el.scrollLeft = g.left - dx * g.gain;

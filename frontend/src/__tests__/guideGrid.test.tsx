@@ -508,11 +508,13 @@ describe("revealing an airing the search found", () => {
 describe("dragging the guide", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  /** jsdom has no pointer capture; the component asks for it unconditionally. */
+  /** jsdom has no pointer capture. Records who asked for it, and when. */
   function stubCapture() {
-    Element.prototype.setPointerCapture = () => {};
+    const taken: number[] = [];
+    Element.prototype.setPointerCapture = function (id: number) { taken.push(id); };
     Element.prototype.hasPointerCapture = () => false;
     Element.prototype.releasePointerCapture = () => {};
+    return taken;
   }
 
   /**
@@ -621,6 +623,36 @@ describe("dragging the guide", () => {
     drag(chip, { dx: 0, moves: 0 });
     fireEvent.click(chip);
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("does not take the pointer until a press over the listings becomes a drag", async () => {
+    // The regression this covers shipped: capturing on pointerdown made the
+    // browser retarget the compatibility mouse events to the capture element,
+    // so `click` landed on the scrolled surface rather than the programme
+    // button, and no sheet opened at all. jsdom does not model that
+    // retargeting, so the test watches the cause instead - capture is taken
+    // over the listings only once the gesture is a drag, which is after any
+    // click has been ruled out.
+    const taken = stubCapture();
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    const cell = await screen.findByText("Hour 3");
+    const chip = cell.closest("button")!;
+    const { sc, hourRow } = parts(container);
+
+    // A click: pressed and released without travelling. Nothing captured.
+    drag(chip, { dx: 0, moves: 0 });
+    expect(taken).toHaveLength(0);
+
+    // A drag over the same chip: captured, because it has to outlive the grid.
+    sc.scrollLeft = 2000;
+    drag(chip, { dx: -20, moves: 6 });
+    expect(taken.length).toBeGreaterThan(0);
+
+    // The header has nothing to click, so it takes the pointer immediately.
+    taken.length = 0;
+    drag(hourRow, { dx: 0, moves: 0 });
+    expect(taken).toHaveLength(1);
   });
 
   it("ignores a touch, which already pans the guide natively", async () => {
