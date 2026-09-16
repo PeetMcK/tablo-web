@@ -176,6 +176,41 @@ describe("the player's chrome", () => {
     expect(requestWindow).toHaveBeenCalledWith();
   });
 
+  it("turns the pop-out button around once the stage is in the other window", async () => {
+    // Same button, same place in the row, either side of the pop-out — so
+    // what it says and what it draws has to follow the state, or the button
+    // in the popped-out window still offers to pop out.
+    const { container } = renderLive();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+
+    const pipDoc = document.implementation.createHTMLDocument("pip");
+    const pipWindow = {
+      document: pipDoc,
+      close: vi.fn(),
+      addEventListener: vi.fn(),
+    } as unknown as Window;
+    (window as unknown as Record<string, unknown>).documentPictureInPicture = {
+      requestWindow: vi.fn().mockResolvedValue(pipWindow),
+    };
+
+    // In the tab, it points out.
+    const inTab = [...container.querySelectorAll("button")]
+      .find((b) => b.getAttribute("title") === "Picture in picture")!;
+    expect(inTab.querySelector("svg")!.getAttribute("class"))
+      .toContain("lucide-picture-in-picture-2");
+
+    fireEvent.click(screen.getByTitle("Picture in picture"));
+
+    // In the window it opened, it points back.
+    const back = await waitFor(() => {
+      const b = pipDoc.body.querySelector('button[title="Close picture-in-picture"]');
+      expect(b).not.toBeNull();
+      return b!;
+    });
+    expect(back.querySelector("svg")!.getAttribute("class"))
+      .toContain("lucide-picture-in-picture-exit");
+  });
+
   it("fullscreens the player, not the bare video element", async () => {
     // Fullscreening the <video> hands the browser's own controls to the
     // viewer and leaves our timeline — cache bands, thumbnail scrubbing,

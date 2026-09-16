@@ -5,6 +5,7 @@ import {
   X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
   PictureInPicture2,
 } from "lucide-react";
+import { PictureInPictureExit } from "./icons";
 import { usePlayer } from "../hooks/usePlayer";
 import { api, previewUrl } from "../api/tablo";
 import type {
@@ -188,6 +189,14 @@ interface PlayerView {
   onClose: () => void;
   waiting: boolean;
   waitPct: number | null;
+  /**
+   * Whether this stage is the one in the popped-out window.
+   *
+   * The stage is the same markup either side, so the picture-in-picture
+   * button has to be told which way it points: out of the tab, or back into
+   * it.
+   */
+  poppedOut: boolean;
   togglePictureInPicture: () => void;
   enterFullscreen: () => void;
   paused: boolean;
@@ -1212,7 +1221,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     videoRef, rootRef, videoHostRef, barRef,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
-    togglePictureInPicture, enterFullscreen,
+    poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
@@ -1236,7 +1245,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           title="Close picture-in-picture"
           aria-label="Close picture-in-picture"
         >
-          <PictureInPicture2 className="w-9 h-9" aria-hidden />
+          <PictureInPictureExit className="w-9 h-9" aria-hidden />
         </button>
         <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
       </div>
@@ -1260,7 +1269,7 @@ function Stage({ view }: { view: PlayerView }) {
     videoRef, rootRef, videoHostRef, barRef,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
-    togglePictureInPicture, enterFullscreen,
+    poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
@@ -1705,10 +1714,15 @@ function Stage({ view }: { view: PlayerView }) {
                 <button
                   onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
                   className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
-                  title="Picture in picture"
-                  aria-label="Picture in picture"
+                  title={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
+                  aria-label={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
                 >
-                  <PictureInPicture2 className="w-4 h-4" aria-hidden />
+                  {/* The same button either side of the pop-out, so the icon
+                      carries which way it goes: the plain frame out of the
+                      tab, the arrow back into it. */}
+                  {poppedOut
+                    ? <PictureInPictureExit className="w-4 h-4" aria-hidden />
+                    : <PictureInPicture2 className="w-4 h-4" aria-hidden />}
                 </button>
               )}
 
