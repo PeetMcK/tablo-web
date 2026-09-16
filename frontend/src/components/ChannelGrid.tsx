@@ -190,9 +190,14 @@ export function ChannelGrid({ onLogout }: Props) {
             {/* Logo */}
             <div className="flex items-center gap-2.5 mr-6">
               <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg shadow-accent/20"
-                   style={{ background: "linear-gradient(135deg, #5b8af5, #7c5bf5)" }}>
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875C21 4.254 20.496 3.75 19.875 3.75H4.125C3.504 3.75 3 4.254 3 4.875v11.25c0 .621.504 1.125 1.125 1.125z" />
+                   style={{ background: "linear-gradient(135deg, #478cc9, #2c6296)" }}>
+                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                     strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                  {/* Stadium screen: corner radius is half the height, so both ends
+                      are true semicircles — the brand mark, wearing a TV stand. */}
+                  <rect x="2.25" y="3.25" width="19.5" height="13.5" rx="6.75" />
+                  <path d="M12 17v4" />
+                  <path d="M8 21h8" />
                 </svg>
               </div>
               <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
