@@ -1153,12 +1153,20 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               {/* Transcoded extent. This is the only thing that grows on its
                   own, so it is the only thing that eases - it advances in
                   window-sized jumps as encoding completes, and easing hides
-                  the step. */}
+                  the step.
+
+                  Width only. Where a band *starts* is not something that grows:
+                  it changes when the DVR window rolls or the bar it is measured
+                  against moves under it, and easing that read as the cached
+                  region sliding along the timeline of its own accord - a
+                  motion nothing in the recording corresponds to. Snapping the
+                  position and gliding only the edge leaves the one animation
+                  that describes something real. */}
               {readyBands.map((b) => (
                 <div
                   key={b.key}
                   className={`absolute h-1.5 rounded-full bg-player-buffered
-                              ${scrubbing ? "" : "transition-[width,left] duration-[2800ms] ease-linear"}`}
+                              ${scrubbing ? "" : "transition-[width] duration-[2800ms] ease-linear"}`}
                   style={{ left: `${b.left}%`, width: `${b.width}%` }}
                 />
               ))}

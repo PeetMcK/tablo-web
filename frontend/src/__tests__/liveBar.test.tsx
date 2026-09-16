@@ -145,4 +145,21 @@ describe("the live bar", () => {
     await waitFor(() => expect(seeks.length).toBeGreaterThan(0));
     expect(Math.max(...seeks)).toBeLessThanOrEqual(HOUR_AGO_QUARTER);
   });
+
+  it("eases the cached band's growth but never its position", async () => {
+    // Where a band starts moves when the DVR window rolls or the bar shifts
+    // under it. Easing that drew the cached region sliding along the timeline
+    // of its own accord, which corresponds to nothing in the recording.
+    const { container } = renderLive();
+    await playAt(container, HOUR_AGO_QUARTER);
+
+    const band = await waitFor(() => {
+      const el = container.querySelector(".bg-player-buffered");
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(band.className).toMatch(/transition-\[width\]/);
+    // The property list must not have picked `left` back up.
+    expect(band.className).not.toMatch(/transition-\[[^\]]*left/);
+  });
 });
