@@ -17,6 +17,15 @@ describe("readyRange", () => {
       .toEqual([1800, 2400]);
   });
 
+  it("still belongs to the island whose frontier it is stalled on", () => {
+    // A forward skip parks at the last playable instant, playback rolls the
+    // remaining half-second, and the playhead comes to rest exactly on the
+    // window boundary waiting for the encoder. It has not left the island it
+    // was watching, and rewinding into it is the one move guaranteed warm.
+    expect(readyRange(600, { ranges: cached, start: 0, end: 3600, whole: false }))
+      .toEqual([0, 600]);
+  });
+
   it("is a point when the playhead sits in a gap", () => {
     expect(readyRange(1000, { ranges: cached, start: 0, end: 3600, whole: false }))
       .toEqual([1000, 1000]);
@@ -105,6 +114,24 @@ describe("airingAt", () => {
     expect(airingAt(schedule, EIGHT_PM - 1)).toBeNull();
     expect(airingAt([], EIGHT_FIFTEEN)).toBeNull();
     expect(airingAt([{ start: "whenever", duration: 60 }], EIGHT_FIFTEEN)).toBeNull();
+  });
+});
+
+describe("stalled on the encoder's frontier", () => {
+  const cached: [number, number][] = [[0, 600]];
+  const opts = { ranges: cached, start: 0, end: 3600, whole: false };
+
+  it("rewinds out of the stall instead of holding still", () => {
+    // Skipping forward near the frontier lands just inside it; half a second of
+    // playback later the playhead is on the boundary, waiting for the next
+    // 60s window to encode. A rewind from there must move.
+    const parked = clampSkip(590, 30, readyRange(590, opts));
+    expect(parked).toBe(599.5);
+    expect(clampSkip(600, -10, readyRange(600, opts))).toBe(590);
+  });
+
+  it("does not jump forward into the window being encoded", () => {
+    expect(clampSkip(600, 30, readyRange(600, opts))).toBeLessThan(600);
   });
 });
 
