@@ -125,9 +125,9 @@ describe("the player's chrome", () => {
     // use `requestPictureInPicture`.
     const { container } = renderLive();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-    // Asserted as the attribute: jsdom does not reflect the IDL property.
-    expect(container.querySelector("video")!.hasAttribute("disablepictureinpicture"))
-      .toBe(true);
+    // Set as a property now: the element is built imperatively rather than
+    // rendered, because two React roots would each make one from JSX.
+    expect(container.querySelector("video")!.disablePictureInPicture).toBe(true);
   });
 
   it("offers the pop-out between sound and fullscreen", async () => {
@@ -140,9 +140,12 @@ describe("the player's chrome", () => {
     expect(titles).toEqual(["Mute (M)", "Picture in picture", "Fullscreen (F)"]);
   });
 
-  it("moves the playing element into the pop-out, rather than building a new one", async () => {
-    // Re-rendering a second <video> there would start from nothing: the stream
-    // is attached to this element through a MediaSource.
+  it("mounts the stage on the pop-out window and takes the same video there", async () => {
+    // Moving the DOM alone was not enough: React delegates events to the root
+    // container, so a stage merely relocated into the other document fired
+    // its clicks where nothing was listening. The window gets a root of its
+    // own, and the one video element — the stream is attached to it through a
+    // MediaSource, so a second would start from nothing — goes with it.
     const { container } = renderLive();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
 
@@ -156,16 +159,21 @@ describe("the player's chrome", () => {
     (window as unknown as Record<string, unknown>).documentPictureInPicture = { requestWindow };
 
     const video = container.querySelector("video")!;
-    const host = video.parentElement!;
 
     fireEvent.click(screen.getByTitle("Picture in picture"));
     await waitFor(() => expect(requestWindow).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(video.parentElement).toBe(pipDoc.body));
 
-    // The same element, and the host it left is still there to take it back.
+    // Same element, now living in the other document, with the transport
+    // rendered around it rather than left behind.
+    await waitFor(() => expect(pipDoc.body.contains(video)).toBe(true));
     expect(pipDoc.body.querySelector("video")).toBe(video);
-    expect(container.contains(host)).toBe(true);
-    expect(host.querySelector("video")).toBeNull();
+    await waitFor(() =>
+      expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
+
+    // The tab keeps the way back, and nothing else.
+    expect(screen.getByTitle("Close picture-in-picture")).toBeInTheDocument();
+    // Placement is the browser's to remember.
+    expect(requestWindow).toHaveBeenCalledWith();
   });
 
   it("fullscreens the player, not the bare video element", async () => {
