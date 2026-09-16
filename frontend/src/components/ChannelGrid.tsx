@@ -185,11 +185,25 @@ export function ChannelGrid({ onLogout }: Props) {
 
       <div className="min-h-screen flex flex-col bg-surface">
         {/* Header */}
-        {/* `.glass` carries an all-sides border, which is right for the rounded
-            glass buttons but not for a full-bleed sticky header — it drew
-            hairlines down the viewport edges. Zero the other three explicitly:
-            `.glass` is a components-layer rule, so these utilities win. */}
-        <header className="sticky top-0 z-10 glass border-x-0 border-t-0 border-b border-border">
+        {/* Opaque, not `.glass`. Frosted glass means "there is live content
+            behind this that you should still perceive" — true of the player's
+            controls over video, false of a nav bar over a list you have already
+            scrolled past.
+
+            It also made this bar the one element in the app whose contrast
+            could not be stated. `.glass` is a 4.5% wash, so the ground was
+            whatever scrolled under it, and blur averages colour rather than
+            removing it: a 20px blur over a football field is saturated green,
+            not neutral grey. The nav tabs measure 5.92:1 against the page, but
+            that only held at scroll-top. Both themes were affected — dark's
+            page is dark, but the thumbnails passing under it are bright.
+
+            Matching the page colour rather than `surface-raised` keeps it
+            reading as the page continuing under the content; the hairline does
+            the separating. Also drops a `backdrop-filter` compositor layer that
+            was re-rasterising the full header width on every scroll frame, over
+            a grid of video thumbnails. */}
+        <header className="sticky top-0 z-10 bg-surface border-b border-border">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
             {/* Logo */}
             <div className="flex items-center gap-2.5 mr-6">
