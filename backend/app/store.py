@@ -676,6 +676,29 @@ def airing_series_paths() -> list[str]:
     ]
 
 
+def imminent_cover_ids(hours: int = 12, now: float | None = None) -> list[int]:
+    """Cover image ids for programmes on air within the next `hours`.
+
+    The prefetch window - a few dozen images, against the ~3,190 the full
+    guide covers. Everything outside it is fetched when a sheet asks.
+
+    "On air within the window" means still running and already started by the
+    end of it, so a programme half-way through right now counts. There is no
+    start column; `end_epoch - duration` is the start, which is exactly how
+    `_end_epoch` built it.
+    """
+    at = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    rows = db.query(
+        "SELECT DISTINCT s.cover_image_id AS id "
+        "FROM guide_airing a JOIN guide_series s ON s.path = a.series_path "
+        "WHERE s.cover_image_id IS NOT NULL "
+        "  AND a.end_epoch >= ? AND a.end_epoch - a.duration <= ? "
+        "ORDER BY s.cover_image_id",
+        (at, at + hours * 3600),
+    )
+    return [r["id"] for r in rows]
+
+
 def airing_detail(channel: str, start: str, now: float | None = None) -> dict | None:
     """Everything the show sheet renders, from the mirror alone.
 

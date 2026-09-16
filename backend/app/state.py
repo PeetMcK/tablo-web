@@ -804,6 +804,27 @@ class AppState:
         await _run_sync(store.save_series, rows)
         return len(rows)
 
+    async def prefetch_artwork(self) -> int:
+        """Warm the cache for what airs soon. Never raises.
+
+        Paired with `sync_series`: that fills in which image each series has,
+        this fetches the ones a viewer is about to be able to see.
+        """
+        from . import guide_images
+
+        ids = await _run_sync(store.imminent_cover_ids)
+        missing = [i for i in ids if not guide_images.cached_path(i).exists()]
+        if not missing:
+            return 0
+        sem = asyncio.Semaphore(SERIES_SYNC_CONCURRENCY)
+
+        async def one(image_id: int):
+            async with sem:
+                return await guide_images.get(image_id, self.fetch_device_image)
+
+        got = await asyncio.gather(*[one(i) for i in missing])
+        return sum(1 for g in got if g)
+
     @staticmethod
     def _airing_row(a: dict) -> dict:
         """One guide airing, as the mirror stores it.

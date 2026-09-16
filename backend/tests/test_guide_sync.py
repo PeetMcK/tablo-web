@@ -256,7 +256,9 @@ def test_run_forever_survives_a_sync_once_that_raises(monkeypatch):
     class StopTest(BaseException):
         pass
 
-    async def boom(fetch, sync_series=None):
+    # *args because this stands in for sync_once, whose optional injected
+    # collaborators grow; the test has nothing to say about how many there are.
+    async def boom(*args):
         calls["n"] += 1
         raise RuntimeError("boom")
 

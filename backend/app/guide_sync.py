@@ -74,7 +74,7 @@ async def backfill_index() -> int:
     return sum(len(ch.get("airings") or []) for ch in rows)
 
 
-async def sync_once(fetch, sync_series=None) -> int:
+async def sync_once(fetch, sync_series=None, prefetch_artwork=None) -> int:
     """Run one sync. Returns airings seen; never raises.
 
     `fetch` is an awaitable returning grid rows, injected so this is testable
@@ -82,8 +82,8 @@ async def sync_once(fetch, sync_series=None) -> int:
     already persists the rows itself - this only prunes and records coverage,
     so the guide is not written to SQLite twice per cycle.
 
-    `sync_series` is injected the same way, and is optional so every existing
-    caller and test keeps working without one.
+    `sync_series` and `prefetch_artwork` are injected the same way, and are
+    optional so every existing caller and test keeps working without them.
 
     Every step that touches the database is guarded independently: starting
     the run, recording success, and recording failure can each fail on their
@@ -112,6 +112,10 @@ async def sync_once(fetch, sync_series=None) -> int:
             fetched = await sync_series(paths) if sync_series else 0
             if fetched:
                 print(f"[guide] captured {fetched} series", flush=True)
+            # After the capture, so it warms images this run just learned about.
+            warmed = await prefetch_artwork() if prefetch_artwork else 0
+            if warmed:
+                print(f"[guide] prefetched {warmed} images", flush=True)
         except Exception as e:  # noqa: BLE001 - metadata must not fail the sync
             print(f"[guide] series capture failed: {type(e).__name__}: {e}", flush=True)
 
@@ -131,7 +135,7 @@ async def sync_once(fetch, sync_series=None) -> int:
         return 0
 
 
-async def run_forever(fetch, sync_series=None) -> None:
+async def run_forever(fetch, sync_series=None, prefetch_artwork=None) -> None:
     """Index what is already stored, then sync at startup and every SYNC_HOURS."""
     try:
         indexed = await backfill_index()
@@ -145,7 +149,7 @@ async def run_forever(fetch, sync_series=None) -> None:
         # line of defence: a single unlucky exception must not silently kill
         # background syncing for the rest of the process's life.
         try:
-            await sync_once(fetch, sync_series)
+            await sync_once(fetch, sync_series, prefetch_artwork)
         except Exception as e:  # noqa: BLE001 - see above
             print(f"[guide] sync_once raised unexpectedly: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
