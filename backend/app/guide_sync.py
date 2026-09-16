@@ -99,7 +99,7 @@ async def sync_once(fetch, sync_series=None, prefetch_artwork=None) -> int:
     started = _now()
     try:
         run_id = await asyncio.to_thread(_start_run, started)
-    except Exception as e:  # noqa: BLE001 - starting the run must not fail the sync
+    except Exception as e:
         print(f"[guide] sync could not start: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         return 0
@@ -122,18 +122,18 @@ async def sync_once(fetch, sync_series=None, prefetch_artwork=None) -> int:
             warmed = await prefetch_artwork() if prefetch_artwork else 0
             if warmed:
                 print(f"[guide] prefetched {warmed} images", flush=True)
-        except Exception as e:  # noqa: BLE001 - metadata must not fail the sync
+        except Exception as e:
             print(f"[guide] series capture failed: {type(e).__name__}: {e}", flush=True)
 
         await asyncio.to_thread(_finish_run, run_id, seen)
         print(f"[guide] synced {seen} airings, pruned {removed}", flush=True)
         return seen
-    except Exception as e:  # noqa: BLE001 - a failed sync must not stop the app
+    except Exception as e:
         print(f"[guide] sync failed: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         try:
             await asyncio.to_thread(_fail_run, run_id, e)
-        except Exception as inner:  # noqa: BLE001 - recording the failure must not fail too
+        except Exception as inner:
             print(
                 f"[guide] could not record sync failure: {type(inner).__name__}: {inner}",
                 flush=True,
@@ -147,7 +147,7 @@ async def run_forever(fetch, sync_series=None, prefetch_artwork=None) -> None:
         indexed = await backfill_index()
         if indexed:
             print(f"[guide] backfilled {indexed} airings into the search index", flush=True)
-    except Exception as e:  # noqa: BLE001 - a failed backfill must not block sync
+    except Exception as e:
         print(f"[guide] backfill failed: {type(e).__name__}: {e}", flush=True)
 
     while True:
@@ -156,7 +156,7 @@ async def run_forever(fetch, sync_series=None, prefetch_artwork=None) -> None:
         # background syncing for the rest of the process's life.
         try:
             await sync_once(fetch, sync_series, prefetch_artwork)
-        except Exception as e:  # noqa: BLE001 - see above
+        except Exception as e:
             print(f"[guide] sync_once raised unexpectedly: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
         await asyncio.sleep(SYNC_HOURS * 3600)

@@ -34,8 +34,9 @@ def test_channel_detail_rejects_bad_path():
     # We can't easily auth in unit tests, but we can verify the 400 vs 401 distinction
     # by checking validation logic directly via the route.
     # This test verifies the validation is present by importing the logic.
-    from app.routes.channels import channel_detail
     import inspect
+
+    from app.routes.channels import channel_detail
     src = inspect.getsource(channel_detail)
     assert '://' in src  # SSRF check present
     assert 'startswith("/")' in src  # path must be absolute

@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from typing import ClassVar
 
 from app import guide_images, store
 
@@ -94,7 +95,7 @@ def test_the_image_fetch_follows_the_device_off_its_api_port():
 
     class FakeResponse:
         status_code = 200
-        headers = {"content-type": "image/jpeg"}
+        headers: ClassVar[dict[str, str]] = {"content-type": "image/jpeg"}
         content = b"jpeg-bytes"
 
         def raise_for_status(self):
@@ -128,7 +129,7 @@ def test_other_device_requests_still_do_not_follow_redirects():
 
     class FakeResponse:
         status_code = 200
-        headers = {}
+        headers: ClassVar[dict[str, str]] = {}
         content = b"{}"
 
         def json(self):
