@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { ChevronDown } from "lucide-react";
 import { api } from "../api/tablo";
-import { useTheme, THEME_LABELS } from "../lib/theme";
 import { ThemeControl } from "./ThemeControl";
 
 interface Props {
@@ -35,7 +34,6 @@ export function AppMenu({ email, onLogout }: Props) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const themeLabelId = useId();
   const panelId = useId();
-  const { theme, resolvedTheme } = useTheme();
 
   useEffect(() => {
     if (!open) return;
@@ -148,11 +146,6 @@ export function AppMenu({ email, onLogout }: Props) {
               Appearance
             </p>
             <ThemeControl labelledBy={themeLabelId} />
-            <p className="mt-1.5 text-[10px] font-medium text-fg-muted">
-              {theme === "system"
-                ? `Following your system · ${THEME_LABELS[resolvedTheme].toLowerCase()}`
-                : `Always ${THEME_LABELS[theme].toLowerCase()}`}
-            </p>
           </div>
 
           <div className="p-2">
