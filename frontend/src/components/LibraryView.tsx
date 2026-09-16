@@ -24,13 +24,6 @@ function formatBytes(n: number): string {
 }
 
 /**
- * When the recording started, as `9/13/2026 2:25 PM`.
- *
- * The date alone was ambiguous on days with several games on the same channel -
- * three of these start within hours of each other - so the kickoff time is what
- * actually distinguishes them.
- */
-/**
  * Runtime as `3h 35m`.
  *
  * Lowercase deliberately, and rendered without the uppercasing applied to the

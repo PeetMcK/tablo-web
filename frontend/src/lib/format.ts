@@ -10,16 +10,6 @@
 const NBSP = " ";
 
 /**
- * When a recording aired, as `9/13/2026 2:25 PM`.
- *
- * The date and the time are each tied together with non-breaking spaces, so the
- * single ordinary space between them is the only place the stamp can wrap. The
- * cards are narrow enough to need one, and left alone the browser took the last
- * opportunity instead of the sensible one - stranding "PM" on a line by itself
- * under the time it belongs to. Tying the date matters too: plenty of locales
- * spell it "13 Sep 2026", which would otherwise come apart in three places.
- */
-/**
  * One colour per weekday, indexed by `Date.getDay()` — Sunday first.
  *
  * Fixed rather than alternating, so a day always looks the same wherever it
@@ -64,6 +54,16 @@ export function formatDayHeading(iso: string): string {
   return `${weekday} ${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+/**
+ * When a recording aired, as `9/13/2026 2:25 PM`.
+ *
+ * The date and the time are each tied together with non-breaking spaces, so the
+ * single ordinary space between them is the only place the stamp can wrap. The
+ * cards are narrow enough to need one, and left alone the browser took the last
+ * opportunity instead of the sensible one - stranding "PM" on a line by itself
+ * under the time it belongs to. Tying the date matters too: plenty of locales
+ * spell it "13 Sep 2026", which would otherwise come apart in three places.
+ */
 export function formatAired(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
