@@ -162,6 +162,57 @@ The first two are exactly the class of bug the test suite cannot reach: both
 are about *when* things happen across a worker boundary, and both were invisible
 to every test that passed.
 
+## Live soak against the real device (Task 17, partial)
+
+Run against the actual Tablo with the worktree's backend on `:8000` and the
+built frontend served by `vite preview`. **It plays**: real 1080i broadcast,
+decoded in WASM, deinterlaced by the shader, in sync with its own audio,
+sustained across tens of seconds — and the fallback to the transcode works
+cleanly when the WASM path gives up.
+
+It is **not yet reliable from a cold start**, and the flag stays default-off.
+
+### What the soak found that the test suite could not
+
+1. **The device serves byte-range HLS behind a master playlist.** Every EXTINF
+   names the same `segw.ts` and differs only in `#EXT-X-BYTERANGE`. The
+   follower understood neither, so the ring stayed empty for ever. FFmpeg and
+   hls.js both resolve this on their own, which is precisely why nothing in
+   this codebase had ever had to know.
+2. **Audio and video disagreed by 39 seconds.** `buffersink` re-bases what it
+   emits onto the filter graph's timeline rather than the stream's, so the
+   downmixed audio carried timestamps unrelated to the frames beside it. Audio
+   is now timed from the decoder's own pts plus samples emitted.
+3. **The playhead and the seekable window were in different timebases** —
+   decoded pts against seconds-since-session-open — and only looked plausible
+   because the two origins happened to be close.
+4. **Nothing paced the transport.** Decode runs at 8x realtime, so it ate the
+   ring's whole backlog and the field queue filled with video the clock would
+   not reach for a minute; everything evicted before its moment. Pacing now
+   measures media fed against media played.
+5. **The obvious pacing fix deadlocks.** The playhead only advances while audio
+   renders, audio only exists if the transport fetched it, and the transport
+   only fetches if the playhead moved. A buffer floor breaks the cycle.
+
+Plus: a field queue capped at 8 threw away nine tenths of every segment;
+concurrent polls fetched every segment twice; a player closed mid-open leaked a
+tuner; and the first-frame deadline counted from the open rather than from the
+first segment fed, so a cold ring failed before there was anything to decode.
+
+### Where it stands
+
+On a channel whose ring has been filling for a while, the WASM path plays and
+keeps playing. On a freshly opened channel the decoder sometimes produces
+nothing at all from the first few seconds of media and the session falls back.
+The probe limits have been loosened once (512KB → 2MB, 0.5s → 2s of analysis)
+on the theory that a cold ring's opening segments are where PAT and PMT have to
+be found, but that has not yet been confirmed against the device.
+
+**Next step:** instrument the worker's demuxer open on a cold channel and find
+out whether it is the probe, a mid-GOP start, or something else. Until that is
+answered, `tablo.wasmlive` stays off by default and every viewer gets the
+transcode exactly as before.
+
 ### Device playlist depth — not yet run
 
 Deferred deliberately. It needs a tuner held open against the live device, and
