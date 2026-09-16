@@ -38,7 +38,64 @@ LGPL sources vendored under `sources/` (16 MB): `ffmpeg-9.0.tar.xz` and
 
 ## Task 2 — decode throughput
 
-(pending)
+Measured with `frontend/tools/measure-decode.mjs` against the saved 9.41s 1080i
+sample (NBC 13.1, 1920x1080 tt, 29.97, AC-3 5.1), node 20, single-threaded, M1
+Max. Media duration is taken from packet timestamps in the input stream's
+timebase — frame timestamps are unusable here because `bwdif=send_field` halves
+the output timebase, which made the first run read 2x too fast.
+
+`-Oz` build (libav.js default):
+
+| | wall | vs realtime |
+|---|---|---|
+| decode + AC-3, no deinterlace, frames copied out | 1.13s | **8.35x** |
+| decode + AC-3, no deinterlace, frames left in wasm | 1.15s | 8.20x |
+| decode + AC-3 + `bwdif=send_field` | 11.65s | **0.81x** |
+
+`-O3` build (this is the one now committed):
+
+| | wall | vs realtime |
+|---|---|---|
+| decode + AC-3, no deinterlace | 1.07s | **8.81x** |
+| video decode alone, no audio, no copy | 1.14s | 8.22x |
+| decode + AC-3 + `bwdif=mode=send_frame` (30p out) | 6.52s | 1.44x |
+| decode + AC-3 + `bwdif=mode=send_field` (60p out) | 11.54s | **0.82x** |
+| decode + AC-3 + `yadif=mode=send_field` | 18.91s | 0.50x |
+
+### What the numbers say
+
+**Decode passes, easily.** 8.8x realtime against 25.6x native is a 2.9x WASM
+penalty — the middle of the 2-3x the investigation assumed. AC-3 decode is
+free at this scale: dropping it changed nothing measurable. Copying frames out
+of the wasm heap is also free (0.02s across 560 frames), so the `VideoFrame`
+path costs nothing.
+
+**Software deinterlacing fails, by a mile.** `bwdif` costs 10.5s of the 11.5s.
+Native `bwdif` over the same clip is 0.55 CPU-s, so the penalty on the filter
+alone is roughly 19x, against 2.9x for the decoder. The reason is
+straightforward: `bwdif` and `yadif` are hand-written AVX2 in native FFmpeg,
+and this build has no SIMD at all — libav.js dropped its SIMD variant because
+its constituent libraries do not use WebAssembly SIMD.
+
+Neither lever recovers it:
+
+- **`-O3` instead of `-Oz`** bought 5% on decode and nothing on `bwdif`
+  (0.81 → 0.82x). The artifact grew 2.04 → 2.54 MB. Kept anyway, for the decode
+  gain and the headroom it buys.
+- **`yadif` instead of `bwdif`** is *worse*, at 0.50x.
+- **`bwdif=send_frame`** (30p out rather than 60p) reaches 1.44x — still under
+  the 1.5x gate, with no headroom left for presentation, and it throws away the
+  60p field cadence that makes 1080i playback look right today.
+
+### Verdict
+
+The gate as written — decode plus deinterlace ≥ 1.5x — **fails at 0.82x**.
+The gate on decode alone **passes at 8.8x**.
+
+The spec listed WebGL deinterlacing as optional, a v2 move to reclaim CPU. This
+measurement makes it mandatory: deinterlacing has to happen on the GPU, where
+it is nearly free, and the WASM build does decode only. Decode at 8.8x leaves
+ample budget for that.
 
 ## Task 3 — browser probes
 
