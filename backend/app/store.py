@@ -366,6 +366,47 @@ def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
     )
 
 
+def index_recordings(items: list[dict]) -> None:
+    """Index the library from a device listing.
+
+    Called on every listing rather than on a write, because the device holds
+    the library and we only mirror the handful we have transcoded. Cheap: an
+    upsert per recording, and there are rarely more than a few dozen.
+
+    Uses `ON CONFLICT DO UPDATE`, not `INSERT OR REPLACE` - see the note on
+    `index_channel` for why the latter silently corrupts `search_fts` here.
+    This is the writer that reindexes most often (every listing), so it is
+    the one where that bug would bite hardest.
+    """
+    if not items:
+        return
+    with db.write() as conn:
+        for rec in items:
+            ch = rec.get("channel") or {}
+            label = " ".join(
+                str(p) for p in (ch.get("number"), ch.get("network") or ch.get("call_sign")) if p
+            )
+            conn.execute(
+                "INSERT INTO search_doc(kind, ref, title, subtitle, body, "
+                "    channel, start_epoch, duration, target) "
+                "VALUES ('recording', ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(kind, ref) DO UPDATE SET "
+                "  title=excluded.title, subtitle=excluded.subtitle, body=excluded.body, "
+                "  channel=excluded.channel, start_epoch=excluded.start_epoch, "
+                "  duration=excluded.duration, target=excluded.target",
+                (
+                    str(rec.get("object_id")),
+                    rec.get("title"),
+                    rec.get("subtitle") or "",
+                    " ".join(str(p) for p in (rec.get("description"), label) if p),
+                    label,
+                    _start_epoch(rec.get("start")),
+                    int(rec.get("duration") or 0),
+                    json.dumps({"tab": "library", "watch": int(rec.get("object_id"))}),
+                ),
+            )
+
+
 def save_guide(rows: list[dict], now: float | None = None) -> None:
     """Merge the guide into the mirror, keeping everything already stored.
 

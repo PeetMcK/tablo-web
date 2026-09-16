@@ -1,5 +1,6 @@
 """Search index, ranking and guide retention."""
 
+import json
 import time
 
 from app import db, store
@@ -109,3 +110,60 @@ def test_pruning_an_airing_removes_it_from_the_index():
 
     assert not db.query("SELECT 1 FROM search_doc WHERE title = 'Ancient'")
     assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'ancient'")
+
+
+def test_recordings_are_indexed_from_a_listing():
+    """The device is the source of truth for the library, not our table.
+
+    `recording` holds cache bookkeeping for the few we have transcoded, with
+    the title buried in an `info` blob - so the index is fed from the listing.
+    """
+    store.index_recordings([{
+        "object_id": 80888,
+        "title": "NFL Football",
+        "subtitle": "Denver Broncos at Kansas City Chiefs",
+        "description": "AFC West matchup at Arrowhead Stadium.",
+        "start": "2026-09-15T00:15:00Z",
+        "duration": 12615,
+        "channel": {"call_sign": "KTMFABC", "network": "ABC", "number": "23.1"},
+    }])
+
+    row = db.query_one("SELECT * FROM search_doc WHERE kind = 'recording'")
+    assert row["title"] == "NFL Football"
+    assert row["channel"] == "23.1 ABC"
+    assert json.loads(row["target"]) == {"tab": "library", "watch": 80888}
+
+
+def test_relisting_does_not_duplicate_a_recording():
+    item = {"object_id": 1, "title": "A", "subtitle": "", "description": "",
+            "start": "2026-09-15T00:15:00Z", "duration": 60, "channel": None}
+    store.index_recordings([item])
+    store.index_recordings([item])
+    assert len(db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")) == 1
+
+
+def test_reindexing_a_recording_does_not_leave_the_old_title_in_fts():
+    """Regression test for the INSERT OR REPLACE bug: reindexing the same
+    object_id under a new title must not leave the old title still matching
+    in `search_fts`, and must make the new title findable. Asserted on FTS
+    contents rather than `search_doc` row counts, since a row-count check
+    passes even when the index is corrupt - which is how the bug survived
+    its first review.
+    """
+    store.index_recordings([{
+        "object_id": 80888,
+        "title": "Broncos at Chiefs",
+        "subtitle": "", "description": "",
+        "start": "2026-09-15T00:15:00Z", "duration": 3600,
+        "channel": {"call_sign": "KTMFABC", "network": "ABC", "number": "23.1"},
+    }])
+    store.index_recordings([{
+        "object_id": 80888,
+        "title": "Seahawks at Cardinals",
+        "subtitle": "", "description": "",
+        "start": "2026-09-15T00:15:00Z", "duration": 3600,
+        "channel": {"call_sign": "KTMFABC", "network": "ABC", "number": "23.1"},
+    }])
+
+    assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'broncos'")
+    assert db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'seahawks'")
