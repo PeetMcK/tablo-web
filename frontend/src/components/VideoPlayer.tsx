@@ -6,10 +6,11 @@ import { api, previewUrl } from "../api/tablo";
 import type {
   Channel, Program, Recording, CacheState, EncodingProgress,
 } from "../api/tablo";
-import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
+import { log, fmt, isCached, rangesLabel, installSnapshot } from "../lib/debug";
 import {
   airingAt, clampSkip, covers, programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
+import { createHlsSurface, type PlaybackSurface } from "../lib/playbackSurface";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -163,6 +164,20 @@ function clockTime(iso: string): string {
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
   const videoRef = useRef<HTMLVideoElement>(null);
+  /**
+   * What playback is actually happening on.
+   *
+   * Everything below reads the clock and the seekable range through this
+   * rather than from the element, so a second implementation — MPEG-2 decoded
+   * in WASM onto a canvas — can stand in the same place without the bar, the
+   * scrubber or the anchor knowing about it.
+   *
+   * A ref, not state: the controls read it synchronously from click handlers,
+   * and a state update lands a render later than the surface exists.
+   */
+  const surfaceRef = useRef<PlaybackSurface | null>(null);
+  /** Detaches the transport from the surface currently held. */
+  const detachRef = useRef<(() => void) | null>(null);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -364,10 +379,85 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     setAnchor(null);
   }
 
+  // ------------------------------------------------------------ transport
+  //
+  // Wired when a surface is created rather than from an effect watching state:
+  // an effect attaches a render late, which loses the surface's first events —
+  // including the seekable range the whole bar is scaled by. Returns its own
+  // unsubscribe, so a surface swap (a WASM session giving up mid-playback and
+  // handing the channel back to the transcode) is a detach and a re-attach.
+  const attachTransport = useCallback((surface: PlaybackSurface) => {
+    const sync = () => {
+      setPosition(surface.currentTime);
+      // Arrived (or the player moved on its own) — stop overriding the bar.
+      setPendingSeek((want) =>
+        want !== null && Math.abs(surface.currentTime - want) < 1.5 ? null : want,
+      );
+      onPositionRef.current?.(surface.currentTime);
+      setPaused(surface.paused);
+      const sk = surface.seekable;
+      if (sk) {
+        setRangeStart(sk[0]);
+        setRangeEnd(sk[1]);
+        // The one reading that ties this session's media clock to the wall
+        // clock. Taken when a playlist first exists and never again — the live
+        // edge is now, so the two can be converted from here on. Keeping the
+        // first reading rather than the latest is what holds the bar still;
+        // re-anchoring would slide the programme under the playhead.
+        setAnchor((held) => held ?? { wallMs: Date.now(), media: sk[1] });
+      } else if (surface.duration !== null) {
+        setRangeStart(0);
+        setRangeEnd(surface.duration);
+      }
+    };
+    const onVolume = () => setMuted(surface.muted);
+    let stalledAt = 0;
+    const onWait = () => {
+      stalledAt = performance.now();
+      const t = surface.currentTime;
+      log.warn(`stalled at ${fmt(t)}`, {
+        cachedHere: isCached(t, cachedRangesRef.current),
+        ...surface.diagnostics(),
+      });
+      setWaiting(true);
+    };
+    const onPlaying = () => {
+      if (stalledAt) {
+        log.player(`resumed after ${Math.round(performance.now() - stalledAt)}ms at ${fmt(surface.currentTime)}`);
+        stalledAt = 0;
+      }
+      setWaiting(false);
+    };
+
+    const offs = [
+      surface.on("timeupdate", sync),
+      surface.on("ready", sync),
+      surface.on("paused", sync),
+      surface.on("volumechange", onVolume),
+      surface.on("waiting", onWait),
+      surface.on("playing", onPlaying),
+    ];
+    sync();
+    return () => offs.forEach((off) => off());
+  }, []);
+
   // ---------------------------------------------------------------- start
   useEffect(() => {
     let cancelled = false;
     const current = sourceRef.current;
+
+    /** Put a stream on the element and hand the player a surface over it. */
+    /** Put a stream on the element and wire the transport to it. */
+    const openSurface = (url: string) => {
+      const video = videoRef.current;
+      if (!video) return;
+      detachRef.current?.();
+      surfaceRef.current?.destroy();
+      const next = createHlsSurface(video, load, url);
+      surfaceRef.current = next;
+      detachRef.current = attachTransport(next);
+    };
+
     const start = async () => {
       try {
         if (current.kind === "live") {
@@ -388,7 +478,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           });
           setSessionId(r.session_id);
           setLiveTranscoded(!!r.transcoded);
-          load(r.stream_url);
+          openSurface(r.stream_url);
         } else {
           const t0 = performance.now();
           const r = await api.watchRecording(current.recording.object_id);
@@ -405,7 +495,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           });
           setCacheState(r.state);
           setCachedRanges(r.cached_ranges ?? []);
-          load(r.stream_url);
+          openSurface(r.stream_url);
         }
         if (!cancelled) setLoading(false);
       } catch (e) {
@@ -419,6 +509,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     start();
     return () => {
       cancelled = true;
+      detachRef.current?.();
+      detachRef.current = null;
+      surfaceRef.current?.destroy();
+      surfaceRef.current = null;
       destroy();
     };
     // startAt/autoPlay are read once when the stream opens; changing them
@@ -481,18 +575,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         if (cur.kind !== "recording") return;
         // Position is the heartbeat: it tells the server someone is still here
         // and where to keep the lookahead.
-        const s = await api.recordingStatus(
-          cur.recording.object_id,
-          videoRef.current?.currentTime ?? 0,
-        );
+        const at = surfaceRef.current?.currentTime ?? 0;
+        const s = await api.recordingStatus(cur.recording.object_id, at);
         setCacheState(s.state);
         const secs = s.cached_seconds ?? 0;
         log.cache(`${s.state} — ${fmt(secs)} of ${fmt(s.duration)} (${Math.round(s.progress * 100)}%)`, {
-          playhead: fmt(videoRef.current?.currentTime ?? 0),
+          playhead: fmt(at),
           ahead: fmt(Math.max(0, (s.cached_ranges ?? []).reduce(
-            (m, [a, b]) => ((videoRef.current?.currentTime ?? 0) >= a &&
-                            (videoRef.current?.currentTime ?? 0) < b ? b : m), 0)
-            - (videoRef.current?.currentTime ?? 0))),
+            (m, [a, b]) => (at >= a && at < b ? b : m), 0) - at)),
           ranges: rangesLabel(s.cached_ranges ?? []),
           error: s.error,
         });
@@ -541,84 +631,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     return () => clearInterval(id);
   }, [isLive]);
 
-  // ------------------------------------------------------------ transport
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const sync = () => {
-      setPosition(video.currentTime);
-      // Arrived (or the player moved on its own) — stop overriding the bar.
-      setPendingSeek((want) =>
-        want !== null && Math.abs(video.currentTime - want) < 1.5 ? null : want,
-      );
-      onPositionRef.current?.(video.currentTime);
-      setPaused(video.paused);
-      const sk = video.seekable;
-      if (sk.length > 0) {
-        setRangeStart(sk.start(0));
-        setRangeEnd(sk.end(sk.length - 1));
-        // The one reading that ties this session's media clock to the wall
-        // clock. Taken when a playlist first exists and never again — the live
-        // edge is now, so the two can be converted from here on. Keeping the
-        // first reading rather than the latest is what holds the bar still;
-        // re-anchoring would slide the programme under the playhead.
-        setAnchor((held) => held ?? { wallMs: Date.now(), media: sk.end(sk.length - 1) });
-      } else if (Number.isFinite(video.duration)) {
-        setRangeStart(0);
-        setRangeEnd(video.duration);
-      }
-    };
-    const onVolume = () => setMuted(video.muted);
-    let stalledAt = 0;
-    const onWait = () => {
-      stalledAt = performance.now();
-      const t = video.currentTime;
-      log.warn(`stalled at ${fmt(t)}`, {
-        cachedHere: isCached(t, cachedRangesRef.current),
-        buffered: timeRangesToArray(video.buffered).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", ") || "none",
-        readyState: video.readyState,
-      });
-      setWaiting(true);
-    };
-    const onPlaying = () => {
-      if (stalledAt) {
-        log.player(`resumed after ${Math.round(performance.now() - stalledAt)}ms at ${fmt(video.currentTime)}`);
-        stalledAt = 0;
-      }
-      setWaiting(false);
-    };
-    const onSeeked = () => {
-      const t = video.currentTime;
-      log.player(`seeked → ${fmt(t)}`, {
-        cached: isCached(t, cachedRangesRef.current) ? "warm" : "COLD — will transcode",
-      });
-    };
-
-    const events: [string, EventListener][] = [
-      ["timeupdate", sync], ["progress", sync], ["play", sync], ["pause", sync],
-      ["durationchange", sync], ["seeked", sync], ["seeked", onSeeked],
-      ["volumechange", onVolume],
-      ["waiting", onWait], ["seeking", onWait],
-      ["playing", onPlaying], ["canplay", onPlaying],
-    ];
-    events.forEach(([e, h]) => video.addEventListener(e, h));
-    return () => events.forEach(([e, h]) => video.removeEventListener(e, h));
-  }, []);
-
   const togglePlay = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) video.play().catch(() => {});
-    else video.pause();
+    const s = surfaceRef.current;
+    if (!s) return;
+    if (s.paused) s.play().catch(() => {});
+    else s.pause();
   }, []);
 
   const seekTo = useCallback((t: number) => {
-    const video = videoRef.current;
-    if (!video) return;
+    const s = surfaceRef.current;
+    if (!s) return;
     const target = Math.max(rangeStart, Math.min(t, rangeEnd));
     setPendingSeek(target);
-    video.currentTime = target;
+    s.seek(target);
+    log.player(`seek → ${fmt(target)}`, {
+      cached: isCached(target, cachedRangesRef.current) ? "warm" : "COLD — will transcode",
+    });
   }, [rangeStart, rangeEnd]);
 
   /**
@@ -629,9 +657,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * to go anywhere and wait.
    */
   const skip = useCallback((delta: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    const from = video.currentTime;
+    const s = surfaceRef.current;
+    if (!s) return;
+    const from = s.currentTime;
     const range = readyRange(from, {
       ranges: cachedRangesRef.current,
       start: rangeStart,
@@ -686,16 +714,16 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * could reach until release.
    */
   const previewSeek = useCallback((t: number) => {
-    const video = videoRef.current;
-    if (!video) return;
+    const s = surfaceRef.current;
+    if (!s) return;
     const cached = isLive || cachedRanges.some(([a, b]) => t >= a && t <= b);
     if (!cached) return;
     // A seek per pointer event would queue faster than they can complete.
     const now = performance.now();
     if (now - lastPreviewRef.current < 120) return;
-    if (Math.abs(video.currentTime - t) < 0.5) return;
+    if (Math.abs(s.currentTime - t) < 0.5) return;
     lastPreviewRef.current = now;
-    video.currentTime = t;
+    s.seek(t);
   }, [cachedRanges, isLive]);
 
   const onBarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -777,14 +805,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     e.preventDefault();
     e.stopPropagation();
     const mag = Math.abs(dir) === 60 ? 60 : (e.shiftKey ? 30 : 5);
-    seekTo((videoRef.current?.currentTime ?? 0) + Math.sign(dir) * mag);
+    seekTo((surfaceRef.current?.currentTime ?? 0) + Math.sign(dir) * mag);
   }, [seekTo]);
 
   const toggleMute = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = !video.muted;
-    setMuted(video.muted);
+    const s = surfaceRef.current;
+    if (!s) return;
+    s.setMuted(!s.muted);
+    setMuted(s.muted);
   }, []);
 
   // iOS Safari uses webkitEnterFullscreen on the video element itself;
@@ -824,19 +852,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   // `tabloDebug()` in the console dumps everything at once, mid-problem.
   useEffect(() => installSnapshot(() => {
-    const v = videoRef.current;
+    const s = surfaceRef.current;
+    const seekable = s?.seekable;
     return {
       source: isLive ? "live" : `recording ${('recording' in source) ? source.recording.object_id : ""}`,
       title,
-      position: fmt(v?.currentTime ?? 0),
-      duration: fmt(v?.duration ?? 0),
-      paused: v?.paused, readyState: v?.readyState, muted: v?.muted,
-      seekable: timeRangesToArray(v?.seekable).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", "),
-      buffered: timeRangesToArray(v?.buffered).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", "),
+      position: fmt(s?.currentTime ?? 0),
+      duration: fmt(s?.duration ?? 0),
+      paused: s?.paused, muted: s?.muted,
+      seekable: seekable ? `${fmt(seekable[0])}-${fmt(seekable[1])}` : "none",
       cacheState,
       cachedRanges: rangesLabel(cachedRangesRef.current),
-      atCachedPoint: isCached(v?.currentTime ?? 0, cachedRangesRef.current),
-      mediaError: v?.error?.message ?? null,
+      atCachedPoint: isCached(s?.currentTime ?? 0, cachedRangesRef.current),
+      mediaError: s?.error ?? null,
+      // Whatever the implementation in use can say about itself: readyState
+      // and buffered ranges for hls, decode and present counts for wasm.
+      ...(s?.diagnostics() ?? {}),
     };
   }), [isLive, source, title, cacheState]);
 

@@ -27,19 +27,22 @@ const REQUIRED = [
   "WebGL2RenderingContext",
 ] as const;
 
+function readFlag(storage: Pick<Storage, "getItem">): string | null {
+  try {
+    return storage.getItem(WASMLIVE_FLAG);
+  } catch {
+    return null;
+  }
+}
+
 export function wasmLiveEligible(
   win: Pick<Window, "navigator"> & Record<string, unknown>,
   storage: Pick<Storage, "getItem">,
   channelKind: string | null | undefined,
 ): Eligibility {
-  let flag: string | null = null;
-  try {
-    flag = storage.getItem(WASMLIVE_FLAG);
-  } catch {
-    // Private mode, or a browser set to block site data. Treat as off rather
-    // than letting a storage exception take the player down.
-    flag = null;
-  }
+  // Private mode, or a browser set to block site data, throws on read. Treat
+  // that as off rather than letting a storage exception take the player down.
+  const flag = readFlag(storage);
   if (!flag || flag === "0") return { eligible: false, reason: "flag off" };
 
   // A guide row without a kind is a broadcast until proven otherwise, which is
