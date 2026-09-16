@@ -97,3 +97,86 @@ describe("Live TV's content filter chips", () => {
     expect(menu.getByRole("button", { name: /Sports/ })).toBeInTheDocument();
   });
 });
+
+/** Answer `(max-width: 639px)` — and only that query — with `matches`. */
+function stubPhone(matches: boolean) {
+  const real = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: matches && query === "(max-width: 639px)",
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+  return () => { window.matchMedia = real; };
+}
+
+describe("the topbar search at phone width", () => {
+  let restoreMedia = () => {};
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "#/live");
+    mockShell();
+  });
+  afterEach(() => { restoreMedia(); vi.restoreAllMocks(); });
+
+  const field = () => screen.getByPlaceholderText(/search programs, channels/i);
+  const fieldBox = () => field().parentElement!;
+
+  it("is an icon, not a field, until it is asked for", () => {
+    restoreMedia = stubPhone(true);
+    renderShell();
+
+    expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
+    // One input, hidden rather than unmounted: its value is the live filter,
+    // and unmounting would drop the query every time the row narrowed.
+    expect(fieldBox().className).toMatch(/\bhidden\b/);
+    expect(screen.getByRole("button", { name: "Guide" })).toBeInTheDocument();
+  });
+
+  it("takes the row when opened, so the field has somewhere to go", () => {
+    restoreMedia = stubPhone(true);
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(fieldBox().className).not.toMatch(/\bhidden\b/);
+    expect(field()).toHaveFocus();
+    // The tabs and the clock stand down — all four do not fit under 640px,
+    // which is the whole reason the field collapses in the first place.
+    expect(document.querySelector("header nav")!.className).toMatch(/\bhidden\b/);
+    expect(screen.getByRole("button", { name: "Close search" })).toBeInTheDocument();
+  });
+
+  it("gives the tabs back, and drops the query with them", () => {
+    restoreMedia = stubPhone(true);
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.change(field(), { target: { value: "broncos" } });
+    fireEvent.click(screen.getByRole("button", { name: "Close search" }));
+
+    expect(document.querySelector("header nav")!.className).toMatch(/\bflex\b/);
+    expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
+    expect(field()).toHaveValue("");
+  });
+
+  it("escape closes it the same way the button does", () => {
+    restoreMedia = stubPhone(true);
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.keyDown(field(), { key: "Escape" });
+
+    expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
+    expect(fieldBox().className).toMatch(/\bhidden\b/);
+  });
+
+  it("stays a plain field on anything wider", () => {
+    restoreMedia = stubPhone(false);
+    renderShell();
+
+    expect(screen.queryByRole("button", { name: "Search" })).not.toBeInTheDocument();
+    expect(fieldBox().className).not.toMatch(/\bhidden\b/);
+  });
+});

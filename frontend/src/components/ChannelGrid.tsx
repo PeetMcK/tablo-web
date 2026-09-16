@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { api, type GuideChannel, type GridChannel, type SearchItem } from "../api/tablo";
 import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
-import { Inbox, Search } from "lucide-react";
+import { Inbox, Search, X } from "lucide-react";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { LibraryView } from "./LibraryView";
@@ -110,6 +111,19 @@ export function ChannelGrid({ onLogout }: Props) {
   // never actually lost focus. This is set explicitly by the handlers that
   // care, never inferred from focus except via the real onFocus/onBlur pair.
   const [searchOpen, setSearchOpen] = useState(false);
+  /**
+   * Phone layout: below Tailwind's `sm`, the topbar cannot hold the mark, the
+   * three tabs, a search field and the clock at once — the clock was the one
+   * that lost, running off the right edge. So the field collapses to its own
+   * icon, and expanding it takes the row over for as long as it is open.
+   *
+   * A media query in JS rather than a `sm:hidden` pair, because both shapes
+   * share one input: a second copy behind a breakpoint would mean two fields
+   * with the same placeholder and the same value to keep in step.
+   */
+  const phone = useMediaQuery("(max-width: 639px)");
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   // A channel picked from search that was not yet in `channels` when picked
   // (the guide stream only runs once the Live TV tab is active). Matched
   // against `channels` below, via `pendingMatch`, as soon as the stream
@@ -303,6 +317,26 @@ export function ChannelGrid({ onLogout }: Props) {
 
   const closeSearch = useCallback(() => setSearchOpen(false), []);
 
+  /** Collapse the phone search back to its icon, dropping the query with it. */
+  const collapseSearch = useCallback(() => {
+    setSearchExpanded(false);
+    setSearchOpen(false);
+    setFilter("");
+  }, []);
+
+  // Focus follows the expansion: tapping the icon should put the caret in the
+  // field, not merely reveal it. Effect rather than `autoFocus`, which only
+  // fires on mount and would do nothing on the second open.
+  useEffect(() => {
+    if (searchExpanded) searchInputRef.current?.focus();
+  }, [searchExpanded]);
+
+  // Widening the window while the phone field is open leaves the row hiding
+  // its own tabs and clock, since the expanded shape is what renders them out.
+  useEffect(() => {
+    if (!phone) setSearchExpanded(false);
+  }, [phone]);
+
   // The palette activates through the very same path as the topbar dropdown
   // (`handleSearchActivate`) rather than a second, parallel one - it only
   // adds closing itself on top.
@@ -421,7 +455,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 16px more padding — but a pill's padding only counts once
                 against the mark, so the flex gap alone left "Live" 20px off it
                 and the mark looked glued on. 16 + 4 + 16 either side. */}
-            <nav className="flex items-center gap-1 mr-auto ml-4">
+            <nav className={`items-center gap-1 mr-auto ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
               <button
                 onClick={() => goToTab("live")}
                 className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
@@ -445,19 +479,43 @@ export function ChannelGrid({ onLogout }: Props) {
               </button>
             </nav>
 
-            {/* Search — global, not just a Live TV filter. Always mounted so the
-                header height stays put across tab switches. The dropdown shows
-                server results for any tab; the Live TV list below is filtered
-                locally too, since that is instant and free. */}
-            <div className="relative flex-1 max-w-sm">
+            {/* Phone, closed: the field is an icon. Tapping it expands the row
+                into the field below — the tabs and the clock stand down for as
+                long as it is open, which is the only way all four fit under
+                640px. Above that the field is simply always there. */}
+            {phone && !searchExpanded && (
+              <button
+                onClick={() => setSearchExpanded(true)}
+                aria-label="Search"
+                aria-expanded={false}
+                className="shrink-0 p-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                           text-fg-muted hover:text-fg-secondary hover:bg-fill transition
+                           focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <Search className="w-4 h-4" aria-hidden />
+              </button>
+            )}
+
+            {/* Search — global, not just a Live TV filter. Mounted on every tab
+                so the header height stays put across tab switches. The dropdown
+                shows server results for any tab; the Live list below is
+                filtered locally too, since that is instant and free. */}
+            <div className={`relative flex-1 max-w-sm ${phone && !searchExpanded ? "hidden" : ""}`}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
               <input
+                ref={searchInputRef}
                 type="text"
                 value={filter}
                 onChange={e => { setFilter(e.target.value); setSearchOpen(true); }}
                 onFocus={() => setSearchOpen(true)}
                 onBlur={() => setSearchOpen(false)}
-                onKeyDown={e => { if (e.key === "Escape") closeSearch(); }}
+                onKeyDown={e => {
+                  if (e.key !== "Escape") return;
+                  // One Escape, one dismissal: on a phone the field IS the
+                  // row, so leaving it open with the dropdown gone would hide
+                  // the tabs behind an empty box.
+                  if (searchExpanded) collapseSearch(); else closeSearch();
+                }}
                 placeholder="Search programs, channels..."
                 className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
                            text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
@@ -481,7 +539,23 @@ export function ChannelGrid({ onLogout }: Props) {
               )}
             </div>
 
-            <div className="flex items-center gap-4 ml-4">
+            {/* The way back to the tabs. `onMouseDown` preventDefault for the
+                same reason the dropdown does it: the input's own blur must not
+                land first and take the dropdown down under the tap. */}
+            {searchExpanded && (
+              <button
+                onMouseDown={e => e.preventDefault()}
+                onClick={collapseSearch}
+                aria-label="Close search"
+                className="shrink-0 ml-1 p-2.5 rounded-xl text-fg-muted hover:text-fg-secondary
+                           hover:bg-fill-soft transition
+                           focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <X className="w-4 h-4" aria-hidden />
+              </button>
+            )}
+
+            <div className={`items-center gap-4 ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
               <HeaderClock now={now} />
             </div>
           </div>
