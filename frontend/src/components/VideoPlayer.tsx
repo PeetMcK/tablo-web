@@ -1051,10 +1051,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         pipRoot.current = null;
         pipWindow.current = null;
         setPoppedOut(false);
-        // Back into the tab's host, which the stage remounts on the next
-        // render. Done here too so the picture is never left orphaned if that
-        // render is delayed.
-        host.append(video);
+        // The stage puts the picture back when it remounts in the tab, and it
+        // does that as one step with resuming playback — the move pauses the
+        // element whichever way it goes. Appending here as well would move it
+        // first and leave that remount with nothing to notice, so the video
+        // would come home stopped.
       }, { once: true });
     } catch (e) {
       // Refused for want of a user gesture, or not implemented here after all.
@@ -1371,7 +1372,25 @@ function Stage({ view }: { view: PlayerView }) {
   useEffect(() => {
     const video = videoRef.current;
     const host = videoHostRef.current;
-    if (video && host && video.parentElement !== host) host.append(video);
+    if (!video || !host || video.parentElement === host) return;
+
+    // Carrying the picture between windows stops it, and not by our choice:
+    // taking a media element out of a document queues a task that pauses it,
+    // and moving one is a removal followed by an insertion. So the state is
+    // read before the move and put back after.
+    //
+    // Restored on a later task, because that pause is queued too — calling
+    // play() here would be undone by a pause that has not run yet.
+    const wasPlaying = !video.paused;
+    host.append(video);
+    if (!wasPlaying) return;
+    // Unconditionally, rather than only when it reads as paused: whether that
+    // queued pause has run yet is not knowable from here, and asking an
+    // already-playing element to play is nothing.
+    const resume = setTimeout(() => {
+      video.play().catch((e) => log.warn("resume after move refused", e));
+    }, 0);
+    return () => clearTimeout(resume);
   });
 
   return (
@@ -1477,8 +1496,8 @@ function Stage({ view }: { view: PlayerView }) {
       )}
 
       <div
-        className={`absolute inset-0 flex flex-col justify-between transition-opacity duration-300 pointer-events-none
-          ${poppedOut ? "p-2" : "p-6"}
+        className={`absolute inset-0 flex flex-col transition-opacity duration-300 pointer-events-none
+          ${poppedOut ? "justify-end p-2" : "justify-between p-6"}
           ${chromeUp ? "opacity-100" : "opacity-0"}`}
         style={{
           // Sized in pixels to the two bands that actually hold content — the
@@ -1707,7 +1726,13 @@ function Stage({ view }: { view: PlayerView }) {
             {/* What is playing, on the left. The transport is centered over it
                 absolutely, so a long title cannot push the controls off centre. */}
             <div
-              className="max-w-[30%] text-left pointer-events-none select-none"
+              // Nothing to gain from it in a pop-out: the window is named
+              // after the programme, and at that width the name and the
+              // controls are fighting over the same strip of picture. The
+              // element stays in place rather than being dropped, so the row
+              // keeps three cells and the transport stays centred.
+              className={`max-w-[30%] text-left pointer-events-none select-none
+                ${poppedOut ? "invisible" : ""}`}
               // A crisp outline rather than a blurred shadow: over flat white
               // content a soft shadow reads as a smudge. `paint-order: stroke`
               // draws the stroke beneath the fill, so the glyphs keep their
