@@ -543,3 +543,48 @@ describe("SearchResultsView", () => {
     expect(await screen.findByText(/history since/i)).toBeInTheDocument();
   });
 });
+
+const AIRING_SEARCH_ITEM: SearchItem = {
+  kind: "airing", ref: "chA|2026-09-27T17:00:00Z", title: "NFL Football",
+  subtitle: null, channel: "8.1 CBS", start_epoch: 1_790_528_400, duration: 12300,
+  target: { tab: "grid", at: "2026-09-27T17:00:00Z", channel_id: "chA" },
+  recorded: null,
+};
+
+const AIRING_GROUPED: SearchResponse = {
+  query: "nfl",
+  coverage: { since: null, last_sync: null },
+  groups: [{ kind: "airing", total: 1, items: [AIRING_SEARCH_ITEM] }],
+};
+
+describe("ChannelGrid guide search handoff", () => {
+  beforeEach(() => window.history.replaceState(null, "", "#/live"));
+  afterEach(() => vi.restoreAllMocks());
+
+  it("opens the show sheet for an upcoming airing picked from search", async () => {
+    // Until this landed, a guide result only switched tabs: `target.at` was
+    // read nowhere, so clicking an upcoming game left you at whatever hour
+    // the guide happened to be showing, with nothing said about the game.
+    mockChannelGridApis();
+    vi.spyOn(api, "search").mockResolvedValue(AIRING_GROUPED);
+    const detail = vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: "Week 4.", start: "2026-09-27T17:00:00Z",
+      duration: 12300, orig_air_date: null, genres: ["Sports"], rating: null,
+      image_url: null, airing_now: false,
+      channel: { identifier: "chA", call_sign: "KPAX", major: 8, minor: 1,
+                 network: "CBS", logo_url: null, kind: "ota" },
+    });
+    renderChannelGrid();
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "nfl" } });
+    fireEvent.click(await screen.findByRole("option"));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    // Both halves of the airing's key reach the sheet, which is the whole
+    // reason `channel_id` rides along in the target.
+    expect(detail).toHaveBeenCalledWith("chA", "2026-09-27T17:00:00Z");
+  });
+});

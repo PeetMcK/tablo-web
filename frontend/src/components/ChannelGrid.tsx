@@ -5,7 +5,7 @@ import { VideoPlayer } from "./VideoPlayer";
 import { Inbox, Search } from "lucide-react";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { LibraryView } from "./LibraryView";
-import { GuideGridView } from "./GuideGridView";
+import { GuideGridView, type GuideJumpTarget } from "./GuideGridView";
 import { AppMenu } from "./AppMenu";
 import { HeaderClock } from "./HeaderClock";
 import { SearchDropdown } from "./SearchDropdown";
@@ -132,6 +132,12 @@ export function ChannelGrid({ onLogout }: Props) {
   // LibraryView never remounts and never re-reads the hash. Changing its key
   // forces that remount regardless of which tab the click came from.
   const [libraryActivation, setLibraryActivation] = useState(0);
+  // The airing a guide-target search result asked for. Carries its own nonce
+  // rather than reusing a counter like `libraryActivation`, because the guide
+  // needs the channel and start as well - and unlike Library, it cannot be
+  // handed off through the hash: the route encodes what is playing, and an
+  // upcoming airing is not something that plays.
+  const [guideJump, setGuideJump] = useState<GuideJumpTarget | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -257,7 +263,7 @@ export function ChannelGrid({ onLogout }: Props) {
   // `libraryActivation` so that read happens even when Library was already
   // the active tab and would not otherwise remount.
   const handleSearchActivate = useCallback((item: SearchItem) => {
-    const { tab, watch } = item.target;
+    const { tab, watch, at, channel_id } = item.target;
     setSearchOpen(false);
     setFilter("");
 
@@ -268,6 +274,12 @@ export function ChannelGrid({ onLogout }: Props) {
     } else if (tab === "library" && typeof watch === "number") {
       writeRoute({ tab: "library", watch: { kind: "recording", id: watch } });
       setLibraryActivation(n => n + 1);
+    } else if (tab === "grid" && at && channel_id) {
+      // Both halves or nothing: an airing indexed before the target carried
+      // `channel_id` still switches to the Guide, which is what this did for
+      // every airing until now. Better than opening a sheet keyed on half a
+      // key and showing an error in it.
+      setGuideJump(j => ({ channel: channel_id, start: at, nonce: (j?.nonce ?? 0) + 1 }));
     }
     // `goToTab` only clears `pendingChannel` for a tab other than "live" —
     // this call is always "live" in the branch above that just set it, so
@@ -500,7 +512,7 @@ export function ChannelGrid({ onLogout }: Props) {
 
           {isGuide && (
             <div className="flex flex-col flex-1 min-h-0">
-               <GuideGridView onPlay={handlePlay} />
+               <GuideGridView onPlay={handlePlay} jumpTo={guideJump} />
             </div>
           )}
 

@@ -340,6 +340,12 @@ def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
 
     Uses `ON CONFLICT DO UPDATE`, not `INSERT OR REPLACE` - see the note on
     `index_channel` for why the latter silently corrupts `search_fts` here.
+
+    The target carries `channel_id` as well as `at` because opening an airing
+    needs both halves of the `guide_airing` key - the show sheet is fetched by
+    (channel, start). `ref` happens to concatenate exactly those two, but
+    splitting it client-side would make this function's key format part of the
+    API, so the target states them outright.
     """
     genres = air.get("genres") or []
     body = " ".join(
@@ -361,7 +367,11 @@ def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
             label,
             _start_epoch(air.get("start")),
             int(air.get("duration") or 0),
-            json.dumps({"tab": "grid", "at": air.get("start")}),
+            json.dumps({
+                "tab": "grid",
+                "at": air.get("start"),
+                "channel_id": channel_id,
+            }),
         ),
     )
 

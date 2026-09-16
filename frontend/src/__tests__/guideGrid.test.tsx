@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { GuideGridView } from "../components/GuideGridView";
 import { api } from "../api/tablo";
 import type { GridChannel } from "../api/tablo";
@@ -331,5 +331,91 @@ describe("channels you can still tune", () => {
 
     await screen.findByText("Survivor");
     expect(screen.getByRole("button", { name: "Watch KECI 13.1" })).toBeInTheDocument();
+  });
+});
+
+describe("revealing an airing the search found", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** The sheet fetches its own detail; these tests only care that it opened. */
+  function mockDetail(title = "Hour 6") {
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title, episode_title: null, season_number: null, episode_number: null,
+      description: "filler", start: "2026-09-16T08:00Z", duration: 3600,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false,
+      channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
+                 network: "CBS", logo_url: null, kind: "ota" },
+    });
+  }
+
+  /** `jumpTo` for the airing `hoursOut` past the top of this hour. */
+  function jump(hoursOut: number, channel = "ch1", nonce = 1) {
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    return {
+      channel,
+      start: new Date(top.getTime() + hoursOut * 3600_000).toISOString(),
+      nonce,
+    };
+  }
+
+  it("opens the show sheet and scrolls the timeline to the airing", async () => {
+    mockDetail();
+    mockStream(longChannel(24));
+    const { container } = render(
+      <GuideGridView onPlay={() => {}} jumpTo={jump(6)} />,
+    );
+
+    // The sheet is the answer to the click; the scroll is how the guide
+    // behind it explains where that answer sits.
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    // 6 hours out, less the 15-minute lead, at 400px an hour: 2300.
+    await waitFor(() => expect(scroller(container).scrollLeft).toBe(2300));
+  });
+
+  it("opens the sheet even for a channel the grid stream never delivers", async () => {
+    // The sheet reads the mirror by (channel, start) and needs nothing from
+    // the stream. Making it wait would mean a channel the device has since
+    // dropped answers a click with silence.
+    mockDetail("Gone Channel");
+    mockStream([]);
+    render(<GuideGridView onPlay={() => {}} jumpTo={jump(6, "ch-missing")} />);
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("drops a content filter that hides the channel it was sent to", async () => {
+    // Otherwise the jump lands on a row that is not rendered: the sheet opens
+    // over a guide scrolled to nothing, with no hint that a filter did it.
+    mockDetail();
+    mockStream(longChannel(24)); // one OTA channel, so "Streaming" empties the grid
+    const { rerender, container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    fireEvent.click(screen.getByRole("button", { name: /streaming/i }));
+    expect(screen.queryByText("Hour 0")).not.toBeInTheDocument();
+
+    rerender(<GuideGridView onPlay={() => {}} jumpTo={jump(6)} />);
+
+    expect(await screen.findByText("Hour 0")).toBeInTheDocument();
+    await waitFor(() => expect(scroller(container).scrollLeft).toBe(2300));
+  });
+
+  it("reveals the same airing again when it is activated a second time", async () => {
+    // Channel and start are identical between the two clicks, so without the
+    // nonce the second is indistinguishable from the first — and closing the
+    // sheet would make the result permanently unclickable.
+    mockDetail();
+    mockStream(longChannel(24));
+    const { rerender } = render(
+      <GuideGridView onPlay={() => {}} jumpTo={jump(6)} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /close/i }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    rerender(<GuideGridView onPlay={() => {}} jumpTo={jump(6, "ch1", 2)} />);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 });

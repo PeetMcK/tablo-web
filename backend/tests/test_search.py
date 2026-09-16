@@ -100,6 +100,25 @@ def test_saving_the_guide_indexes_channels_and_airings():
     assert kinds["airing"]["channel"] == "8.1 CBS"
 
 
+def test_an_airing_target_carries_both_halves_of_its_key():
+    """Opening the show sheet needs (channel, start), so the target states both.
+
+    Without `channel_id` the only way to the channel is splitting `ref` on its
+    separator, which would freeze `index_airing`'s key format into the API.
+    """
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+    store.save_guide([_ch(ident="S34654_008_01", airings=[{
+        "title": "NFL Football", "subtitle": "", "description": "",
+        "start": start, "duration": 12300, "genres": [], "kind": "sportEvent",
+    }])], now=now)
+
+    row = db.query_one("SELECT target FROM search_doc WHERE kind = 'airing'")
+    assert json.loads(row["target"]) == {
+        "tab": "grid", "at": start, "channel_id": "S34654_008_01",
+    }
+
+
 def test_reindexing_the_same_airing_does_not_duplicate_it():
     now = time.time()
     air = {

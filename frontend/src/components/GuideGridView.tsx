@@ -6,8 +6,23 @@ import { ChannelLogo } from "./ChannelLogo";
 import { GuideJump } from "./GuideJump";
 import { ShowInfo } from "./ShowInfo";
 
+/**
+ * An airing to reveal, handed in from search.
+ *
+ * `nonce` is what makes a repeat activation land. The same result clicked
+ * twice produces an identical channel and start, so without it the second
+ * click is indistinguishable from the first and the effects below correctly
+ * decline to re-run — leaving a click that visibly does nothing.
+ */
+export interface GuideJumpTarget {
+  channel: string;
+  start: string;
+  nonce: number;
+}
+
 interface Props {
   onPlay: (channel: GridChannel) => void;
+  jumpTo?: GuideJumpTarget | null;
 }
 
 const HOUR_WIDTH = 400; // px per hour
@@ -27,6 +42,16 @@ const CHANNEL_W = 128;
  * likely looking for.
  */
 const NOW_LEAD_MS = 15 * 60_000;
+
+/**
+ * How far before a jumped-to airing the guide lands.
+ *
+ * Scrolling exactly to its start puts the cell flush against the frozen
+ * channel column, which reads as clipped rather than as the thing you asked
+ * for. Same reasoning as NOW_LEAD_MS, and the same distance so both kinds of
+ * jump settle the same way.
+ */
+const JUMP_LEAD_MS = NOW_LEAD_MS;
 
 
 function airingMatchesFilter(air: Program, f: ContentFilter): boolean {
@@ -84,6 +109,11 @@ function placeAirings(airings: Program[], startTime: number): Placement[] {
   return out;
 }
 
+/** Pixel offset of an instant from the left edge of the timeline, clamped at 0. */
+function timeOffset(at: number, startTime: number): number {
+  return Math.max(0, ((at - startTime) / 3600_000) * HOUR_WIDTH);
+}
+
 /** How a channel names itself out loud — a logo and a number announce nothing. */
 function channelLabel(ch: GridChannel): string {
   return ch.major > 0 ? `${ch.call_sign} ${ch.major}.${ch.minor}` : ch.call_sign;
@@ -129,7 +159,7 @@ function useGridStream() {
   return { grid, loading };
 }
 
-export function GuideGridView({ onPlay }: Props) {
+export function GuideGridView({ onPlay, jumpTo }: Props) {
   const { grid, loading: isLoading } = useGridStream();
   const [now, setNow] = useState(() => Date.now());
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
@@ -158,10 +188,14 @@ export function GuideGridView({ onPlay }: Props) {
    * are all gone with it.
    */
   const scrollerRef = useRef<HTMLDivElement>(null);
+  /** The frozen hour row, measured when scrolling a channel out from under it. */
+  const headerRef = useRef<HTMLDivElement>(null);
   /** Which hour column the guide is scrolled to, for the jump control's label. */
   const [hourAt, setHourAt] = useState(0);
   // The open show sheet, keyed the way `guide_airing` is. Null when closed.
   const [info, setInfo] = useState<{ channel: string; start: string } | null>(null);
+  /** The `jumpTo` nonce whose sheet has been opened. See the jump block below. */
+  const [shownJump, setShownJump] = useState<number | null>(null);
 
   // The jump control names where the guide is, which needs a render to change -
   // but this runs on every scroll frame, and re-rendering the guide per frame
@@ -232,12 +266,11 @@ export function GuideGridView({ onPlay }: Props) {
   const scrollToTime = (at: number) => {
     const el = scrollerRef.current;
     if (!el) return;
-    const want = Math.max(0, ((at - startTime) / 3600_000) * HOUR_WIDTH);
     // A target inside the last screenful sits past the furthest the guide can
     // scroll, and the browser clamps the write. Read back what it actually did
     // rather than what was asked for, or the jump control's label describes a
     // position the guide is not at.
-    el.scrollLeft = want;
+    el.scrollLeft = timeOffset(at, startTime);
     setHourAt(Math.floor(el.scrollLeft / HOUR_WIDTH));
   };
 
@@ -253,6 +286,59 @@ export function GuideGridView({ onPlay }: Props) {
   );
 
   const filteredGrid = contentFilter === "all" ? grid : grid.filter(ch => channelMatchesFilter(ch, contentFilter));
+
+  // A jumped-to airing opens its sheet straight away, without waiting for the
+  // grid. ShowInfo fetches by (channel, start) from the mirror and needs
+  // nothing from the stream, so making the answer wait on a channel row that
+  // may be seconds away - or, if the device has since dropped the channel,
+  // never - would withhold the one thing the click actually asked for.
+  //
+  // Adjusted during render rather than from an effect: this is React's own
+  // "changing state when a prop changes" pattern, and an effect here would
+  // render the guide once with the sheet shut and again with it open.
+  // `shownJump` is compared, not `info` - the sheet can be closed, and
+  // deriving from `info` would reopen it on the next render.
+  if (jumpTo && shownJump !== jumpTo.nonce) {
+    setShownJump(jumpTo.nonce);
+    setInfo({ channel: jumpTo.channel, start: jumpTo.start });
+  }
+
+  // Hidden behind a content filter: drop the filter rather than scroll to a
+  // row that is not rendered. Landing nowhere with no explanation is worse
+  // than losing a filter the search result plainly contradicts. Guarded on
+  // the channel being in `grid` at all, so this waits for the stream instead
+  // of clearing the filter over a channel that was never coming; and on
+  // `contentFilter` already being narrowed, so it cannot loop.
+  const jumpHidden =
+    jumpTo !== null && jumpTo !== undefined &&
+    contentFilter !== "all" &&
+    grid.some(c => c.identifier === jumpTo.channel) &&
+    !filteredGrid.some(c => c.identifier === jumpTo.channel);
+  if (jumpHidden) setContentFilter("all");
+
+  // Scrolling to it is the best-effort half, and needs the channel's row in
+  // the DOM. The stream delivers channels one at a time, so this runs again
+  // on every grid update until the row is there. An effect, not render-time
+  // work: it writes to the DOM and sets no state - `scrollLeft` fires the
+  // scroller's own `onScroll`, which is what moves the jump control's label.
+  const jumped = useRef<number | null>(null);
+  useEffect(() => {
+    if (!jumpTo || jumped.current === jumpTo.nonce) return;
+    const el = scrollerRef.current;
+    const row = el?.querySelector<HTMLElement>(
+      `[data-channel="${CSS.escape(jumpTo.channel)}"]`,
+    );
+    if (!el || !row) return;
+
+    jumped.current = jumpTo.nonce;
+    const at = new Date(jumpTo.start).getTime();
+    if (Number.isFinite(at)) el.scrollLeft = timeOffset(at - JUMP_LEAD_MS, startTime);
+    // `offsetTop` rather than a row-height constant: rows are a fixed height
+    // today, but a second place to encode it is a second place to drift.
+    // Sticky elements still take part in flow, so this already includes the
+    // header - which is why it comes back off, leaving the row flush beneath.
+    el.scrollTop = Math.max(0, row.offsetTop - (headerRef.current?.offsetHeight ?? 0));
+  }, [jumpTo, grid, filteredGrid, startTime]);
 
   if (isLoading) {
     return (
@@ -322,7 +408,7 @@ export function GuideGridView({ onPlay }: Props) {
           through. The frozen row and the frozen column share `surface-sunken`,
           which is the token for exactly this and reads within a point or two of
           what the wash composited to. */}
-      <div className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30 relative">
+      <div ref={headerRef} className="flex bg-surface-sunken border-b border-border-subtle sticky top-0 z-30 relative">
         <div className="w-32 shrink-0 border-r border-border-subtle bg-surface-sunken flex items-center justify-center sticky left-0 z-10">
           <span className="text-[10px] font-black text-fg-muted uppercase tracking-widest">Channel</span>
         </div>
@@ -366,7 +452,13 @@ export function GuideGridView({ onPlay }: Props) {
         {filteredGrid.map((ch) => {
           const placed = placeAirings(ch.airings, startTime);
           return (
-          <div key={ch.identifier} className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition">
+          <div
+            key={ch.identifier}
+            /* How a jump finds this row's vertical offset. See the jump
+               effect above: read, never styled. */
+            data-channel={ch.identifier}
+            className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition"
+          >
             {/* Channel Info — frozen left, and the tune control.
                 Opaque for the same reason the header is: programmes scroll
                 underneath it. `hover:bg-surface-raised` rather than the usual

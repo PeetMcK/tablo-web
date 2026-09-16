@@ -248,6 +248,8 @@ export interface SearchTarget {
   watch?: string | number;
   /** ISO start, for a guide result. */
   at?: string;
+  /** Channel the airing is on, for a guide result. With `at`, keys the show sheet. */
+  channel_id?: string;
 }
 
 export interface SearchItem {
