@@ -7,9 +7,14 @@ from app import db, store
 from app import search as search_mod
 
 
-def test_schema_is_at_version_two():
+def test_the_search_migration_has_run():
+    """`>=`, not `==`: this asserts v2 landed, not that v2 is the newest.
+
+    Pinning the literal made every later migration break a search test that
+    has nothing to say about it.
+    """
     row = db.query_one("PRAGMA user_version")
-    assert row[0] == 2
+    assert row[0] >= 2
 
 
 def test_index_tables_exist():

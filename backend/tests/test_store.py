@@ -17,6 +17,26 @@ def test_schema_is_created_and_versioned():
     assert db.query_one("PRAGMA user_version")[0] == db.SCHEMA_VERSION
 
 
+def test_schema_v3_adds_episode_fields_and_series_table():
+    """Show information needs per-episode fields and a series record.
+
+    The airing columns are nullable so existing rows keep working and
+    backfill happens as syncs run, rather than in a migration step.
+    """
+    cols = {r["name"] for r in db.query("PRAGMA table_info(guide_airing)")}
+    assert {"episode_title", "season_number", "episode_number", "orig_air_date",
+            "series_path", "airing_path", "schedule_state", "schedule_qualifier",
+            "skip_reason"} <= cols
+
+    series_cols = {r["name"] for r in db.query("PRAGMA table_info(guide_series)")}
+    assert {"path", "identifier", "title", "description", "genres", "rating",
+            "orig_air_date", "episode_runtime", "cast", "cover_image_id",
+            "thumbnail_image_id", "background_image_id", "schedule_rule",
+            "keep_rule", "keep_count", "updated_at"} <= series_cols
+
+    assert db.query_one("PRAGMA user_version")["user_version"] >= 3
+
+
 def test_reopening_does_not_re_run_migrations():
     store.save_credentials("a@b.com", "pw")
     db.close()
