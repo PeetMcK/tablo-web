@@ -23,6 +23,19 @@ CONFIG_PATH = Path(os.environ.get("TABLO_CONFIG_PATH", "/data/config.json"))
 # and shares the device with playback, which saturates around 10x realtime.
 SERIES_SYNC_CONCURRENCY = int(os.environ.get("TABLO_SERIES_SYNC_CONCURRENCY", "8"))
 
+# How far the cloud guide is walked, one request per day.
+#
+# Fourteen because that is where the data stops: the device publishes its own
+# horizon at /server/guide/status.limit, and the cloud grid returns partial
+# data one day past it and nothing two days past. Asking for more is free but
+# pointless. See docs/tablo-api.md.
+CLOUD_GUIDE_DAYS = int(os.environ.get("TABLO_CLOUD_GUIDE_DAYS", "14"))
+
+# These are someone else's servers, not the Tablo, so the reasoning that keeps
+# the device sync slow does not apply - but fourteen requests need no fan-out
+# either, and a burst is a poor way to greet a rate limiter.
+CLOUD_GUIDE_CONCURRENCY = int(os.environ.get("TABLO_CLOUD_GUIDE_CONCURRENCY", "4"))
+
 _lock = Lock()
 
 
@@ -317,52 +330,154 @@ class AppState:
 
         return logo_map, identifiers
 
-    async def _fetch_cloud_airings(self, identifiers: list[str]) -> dict:
-        """Fetch current airing for each OTT channel identifier (parallel, semaphore-limited).
+    @staticmethod
+    def _airing_on_now(airings: list, now: datetime | None = None) -> dict | None:
+        """Whichever of `airings` is on air, or None.
 
-        Returns airing_map keyed by identifier.
+        The cloud schedule is a full timeline now, so the current programme has
+        to be picked out of it rather than handed over ready-made as the
+        single-airing endpoint used to do.
         """
-        if self.active_device is None or not identifiers:
+        at = now or datetime.now(timezone.utc)
+        for air in airings:
+            start_str = air.get("start")
+            if not start_str:
+                continue
+            try:
+                start = datetime.fromisoformat(str(start_str).replace("Z", "+00:00"))
+                end = start + timedelta(seconds=air.get("duration") or 0)
+                if start <= at < end:
+                    return air
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _cloud_airing_row(a: dict) -> dict:
+        """One cloud airing, in the shape the mirror stores.
+
+        The naming is inverted relative to the device, and getting it wrong is
+        silent: the cloud's `title` is the *episode* and `show.title` is the
+        programme, where the device has `airing_details.show_title` for the
+        programme and `episode.title` for the episode. Mapping `title` to
+        `title` puts "Oh, the Humidity!" in the grid cell and loses "Weather
+        Hunters" altogether.
+
+        Movies and one-off events repeat the same string in both fields, so the
+        episode title is dropped when it matches - otherwise the sheet renders
+        the title twice, once under itself.
+
+        `airing_path`, `series_path` and the schedule fields stay None. The
+        cloud has no device paths, and a non-null `airing_path` that is not one
+        would be a PATCH target that 404s. See docs/tablo-api.md.
+        """
+        show = a.get("show") or {}
+        ep = a.get("episode") or {}
+        season = ep.get("season") or {}
+
+        programme = show.get("title") or a.get("title")
+        episode_title = a.get("title")
+        if episode_title == programme:
+            episode_title = None
+
+        # `season.number` is 0 on plenty of real records - 500.1 is full of
+        # them - and that means "no season", not "season zero". The `kind`
+        # field exists at all because the slot is not always a season index, so
+        # anything other than "number" is not one either.
+        season_number = season.get("number")
+        if season.get("kind") != "number" or not season_number:
+            season_number = None
+
+        return {
+            "title": programme,
+            "subtitle": None,
+            "description": a.get("description"),
+            "start": a.get("datetime"),
+            "duration": a.get("duration"),
+            "genres": a.get("genres") or [],
+            "kind": a.get("kind"),
+            "episode_title": episode_title,
+            "season_number": season_number,
+            "episode_number": ep.get("episodeNumber"),
+            "orig_air_date": ep.get("originalAirDate"),
+            # Display source only - the cloud carries no device handles.
+            "series_path": None,
+            "airing_path": None,
+            "schedule_state": None,
+            "schedule_qualifier": None,
+            "skip_reason": None,
+        }
+
+    async def _fetch_cloud_schedule(
+        self, days: int = CLOUD_GUIDE_DAYS, today: str | None = None
+    ) -> dict[str, list[dict]]:
+        """The cloud guide, keyed by channel identifier. Never raises.
+
+        This is the only source of OTT/FAST schedules - the device returns zero
+        airings for every one of them.
+
+        Two undocumented parameters do the work. `limit=50` collapses the
+        grid's four-channels-per-page pagination into a single response, and
+        `day` walks forward; nothing else moves the window. So the whole
+        14-day guide for every channel is `days` requests, against the ~9,166
+        the device walk costs for the same period.
+
+        Consecutive days overlap at their edges because the grid's day boundary
+        is local rather than UTC, so airings are keyed on start and deduped.
+        """
+        if self.active_device is None:
             return {}
         host, headers = self._cloud_headers()
         token = self.active_device.lighthouse_token
-        sem = asyncio.Semaphore(20)
+        start = (
+            datetime.fromisoformat(today) if today
+            else datetime.now(timezone.utc)
+        )
+        url = f"{host}/api/v2/account/{token}/guide/grid/"
+        sem = asyncio.Semaphore(CLOUD_GUIDE_CONCURRENCY)
 
-        async def fetch_one(ident: str):
+        async def fetch_day(offset: int):
+            day = (start + timedelta(days=offset)).strftime("%Y-%m-%d")
             async with sem:
                 try:
                     r = await self._http.get(
-                        f"{host}/api/v2/account/{token}/guide/channels/{ident}/airings/",
-                        headers=headers,
-                        timeout=10,
+                        url, headers=headers,
+                        params={"limit": 50, "day": day}, timeout=30,
                     )
-                    if r.status_code == 200:
-                        items = r.json()
-                        if isinstance(items, list) and items:
-                            a = items[0]
-                            return ident, {
-                                "title": a.get("title") or a.get("show", {}).get("title"),
-                                "description": a.get("description"),
-                                "start": a.get("datetime"),
-                                "duration": a.get("duration"),
-                                "genres": a.get("genres") or [],
-                                "kind": a.get("kind"),
-                            }
-                except Exception:
-                    pass
-                return ident, None
+                    if r.status_code != 200:
+                        return []
+                    return (r.json() or {}).get("grid") or []
+                except Exception:  # noqa: BLE001 - one bad day is not a lost guide
+                    return []
 
-        results = await asyncio.gather(*[fetch_one(i) for i in identifiers])
-        return {ident: data for ident, data in results if data is not None}
+        pages = await asyncio.gather(*[fetch_day(d) for d in range(days)])
+
+        by_channel: dict[str, dict[str, dict]] = {}
+        for grid in pages:
+            for row in grid:
+                ident = ((row or {}).get("channel") or {}).get("identifier")
+                if not ident:
+                    continue
+                slot = by_channel.setdefault(ident, {})
+                for a in row.get("airings") or []:
+                    mapped = AppState._cloud_airing_row(a)
+                    if mapped["start"]:
+                        slot[mapped["start"]] = mapped
+
+        return {
+            ident: [slot[k] for k in sorted(slot)]
+            for ident, slot in by_channel.items()
+        }
 
     async def _fetch_cloud_data(self) -> tuple[dict, dict]:
-        """Fetch OTT channel logos and current airings from the Tablo cloud API.
+        """Fetch cloud channel logos and the cloud guide.
 
-        Returns (logo_map, airing_map) both keyed by channel identifier.
+        Returns (logo_map, schedule_map). The schedule is keyed by channel
+        identifier and each value is the channel's airings, in order.
         """
-        logo_map, identifiers = await self._fetch_cloud_channels()
-        airing_map = await self._fetch_cloud_airings(identifiers)
-        return logo_map, airing_map
+        logo_map, _ = await self._fetch_cloud_channels()
+        schedule = await self._fetch_cloud_schedule()
+        return logo_map, schedule
 
     async def _fetch_guide_enrichment_local(self) -> tuple[dict, dict, dict]:
         """Fetch local device logos and current airings (OTA only).
@@ -444,9 +559,9 @@ class AppState:
     async def _fetch_guide_enrichment(self) -> tuple[dict, dict, dict, dict]:
         """Fetch logo and airing data from local device and cloud in parallel.
 
-        Returns (logo_map, path_to_ident, channel_airing_map, cloud_airing_map).
+        Returns (logo_map, path_to_ident, channel_airing_map, cloud_schedule).
         channel_airing_map is keyed by local channel path (OTA only).
-        cloud_airing_map is keyed by channel identifier (OTT).
+        cloud_schedule is keyed by channel identifier (OTT).
         """
         path_results = await asyncio.gather(
             self.request_device("GET", "/guide/channels"),
@@ -457,11 +572,11 @@ class AppState:
         detail_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
         airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
         cloud_logos: dict
-        cloud_airing_map: dict
+        cloud_schedule: dict
         if isinstance(path_results[2], Exception):
-            cloud_logos, cloud_airing_map = {}, {}
+            cloud_logos, cloud_schedule = {}, {}
         else:
-            cloud_logos, cloud_airing_map = path_results[2]
+            cloud_logos, cloud_schedule = path_results[2]
 
         sem = asyncio.Semaphore(30)
 
@@ -530,7 +645,7 @@ class AppState:
             if ident not in logo_map:
                 logo_map[ident] = url
 
-        return logo_map, path_to_ident, channel_airing_map, cloud_airing_map
+        return logo_map, path_to_ident, channel_airing_map, cloud_schedule
 
     async def get_guide_data(self) -> list[dict]:
         """Aggregate channels with logos and current airing info."""
@@ -538,12 +653,15 @@ class AppState:
             raise RuntimeError("No active device")
 
         channels = await self.channels()
-        logo_map, path_to_ident, channel_airing_map, cloud_airing_map = await self._fetch_guide_enrichment()
+        logo_map, path_to_ident, channel_airing_map, cloud_schedule = await self._fetch_guide_enrichment()
 
         guide = []
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
-            current_program = (channel_airing_map.get(c_path) if c_path else None) or cloud_airing_map.get(c.identifier)
+            current_program = (
+                (channel_airing_map.get(c_path) if c_path else None)
+                or AppState._airing_on_now(cloud_schedule.get(c.identifier) or [])
+            )
             guide.append({
                 "identifier": c.identifier,
                 "call_sign": c.call_sign,
@@ -602,33 +720,20 @@ class AppState:
 
         # Phase 3: full enrichment via shared grid cache (instant on hit, ~90s on cold start)
         try:
-            logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
+            logo_map, path_to_ident, channel_to_airings, cloud_schedule = await asyncio.wait_for(
                 self._build_grid_enrichment(), timeout=90
             )
         except Exception as e:
             print(f"[guide-live] Phase 3 failed: {type(e).__name__}: {e}")
             return
 
-        now = datetime.now(timezone.utc)
-
-        def _current_airing(airings: list) -> dict | None:
-            for air in airings:
-                start_str = air.get("start")
-                if not start_str:
-                    continue
-                try:
-                    start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                    end = start + timedelta(seconds=air.get("duration") or 0)
-                    if start <= now < end:
-                        return air
-                except Exception:
-                    pass
-            return None
-
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
             airings = channel_to_airings.get(c_path, []) if c_path else []
-            current_program = _current_airing(airings) or cloud_airing_map.get(c.identifier)
+            current_program = (
+                AppState._airing_on_now(airings)
+                or AppState._airing_on_now(cloud_schedule.get(c.identifier) or [])
+            )
             yield _stub(c, logo_url=logo_map.get(c.identifier), current_program=current_program)
 
     @staticmethod
@@ -889,7 +994,7 @@ class AppState:
     async def _build_grid_enrichment(self, max_airings: int = 1000, concurrency: int = 30) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
-        Returns (logo_map, path_to_ident, channel_to_airings, cloud_airing_map).
+        Returns (logo_map, path_to_ident, channel_to_airings, cloud_schedule).
         Results are cached for _GRID_CACHE_TTL seconds so repeated guide loads
         don't re-fetch hundreds of airing detail records from the device.
         The EPG endpoint passes max_airings=15000 and bypasses the cache.
@@ -917,11 +1022,11 @@ class AppState:
         local_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
         airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
         cloud_logos: dict
-        cloud_airing_map: dict
+        cloud_schedule: dict
         if isinstance(path_results[2], Exception):
-            cloud_logos, cloud_airing_map = {}, {}
+            cloud_logos, cloud_schedule = {}, {}
         else:
-            cloud_logos, cloud_airing_map = path_results[2]
+            cloud_logos, cloud_schedule = path_results[2]
 
         sem = asyncio.Semaphore(concurrency)
 
@@ -962,7 +1067,7 @@ class AppState:
             if ident not in logo_map:
                 logo_map[ident] = url
 
-        cloud_airing_map_local = cloud_airing_map  # rename for closure clarity
+        cloud_schedule_local = cloud_schedule  # rename for closure clarity
         channel_to_airings: dict = {}
         for a in airing_details:
             if not a or "airing_details" not in a:
@@ -972,19 +1077,24 @@ class AppState:
                 continue
             channel_to_airings.setdefault(c_path, []).append(AppState._airing_row(a))
 
-        result = logo_map, path_to_ident, channel_to_airings, cloud_airing_map_local
+        result = logo_map, path_to_ident, channel_to_airings, cloud_schedule_local
         if use_cache:
             async with self._grid_cache_lock:
                 self._grid_cache = result
                 self._grid_cache_time = _time.monotonic()
         return result
 
-    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_airing_map: dict) -> dict:
+    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
         airings = channel_to_airings.get(c_path, []) if c_path else []
-        # For OTT channels with no local airings, inject cloud current program
-        if not airings and c.identifier in cloud_airing_map:
-            airings = [cloud_airing_map[c.identifier]]
+        # OTT/FAST channels have no device schedule at all, so the cloud is not
+        # a fallback here - it is the only source. This used to inject a single
+        # current programme, which is why those rows drew exactly one cell.
+        #
+        # The device still wins where it has anything, because its records
+        # carry the recording handles the cloud has no equivalent for.
+        if not airings:
+            airings = list(cloud_schedule.get(c.identifier) or [])
         airings.sort(key=lambda x: x.get("start") or "")
         return {
             "identifier": c.identifier,
@@ -1030,11 +1140,11 @@ class AppState:
         # Only reached when the stored guide was already stale, so this costs
         # no extra device traffic at rest.
         channels = await self.channels(refresh=True)
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment(
+        logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(
             max_airings=max_airings, concurrency=concurrency
         )
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
             for c in channels
         ]
         try:
@@ -1072,9 +1182,9 @@ class AppState:
             self._grid_cache_time = 0.0
 
         channels = await self.channels(refresh=True)
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment()
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
             for c in channels
         ]
         await _run_sync(store.save_guide, rows)
@@ -1109,8 +1219,8 @@ class AppState:
         if self.active_device is None:
             raise RuntimeError("No active device")
         channels = await self.channels()
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment(max_airings=15000)
-        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map) for c in channels]
+        logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(max_airings=15000)
+        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule) for c in channels]
 
     async def stream_grid_guide_data(self):
         """Async generator for NDJSON grid guide streaming.
@@ -1151,14 +1261,14 @@ class AppState:
 
         # Phase 2: enriched rows with logos and timelines (90s hard timeout)
         try:
-            logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
+            logo_map, path_to_ident, channel_to_airings, cloud_schedule = await asyncio.wait_for(
                 self._build_grid_enrichment(), timeout=90
             )
         except Exception as e:
             print(f"[guide-grid] Phase 2 failed: {type(e).__name__}: {e}")
             return
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
             for c in channels
         ]
         for row in rows:
