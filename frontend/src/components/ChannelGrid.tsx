@@ -445,7 +445,12 @@ export function ChannelGrid({ onLogout }: Props) {
               than a separate block sat off to the left. Nothing downstream goes
               short of air: the nav's `mr-auto` opens the whole remaining gap
               before the search field, and the clock brings its own `ml-4`. */}
-          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-1">
+          {/* `px-4` below sm, matching main's — the two set the page's left
+              edge between them, and the mark has to line up with the cards
+              under it. The narrower gutter is also 16px of the row back: at
+              320px the topbar did not fit, and what did not fit pushed the
+              whole document sideways. */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-1">
             {/* The mark is also the settings menu — see AppMenu for why. */}
             <AppMenu email={userEmail} onLogout={onLogout} />
 
@@ -455,24 +460,24 @@ export function ChannelGrid({ onLogout }: Props) {
                 16px more padding — but a pill's padding only counts once
                 against the mark, so the flex gap alone left "Live" 20px off it
                 and the mark looked glued on. 16 + 4 + 16 either side. */}
-            <nav className={`items-center gap-1 mr-auto ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
+            <nav className={`items-center gap-1 mr-auto ml-2 sm:ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
               <button
                 onClick={() => goToTab("live")}
-                className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                className={`px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Live
               </button>
               <button
                 onClick={() => goToTab("grid")}
-                className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                className={`px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "grid" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Guide
               </button>
               <button
                 onClick={() => goToTab("library")}
-                className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                className={`px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "library" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Library
@@ -576,9 +581,11 @@ export function ChannelGrid({ onLogout }: Props) {
             their own band rather than as deliberate room. The foot of the
             page keeps its 40px — only the top was out. */}
         {/* The guide loses the 40px foot on a phone: the grid runs to both
-            edges there (see GuideGridView's own `-mx-6`), and a band of page
-            under it would be the one side still framed. */}
-        <main className={`flex-1 max-w-7xl mx-auto w-full px-6 pt-4
+            edges there (see GuideGridView's own `-mx-4`), and a band of page
+            under it would be the one side still framed.
+            `px-4` below sm — the same gutter the header uses, since the two
+            have to agree on where the page starts. */}
+        <main className={`flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 pt-4
                           ${isGuide ? "pb-0 sm:pb-10 min-h-0 flex flex-col" : "pb-10"}`}>
           {activeTab === "live" && (
             <>
