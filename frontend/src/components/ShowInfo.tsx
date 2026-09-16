@@ -104,13 +104,14 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
   }, [onClose]);
 
   const number = detail ? channelNumber(detail.channel) : null;
+  // Network and channel number are deliberately absent: the eyebrow above the
+  // title already carries both, and repeating them put "LOCALFAST · 7.99" two
+  // lines under "7.99 · LOCALFAST" on every sheet.
   const meta = detail
     ? [
         detail.season_number != null && detail.episode_number != null
           ? `S${detail.season_number} E${detail.episode_number}`
           : null,
-        detail.channel.network,
-        number,
         detail.duration ? formatDuration(detail.duration) : null,
         detail.rating ? formatRating(detail.rating) : null,
       ].filter(Boolean)

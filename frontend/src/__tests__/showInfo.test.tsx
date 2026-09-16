@@ -32,6 +32,18 @@ describe("ShowInfo", () => {
     expect(screen.getByText(/TV-PG/i)).toBeInTheDocument();
   });
 
+  it("names the channel once, not twice", async () => {
+    // The eyebrow above the title carries network and channel number. The meta
+    // row used to repeat both, so every sheet read "LOCALFAST · 7.99" two lines
+    // under "7.99 · LOCALFAST".
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail());
+    render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}} />);
+
+    await screen.findByText("Finding Your Roots");
+    expect(screen.getAllByText(/PBS/)).toHaveLength(1);
+    expect(screen.getAllByText(/8\.1/)).toHaveLength(1);
+  });
+
   it("offers to tune only while the programme is on", async () => {
     vi.spyOn(api, "airingDetail").mockResolvedValue(detail({ airing_now: true }));
     const onTune = vi.fn();
