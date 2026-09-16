@@ -297,7 +297,6 @@ export function ChannelGrid({ onLogout }: Props) {
             <>
               <PageHeader
                 title="On Air Now"
-                subtitle="Browse your local guide and start watching instantly"
               />
 
               {/* Content type filter chips */}
@@ -344,10 +343,7 @@ export function ChannelGrid({ onLogout }: Props) {
 
           {isGuide && (
             <div className="flex flex-col flex-1 min-h-0">
-               <PageHeader
-                 title="TV Guide"
-                 subtitle="Traditional timeline view of all upcoming airings"
-               />
+               <PageHeader title="Guide" />
                <GuideGridView onPlay={handlePlay} />
             </div>
           )}
