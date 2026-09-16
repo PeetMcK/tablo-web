@@ -469,21 +469,21 @@ export function ChannelGrid({ onLogout }: Props) {
             <nav className={`items-center gap-1 mr-auto ml-2 sm:ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
               <button
                 onClick={() => goToTab("live")}
-                className={`px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Live
               </button>
               <button
                 onClick={() => goToTab("grid")}
-                className={`px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "grid" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Guide
               </button>
               <button
                 onClick={() => goToTab("library")}
-                className={`px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
                            ${activeTab === "library" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Library
@@ -499,7 +499,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 onClick={() => setSearchExpanded(true)}
                 aria-label="Search"
                 aria-expanded={false}
-                className="shrink-0 p-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                className="touch-target shrink-0 flex items-center justify-center p-2.5 rounded-xl bg-fill-soft border border-border-subtle
                            text-fg-muted hover:text-fg-secondary hover:bg-fill transition
                            focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
@@ -561,7 +561,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 onMouseDown={e => e.preventDefault()}
                 onClick={collapseSearch}
                 aria-label="Close search"
-                className="shrink-0 ml-1 p-2.5 rounded-xl text-fg-muted hover:text-fg-secondary
+                className="touch-target shrink-0 ml-1 flex items-center justify-center p-2.5 rounded-xl text-fg-muted hover:text-fg-secondary
                            hover:bg-fill-soft transition
                            focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
@@ -611,7 +611,7 @@ export function ChannelGrid({ onLogout }: Props) {
                   <button
                     key={f.id}
                     onClick={() => setContentFilter(f.id)}
-                    className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
+                    className={`touch-target shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
                       ${contentFilter === f.id
                         /* Flat accent, not the ramp — see GuideGridView's copy
                            of this chip: no foreground clears 4.5:1 against both

@@ -456,6 +456,24 @@
     background-clip: padding-box;
   }
 
+  /* Controls sized for a finger rather than a cursor.
+     Measured at 400px before this existed: the mark 40x40, the tabs 32 tall,
+     the search icon 38, the filter pill 30. All of them clear WCAG 2.2's AA
+     floor of 24px and none of them clear 44, which is Apple's figure, Google's
+     48 rounded down, and WCAG's AAA — the size at which a thumb stops missing.
+
+     Gated on `pointer: coarse`, not a width breakpoint: it is the input device
+     that decides this, not the screen. A touch laptop or a tablet gets the
+     bigger targets at any width, and a 380px browser window on a desktop keeps
+     the tight ones. `min-*`, so anything already larger is left alone.
+
+     Applied to the topbar and the filter controls — the small, repeatedly-hit
+     chrome. The cards, channel tiles and programme cells are already well past
+     44px and carry no class. */
+  @media (pointer: coarse) {
+    .touch-target { min-width: 44px; min-height: 44px; }
+  }
+
   /* The ring and spread are the accent, so this now glows the brand swatch in
      dark - the same rgba(71,140,201,0.5)/0.2 the hardcoded rule spelled out -
      and the brand shade in light, where a swatch-bright halo on a pale card

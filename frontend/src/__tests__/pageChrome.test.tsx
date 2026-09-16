@@ -217,6 +217,22 @@ describe("the topbar search at phone width", () => {
       .toMatch(/\bflex\b/);
   });
 
+  it("gives the icon a finger-sized hit area", () => {
+    // 38px drawn, 44 to hit: `.touch-target` is a min-size under
+    // `pointer: coarse`, so the mouse layout is untouched. jsdom lays nothing
+    // out, so the class is the only honest assertion here — the measurement
+    // was taken in Chrome.
+    restoreMedia = stubPhone(true);
+    renderShell();
+
+    expect(screen.getByRole("button", { name: "Search" }).className)
+      .toMatch(/\btouch-target\b/);
+    expect(screen.getByRole("button", { name: "Guide" }).className)
+      .toMatch(/\btouch-target\b/);
+    expect(screen.getByRole("button", { name: "Tablo-Web menu" }).className)
+      .toMatch(/\btouch-target\b/);
+  });
+
   it("does not change the height of the bar when it opens", () => {
     // The row used to be as tall as its tallest child: 38px icon closed, 42px
     // field open, so opening search moved the whole page down 4px.

@@ -122,7 +122,7 @@ export function AppMenu({ email, onLogout }: Props) {
         aria-label="Tablo-Web menu"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        className="group flex items-center -m-1 p-1 rounded-xl hover:bg-fill-soft
+        className="touch-target group flex items-center justify-center -m-1 p-1 rounded-xl hover:bg-fill-soft
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent transition"
       >
         {/* The brand ramp, via `.accent-gradient` — both stops are the brand's
