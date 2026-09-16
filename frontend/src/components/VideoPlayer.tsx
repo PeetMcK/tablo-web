@@ -8,8 +8,8 @@ import type {
 } from "../api/tablo";
 import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
 import {
-  airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, programWindow, readyRange,
-  type LiveAnchor,
+  airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
+  programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
 
 /**
@@ -53,9 +53,6 @@ const STALL_GRACE_MS = 1000;
 
 /** Must not exceed the backend's LIVE_DVR_MINUTES window (default 60). */
 const LIVE_DVR_SECONDS = 3600;
-
-/** Within this many seconds of the seekable end counts as "at the live edge". */
-const LIVE_EDGE_THRESHOLD = 12;
 
 /**
  * Encoder lead a live stream needs before playback starts, in seconds.
@@ -675,7 +672,18 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     seekTo(target);
   }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
 
-  const goLive = useCallback(() => seekTo(rangeEnd), [seekTo, rangeEnd]);
+  /**
+   * Back to the live edge — stopping the same distance short of it as a skip.
+   *
+   * Seeking onto the frontier itself lands where the encoder has not reached,
+   * so Go Live bought a stall every time, most visibly after a pause. Ten
+   * seconds behind still reads as live: the badge's own threshold for "at the
+   * edge" is wider than this, so the button correctly greys out on arrival.
+   */
+  const goLive = useCallback(
+    () => seekTo(Math.max(rangeStart, rangeEnd - LIVE_EDGE_MARGIN)),
+    [seekTo, rangeStart, rangeEnd],
+  );
 
   /**
    * Seek once, when the drag ends.

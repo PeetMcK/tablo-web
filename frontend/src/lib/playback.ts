@@ -95,6 +95,16 @@ const EDGE_MARGIN = 0.5;
 export const LIVE_EDGE_MARGIN = 10;
 
 /**
+ * Within this many seconds of the frontier counts as "at the live edge".
+ *
+ * Must stay wider than `LIVE_EDGE_MARGIN`. Go Live and a clamped forward skip
+ * both land a margin short of the edge, and if that landing did not itself
+ * read as live the badge would light up again the instant it arrived — the
+ * button offering to make a jump it has just made.
+ */
+export const LIVE_EDGE_THRESHOLD = 12;
+
+/**
  * A jump of `delta` seconds from `from`, held inside `[lo, hi]`.
  *
  * A skip is meant to be instant, so it stops at the last playable moment rather
