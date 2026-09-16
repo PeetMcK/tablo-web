@@ -28,15 +28,15 @@ export function SearchDropdown({
          "Search results": the two used to be indistinguishable to a
          screen reader, and could be on screen together. */
       aria-label="Search suggestions"
-      className="absolute top-full mt-2 left-0 right-0 z-50 rounded-xl border border-white/10
+      className="absolute top-full mt-2 left-0 right-0 z-50 rounded-xl border border-border
                  bg-surface-raised shadow-2xl p-2 max-h-[70vh] overflow-y-auto"
     >
       {empty ? (
-        <p className="px-3 py-4 text-xs text-white/30">No matches for "{data.query}"</p>
+        <p className="px-3 py-4 text-xs text-fg-muted">No matches for "{data.query}"</p>
       ) : (
         data.groups.map(group => (
           <div key={group.kind} className="mb-2 last:mb-0">
-            <p className="px-3 py-1 text-[10px] font-black uppercase tracking-widest text-white/20">
+            <p className="px-3 py-1 text-[10px] font-black uppercase tracking-widest text-fg-muted">
               {LABELS[group.kind]}
             </p>
             {group.items.map(item => (
