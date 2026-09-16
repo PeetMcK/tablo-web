@@ -28,6 +28,18 @@
     border: 1px solid rgba(255,255,255,0.08);
   }
   .channel-glow {
-    box-shadow: 0 0 0 1px rgba(91,138,245,0.5), 0 0 32px rgba(91,138,245,0.2);
+    box-shadow: 0 0 0 1px rgba(71,140,201,0.5), 0 0 32px rgba(71,140,201,0.2);
+  }
+
+  /* The brand gradient, in one place: accent.DEFAULT (the swatch, as the
+     highlight) running into accent.deep. Filled surfaces that used to be a flat
+     bg-accent take one of these instead — the 135° version for anything roughly
+     square, the -x version for bars, where a diagonal ramp across 3px of height
+     reads as a flat colour anyway. */
+  .accent-gradient {
+    background-image: linear-gradient(135deg, theme(colors.accent.DEFAULT), theme(colors.accent.deep));
+  }
+  .accent-gradient-x {
+    background-image: linear-gradient(to right, theme(colors.accent.DEFAULT), theme(colors.accent.deep));
   }
 }

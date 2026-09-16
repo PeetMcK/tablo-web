@@ -51,7 +51,7 @@ export function ChannelCard({ channel, now, onClick }: Props) {
             <div className="mt-3">
               <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
                 <div 
-                  className="h-full bg-accent transition-all duration-1000" 
+                  className="accent-gradient-x h-full transition-all duration-1000" 
                   style={{ width: `${progress}%` }} 
                 />
               </div>
@@ -66,7 +66,7 @@ export function ChannelCard({ channel, now, onClick }: Props) {
 
       {/* Overlay play button on hover */}
       <div className="absolute inset-0 bg-accent/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-         <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
+         <div className="accent-gradient w-12 h-12 rounded-full flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
             <svg className="w-6 h-6 text-white translate-x-0.5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>

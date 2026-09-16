@@ -31,13 +31,12 @@ export function LoginScreen({ onSuccess }: Props) {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4"
-               style={{ background: "linear-gradient(135deg, #478cc9, #2c6296)" }}>
+          <div className="accent-gradient inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4">
             <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"
                  strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
               {/* Same stadium mark as the app header — see ChannelGrid.tsx. */}
-              <rect x="2.25" y="3.25" width="19.5" height="13.5" rx="6.75" />
-              <path d="M12 17v4" />
+              <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5" />
+              <path d="M12 15.75v5.25" />
               <path d="M8 21h8" />
             </svg>
           </div>
@@ -84,10 +83,9 @@ export function LoginScreen({ onSuccess }: Props) {
           <button
             type="submit"
             disabled={loading || !email || !password}
-            className="w-full py-3 rounded-xl font-semibold text-sm transition
+            className="accent-gradient w-full py-3 rounded-xl font-semibold text-sm transition
                        disabled:opacity-40 disabled:cursor-not-allowed
                        hover:opacity-90 active:scale-[0.98]"
-            style={{ background: "linear-gradient(135deg, #478cc9, #2c6296)" }}
           >
             {loading ? (
               <span className="flex items-center justify-center gap-2">

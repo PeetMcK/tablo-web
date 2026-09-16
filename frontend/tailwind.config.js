@@ -11,8 +11,12 @@ export default {
           border: "rgba(255,255,255,0.08)",
         },
         accent: {
-          DEFAULT: "#5b8af5",
-          glow: "rgba(91,138,245,0.25)",
+          // The brand swatch is the highlight; `deep` is the shade the gradient
+          // runs down into. Keep these two in step with the .accent-gradient
+          // utilities in index.css and the favicon's gradient stops.
+          DEFAULT: "#478cc9",
+          deep: "#2c6296",
+          glow: "rgba(71,140,201,0.25)",
         },
       },
       fontFamily: {

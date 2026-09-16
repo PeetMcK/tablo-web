@@ -76,7 +76,7 @@ export function ConfirmDialog({ confirmation, onClose }: Props) {
               focus:outline-none focus:ring-2 focus:ring-offset-0
               ${danger
                 ? "bg-red-500/90 text-white hover:bg-red-500 focus:ring-red-400/50"
-                : "bg-accent text-white hover:opacity-90 focus:ring-accent/50"}`}
+                : "accent-gradient text-white hover:opacity-90 focus:ring-accent/50"}`}
           >
             {confirmLabel}
           </button>

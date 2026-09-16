@@ -902,7 +902,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             {waitPct !== null && (
               <div className="h-1 rounded-full bg-white/15 overflow-hidden">
                 <div
-                  className="h-full bg-accent rounded-full transition-[width] duration-300 ease-out"
+                  className="accent-gradient-x h-full rounded-full transition-[width] duration-300 ease-out"
                   style={{ width: `${Math.max(4, waitPct)}%` }}
                 />
               </div>
@@ -999,7 +999,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 return width > 0 ? (
                   <div
                     key={`w${b.key}`}
-                    className="absolute h-1.5 rounded-full bg-accent"
+                    className="accent-gradient-x absolute h-1.5 rounded-full"
                     style={{ left: `${b.left}%`, width: `${width}%` }}
                   />
                 ) : null;

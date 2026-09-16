@@ -4,8 +4,8 @@
      role="img" aria-label="TV">
   <!-- Screen: a stadium — a rect whose corner radius is exactly half its height,
        so the left and right ends are full semicircles, matching the brand mark. -->
-  <rect x="2.25" y="3.25" width="19.5" height="13.5" rx="6.75"/>
+  <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5"/>
   <!-- Pedestal stand, in place of the antenna. -->
-  <path d="M12 17v4"/>
+  <path d="M12 15.75v5.25"/>
   <path d="M8 21h8"/>
 </svg>

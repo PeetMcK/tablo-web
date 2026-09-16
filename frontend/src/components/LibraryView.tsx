@@ -251,7 +251,7 @@ export function LibraryView() {
                     </div>
                   )}
                   <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition">
-                    <div className="w-14 h-14 rounded-full bg-accent/90 flex items-center justify-center">
+                    <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center">
                       <Play className="w-6 h-6 text-white ml-0.5" fill="currentColor" aria-hidden />
                     </div>
                   </div>

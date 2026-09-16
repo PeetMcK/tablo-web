@@ -183,7 +183,7 @@ export function GuideGridView({ onPlay }: Props) {
           onClick={() => setContentFilter(f.id)}
           className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
             ${contentFilter === f.id
-              ? "bg-accent text-white shadow-lg shadow-accent/30"
+              ? "accent-gradient text-white shadow-lg shadow-accent/30"
               : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
             }`}
         >
@@ -285,7 +285,7 @@ export function GuideGridView({ onPlay }: Props) {
                     {/* Per-airing progress bar */}
                     {isOnNow && (
                       <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-                        <div className="h-full bg-accent/70" style={{ width: `${progress}%` }} />
+                        <div className="accent-gradient-x h-full opacity-70" style={{ width: `${progress}%` }} />
                       </div>
                     )}
                   </button>
