@@ -3,7 +3,9 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { VideoPlayer } from "../components/VideoPlayer";
-import { SEGMENT_SECONDS } from "../lib/playback";
+import {
+  LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD, SEGMENT_SECONDS,
+} from "../lib/playback";
 import { api } from "../api/tablo";
 import type { Channel, Program } from "../api/tablo";
 
@@ -164,6 +166,37 @@ describe("the live bar", () => {
 
     await new Promise((r) => setTimeout(r, 50));
     expect(seeks).toEqual([]);
+  });
+
+  it("jumps Go Live to the same threshold a skip stops at", async () => {
+    // Seeking onto the frontier itself lands where the encoder has not reached
+    // yet, so Go Live bought a stall every time — most obviously after a pause,
+    // where the gap to the edge is however long the viewer stood still.
+    const { container } = renderLive();
+    await playAt(container, HOUR_AGO_QUARTER);
+
+    const video = container.querySelector("video")!;
+    const seeks: number[] = [];
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => 0,            // far enough behind that Go Live is offered
+      set: (t: number) => seeks.push(t),
+    });
+    // The button reads the position state, not the element, so the new reading
+    // has to be delivered before it will offer the jump.
+    fireEvent(video, new Event("timeupdate"));
+
+    fireEvent.click(await screen.findByText("GO LIVE"));
+
+    await waitFor(() => expect(seeks.length).toBeGreaterThan(0));
+    expect(seeks[0]).toBe(HOUR_AGO_QUARTER - LIVE_EDGE_MARGIN);
+    expect(seeks[0]).toBeLessThanOrEqual(HOUR_AGO_QUARTER - SEGMENT_SECONDS);
+  });
+
+  it("still counts as live once Go Live has landed", async () => {
+    // The cushion has to stay inside the badge's own idea of the edge, or the
+    // button would jump and then offer itself again.
+    expect(LIVE_EDGE_MARGIN).toBeLessThan(LIVE_EDGE_THRESHOLD);
   });
 
   it("eases the cached band's growth but never its position", async () => {
