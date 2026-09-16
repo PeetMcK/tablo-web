@@ -214,7 +214,15 @@ export function ChannelGrid({ onLogout }: Props) {
             the separating. Also drops a `backdrop-filter` compositor layer that
             was re-rasterising the full header width on every scroll frame, over
             a grid of video thumbnails. */}
-        <header className="sticky top-0 z-10 bg-surface border-b border-border">
+        {/* z-40, not z-10. A sticky element with a z-index creates a stacking
+            context, so the AppMenu panel's own z-50 only orders it WITHIN this
+            header — against the page, everything in here competes at the
+            header's value. At z-10 that put the whole bar, panel included,
+            underneath the guide's hour row (z-20) and its now-line (z-30),
+            which drew straight through the open menu. The bar is app chrome and
+            belongs above every page layer; the player (z-50) and confirm dialog
+            (z-60) are still above it, which is right — both are modal. */}
+        <header className="sticky top-0 z-40 bg-surface border-b border-border">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-4">
             {/* The mark is also the settings menu — see AppMenu for why. */}
             <AppMenu email={userEmail} onLogout={onLogout} />
