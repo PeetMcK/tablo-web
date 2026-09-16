@@ -9,7 +9,7 @@ stores six fields per airing and discards the rest of a record it has already
 paid to fetch.
 
 This covers capture and display. Recording management lands on top later; the
-device's write API is mapped in `docs/tablo-device-api.md` and the fields it
+device's write API is mapped in `docs/tablo-api.md` and the fields it
 needs are captured here so that work needs no migration and no re-sync.
 
 ## What the device gives us
