@@ -52,7 +52,13 @@ async def lifespan(app: FastAPI):
     # Guide history can only be captured going forward, so this starts at boot
     # rather than waiting for the first interval.
     async def _fetch_guide():
-        return await state.get_grid_guide(max_airings=15000, concurrency=guide_sync.SYNC_CONCURRENCY)
+        # strict=False: a sync that lost some of its fetches is still worth
+        # storing. History is only capturable as it happens, `save_guide` only
+        # appends, and guide_sync records the loss either way - so discarding a
+        # partial run would trade a recoverable gap for a permanent one.
+        return await state.get_grid_guide(
+            max_airings=15000, concurrency=guide_sync.SYNC_CONCURRENCY, strict=False
+        )
 
     guide_task = asyncio.create_task(
         guide_sync.run_forever(_fetch_guide, state.sync_series, state.prefetch_artwork)

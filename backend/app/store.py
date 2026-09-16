@@ -288,6 +288,23 @@ def _start_epoch(start: str | None) -> int:
     return _end_epoch(start, 0)
 
 
+def guide_forward_seconds(rows: list[dict], now: float | None = None) -> float:
+    """How far beyond `now` the furthest airing in `rows` still runs.
+
+    What the grid draws is the span to the right of the current time, and age
+    alone does not measure it: a guide fetched a minute ago is useless if
+    everything in it ends in a minute, while one fetched an hour ago is fine if
+    it still reaches tomorrow. Callers use this to decide whether a stored guide
+    is worth serving or should be rebuilt.
+    """
+    cutoff = now if now is not None else datetime.now(timezone.utc).timestamp()
+    furthest = 0
+    for row in rows:
+        for air in row.get("airings") or []:
+            furthest = max(furthest, _end_epoch(air.get("start"), air.get("duration")))
+    return max(0.0, furthest - cutoff)
+
+
 # ---------------------------------------------------------------------------
 # Search index
 # ---------------------------------------------------------------------------

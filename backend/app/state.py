@@ -101,6 +101,18 @@ def _unescape(text: str | None) -> str | None:
 _lock = Lock()
 
 
+class GuideFetchIncomplete(RuntimeError):
+    """A guide build lost too much of the device's data to be worth keeping.
+
+    Raised rather than returning the thin result, because downstream the two are
+    indistinguishable: a build in which nine device calls in ten failed has the
+    same shape as a line-up that genuinely has little on it. The sparse version
+    used to be cached in memory, written to the database, and served as the
+    schedule for an hour - a blank grid that no amount of reloading would fix.
+    Raising keeps a failed build out of both caches.
+    """
+
+
 class StreamSession:
     """Tracks a live HLS stream for one viewer."""
 
@@ -136,6 +148,17 @@ class AppState:
     # The client keeps its own copy for instant display; this only governs how
     # often the device is re-consulted.
     _GRID_CACHE_TTL = int(os.environ.get("GUIDE_CACHE_TTL", "3600"))
+
+    # Above this share of failed device calls, a build is treated as failed
+    # rather than merely thin. Some loss is normal - the device drops the odd
+    # request when transcodes are competing for it - but a guide missing a fifth
+    # of itself is not one to keep for an hour.
+    _MAX_FETCH_FAILURE_RATIO = float(os.environ.get("GUIDE_MAX_FETCH_FAILURES", "0.2"))
+
+    # How far a stored guide must still reach before it is worth serving. Below
+    # this the grid has almost nothing left to draw, so paying for a rebuild
+    # beats rendering rows that look broken.
+    _MIN_FORWARD_COVERAGE = int(os.environ.get("GUIDE_MIN_FORWARD", "3600"))
 
     # ------------------------------------------------------------------
     # Persistence
@@ -1155,7 +1178,9 @@ class AppState:
             "skip_reason": sched.get("skip_reason"),
         }
 
-    async def _build_grid_enrichment(self, max_airings: int = 1000, concurrency: int = 30) -> tuple[dict, dict, dict, dict]:
+    async def _build_grid_enrichment(
+        self, max_airings: int = 1000, concurrency: int = 30, strict: bool = True
+    ) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
         Returns (logo_map, path_to_ident, channel_to_airings, cloud_schedule).
@@ -1183,34 +1208,53 @@ class AppState:
             self._fetch_cloud_data(),
             return_exceptions=True,
         )
-        local_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
-        airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
+        # A failed listing used to degrade to an empty list, which is the
+        # cheapest way to build a guide with nothing in it: no channel paths
+        # means no join key, so every row falls through to its current
+        # programme. One dropped request could do it, and said nothing.
+        listing_errors = [
+            f"{path}: {type(r).__name__}: {r}"
+            for path, r in (("/guide/channels", path_results[0]), ("/guide/airings", path_results[1]))
+            if isinstance(r, Exception)
+        ]
+        if listing_errors:
+            raise GuideFetchIncomplete("guide listing failed - " + "; ".join(listing_errors))
+        local_paths = path_results[0]
+        airing_paths = path_results[1]
+
+        # The cloud half only decorates OTT rows, so losing it is survivable.
         cloud_logos: dict
         cloud_schedule: dict
         if isinstance(path_results[2], Exception):
+            print(f"[guide-grid] cloud data unavailable: {type(path_results[2]).__name__}", flush=True)
             cloud_logos, cloud_schedule = {}, {}
         else:
             cloud_logos, cloud_schedule = path_results[2]
 
         sem = asyncio.Semaphore(concurrency)
+        failures: dict[str, int] = {"channel": 0, "airing": 0}
+        first_error: dict[str, str] = {}
 
-        async def fetch_detail(path):
+        async def fetch(kind: str, path: str):
+            """One device call, counting what it costs when it fails.
+
+            Swallowing the exception is deliberate - one missing airing should
+            not lose the other nine hundred - but swallowing it silently is what
+            let a mostly-failed build pass for a thin schedule.
+            """
             async with sem:
                 try:
                     return await self.request_device("GET", path)
-                except Exception:
+                except Exception as e:  # counted, and judged below
+                    failures[kind] += 1
+                    first_error.setdefault(kind, f"{type(e).__name__}: {e}")
                     return None
 
-        async def fetch_airing(path):
-            async with sem:
-                try:
-                    return await self.request_device("GET", path)
-                except Exception:
-                    return None
-
+        channel_paths = local_paths[:300]
+        wanted_airings = airing_paths[:max_airings]
         details, airing_details = await asyncio.gather(
-            asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]]),
-            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:max_airings]]),
+            asyncio.gather(*[fetch("channel", p) for p in channel_paths]),
+            asyncio.gather(*[fetch("airing", p) for p in wanted_airings]),
         )
 
         path_to_ident: dict = {}
@@ -1241,12 +1285,69 @@ class AppState:
                 continue
             channel_to_airings.setdefault(c_path, []).append(AppState._airing_row(a))
 
+        self._assert_fetch_complete(
+            channel_paths, wanted_airings, failures, first_error, path_to_ident, strict=strict
+        )
+
         result = logo_map, path_to_ident, channel_to_airings, cloud_schedule_local
         if use_cache:
             async with self._grid_cache_lock:
                 self._grid_cache = result
                 self._grid_cache_time = _time.monotonic()
         return result
+
+    def _assert_fetch_complete(
+        self,
+        channel_paths: list,
+        airing_paths: list,
+        failures: dict[str, int],
+        first_error: dict[str, str],
+        path_to_ident: dict,
+        strict: bool = True,
+    ) -> None:
+        """Refuse a build that lost too much of the device's guide.
+
+        The grid joins airings to channels through `path_to_ident`, so losing
+        the channel details costs every airing on every row at once. What that
+        looks like from the outside is a full list of channels with nothing on
+        any of them - indistinguishable from an empty schedule, and previously
+        kept for an hour as if it were one.
+
+        `strict=False` counts and reports the loss without discarding the work,
+        which is what the background history sync needs. Its whole premise is
+        that the device's guide is forward-looking and a gap is permanent, so
+        three quarters of a sync is worth keeping where none of it is not -
+        and `save_guide` only ever appends, so a partial run cannot cost
+        anything already stored. The interactive grid takes the opposite view:
+        what it builds gets cached and served as the schedule, and a broken
+        schedule is worse than paying for another fetch.
+        """
+        print(
+            f"[guide-grid] channels {len(channel_paths) - failures['channel']}/{len(channel_paths)}, "
+            f"airings {len(airing_paths) - failures['airing']}/{len(airing_paths)}",
+            flush=True,
+        )
+        for kind, paths in (("channel", channel_paths), ("airing", airing_paths)):
+            if not paths:
+                continue
+            ratio = failures[kind] / len(paths)
+            if ratio > self._MAX_FETCH_FAILURE_RATIO:
+                if not strict:
+                    print(
+                        f"[guide-grid] degraded: {failures[kind]}/{len(paths)} {kind} fetches "
+                        f"failed ({ratio:.0%}) - keeping what arrived",
+                        flush=True,
+                    )
+                    continue
+                raise GuideFetchIncomplete(
+                    f"{failures[kind]}/{len(paths)} {kind} fetches failed ({ratio:.0%}) - "
+                    f"first was {first_error.get(kind, 'unknown')}"
+                )
+        if strict and channel_paths and not path_to_ident:
+            raise GuideFetchIncomplete(
+                f"no channel details resolved from {len(channel_paths)} paths - "
+                "every row would fall back to its current programme"
+            )
 
     def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
@@ -1275,7 +1376,9 @@ class AppState:
             "airings": airings,
         }
 
-    async def get_grid_guide(self, max_airings: int = 1000, concurrency: int = 30) -> list[dict]:
+    async def get_grid_guide(
+        self, max_airings: int = 1000, concurrency: int = 30, strict: bool = True
+    ) -> list[dict]:
         """The grid guide: channels plus their upcoming airings.
 
         Served from the database when it is fresh enough. Previously the only
@@ -1305,7 +1408,7 @@ class AppState:
         # no extra device traffic at rest.
         channels = await self.channels(refresh=True)
         logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(
-            max_airings=max_airings, concurrency=concurrency
+            max_airings=max_airings, concurrency=concurrency, strict=strict
         )
         rows = [
             self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
@@ -1362,7 +1465,7 @@ class AppState:
         }
 
     async def _stored_guide(self) -> list[dict] | None:
-        """The stored guide, if it is fresh and still has something to show.
+        """The stored guide, if it is fresh and still reaches far enough ahead.
 
         A guide whose airings have all ended is treated as absent: rendering
         empty rows looks like a broken guide rather than a stale one.
@@ -1375,7 +1478,21 @@ class AppState:
         except Exception as e:
             print(f"[db] could not read guide: {e}", flush=True)
             return None
-        if not rows or not any(r.get("airings") for r in rows):
+        if not rows:
+            return None
+        # Age on its own is the wrong question. The guide that made this check
+        # necessary was twelve minutes old and held a single airing per channel,
+        # every one of them ending within the hour: fresh by any clock, and
+        # blank by the time it was drawn. Ask instead how far it still reaches -
+        # which also means an exhausted guide refreshes when it runs out rather
+        # than when its hour happens to be up.
+        forward = store.guide_forward_seconds(rows)
+        if forward < self._MIN_FORWARD_COVERAGE:
+            print(
+                f"[guide-grid] stored guide reaches only {forward / 60:.0f} min ahead "
+                f"({sum(len(r.get('airings') or []) for r in rows)} airings); rebuilding",
+                flush=True,
+            )
             return None
         return rows
 
