@@ -298,6 +298,10 @@ describe("channels you can still tune", () => {
     // Without this the row is blank: nothing to click, and no way to reach the
     // channel from the guide at all. Four channels on a real device are in
     // this state.
+    //
+    // It opens the sheet rather than tuning, which is what every other row in
+    // the guide does. Tuning straight from the row made a brushed blank row
+    // the one click in the guide that started playback.
     const onPlay = vi.fn();
     mockStream([nest]);
     render(<GuideGridView onPlay={onPlay} />);
@@ -306,7 +310,46 @@ describe("channels you can still tune", () => {
     expect(cell).toHaveTextContent("Programming Not Available");
 
     fireEvent.click(cell);
-    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: nest.identifier }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it("tunes from that sheet's own button", async () => {
+    const onPlay = vi.fn();
+    mockStream([nest]);
+    render(<GuideGridView onPlay={onPlay} />);
+
+    fireEvent.click(await screen.findByRole("button",
+      { name: /THENEST 13\.5 — no programme information/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /watch live/i }));
+
+    expect(onPlay).toHaveBeenCalledWith(
+      expect.objectContaining({ identifier: nest.identifier }));
+  });
+
+  it("opens nothing when a drag ends on the blank row", async () => {
+    // The programme cells check this and the blank row did not, so a pan that
+    // happened to finish over an empty row tuned the channel under it.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+    const onPlay = vi.fn();
+    mockStream([nest]);
+    const { container } = render(<GuideGridView onPlay={onPlay} />);
+    const cell = await screen.findByRole("button",
+      { name: /THENEST 13\.5 — no programme information/ });
+
+    const surface = container.querySelector<HTMLElement>(".overflow-auto")!
+      .firstElementChild as HTMLElement;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+    fireEvent.pointerDown(surface, { ...common, clientX: 400, clientY: 300 });
+    fireEvent.pointerMove(surface, { ...common, clientX: 340, clientY: 300 });
+    fireEvent.pointerUp(surface, { ...common, clientX: 340, clientY: 300 });
+    fireEvent.click(cell);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onPlay).not.toHaveBeenCalled();
   });
 
   it("does the same when every listing falls outside the window", async () => {
@@ -834,6 +877,89 @@ describe("dragging across the listings", () => {
     unmount();
 
     expect(selectionRefused(document.body)).toBe(false);
+  });
+});
+
+describe("the content filter pills", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("wraps rather than running off under the jump control", async () => {
+    // They were a horizontal scroller with the scrollbar hidden, so at any
+    // width that could not hold all eight the last of them ran under the NOW
+    // pill and off the edge — measured at 809px of pills in 553px of room,
+    // with nothing to say the rest were there. Eight short pills fit on two
+    // lines at any width worth supporting.
+    mockStream(longChannel(24));
+    render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const pills = screen.getByRole("button", { name: /Movies/ }).parentElement!;
+    expect(pills.className).toMatch(/flex-wrap/);
+    expect(pills.className).not.toMatch(/overflow-x-auto/);
+  });
+
+  it("keeps every filter reachable", async () => {
+    mockStream(longChannel(24));
+    render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    for (const label of ["All", "Movies", "Sports", "News", "Reality",
+                         "Documentary", "Broadcast", "Streaming"]) {
+      expect(screen.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
+    }
+  });
+});
+
+describe("the now marker", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * The marker's own layers, inside the guide.
+   *
+   * Scoped to the scroller on purpose: the jump control's NOW pill carries a
+   * dot of the same colour, and it is not part of this.
+   */
+  function marks(container: HTMLElement) {
+    return [...scroller(container).querySelectorAll<HTMLElement>(".bg-danger-solid")];
+  }
+
+  it("stays under the frozen column and the frozen corner", async () => {
+    // Measured in Chrome before this: the header's marker sat at z-30 against
+    // a corner cell at z-20, so the line and its dot drew straight over the
+    // word CHANNEL once the current time scrolled behind the frozen column.
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const corner = container
+      .querySelector<HTMLElement>("[data-guide-header]")!.firstElementChild!;
+    const cornerZ = Number(/z-(\d+)/.exec(corner.className)?.[1]);
+    const columnZ = Number(/z-(\d+)/.exec(
+      container.querySelector<HTMLElement>("[data-channel] button")!.className)?.[1]);
+
+    for (const mark of marks(container)) {
+      const line = mark.closest<HTMLElement>("[class*='z-']")!;
+      const z = Number(/z-(\d+)/.exec(line.className)?.[1]);
+      expect(z).toBeLessThan(cornerZ);
+      expect(z).toBeLessThan(columnZ);
+    }
+  });
+
+  it("is not peeked at through the gap a row border leaves", async () => {
+    // The line lives on the scrolled surface and is covered by the frozen
+    // column — everywhere the column actually paints. A border on the row
+    // itself is outside the column's own box, so the line showed through that
+    // 1px strip as a red dash at every row boundary, all the way across the
+    // frozen column. The border belongs to the cells, which do cover it.
+    mockStream(longChannel(24));
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("Hour 0");
+
+    const row = container.querySelector<HTMLElement>("[data-channel]")!;
+    expect(row.className).not.toMatch(/border-b/);
+    for (const cell of [...row.children] as HTMLElement[]) {
+      expect(cell.className).toMatch(/border-b/);
+    }
   });
 });
 

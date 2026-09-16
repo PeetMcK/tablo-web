@@ -197,7 +197,12 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   /** Which hour column the guide is scrolled to, for the jump control's label. */
   const [hourAt, setHourAt] = useState(0);
   // The open show sheet, keyed the way `guide_airing` is. Null when closed.
-  const [info, setInfo] = useState<{ channel: string; start: string } | null>(null);
+  // The open show sheet, keyed the way `guide_airing` is — except for a
+  // channel the guide has no listing for, where there is no airing to key and
+  // `start` is null. `label` names the channel in that case, since the sheet's
+  // own eyebrow is built from an airing it will not have.
+  const [info, setInfo] = useState<
+    { channel: string; start: string | null; label?: string } | null>(null);
   /** The `jumpTo` nonce whose sheet has been opened. See the jump block below. */
   const [shownJump, setShownJump] = useState<number | null>(null);
 
@@ -605,8 +610,15 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     // below and the card goes back to overflowing the page.
     <div className="flex flex-col gap-4 flex-1 min-h-0">
     {/* Content type filter chips, and the jump control in the space they leave */}
-    <div className="flex items-center gap-2">
-    <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+    {/* `items-start`, so a second row of chips grows downward and leaves the
+        jump control where it was rather than dragging it to the middle. */}
+    <div className="flex items-start gap-2">
+    {/* Wrapping, not a hidden-scrollbar overflow. As a scroller the eighth
+        chip ran under the NOW pill and off the edge with nothing to say it was
+        there — 809px of chips in 553px of room at the width this was found at.
+        `min-w-0` so the wrapping box may actually be narrower than its
+        content, which a flex child refuses by default. */}
+    <div className="flex flex-wrap gap-2 flex-1 min-w-0">
       {CONTENT_FILTERS.map(f => (
         <button
           key={f.id}
@@ -627,8 +639,8 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       ))}
     </div>
 
-      <div className="flex-1" />
-
+      {/* No spacer: the chip box above takes the room now, and a `flex-1`
+          here would split it with them and wrap the chips early. */}
       <GuideJump
         days={jumpRows}
         label={positionLabel(startTime, hourAt * HOUR_WIDTH, HOUR_WIDTH)}
@@ -746,7 +758,11 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                 day that is under way. */}
             {nowVisible && (
               <div
-                className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-30"
+                /* Below the frozen corner (z-20), above the hour cells. At
+                   z-30 it drew over the word CHANNEL the moment the current
+                   time scrolled behind the frozen column — the marker has to
+                   disappear under that column, not ride over it. */
+                className="absolute top-0 bottom-0 w-0.5 bg-danger-solid pointer-events-none z-10"
                 style={{ left: nowLeft }}
               >
                 <div className="w-2.5 h-2.5 rounded-full bg-danger-solid -ml-1 mt-1" />
@@ -766,7 +782,12 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             /* How a jump finds this row's vertical offset. See the jump
                effect above: read, never styled. */
             data-channel={ch.identifier}
-            className="flex border-b border-border-subtle hover:bg-tint/[0.02] transition"
+            /* The row rule is carried by the cells, not by the row. A border
+               here is outside the frozen column's own box, so the now line —
+               which the column is meant to hide — showed through that 1px
+               strip as a red dash at every row boundary, right across the
+               column. The cells paint their own bottom edge and cover it. */
+            className="flex hover:bg-tint/[0.02] transition"
           >
             {/* Channel Info — frozen left, and the tune control.
                 Opaque for the same reason the header is: programmes scroll
@@ -783,7 +804,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             <button
               onClick={() => onPlay(ch)}
               aria-label={`Watch ${channelLabel(ch)}`}
-              className="w-32 shrink-0 p-4 border-r border-border-subtle flex flex-col items-center justify-center gap-1.5
+              className="w-32 shrink-0 p-4 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1.5
                          bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
             >
@@ -797,7 +818,8 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
             {/* Programs Timeline — no longer a scroller, just the surface the
                 absolutely-positioned airings are placed on. */}
-            <div className="shrink-0 py-2 relative h-24" style={{ width: totalHours * HOUR_WIDTH }}>
+            <div className="shrink-0 py-2 relative h-24 border-b border-border-subtle"
+                 style={{ width: totalHours * HOUR_WIDTH }}>
               {placed.length === 0 ? (
                 /* A channel with nothing drawable is still a channel you can
                    watch — several carry no EPG data at all and were, until
@@ -806,7 +828,17 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                    view however far along the timeline you have scrolled,
                    rather than sitting at hour zero and disappearing. */
                 <button
-                  onClick={() => onPlay(ch)}
+                  /* The sheet, not playback — every other row in the guide
+                     opens the sheet, and this one tuning on contact made a
+                     brushed blank row the single click that started a stream.
+                     Its own Watch Live does the tuning. `panned` for the same
+                     reason the programme cells check it: a pan that happens to
+                     end over a row is not a click on it. */
+                  onClick={() => {
+                    if (panned.current) return;
+                    setInfo({ channel: ch.identifier, start: null,
+                              label: channelLabel(ch) });
+                  }}
                   aria-label={`Watch ${channelLabel(ch)} — no programme information`}
                   className="absolute inset-y-2 left-0 flex items-center rounded-sm border-l border-border-subtle
                              hover:bg-fill-soft transition-colors group text-left"
@@ -882,6 +914,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
         <ShowInfo
           channel={info.channel}
           start={info.start}
+          channelLabel={info.label}
           onClose={() => setInfo(null)}
           onTune={() => {
             const ch = filteredGrid.find((c) => c.identifier === info.channel);

@@ -6,8 +6,17 @@ import type { AiringDetail } from "../api/tablo";
 interface Props {
   /** Channel identifier, as the grid holds it. */
   channel: string;
-  /** Airing start, as the grid holds it. Together these key `guide_airing`. */
-  start: string;
+  /**
+   * Airing start, as the grid holds it. Together these key `guide_airing`.
+   *
+   * Null for a channel the guide has no listing for at all — several on a real
+   * device carry no EPG data. There is nothing to ask the device about then,
+   * and the sheet stands in for the row: it names the channel, says the
+   * listings are missing, and offers to watch it anyway.
+   */
+  start: string | null;
+  /** How to name the channel when there is no airing to name it. */
+  channelLabel?: string;
   onClose: () => void;
   /** Tune to this airing's channel. Only reachable while it is on air. */
   onTune: () => void;
@@ -71,7 +80,7 @@ function whenLine(start: string, duration: number): string | null {
  * all. The layout omits rather than empties, so a sheet with nothing but a
  * title and a channel still looks deliberate instead of broken.
  */
-export function ShowInfo({ channel, start, onClose, onTune }: Props) {
+export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Props) {
   const [detail, setDetail] = useState<AiringDetail | null>(null);
   const [failed, setFailed] = useState(false);
   // Whatever had focus when the sheet opened, so closing can hand it back.
@@ -86,6 +95,9 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
   }, []);
 
   useEffect(() => {
+    // Nothing to ask for without an airing to ask about — and asking with an
+    // empty start would 404 and dress the sheet as a failure, which it is not.
+    if (start === null) return;
     let live = true;
     api.airingDetail(channel, start)
       .then((d) => { if (live) setDetail(d); })
@@ -102,6 +114,9 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  /** A channel the guide has no listing for, rather than one still loading. */
+  const noListing = start === null;
 
   const number = detail ? channelNumber(detail.channel) : null;
   // Network and channel number are deliberately absent: the eyebrow above the
@@ -122,7 +137,9 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
       className="fixed inset-0 z-[60] flex items-center justify-center bg-scrim backdrop-blur-sm p-6"
       role="dialog"
       aria-modal="true"
-      aria-label={detail?.title ?? "Show information"}
+      aria-label={noListing
+        ? `${channelLabel ?? "Channel"} — no programme information`
+        : detail?.title ?? "Show information"}
       onClick={onClose}
     >
       <div
@@ -143,6 +160,14 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
         <div className="p-6">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
+              {/* No airing to name, so the channel names itself. The eyebrow
+                  below is built from the airing's own channel record, which
+                  there is none of here. */}
+              {noListing && (
+                <p className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+                  {channelLabel}
+                </p>
+              )}
               {detail && (
                 <p className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
                   {[number, detail.channel.network ?? detail.channel.call_sign]
@@ -150,7 +175,9 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
                 </p>
               )}
               <h2 className="mt-1 text-xl font-bold text-fg leading-snug text-balance">
-                {detail?.title ?? (failed ? "Information unavailable" : " ")}
+                {noListing
+                  ? "No programme information"
+                  : detail?.title ?? (failed ? "Information unavailable" : " ")}
               </h2>
               {detail?.episode_title && (
                 <p className="mt-1 text-base text-fg-secondary leading-snug">
@@ -190,8 +217,12 @@ export function ShowInfo({ channel, start, onClose, onTune }: Props) {
           )}
 
           {/* Only while it is on. `airing_now` is the server's judgement, not
-              this browser's — see the endpoint for why. */}
-          {detail?.airing_now && (
+              this browser's — see the endpoint for why.
+
+              Always for a channel with no listings: what is missing there is
+              the EPG data, not the channel, and watching it is the only thing
+              this sheet is for. */}
+          {(noListing || detail?.airing_now) && (
             <button
               onClick={onTune}
               className="mt-6 w-full flex items-center justify-center gap-2
