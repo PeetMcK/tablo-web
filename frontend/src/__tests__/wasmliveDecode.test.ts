@@ -17,26 +17,29 @@ import { describe, it, expect } from "vitest";
 import { createDecoder } from "../lib/wasmlive/libavClient";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "../lib/wasmlive/types";
 
-// Paths from the package root, which is where vitest runs.
+// Paths from the package root, which is where vitest runs. The wasm binary is
+// bundled as an asset in the browser; node needs to be told where it is.
 const FIXTURE = resolve("src/lib/wasmlive/__fixtures__/1080i-1s.ts.bin");
-const LOADER = pathToFileURL(
-  resolve("public/wasm/libav/libav-6.10.9.0-tablo-mpeg2.mjs"),
+const WASM = pathToFileURL(
+  resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm"),
 ).href;
 
 async function decodeFixture() {
-  const decoder = await createDecoder({ url: LOADER });
-  const bytes = new Uint8Array(readFileSync(FIXTURE));
-
+  // Output arrives through the callback as it is decoded, not as a return
+  // value: frames must reach the screen when they exist, not when the next
+  // segment happens to arrive.
   const video: DecodedVideoFrame[] = [];
   const audio: DecodedAudioChunk[] = [];
+  const decoder = await createDecoder({
+    wasmUrl: WASM,
+    onOutput: (out) => { video.push(...out.video); audio.push(...out.audio); },
+  });
+
+  const bytes = new Uint8Array(readFileSync(FIXTURE));
   for (let at = 0; at < bytes.length; at += 64 * 1024) {
-    const part = await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
-    video.push(...part.video);
-    audio.push(...part.audio);
+    await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
   }
-  const tail = await decoder.flush();
-  video.push(...tail.video);
-  audio.push(...tail.audio);
+  await decoder.flush();
   await decoder.close();
   return { video, audio };
 }
@@ -93,19 +96,21 @@ describe("libavClient", () => {
 
   it("can be reset mid-stream and decode again", { timeout: 120_000 }, async () => {
     // What a seek does: part of a stream, then start over somewhere else.
-    const decoder = await createDecoder({ url: LOADER });
-    const bytes = new Uint8Array(readFileSync(FIXTURE));
+    let video: DecodedVideoFrame[] = [];
+    const decoder = await createDecoder({
+      wasmUrl: WASM,
+      onOutput: (out) => { video.push(...out.video); },
+    });
 
+    const bytes = new Uint8Array(readFileSync(FIXTURE));
     await decoder.push(bytes.subarray(0, 256 * 1024));
     await decoder.reset();
+    video = [];
 
-    const video: DecodedVideoFrame[] = [];
     for (let at = 0; at < bytes.length; at += 64 * 1024) {
-      const part = await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
-      video.push(...part.video);
+      await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
     }
-    const tail = await decoder.flush();
-    video.push(...tail.video);
+    await decoder.flush();
     await decoder.close();
 
     expect(video.length).toBeGreaterThan(20);

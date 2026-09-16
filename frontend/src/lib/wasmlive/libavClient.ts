@@ -20,11 +20,18 @@
  * to start video mid-GOP.
  */
 
+import libavLoader from "./vendor/libav-6.10.9.0-tablo-mpeg2.mjs";
+import libavFactory from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs";
+import wasmUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm?url";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
-const VARIANT_URL = "/wasm/libav/libav-6.10.9.0-tablo-mpeg2.mjs";
 const DEVICE = "stream.ts";
 const READ_LIMIT = 256 * 1024;
+
+/** How much the demuxer may read before it must name the streams. */
+const PROBE_BYTES = 512 * 1024;
+/** How much media it may analyse for stream parameters, in microseconds. */
+const ANALYZE_MICROSECONDS = 500_000;
 
 /** AVFrame flags, from FFmpeg 9's `libavutil/frame.h`. */
 const AV_FRAME_FLAG_INTERLACED = 1 << 3;
@@ -42,18 +49,31 @@ export interface DecodeOutput {
 }
 
 export interface LibavDecoder {
-  /** Feed bytes; returns whatever has finished decoding so far. */
-  push(bytes: Uint8Array): Promise<DecodeOutput>;
-  /** Signal end of input, wait for the pump, and return the remainder. */
-  flush(): Promise<DecodeOutput>;
+  /** Feed bytes. Output arrives through `onOutput`, as it is decoded. */
+  push(bytes: Uint8Array): Promise<void>;
+  /** Signal end of input and wait for the pump to drain. */
+  flush(): Promise<void>;
   /** Tear down and rebuild — for a seek or a stream discontinuity. */
   reset(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface DecoderOptions {
-  /** Where the libav.js loader lives. */
-  url?: string;
+  /**
+   * Called as soon as each read round produces anything.
+   *
+   * Emitting rather than returning from `push` is the difference between
+   * frames reaching the screen when they are decoded and reaching it when the
+   * *next* segment happens to arrive — six seconds later, on this device.
+   */
+  onOutput?: (output: DecodeOutput) => void;
+  /**
+   * Where the wasm binary is.
+   *
+   * Bundled by default — Vite emits it as an asset and hands back its URL.
+   * Node has no such URL, so the decode test passes a `file://` one.
+   */
+  wasmUrl?: string;
   /**
    * Deinterlace inside WASM with `bwdif`. Off, and measured: it costs about
    * nine tenths of the pipeline's budget. Kept so the comparison can be re-run
@@ -75,13 +95,28 @@ function ptsSeconds(frame: LibavFrame): number {
 }
 
 export async function createDecoder(options: DecoderOptions = {}): Promise<LibavDecoder> {
-  const url = options.url ?? VARIANT_URL;
   const deinterlace = options.deinterlace ?? false;
-  const factory = await import(/* @vite-ignore */ url);
+  const emit = options.onOutput ?? (() => {});
 
-  // `noworker`: this already runs inside our own worker, so libav.js should be
-  // synchronous with it rather than starting a second one.
-  let libav: Libav = await factory.LibAV({ noworker: true });
+  /**
+   * The loader is imported rather than fetched, and handed the wasm factory
+   * directly.
+   *
+   * Left in `public/`, the artifacts could not be imported at all: Vite
+   * refuses to serve a public file as a module ("should not be imported from
+   * source code"), and inside a module worker libav.js has neither
+   * `importScripts` nor a document to fall back on. Bundling them makes both
+   * problems go away, and the wasm binary still travels as a plain asset.
+   */
+  const openLibav = () => (libavLoader as Libav).LibAV({
+    // `noworker`: this already runs inside our own worker, so libav.js should
+    // be synchronous with it rather than starting a second one.
+    noworker: true,
+    factory: libavFactory,
+    wasmurl: options.wasmUrl ?? wasmUrl,
+  });
+
+  let libav: Libav = await openLibav();
 
   let queue: Uint8Array[] = [];
   let atEof = false;
@@ -89,9 +124,6 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   let starved = false;
   let pump: Promise<void> | null = null;
   let pumpError: unknown = null;
-
-  let outVideo: DecodedVideoFrame[] = [];
-  let outAudio: DecodedAudioChunk[] = [];
 
   let videoStream: LibavStream = null;
   let audioStream: LibavStream = null;
@@ -126,7 +158,18 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     await libav.mkreaderdev(DEVICE);
     libav.onread = feed;
 
-    const [ctx, streams] = await libav.ff_init_demuxer_file(DEVICE);
+    // Bound the probe. Left at its defaults, avformat reads 5MB — or waits for
+    // EOF — before it will say what the streams are, which on a live feed is
+    // seconds of silence before the first frame, and on a short fixture is
+    // forever. A fifth of a second of TS is plenty to find two PIDs.
+    let opts = 0;
+    opts = await libav.av_dict_set_js(opts, "probesize", String(PROBE_BYTES), 0);
+    opts = await libav.av_dict_set_js(opts, "analyzeduration", String(ANALYZE_MICROSECONDS), 0);
+
+    const [ctx, streams] = await libav.ff_init_demuxer_file(DEVICE, {
+      format: "mpegts",
+      open_input_options: opts,
+    });
     fmtCtx = ctx;
     videoStream = streams.find((s: LibavStream) => s.codec_type === libav.AVMEDIA_TYPE_VIDEO) ?? null;
     audioStream = streams.find((s: LibavStream) => s.codec_type === libav.AVMEDIA_TYPE_AUDIO) ?? null;
@@ -210,6 +253,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       const [result, packets] = await libav.ff_read_frame_multi(fmtCtx, vpkt, {
         limit: READ_LIMIT,
       });
+      const out: DecodeOutput = { video: [], audio: [] };
 
       const videoPackets = videoStream ? packets[videoStream.index] ?? [] : [];
       if (videoPackets.length) {
@@ -221,7 +265,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           : await libav.ff_decode_multi(vctx, vpkt, vframe, videoPackets, {
               copyoutFrame: "video_packed", fin,
             });
-        for (const frame of frames) outVideo.push(toVideoFrame(frame));
+        for (const frame of frames) out.video.push(toVideoFrame(frame));
       }
 
       const audioPackets = audioStream ? packets[audioStream.index] ?? [] : [];
@@ -232,7 +276,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           if (!asink) await openAudioGraph(decoded[0]);
           const filtered = await libav.ff_filter_multi(asrc, asink, aframe, decoded, { fin });
           for (const frame of filtered) {
-            outAudio.push({
+            out.audio.push({
               samples: frame.data,
               sampleRate: frame.sample_rate,
               ptsSeconds: ptsSeconds(frame),
@@ -240,6 +284,10 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           }
         }
       }
+
+      // Emitted here, the moment they exist. Holding them for the next `push`
+      // would delay every frame until the following segment arrived.
+      if (out.video.length || out.audio.length) emit(out);
 
       if (result === libav.AVERROR_EOF) return;
       // -EAGAIN only means the output limit was reached; go round again.
@@ -254,16 +302,12 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     pump = runPump().catch((e) => { pumpError = e; });
   };
 
-  /** Let the pump make progress, then hand back whatever it produced. */
-  const collect = async (): Promise<DecodeOutput> => {
+  /** Let the pump make progress, and surface anything it threw. */
+  const settle = async (): Promise<void> => {
     // A macrotask, not a microtask: the pump awaits libav calls that resolve on
     // the task queue, and a microtask would return before any of them ran.
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (pumpError) throw pumpError instanceof Error ? pumpError : new Error(String(pumpError));
-    const out = { video: outVideo, audio: outAudio };
-    outVideo = [];
-    outAudio = [];
-    return out;
   };
 
   const teardown = async () => {
@@ -295,7 +339,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       queue.push(bytes);
       start();
       wake();
-      return collect();
+      return settle();
     },
 
     async flush() {
@@ -303,19 +347,17 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       start();
       wake();
       if (pump) await pump.catch((e) => { pumpError = e; });
-      return collect();
+      return settle();
     },
 
     async reset() {
       await teardown();
       queue = [];
-      outVideo = [];
-      outAudio = [];
       atEof = false;
       starved = false;
       pumpError = null;
       frameDuration = DEFAULT_FRAME_DURATION;
-      libav = await factory.LibAV({ noworker: true });
+      libav = await openLibav();
     },
 
     close: teardown,

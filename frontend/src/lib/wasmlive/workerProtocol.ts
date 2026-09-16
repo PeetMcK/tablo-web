@@ -5,7 +5,7 @@
  * testable code rather than something that needs a real Worker to exercise.
  */
 
-import type { LibavDecoder } from "./libavClient";
+import type { DecodeOutput, LibavDecoder } from "./libavClient";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
 export type ToWorker =
@@ -21,13 +21,14 @@ export type FromWorker =
   | { type: "error"; message: string };
 
 export function createWorkerHandler(
-  make: () => Promise<LibavDecoder>,
+  /** Makes a decoder that emits through the callback it is given. */
+  make: (onOutput: (out: DecodeOutput) => void) => Promise<LibavDecoder>,
   post: (message: FromWorker, transfer: Transferable[]) => void,
 ): (message: ToWorker) => Promise<void> {
   let decoder: LibavDecoder | null = null;
   let opening: Promise<LibavDecoder> | null = null;
 
-  const emit = (out: { video: DecodedVideoFrame[]; audio: DecodedAudioChunk[] }) => {
+  const emit = (out: DecodeOutput) => {
     // Buffers are transferred, not copied: a 1080p frame is 3.1MB, and at 60p
     // copying them would cost more than the decode does.
     if (out.video.length) {
@@ -38,12 +39,23 @@ export function createWorkerHandler(
     }
   };
 
-  return async (message: ToWorker) => {
+  /**
+   * Messages are handled one at a time, in order.
+   *
+   * Opening the decoder means loading and instantiating 2.5MB of wasm, and the
+   * session posts its first segments immediately afterwards. Handled
+   * concurrently, every one of those arrives while `decoder` is still null and
+   * is dropped — which is exactly what happened: a decoder that opened
+   * successfully and then produced nothing at all.
+   */
+  let chain: Promise<void> = Promise.resolve();
+
+  const handle = async (message: ToWorker) => {
     try {
       switch (message.type) {
         case "open":
           if (opening) return;  // a second open is a no-op, not a second decoder
-          opening = make();
+          opening = make(emit);
           decoder = await opening;
           post({ type: "opened" }, []);
           return;
@@ -52,7 +64,7 @@ export function createWorkerHandler(
           // A segment that beat `open`, or arrived after `close`, is simply
           // dropped: there is nothing to decode it with.
           if (!decoder) return;
-          emit(await decoder.push(new Uint8Array(message.bytes)));
+          await decoder.push(new Uint8Array(message.bytes));
           return;
 
         case "reset":
@@ -68,5 +80,10 @@ export function createWorkerHandler(
     } catch (e) {
       post({ type: "error", message: e instanceof Error ? e.message : String(e) }, []);
     }
+  };
+
+  return (message: ToWorker) => {
+    chain = chain.then(() => handle(message));
+    return chain;
   };
 }
