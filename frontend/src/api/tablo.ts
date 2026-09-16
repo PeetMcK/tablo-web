@@ -276,6 +276,10 @@ export const api = {
   
   guideGrid: () => req<GridChannel[]>("/channels/guide-grid"),
 
+  /** What is on one channel now and next, from the guide mirror. */
+  channelAirings: (identifier: string) =>
+    req<{ airings: Program[] }>(`/channels/${encodeURIComponent(identifier)}/airings`),
+
   /** @deprecated Use `recordings()` — this returns the unenriched legacy shape. */
   library: () => req<Recording[]>("/channels/library"),
 
