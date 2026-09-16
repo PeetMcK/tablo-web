@@ -217,6 +217,20 @@ describe("the topbar search at phone width", () => {
       .toMatch(/\bflex\b/);
   });
 
+  it("does not change the height of the bar when it opens", () => {
+    // The row used to be as tall as its tallest child: 38px icon closed, 42px
+    // field open, so opening search moved the whole page down 4px.
+    restoreMedia = stubPhone(true);
+    renderShell();
+    const row = () => document.querySelector("header > div")!.className;
+
+    expect(row()).toMatch(/h-\[74px\]/);
+    expect(row()).not.toMatch(/\bpy-4\b/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(row()).toMatch(/h-\[74px\]/);
+  });
+
   it("keeps the mark off the field once it is open", () => {
     // Expanded, the field is what sits next to the mark — flush against it
     // without a margin of its own.
