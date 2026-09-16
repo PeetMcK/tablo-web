@@ -298,8 +298,10 @@ describe("ChannelGrid search wiring", () => {
 
     // It must land in the grid, not auto-open — the selection that queued it
     // is long gone, cleared the moment the user left Live TV, not revived by
-    // coming back.
-    expect(screen.queryByTitle("Close (Esc)")).not.toBeInTheDocument();
+    // coming back. Asserted against the mock's own `data-testid`, not a
+    // `title` the mock never renders — that would be vacuously true whether
+    // or not the bug this test guards against were still present.
+    expect(screen.queryByTestId("video-player")).not.toBeInTheDocument();
   });
 
   it("keeps a channel resolved from search playing when navigating away from Live TV", async () => {
