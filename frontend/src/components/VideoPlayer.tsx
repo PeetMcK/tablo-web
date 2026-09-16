@@ -175,16 +175,27 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   useEffect(() => { onPositionRef.current = onPosition; }, [onPosition]);
   useEffect(() => { cachedRangesRef.current = cachedRanges; }, [cachedRanges]);
 
+  // A new source means a new encoder, so the previous one's numbers must not
+  // carry over — they showed the incoming channel as fully transcoded before it
+  // had produced a frame.
+  //
+  // Reset during render rather than from the start effect below. Setting state
+  // in an effect body queues a second render with the stale values already
+  // painted, and React flags it (`react-hooks/set-state-in-effect`) because
+  // that cascade is exactly what made this player tear itself down and reload
+  // on earlier occasions. Comparing the key here is React's documented way to
+  // adjust state when a prop changes: the re-render happens before anything
+  // reaches the screen.
+  const [renderedSource, setRenderedSource] = useState(sourceKey);
+  if (renderedSource !== sourceKey) {
+    setRenderedSource(sourceKey);
+    setLiveTranscoded(false);
+    setLiveEncoded(null);
+  }
+
   // ---------------------------------------------------------------- start
   useEffect(() => {
     let cancelled = false;
-
-    // A new source means a new encoder. Carrying the last one's numbers over
-    // showed the incoming channel as fully transcoded before it had produced a
-    // single frame.
-    setLiveTranscoded(false);
-    setLiveEncoded(null);
-
     const current = sourceRef.current;
     const start = async () => {
       try {

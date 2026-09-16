@@ -656,7 +656,7 @@ class TranscodeCache:
         target = max(0, int(seconds * 1000))
         # Frames are ordered, so take the last one at or before the target.
         pos = bisect.bisect_right(index, target, key=lambda e: e[0]) - 1
-        ts, offset, length = index[max(0, pos)]
+        _, offset, length = index[max(0, pos)]
         try:
             with open(self.bif_path(object_id), "rb") as f:
                 f.seek(offset)
@@ -1425,7 +1425,7 @@ class TranscodeCache:
         # than declared. Pad by duplicating the last one so every URI the
         # published playlist references resolves.
         if produced < expected:
-            last = sorted(wd.glob("seg_*.ts"))[-1]
+            last = max(wd.glob("seg_*.ts"))
             for n in range(produced, expected):
                 shutil.copyfile(last, wd / f"seg_{n:02d}.ts")
 

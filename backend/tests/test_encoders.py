@@ -6,8 +6,7 @@ exercised here — the container has no VideoToolbox (macOS framework) and no
 it reaches hardware.
 """
 
-import pytest  # noqa: F401
-
+import pytest
 
 from app.transcode_cache import deinterlace_filter, encoder_profile, video_encoder
 
