@@ -4,15 +4,16 @@
 
 **Goal:** Live OTA channels play their native MPEG-2 in the browser — libav.js decoding in a worker, canvas presentation, audio clock as master — with the existing FFmpeg transcode kept as an automatic fallback.
 
-**Architecture:** The backend gains a raw segment ring that copies device segments to disk and serves its own sliding playlist, replacing the DVR window FFmpeg used to provide. The frontend gains `lib/wasmlive/`: a transport that fetches ring segments, a worker that runs libav.js (demux → MPEG-2 decode → `bwdif` → I420; AC-3 decode → stereo PCM), an AudioWorklet that owns the clock, and a presenter that draws `VideoFrame`s to an OffscreenCanvas. `VideoPlayer` talks to a `PlaybackSurface` interface with two implementations, so the programme bar and scrubber are unchanged.
+**Architecture:** The backend gains a raw segment ring that copies device segments to disk and serves its own sliding playlist, replacing the DVR window FFmpeg used to provide. The frontend gains `lib/wasmlive/`: a transport that fetches ring segments, a worker that runs libav.js (demux → MPEG-2 decode → interlaced I420; AC-3 decode → stereo PCM), an AudioWorklet that owns the clock, and a WebGL2 presenter that deinterlaces and colour-converts in one shader pass, drawing each frame twice — once per field — for 60p out. `VideoPlayer` talks to a `PlaybackSurface` interface with two implementations, so the programme bar and scrubber are unchanged.
 
-**Tech Stack:** Python 3.14, FastAPI, httpx, pytest. React 19, TypeScript, vitest, hls.js 1.6, libav.js 6.10.9 (custom variant), WebCodecs `VideoFrame`, OffscreenCanvas, AudioWorklet.
+**Tech Stack:** Python 3.14, FastAPI, httpx, pytest. React 19, TypeScript, vitest, hls.js 1.6, libav.js 6.10.9 (custom variant), WebGL2, OffscreenCanvas, AudioWorklet.
 
 **Spec:** `docs/superpowers/specs/2026-09-16-wasm-mpeg2-live-design.md`
 
 ## Global Constraints
 
-- **Phase 0 is a gate.** Tasks 4 onward do not begin until Task 2 records a measured decode+deinterlace throughput of **at least 1.5x realtime**. Below that, stop and report; the spec is closed.
+- **Phase 0 has run, and it changed the design.** Tasks 1 and 2 are complete; results are in `docs/superpowers/plans/2026-09-16-wasm-mpeg2-live-phase0.md`. Decode clears the gate at **8.81x realtime**. Software deinterlacing fails it at **0.82x**, so **no video filter runs in WASM**: the worker decodes to interlaced I420 and the presenter deinterlaces on the GPU. Tasks 7, 11 and 13 are written against that outcome.
+- **No CPU-side per-pixel work anywhere in the pipeline.** That headroom is what the measurement bought, and spending it is the one way this design loses to the transcode it replaces.
 - **Recordings are untouched.** No task modifies `transcode_cache.py`, the recording routes, or the recording branches of `VideoPlayer`.
 - **The transcode path stays.** Nothing deletes `start_transcoder`, `/api/transcoded/...`, or the `transcode=true` branch. The new path is additive.
 - **Feature flag default off.** `localStorage` key `tablo.wasmlive` gates the new path until the final task flips it in a commit of its own.
@@ -51,7 +52,8 @@
 | `src/lib/wasmlive/capability.ts` (create) | Is this browser eligible, is the flag on |
 | `src/lib/wasmlive/libavClient.ts` (create) | The only file that imports libav.js |
 | `src/lib/wasmlive/decode.worker.ts` (create) | Worker message protocol around `libavClient` |
-| `src/lib/wasmlive/presenter.ts` (create) | OffscreenCanvas + `VideoFrame` presentation |
+| `src/lib/wasmlive/presenter.ts` (create) | Field scheduling and the WebGL2 draw |
+| `src/lib/wasmlive/deinterlace.ts` (create) | The shader pair and its GL plumbing |
 | `src/lib/wasmlive/audioSink.ts` (create) | AudioWorklet feeding and sample accounting |
 | `src/lib/wasmlive/pcmWorklet.js` (create) | The AudioWorkletProcessor itself |
 | `src/lib/wasmlive/session.ts` (create) | Lifecycle gluing transport, worker, sink, presenter |
@@ -66,7 +68,16 @@
 
 ## Phase 0 — The gate
 
-### Task 1: Build the `tablo-mpeg2` libav.js variant
+### Task 1: Build the `tablo-mpeg2` libav.js variant — ✅ COMPLETE
+
+**Done in commits `ebf6476` and `20a9405`.** Built in the `emscripten/emsdk`
+container rather than from a host toolchain (no emsdk installed here, Docker is
+available), with `-O3` instead of libav.js's default `-Oz`, and with `yadif`
+added alongside `bwdif` so the deinterlacers could be compared. Artifacts and
+LGPL sources are committed under `frontend/public/wasm/libav/`; the ESM (`.mjs`)
+targets are built too, because `frontend/package.json` is `type: module` and
+node parses the CommonJS loader as ESM otherwise. The steps below are the
+record of what was run.
 
 No prebuilt libav.js variant contains MPEG-2 video, AC-3, and the MPEG-TS demuxer together — checked against `configs/mkconfigs.js` in libav.js 6.10.9. A custom variant is required.
 
@@ -160,7 +171,21 @@ git commit -m "build: libav.js variant with MPEG-2, AC-3 and bwdif"
 
 ---
 
-### Task 2: Measure decode throughput — the kill gate
+### Task 2: Measure decode throughput — the kill gate — ✅ COMPLETE, DESIGN CHANGED
+
+**Done in commit `20a9405`.** Decode + AC-3 runs at **8.81x realtime**, passing.
+Adding `bwdif=send_field` drops it to **0.82x**, failing: the filter costs 10.5
+of the 11.5 seconds, a ~19x WASM penalty against 2.9x for the decoder, because
+native `bwdif` is hand-written AVX2 and this build has no SIMD. `-O3` did not
+move it, `yadif` is worse (0.50x), and `send_frame` reaches only 1.44x by
+halving the frame rate.
+
+**Consequence: the deinterlace moves to the GPU and no video filter runs in
+WASM.** Tasks 11 and 13 below are rewritten for that. Full numbers, including
+the false start where `bwdif`'s halved output timebase made the first
+measurement read 2x too fast, are in the phase 0 results file.
+
+The steps below are the record of what was run.
 
 **Files:**
 - Create: `frontend/tools/measure-decode.mjs`
@@ -1017,7 +1042,15 @@ git commit -m "feat: serve the raw segment ring as a live playlist"
 - Consumes: the ring playlist format from Task 4 (`#EXT-X-MEDIA-SEQUENCE`, `#EXT-X-PROGRAM-DATE-TIME` on the first segment).
 - Produces:
   ```ts
-  export interface DecodedVideoFrame { data: Uint8Array; width: number; height: number; ptsSeconds: number }
+  export interface DecodedVideoFrame {
+    data: Uint8Array; width: number; height: number; ptsSeconds: number;
+    /** Seconds until the next frame, so the second field can be timed. */
+    durationSeconds: number;
+    /** False for progressive content — commercials, some subchannels. */
+    interlaced: boolean;
+    /** Which field is first in time. Meaningless when not interlaced. */
+    topFieldFirst: boolean;
+  }
   export interface DecodedAudioChunk { samples: Float32Array; sampleRate: number; ptsSeconds: number }
   export interface MediaPlaylist {
     targetDuration: number; mediaSequence: number; programDateTimeMs: number | null;
@@ -1120,12 +1153,24 @@ Expected: FAIL — cannot resolve `../lib/wasmlive/playlist`
 
 ```ts
 // frontend/src/lib/wasmlive/types.ts
-/** One decoded picture, planar I420, packed to the minimum stride. */
+/**
+ * One decoded picture, planar I420, packed to the minimum stride.
+ *
+ * Still interlaced: the deinterlace happens on the GPU, so the frame carries
+ * what the shader needs to know about its fields rather than having been
+ * resolved into progressive lines already.
+ */
 export interface DecodedVideoFrame {
   data: Uint8Array;
   width: number;
   height: number;
   ptsSeconds: number;
+  /** Seconds until the next frame, so the second field can be timed. */
+  durationSeconds: number;
+  /** False for progressive content, which must pass through untouched. */
+  interlaced: boolean;
+  /** Which field is first in time. Meaningless when not interlaced. */
+  topFieldFirst: boolean;
 }
 
 /** Decoded audio, interleaved stereo float. */
@@ -1487,7 +1532,7 @@ const SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
 const capableWindow = (userAgent: string) => ({
   navigator: { userAgent } as Navigator,
-  VideoFrame: class {},
+  WebGL2RenderingContext: class {},
   OffscreenCanvas: class {},
   AudioWorkletNode: class {},
   WebAssembly: {},
@@ -1598,7 +1643,9 @@ export interface Eligibility {
   reason: string;
 }
 
-const REQUIRED = ["VideoFrame", "OffscreenCanvas", "AudioWorkletNode", "WebAssembly"] as const;
+// WebGL2 is checked by actually asking for a context in Task 16's wiring; the
+// constructor names are what can be checked here.
+const REQUIRED = ["OffscreenCanvas", "AudioWorkletNode", "WebAssembly", "WebGL2RenderingContext"] as const;
 
 export function wasmLiveEligible(
   win: Pick<Window, "navigator"> & Record<string, unknown>,
@@ -1935,6 +1982,19 @@ git commit -m "refactor: play through a PlaybackSurface instead of the element"
 ## Phase 3 — The decode pipeline
 
 ### Task 11: `libavClient` and the hermetic decode test
+
+> **Rewritten after Phase 0.** The filter graph in the code below is
+> `format=pix_fmts=yuv420p` and nothing else — `bwdif` is not used, because it
+> measured at 0.82x realtime. What this module must do instead is *report* each
+> frame's interlacing so the GPU can deinterlace it: `interlaced`,
+> `topFieldFirst` and `durationSeconds` on every `DecodedVideoFrame`. In
+> ffmpeg 9 those come from `AVFrame.flags` (`AV_FRAME_FLAG_INTERLACED` = 1 << 3,
+> `AV_FRAME_FLAG_TOP_FIELD_FIRST` = 1 << 4) — read them with the exposed
+> `AVFrame_flags` accessor if `ff_copyout_frame` does not carry them, and assert
+> against the fixture, which is `field_order=tt` and must come back
+> `interlaced: true, topFieldFirst: true`. The deinterlace option stays in
+> `createDecoder`'s signature, defaulting **off**, so the comparison can be
+> re-run if libav.js ever gains SIMD.
 
 **Files:**
 - Create: `frontend/src/lib/wasmlive/libavClient.ts`
@@ -2461,6 +2521,31 @@ git commit -m "feat: decode worker and its message protocol"
 ---
 
 ### Task 13: The presenter
+
+> **Rewritten after Phase 0.** The presenter draws through WebGL2, not
+> `VideoFrame` + `drawImage`. Each decoded frame's Y, U and V planes are
+> uploaded into three reused `R8` textures, and the frame is drawn **twice** —
+> once per field, half a frame duration apart — by a fragment shader that
+> interpolates the field's missing lines and converts YUV to RGB in the same
+> pass. A progressive frame (`interlaced: false`) is drawn once, untouched.
+> Textures are allocated once per resolution and reused; allocating per frame at
+> 60p exhausts GPU memory.
+>
+> The queue therefore holds **fields**, not frames: `{ ptsSeconds, parity,
+> frame }`, where a frame at pts *t* with duration *d* and `topFieldFirst`
+> yields `{t, "top"}` and `{t + d/2, "bottom"}`, and the reverse when bottom
+> field first. Everything in Task 8 (`selectFrame`, `admit`) works unchanged on
+> those entries — they are `Timed`.
+>
+> Keep the dependency injection: `draw(entry)` and a `now()` clock stay
+> injected, so the scheduling tests below run with no GL context. The GL itself
+> lives in `deinterlace.ts` behind `createRenderer(canvas)` →
+> `{ upload(frame), drawField(parity), resize(w, h), destroy() }`, and is
+> exercised by eye in the soak, not by a test that would assert nothing.
+>
+> Tests to add beyond those below: a frame with `interlaced: false` enqueues one
+> entry rather than two; a bottom-field-first frame enqueues `{t, "bottom"}`
+> then `{t + d/2, "top"}`.
 
 **Files:**
 - Create: `frontend/src/lib/wasmlive/presenter.ts`
@@ -3082,22 +3167,12 @@ export function createSession(options: SessionOptions): LiveSession {
   const handlers = new Map<SessionEvent, Set<() => void>>();
   const emit = (event: SessionEvent) => handlers.get(event)?.forEach((fn) => fn());
 
-  const context = options.canvas.getContext?.("2d") ?? null;
+  // The GPU does the deinterlace and the colour conversion; see Task 13.
+  const renderer = createRenderer(options.canvas);
   const presenter: Presenter = createPresenter({
     now: () => options.audio.clockSeconds ?? 0,
-    makeFrame: (decoded: DecodedVideoFrame) =>
-      new VideoFrame(decoded.data, {
-        format: "I420",
-        codedWidth: decoded.width,
-        codedHeight: decoded.height,
-        timestamp: Math.round(decoded.ptsSeconds * 1e6),
-      }),
-    draw: (frame) => {
-      if (!context) return;
-      options.canvas.width = (frame as VideoFrame).displayWidth;
-      options.canvas.height = (frame as VideoFrame).displayHeight;
-      context.drawImage(frame as CanvasImageSource, 0, 0);
-    },
+    upload: (decoded: DecodedVideoFrame) => renderer.upload(decoded),
+    draw: (entry) => renderer.drawField(entry.parity, entry.interlaced),
   });
 
   let playlist: MediaPlaylist = { targetDuration: 6, mediaSequence: 0, programDateTimeMs: null, segments: [] };
@@ -3355,6 +3430,8 @@ if (current.kind === "live") {
     ? createWasmSurface(createSession({
         playlistUrl: r.stream_url,
         originMs: Date.parse(r.started_at),
+        // WebGL2 in the page, on an OffscreenCanvas transferred from the
+        // <canvas> the player renders where the <video> would be.
         canvas: canvasRef.current!.transferControlToOffscreen(),
         worker: new Worker(new URL("../lib/wasmlive/decode.worker.ts", import.meta.url), { type: "module" }),
         audio: await createAudioSink(new AudioContext(), pcmWorkletUrl),
@@ -3420,8 +3497,8 @@ This commit is revertible by itself. That is the point of it being last and alon
 
 ## Self-review
 
-**Spec coverage.** Phase 0 gate → Tasks 1–3. Raw segment ring → Tasks 4–6. `lib/wasmlive/` five modules → Tasks 7, 8, 11, 12, 13, 14, 15. The `PlaybackSurface` seam → Task 10. Fallback rules → Tasks 9, 15, 16. Frame closing and the queue cap → Task 13. Hidden tab, discontinuity, pause/rewind, channel change → Tasks 13 and 15 (`reset` on seek, `pause`/`resume` on the sink, `destroy` on change). Testing section → the tests in every task plus the soak in Task 17. Flag default off then flipped → Tasks 9 and 17. LGPL sources shipped → Task 1.
+**Spec coverage.** Phase 0 gate → Tasks 1–3 (1 and 2 done). Raw segment ring → Tasks 4–6. `lib/wasmlive/` modules → Tasks 7, 8, 11, 12, 13, 14, 15. GPU deinterlace → Task 13 and `deinterlace.ts`. The `PlaybackSurface` seam → Task 10. Fallback rules → Tasks 9, 15, 16. Texture reuse and the queue cap → Task 13. Hidden tab, discontinuity, pause/rewind, channel change → Tasks 13 and 15 (`reset` on seek, `pause`/`resume` on the sink, `destroy` on change). Progressive passthrough → Tasks 11 and 13. Testing section → the tests in every task plus the soak in Task 17. Flag default off then flipped → Tasks 9 and 17. LGPL sources shipped → Task 1.
 
-**Known gaps, deliberate.** The spec's "resolution change mid-stream rebuilds the graph" is handled by `reset` but has no dedicated test — a fixture with a mid-stream format change does not exist, and manufacturing one is more work than the case is worth until it is seen. The WebGL YUV shader is explicitly v2 and has no task.
+**Known gaps, deliberate.** A mid-stream resolution change is handled by `reset` and texture reallocation but has no test; manufacturing a fixture for it costs more than the case is worth until it is seen. Shader *output* is not asserted anywhere — GPU pixels cannot be checked in node, and a test that asserted nothing would be worse than the honest gap. Deinterlace quality is judged by eye in Task 17 against the same frame through today's `yadif` transcode.
 
 **Type consistency.** `DecodedVideoFrame` / `DecodedAudioChunk` are defined in Task 7 and used unchanged in 11–15. `PlaybackSurface` is defined in Task 10 and implemented twice, in 10 and 15. `selectFrame` / `admit` from Task 8 are consumed in Task 13 only. `FallbackState` / `reduceFallback` from Task 9 are consumed in Task 15 only. `LiveMode` values `transcode | raw | ring` match the backend `mode` parameter in Task 6.

@@ -49,13 +49,18 @@ native, on the M1 Max, over a 9.46s / 280-frame clip:
 | decode only | 0.37 | 25.6x | 3.9% |
 | decode + `bwdif` | 0.92 | 10.3x | 9.7% |
 
-Two consequences shrink the project. **No threads are needed**, so no
-`SharedArrayBuffer`, so no `COOP`/`COEP` cross-origin isolation, so nothing
-disturbs `PUBLIC_BACKEND_ORIGIN` — the direct-to-backend path serving MP4
-exports at 583 MB/s rather than 117 through nginx. Every deployment objection to
-this idea rested on that requirement, and none of it applies. And **WebGL
-deinterlacing is optional**: `bwdif` can live inside the WASM build for v1 and
-still clear realtime several times over.
+**No threads are needed**, so no `SharedArrayBuffer`, so no `COOP`/`COEP`
+cross-origin isolation, so nothing disturbs `PUBLIC_BACKEND_ORIGIN` — the
+direct-to-backend path serving MP4 exports at 583 MB/s rather than 117 through
+nginx. Every deployment objection to this idea rested on that requirement, and
+none of it applies.
+
+The second consequence the investigation drew — that `bwdif` could live inside
+the WASM build and still clear realtime — **was measured and is false.** See
+"Phase 0, executed" below. Decode in WASM lands where predicted, at 8.8x
+realtime; `bwdif` in WASM runs at roughly a nineteenth of its native speed and
+drags the pipeline to 0.82x. Deinterlacing is therefore not optional GPU work
+for a later version: it is where this design puts it from the start.
 
 The same sample's audio is the fact the original investigation missed:
 
@@ -77,43 +82,57 @@ so audio is not free either — it is a second decoder in the same WASM build.
 - **Multichannel audio out.** 5.1 is downmixed to stereo.
 - **Replacing the transcode.** It stays, permanently, as the fallback.
 
-## Phase 0: the gate
+## Phase 0, executed
 
-The WASM penalty is assumed, not measured, and every line below it is worthless
-if the assumption is wrong. Nothing downstream begins until these numbers exist.
+The WASM penalty was assumed, not measured, and every line below it was
+worthless if the assumption was wrong. It has now been measured. Full numbers
+are in `docs/superpowers/plans/2026-09-16-wasm-mpeg2-live-phase0.md`; the
+summary, on the 9.41s 1080i sample, single-threaded on the M1 Max:
 
-1. **Build** libav.js with `decoder-mpeg2video`, `decoder-ac3`, and the `bwdif`
-   filter. The artifact and its LGPL `sources/` are vendored under
-   `frontend/public/wasm/libav/`, pinned by version, and served as static
-   assets — not fetched from a CDN at runtime, so playback never depends on a
-   third party being up. Record the artifact size. If `bwdif` cannot be built
-   into libav.js,
-   the design falls back to a bob deinterlace in the presenter and `bwdif`
-   becomes a v2 item — it does not block.
-2. **Decode** the saved 1080i sample in a worker, end to end, and count frames
-   per second of wall clock.
-   - **Kill criterion: under 1.5x realtime for decode + deinterlace stops the
-     project.** Native is 10.3x; a 3x WASM penalty lands at 3.4x. Under 1.5x
-     there is no headroom for presentation, audio, and a browser doing anything
-     else, and the transcode wins on merit.
-3. **Probe** Chrome's AC-3 support in MSE and WebCodecs. Informational only —
-   the design decodes AC-3 in WASM regardless, so that one code path runs
-   everywhere. The number decides whether that was necessary.
-4. **Probe** the depth of the Tablo's own raw playlist, to size the segment
-   ring. Not while the user is watching: probing competes for device bandwidth
-   and corrupts the measurement.
+| | vs realtime |
+|---|---|
+| decode + AC-3, no deinterlace | **8.81x** |
+| decode + AC-3 + `bwdif=send_frame` (30p) | 1.44x |
+| decode + AC-3 + `bwdif=send_field` (60p) | **0.82x** |
+| decode + AC-3 + `yadif=send_field` | 0.50x |
 
-Phase 0 output is a written result in the plan's progress notes, including the
-measured multiple. If it passes, implementation proceeds. If it fails, this spec
-is closed and the transcode stands.
+**Decode passes.** 8.8x against 25.6x native is a 2.9x WASM penalty, the middle
+of the range the investigation assumed. AC-3 decode costs nothing measurable,
+and copying frames out of the wasm heap costs 0.02s across 560 frames, so the
+`VideoFrame` path is free.
+
+**Software deinterlacing fails.** `bwdif` alone accounts for 10.5 of the 11.5
+seconds — a penalty near 19x, against 2.9x for the decoder, because `bwdif` and
+`yadif` are hand-written AVX2 in native FFmpeg and this build has no SIMD at
+all. `-O3` instead of `-Oz` bought 5% on decode and nothing on the filter.
+`yadif` is worse than `bwdif`. `send_frame` clears 1.44x only by halving the
+frame rate, which throws away the 60p field cadence that makes 1080i playback
+look right today.
+
+The conclusion is not that the project fails but that the deinterlace belongs on
+the GPU, where it is nearly free, and the WASM build does decode only. The 8.8x
+decode figure is the budget that pays for it.
+
+The libav build keeps `bwdif` and `yadif` compiled in — they cost only artifact
+size — so the comparison can be re-run if a future libav.js gains SIMD.
+
+### Still to probe
+
+- Chrome's AC-3 support in MSE and WebCodecs. Informational only: the design
+  decodes AC-3 in WASM regardless, so one code path runs everywhere. The answer
+  only says whether that was necessary.
+- The depth of the Tablo's own raw playlist, to size the segment ring. Not while
+  the user is watching — probing competes for device bandwidth and corrupts both
+  the measurement and the viewing.
 
 ## Architecture
 
 ```
 Tablo --HLS / MPEG-2 TS--> backend: proxy + raw segment ring (disk) --> browser
-  worker   libav.js: demux -> mpeg2 decode -> bwdif send_field -> I420 @ 60p
+  worker   libav.js: demux -> mpeg2 decode -> I420 fields @ 29.97i
                      ac3 decode -> downmix 2.0 -> PCM
-  main     AudioWorklet (clock master) + OffscreenCanvas presenter
+  main     AudioWorklet (clock master)
+           WebGL2 presenter: deinterlace + YUV->RGB in one shader pass, 60p out
 ```
 
 The browser cannot talk to the Tablo directly. Device requests need HMAC-MD5
@@ -162,20 +181,28 @@ Five modules, each independently testable, none knowing about React:
   logic plus `fetch`; the sequence arithmetic is unit-testable without a
   network.
 - **`decode.worker.ts`** — owns the libav.js instance. Segment bytes go into a
-  reader device, and a filter graph (`bwdif=mode=send_field`) emits I420 frames
-  at 60p plus stereo PCM. Frames and PCM leave as transferables.
+  reader device and come out as interlaced I420 frames at 29.97 plus stereo PCM,
+  each frame carrying its field order. No video filter runs: the graph pins the
+  pixel format and nothing else. Frames and PCM leave as transferables.
 - **`audioSink.ts`** — AudioWorklet with a ring buffer, and the authority on
   time: `clockSeconds` is what the rest of the pipeline synchronises against.
-- **`presenter.ts`** — an OffscreenCanvas and a bounded frame queue. Each frame
-  becomes a `VideoFrame` constructed directly from its I420 planes, which the
-  browser colour-converts on the GPU; there is no pixel loop in JavaScript and
-  the main thread never touches frame data. On each tick it presents the newest
-  frame whose PTS is at or before the audio clock, drops what is late, and holds
-  what is early.
+- **`presenter.ts`** — an OffscreenCanvas with a WebGL2 context and a bounded
+  queue. Each decoded frame's three planes are uploaded as `R8` textures and
+  drawn twice, once per field, half a frame apart: a fragment shader
+  interpolates the missing lines and converts YUV to RGB in the same pass, so
+  1080i29.97 leaves as 1080p59.94 with no pixel loop in JavaScript and no CPU
+  filter. On each tick it presents the newest field whose PTS is at or before
+  the audio clock, drops what is late, and holds what is early.
+- **`deinterlace.glsl.ts`** — the shader pair. v1 interpolates spatially within
+  the field being shown (a bob with vertical filtering), which is what a GPU
+  does nearly for free; the seam is written so a motion-adaptive version that
+  also samples the neighbouring field can replace it without touching the
+  presenter.
 - **`session.ts`** — assembles the four into something with a lifecycle.
 
-Frames are `close()`d on presentation and the queue is capped at 8. An
-unbounded queue of 1080p frames exhausts GPU memory in seconds.
+The queue is capped at 8 frames and evicts from the front. Each queued frame is
+3.1 MB of I420, and its GPU textures are reused rather than reallocated per
+frame — a fresh texture pair per frame at 60p exhausts GPU memory in seconds.
 
 ### The seam in VideoPlayer
 
@@ -196,7 +223,7 @@ being understood in exactly one 1331-line file.
 ### Fallback
 
 The WASM path is attempted when all of the following hold: the channel is not
-OTT, the browser is Chrome-family desktop, `VideoFrame`, `OffscreenCanvas`,
+OTT, the browser is Chrome-family desktop, `OffscreenCanvas`, WebGL2,
 `AudioWorklet` and WASM are all present, and the feature flag is on.
 
 The flag is a `localStorage` key read when the player opens, alongside the
@@ -216,8 +243,13 @@ flapped between decoders would be worse than either.
 
 ### Edges
 
-- **Discontinuity or resolution change mid-stream.** The filter graph is torn
-  down and rebuilt on a format change; the presenter resizes its canvas.
+- **Discontinuity or resolution change mid-stream.** The decoder is torn down
+  and rebuilt on a format change; the presenter reallocates its textures and
+  resizes the canvas.
+- **Progressive content on an interlaced channel.** Frames arrive flagged
+  progressive — commercials and some 720p subchannels — and the shader is told
+  to pass them through rather than interpolate, so nothing is softened that did
+  not need deinterlacing. Field order comes from the frame, not a setting.
 - **Hidden tab.** Audio continues, video frames are dropped rather than queued.
   The clock is audio, so nothing drifts while hidden.
 - **Pause and rewind.** Pause stops presenting and stops consuming the ring.
@@ -240,6 +272,12 @@ flapped between decoders would be worse than either.
 - **Surface parity.** The `PlaybackSurface` contract is exercised against both
   implementations, so the bar and scrubber are proven against the new path
   without a live device.
+- **The shader, by eye.** GPU output cannot be asserted in node, and pretending
+  otherwise would buy a passing test and no information. What is tested is the
+  presenter's scheduling — which field, at which clock, dropped or held — with
+  the draw call injected. Deinterlace quality is judged on a still of a
+  detailed, moving 1080i frame against the same frame through today's `yadif`
+  transcode, in the soak.
 - **Manual soak, last.** A 30-minute watch, a tab switch, a rewind to the edge
   of the window, and a channel change.
 
@@ -256,9 +294,11 @@ flapped between decoders would be worse than either.
   toolchain that no longer exists.
 - **jsmpeg.** MPEG-1 only. It is the first result everyone finds and it cannot
   work.
-- **A WebGL YUV shader in v1.** The `VideoFrame` path gets GPU colour conversion
-  for free. The shader is the same seam and remains the v2 move if the CPU spent
-  on `bwdif` is ever wanted back.
+- **`VideoFrame` plus `drawImage`, with `bwdif` in WASM.** This was the v1
+  design until Phase 0 measured it at 0.82x realtime. The `VideoFrame` path is
+  still the cheaper way to get colour conversion, but it cannot deinterlace, and
+  deinterlacing on the CPU is what the budget cannot afford. WebGL2 does both in
+  one pass.
 - **Moving deinterlace to WebGL in the *existing* pipeline.** It would save the
   largest CPU item but buys no throughput — the Tablo saturates around 10x
   realtime aggregate and six concurrent windows already run device-bound. It
