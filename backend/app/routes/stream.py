@@ -3,7 +3,9 @@
 import asyncio
 import os
 import re
+import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -11,6 +13,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from ..live_follower import RingFollower
+from ..live_ring import SegmentRing
 from ..state import state
 
 router = APIRouter(tags=["stream"])
@@ -29,6 +33,24 @@ MAX_TRANSCODE_SESSIONS = 4
 HLS_TIME = 6
 LIVE_DVR_MINUTES = int(os.environ.get("LIVE_DVR_MINUTES", "60"))
 LIVE_DVR_SEGMENTS = max(6, LIVE_DVR_MINUTES * 60 // HLS_TIME)
+# The same window, in seconds, for the raw ring - which counts duration rather
+# than segments because the device chooses its own segment length.
+LIVE_DVR_SECONDS = LIVE_DVR_SEGMENTS * HLS_TIME
+
+# Raw MPEG-2 segments copied off the device for the WASM live path. Separate
+# from TRANSCODE_DIR so the startup cleanup below cannot confuse the two.
+RAW_DIR = Path("/tmp/tablo_raw")
+RAW_DIR.mkdir(exist_ok=True)
+
+# A session id is hex, and a raw segment is the five-digit name the ring gave
+# it. Both are matched rather than sanitised: anything else is not ours.
+_SESSION_RE = re.compile(r"^[0-9a-f]{8,64}$")
+_SEGMENT_RE = re.compile(r"^\d{5}\.ts$")
+
+LIVE_MODES = ("transcode", "raw", "ring")
+
+# session_id -> (ring, follower, polling task)
+ring_sessions: dict[str, tuple[SegmentRing, RingFollower | None, asyncio.Task | None]] = {}
 
 # Kill any FFmpeg processes left over from a previous run and wipe stale dirs.
 # After a container restart transcode_procs is empty but old FFmpeg processes
@@ -121,8 +143,20 @@ async def transcoded_stream(session_id: str, path: str, request: Request):
 async def start_stream(
     identifier: str,
     request: Request,
-    transcode: bool = Query(default=False)
+    transcode: bool = Query(default=False),
+    mode: str | None = Query(default=None),
 ):
+    """Open a live session.
+
+    ``mode`` picks how the bytes reach the browser: ``transcode`` runs FFmpeg
+    as it always has, ``raw`` proxies the device's own HLS untouched (fine for
+    OTT, unplayable for MPEG-2), and ``ring`` copies the device's segments into
+    a DVR window of our own for the WASM decoder to chew on.
+
+    The older boolean ``transcode`` still works and means ``mode=transcode``.
+    """
+    if mode is not None and mode not in LIVE_MODES:
+        raise HTTPException(status_code=422, detail=f"Unknown mode: {mode}")
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -133,10 +167,24 @@ async def start_stream(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Stream error: {e}")
 
+    resolved = mode or ("transcode" if transcode else "raw")
+    started_at = datetime.now(timezone.utc)
+
     # NOTE: We use root-relative paths for the frontend so it works through the proxy
-    if transcode:
+    if resolved == "transcode":
         await start_transcoder(session_id, sess.stream.playlist_url)
         stream_url = f"/api/transcoded/{session_id}/playlist.m3u8"
+    elif resolved == "ring":
+        ring = SegmentRing(origin=started_at)
+        follower = RingFollower(
+            ring=ring,
+            directory=RAW_DIR / session_id,
+            playlist_url=sess.stream.playlist_url,
+            fetch=_fetch_bytes,
+            max_seconds=float(LIVE_DVR_SECONDS),
+        )
+        ring_sessions[session_id] = (ring, follower, asyncio.create_task(follower.run()))
+        stream_url = f"/api/raw/{session_id}/playlist.m3u8"
     else:
         stream_url = f"/api/hls/{session_id}/playlist.m3u8"
 
@@ -144,8 +192,18 @@ async def start_stream(
         "session_id": session_id,
         "proxy_url": f"/api/hls/{session_id}/playlist.m3u8",
         "stream_url": stream_url,
-        "transcoded": transcode
+        "mode": resolved,
+        # The browser ties media time to this, together with the playlist's
+        # EXT-X-PROGRAM-DATE-TIME.
+        "started_at": started_at.isoformat(),
+        "transcoded": resolved == "transcode",
     }
+
+
+async def _fetch_bytes(url: str) -> bytes:
+    resp = await state.http.get(url, follow_redirects=True)
+    resp.raise_for_status()
+    return resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +233,60 @@ async def stop_stream(session_id: str):
         except Exception:
             pass
 
+    # A ring session holds a tuner through its polling task, so stopping it is
+    # not optional housekeeping - a leaked follower keeps fetching for ever.
+    if entry := ring_sessions.pop(session_id, None):
+        _ring, _follower, task = entry
+        if task is not None:
+            task.cancel()
+    shutil.rmtree(RAW_DIR / session_id, ignore_errors=True)
+
     state.stop_session(session_id)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Raw ring: the DVR window for the WASM live path
+# ---------------------------------------------------------------------------
+
+@router.get("/raw/{session_id}/playlist.m3u8")
+async def raw_playlist(session_id: str):
+    ring, _follower, _task = _ring_session(session_id)
+    return Response(
+        content=ring.playlist(),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+@router.get("/raw/{session_id}/{name}")
+async def raw_segment(session_id: str, name: str):
+    ring, _follower, _task = _ring_session(session_id)
+    if not _SEGMENT_RE.match(name):
+        raise HTTPException(status_code=400, detail="Bad segment name")
+    # Asking the ring rather than the filesystem: a file the ring has evicted
+    # may still be mid-unlink, and serving it would hand back media the
+    # playlist no longer offers.
+    if not ring.holds(name):
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    path = RAW_DIR / session_id / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Segment not found")
+    return FileResponse(
+        path,
+        media_type="video/mp2t",
+        headers={"Cache-Control": "max-age=30", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+def _ring_session(session_id: str):
+    if not _SESSION_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Bad session id")
+    entry = ring_sessions.get(session_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Stream session not found")
+    return entry
 
 
 # ---------------------------------------------------------------------------
