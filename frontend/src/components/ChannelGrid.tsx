@@ -7,6 +7,7 @@ import { useMediaQuery } from "../lib/useMediaQuery";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { LibraryView } from "./LibraryView";
+import { ShowInfo } from "./ShowInfo";
 import { GuideGridView, type GuideJumpTarget } from "./GuideGridView";
 import { AppMenu } from "./AppMenu";
 import { HeaderClock } from "./HeaderClock";
@@ -73,6 +74,11 @@ interface Props {
 }
 
 
+
+/** `7.1 PBS`, or the call sign alone where the device gave no number. */
+function channelName(ch: GuideChannel): string {
+  return ch.major > 0 ? `${ch.major}.${ch.minor} ${ch.call_sign}` : ch.call_sign;
+}
 
 function matchesContentFilter(ch: GuideChannel, f: ContentFilter): boolean {
   if (f === "all") return true;
@@ -153,6 +159,12 @@ export function ChannelGrid({ onLogout }: Props) {
   // handed off through the hash: the route encodes what is playing, and an
   // upcoming airing is not something that plays.
   const [guideJump, setGuideJump] = useState<GuideJumpTarget | null>(null);
+  // The sheet a Live TV card's programme half opens, keyed the way the guide's
+  // is. `start` is null for a channel with nothing listed, and `label` names
+  // the channel in that case, since the sheet builds its eyebrow from an
+  // airing it will not have.
+  const [cardInfo, setCardInfo] = useState<
+    { channel: string; start: string | null; label: string } | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -403,6 +415,23 @@ export function ChannelGrid({ onLogout }: Props) {
         />
       )}
 
+      {/* The sheet a Live TV card's programme half opens. The same component
+          the guide opens, so the two tabs describe a programme the same way,
+          and its Watch Live is the second way to tune from a card. */}
+      {cardInfo && (
+        <ShowInfo
+          channel={cardInfo.channel}
+          start={cardInfo.start}
+          channelLabel={cardInfo.label}
+          onClose={() => setCardInfo(null)}
+          onTune={() => {
+            const ch = channels.find(c => c.identifier === cardInfo.channel);
+            setCardInfo(null);
+            if (ch) setPlaying(ch);
+          }}
+        />
+      )}
+
       {/* The Guide is a viewport; Live TV and Library are documents.
           A guide is a fixed instrument you look into — chrome pinned, one
           scrollable body, bottom anchored — so it gets `h-dvh` and owns its own
@@ -645,7 +674,20 @@ export function ChannelGrid({ onLogout }: Props) {
                   }}
                 >
                   {filtered.map(ch => (
-                    <ChannelCard key={ch.identifier} channel={ch} now={now} onClick={() => setPlaying(ch)} />
+                    <ChannelCard
+                      key={ch.identifier}
+                      channel={ch}
+                      now={now}
+                      onPlay={() => setPlaying(ch)}
+                      onInfo={() => setCardInfo({
+                        channel: ch.identifier,
+                        // No programme means no airing to key a sheet by; the
+                        // sheet has a mode for that and names the channel
+                        // instead.
+                        start: ch.current_program?.start ?? null,
+                        label: channelName(ch),
+                      })}
+                    />
                   ))}
                   {filtered.length === 0 && channels.length > 0 && (
                     <div className="col-span-full flex flex-col items-center justify-center py-24 text-fg-muted">
