@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import search as search_mod
-from ..state import state
+from ..state import _run_sync, state
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -24,6 +24,11 @@ async def search(
         raise HTTPException(status_code=401, detail="Not authenticated")
     wanted = [k for k in (s.strip() for s in kinds.split(",")) if k] if kinds else None
     try:
-        return search_mod.search(q, limit=limit, kinds=wanted)
+        # search_mod.search is pure blocking db.query/db.query_one - a
+        # limit=50 request issues ~57 synchronous statements. Running that
+        # inline on the event loop would stall every HLS segment this process
+        # is also serving, for up to busy_timeout (5s), on every settled
+        # keystroke from all three surfaces.
+        return await _run_sync(search_mod.search, q, limit, wanted)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Search error: {e}")
