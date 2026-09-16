@@ -59,8 +59,13 @@ async def lifespan(app: FastAPI):
         guide_sync.run_forever(_fetch_guide, state.sync_series, state.prefetch_artwork)
     )
 
+    # Abandoned live transcodes hold tuners, and the case they have to be swept
+    # for is the one where no request is ever coming again to notice them.
+    reap_task = asyncio.create_task(stream.reap_forever())
+
     yield
 
+    reap_task.cancel()
     guide_task.cancel()
     # Before anything that can block: a live transcode holds a tuner on the
     # device, and one left running after this process goes keeps holding it.

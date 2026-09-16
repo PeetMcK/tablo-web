@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -20,7 +21,24 @@ TRANSCODE_DIR.mkdir(exist_ok=True)
 
 transcode_procs: dict[str, subprocess.Popen] = {}
 
+# When each live session was last asked for, by session id. A player fetches
+# the playlist about every segment, so silence here means nobody is watching.
+session_touched: dict[str, float] = {}
+
 MAX_TRANSCODE_SESSIONS = 4
+
+# How long a live transcode may go unasked-for before it is killed, and how
+# often to look. The only orderly way a session ends is DELETE /stream/{id},
+# which a closed laptop, a killed tab or a dropped network never sends - and
+# the transcode holds a tuner on the device until something stops it.
+#
+# Segment fetches alone are not the signal: a player paused on live fills its
+# buffer and then stops asking, while still being watched in every sense that
+# matters. The player pings /transcode/status while it holds a live session,
+# which is what this timeout is really measuring the absence of - two minutes
+# of silence from a thirty-second heartbeat.
+LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "120"))
+REAP_INTERVAL = 30.0
 
 # Rolling DVR window for live transcodes, in segments of HLS_TIME seconds.
 # A 6-segment window (~36s) leaves nothing to rewind into; widening it is what
@@ -61,6 +79,62 @@ def _startup_cleanup():
 _startup_cleanup()
 
 
+def touch_session(session_id: str) -> None:
+    """Mark a live session as still wanted. Cheap enough for every request."""
+    if session_id in transcode_procs:
+        session_touched[session_id] = time.monotonic()
+
+
+def _kill(session_id: str) -> None:
+    proc = transcode_procs.pop(session_id, None)
+    session_touched.pop(session_id, None)
+    if proc:
+        try:
+            proc.kill()
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001 - a dead process is the goal either way
+            pass
+
+
+def reap_idle_transcoders() -> list[str]:
+    """Kill live transcodes nobody has asked about in LIVE_IDLE_SECONDS.
+
+    Returns the sessions it killed, for the log.
+    """
+    now = time.monotonic()
+    stale = [
+        sid for sid in list(transcode_procs)
+        # A session that has never been touched is one started moments ago,
+        # before its player asked for anything. Give it the same grace.
+        if now - session_touched.setdefault(sid, now) > LIVE_IDLE_SECONDS
+    ]
+    for sid in stale:
+        _kill(sid)
+        import shutil
+        try:
+            shutil.rmtree(TRANSCODE_DIR / sid)
+        except Exception:  # noqa: BLE001
+            pass
+        state.stop_session(sid)
+    return stale
+
+
+async def reap_forever():
+    """The sweep has to run on a timer, not on a request.
+
+    The case it exists for is precisely the one where no request is ever coming
+    again: the tab is gone and nothing will ask for this session or any other.
+    """
+    while True:
+        await asyncio.sleep(REAP_INTERVAL)
+        try:
+            if killed := reap_idle_transcoders():
+                print(f"[stream] reaped {len(killed)} idle transcode(s): {killed}",
+                      flush=True)
+        except Exception as e:  # noqa: BLE001 - a bad sweep must not end the loop
+            print(f"[stream] reap failed: {e}", flush=True)
+
+
 def shutdown_transcoders():
     """Kill every live transcoder this process started.
 
@@ -70,13 +144,8 @@ def shutdown_transcoders():
     nothing left that knows how to stop them. Two were found that way after a
     restart, 23 and 10 minutes old.
     """
-    for session_id, proc in list(transcode_procs.items()):
-        try:
-            proc.kill()
-            proc.wait(timeout=3)
-        except Exception:  # noqa: BLE001 - shutdown must not raise
-            pass
-        transcode_procs.pop(session_id, None)
+    for session_id in list(transcode_procs):
+        _kill(session_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +157,8 @@ async def transcoded_stream(session_id: str, path: str, request: Request):
     # Security: Ensure session_id is a valid hex string to prevent path traversal
     if not all(c in "0123456789abcdefABCDEF" for c in session_id):
         raise HTTPException(400, "Invalid session ID")
+
+    touch_session(session_id)
 
     session_dir = TRANSCODE_DIR / session_id
     # Security: Normalize path and prevent traversing out of session_dir
@@ -377,6 +448,10 @@ def encoded_seconds(log_text: str) -> float | None:
 async def transcode_status(session_id: str):
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    # This is the player's heartbeat as well as its progress read: it keeps
+    # asking while it holds the session, including while paused, when no
+    # segment is being fetched at all.
+    touch_session(session_id)
     proc = transcode_procs.get(session_id)
     session_dir = TRANSCODE_DIR / session_id
 

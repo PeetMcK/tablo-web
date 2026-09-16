@@ -7,6 +7,7 @@ found reparented to init after a restart, 23 and 10 minutes old.
 """
 
 import subprocess
+import time
 
 from fastapi.testclient import TestClient
 
@@ -42,6 +43,98 @@ def test_backend_shutdown_reaps_them():
         assert proc.poll() is not None, "the backend exited and left FFmpeg behind"
     finally:
         stream.transcode_procs.pop("deadbeef", None)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_idle_transcoders_are_reaped():
+    """A viewer who closes the laptop lid sends no `DELETE /stream/{id}`.
+
+    Nothing then stops the transcode: it keeps pulling segments and keeps the
+    tuner for as long as the backend lives. Two were found 24 and 22 minutes
+    old with no player anywhere.
+    """
+    proc = _sleeper()
+    stream.transcode_procs["deadbeef"] = proc
+    stream.session_touched["deadbeef"] = time.monotonic() - stream.LIVE_IDLE_SECONDS - 1
+    try:
+        stream.reap_idle_transcoders()
+        assert proc.poll() is not None, "an abandoned transcode was left running"
+        assert "deadbeef" not in stream.transcode_procs
+    finally:
+        stream.transcode_procs.pop("deadbeef", None)
+        stream.session_touched.pop("deadbeef", None)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_a_watched_transcoder_is_left_alone():
+    proc = _sleeper()
+    stream.transcode_procs["deadbeef"] = proc
+    stream.session_touched["deadbeef"] = time.monotonic()
+    try:
+        stream.reap_idle_transcoders()
+        assert proc.poll() is None, "a transcode being watched was killed"
+    finally:
+        stream.transcode_procs.pop("deadbeef", None)
+        stream.session_touched.pop("deadbeef", None)
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_serving_a_segment_counts_as_watching(tmp_path, monkeypatch):
+    """What marks a session alive is the player still asking for it.
+
+    Only for a session that is actually running: an id nobody started is
+    something a stray or hostile request made up, and recording those would let
+    anyone grow this dict without limit.
+    """
+    monkeypatch.setattr(stream, "TRANSCODE_DIR", tmp_path)
+    session_dir = tmp_path / "deadbeef"
+    session_dir.mkdir()
+    (session_dir / "00000.ts").write_bytes(b"\x47" * 188)
+    proc = _sleeper()
+    stream.transcode_procs["deadbeef"] = proc
+    stream.session_touched["deadbeef"] = time.monotonic() - 10_000
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/api/transcoded/deadbeef/00000.ts")
+            assert resp.status_code == 200
+            idle = time.monotonic() - stream.session_touched["deadbeef"]
+            assert idle < 5, "the fetch did not count as the session being watched"
+
+        stream.session_touched.pop("stranger", None)
+        with TestClient(app) as client:
+            client.get("/api/transcoded/stranger/00000.ts")
+        assert "stranger" not in stream.session_touched
+    finally:
+        stream.transcode_procs.pop("deadbeef", None)
+        stream.session_touched.pop("deadbeef", None)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_the_backend_runs_the_sweep_on_its_own(monkeypatch):
+    """Nobody is left to make a request, so the sweep cannot wait for one."""
+    monkeypatch.setattr(stream, "REAP_INTERVAL", 0.01)
+    proc = _sleeper()
+    stream.transcode_procs["deadbeef"] = proc
+    stream.session_touched["deadbeef"] = time.monotonic() - stream.LIVE_IDLE_SECONDS - 1
+    try:
+        with TestClient(app):
+            deadline = time.monotonic() + 3
+            while proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            # Asserted inside the context on purpose: the teardown kills every
+            # transcoder anyway, so the same check after it would pass without
+            # a sweep ever having run.
+            assert proc.poll() is not None, "the backend never swept by itself"
+    finally:
+        stream.transcode_procs.pop("deadbeef", None)
+        stream.session_touched.pop("deadbeef", None)
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
