@@ -4,7 +4,7 @@ import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
 import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
-import { parseRoute, writeRoute } from "../lib/route";
+import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
@@ -163,6 +163,16 @@ export function LibraryView() {
     });
   }, [nowPlaying]);
 
+  const closePlayer = useCallback(() => {
+    setPlaying(null);
+    setRestoreDone(true);
+  }, []);
+
+  // Back out of a player means Escape, the same as it does on the guide side.
+  useEffect(() => onRoutePop((route) => {
+    if (!route.watch) closePlayer();
+  }), [closePlayer]);
+
   // Persist the playhead locally. Throttled to whole seconds; the URL is left
   // alone so it stays a stable reference to the recording.
   const handlePosition = useCallback((seconds: number) => {
@@ -229,7 +239,7 @@ export function LibraryView() {
           startAt={resumeAt}
           autoPlay={Boolean(playing)}
           onPosition={handlePosition}
-          onClose={() => { setPlaying(null); setRestoreDone(true); }}
+          onClose={closePlayer}
         />
       )}
 

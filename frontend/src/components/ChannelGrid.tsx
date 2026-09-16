@@ -11,7 +11,7 @@ import { HeaderClock } from "./HeaderClock";
 import { SearchDropdown } from "./SearchDropdown";
 import { SearchResultsView } from "./SearchResultsView";
 import { CommandPalette } from "./CommandPalette";
-import { parseRoute, writeRoute, type Tab } from "../lib/route";
+import { onRoutePop, parseRoute, writeRoute, type Tab } from "../lib/route";
 
 function useGuideStream(enabled: boolean) {
   const [channels, setChannels] = useState<GuideChannel[]>([]);
@@ -224,6 +224,14 @@ export function ChannelGrid({ onLogout }: Props) {
     setPendingChannel(null);
     setRestoreDone(true);
   }, []);
+
+  // The browser's Back, out of a player, means the same thing as Escape. The
+  // entry it pops is the tab the player was opened from, so an empty `watch`
+  // is the close. The route effect above then finds the hash already correct
+  // and writes nothing, which is what keeps this from bouncing.
+  useEffect(() => onRoutePop((route) => {
+    if (!route.watch) closePlayer();
+  }), [closePlayer]);
 
   // Every tab switch goes through here rather than the raw `setTab`, so that
   // a `pendingChannel` left unresolved cannot outlive the tab it was queued

@@ -51,7 +51,29 @@ export function writeRoute(route: Route): void {
   if (route.tab === "search" && route.q) {
     hash += `?q=${encodeURIComponent(route.q)}`;
   }
-  if (window.location.hash !== hash) {
-    window.history.replaceState(null, "", hash);
-  }
+  if (window.location.hash === hash) return;
+
+  // Opening a player is the one transition that earns a history entry. Without
+  // it the browser's Back left the site entirely from a fullscreen video —
+  // the gesture every viewer reaches for to get out of one. With it, Back pops
+  // to the tab underneath and the player closes, which is what Escape does.
+  //
+  // Only on the way in. Closing, switching tabs and changing channel all keep
+  // replacing, so Back stays a single step out of the video rather than a
+  // walk back through everything that has been watched.
+  const opening = parseRoute().watch === null && route.watch !== null;
+  if (opening) window.history.pushState(null, "", hash);
+  else window.history.replaceState(null, "", hash);
+}
+
+/**
+ * Run `onBack` when a history entry is popped that has nothing playing.
+ *
+ * Paired with the push above: the entry Back lands on is the tab the player
+ * was opened from, so seeing no `watch` in it is the signal to close.
+ */
+export function onRoutePop(onBack: (route: Route) => void): () => void {
+  const handler = () => onBack(parseRoute());
+  window.addEventListener("popstate", handler);
+  return () => window.removeEventListener("popstate", handler);
 }
