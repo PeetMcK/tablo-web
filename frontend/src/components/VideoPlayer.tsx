@@ -178,6 +178,25 @@ function formatTime(seconds: number): string {
     : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** The three invisible click targets across the picture. */
+type SurfaceZone = "back" | "play" | "forward";
+
+/**
+ * Which zone a point across the frame falls in: two fifths, one, two.
+ *
+ * One definition for both the click and the highlight that previews it. Two
+ * copies of these fractions would be free to drift, and a button that lights
+ * up without being the one that fires is worse than no highlight at all.
+ */
+function zoneAtEvent(e: React.MouseEvent<HTMLDivElement>): SurfaceZone | null {
+  const rect = e.currentTarget.getBoundingClientRect();
+  if (!rect.width) return null;
+  const x = (e.clientX - rect.left) / rect.width;
+  if (x < 0.4) return "back";
+  if (x > 0.6) return "forward";
+  return "play";
+}
+
 /**
  * What `Stage` renders from. Assembled by VideoPlayer, handed across
  * unchanged, and destructured back into the same names on arrival.
@@ -1056,12 +1075,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    */
   const handleSurfaceClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     resetHideTimerRef.current?.();
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (!rect.width) return;
-    const x = (e.clientX - rect.left) / rect.width;
-    if (x < 0.4) skip(-10);
-    else if (x > 0.6) skip(30);
-    else togglePlay();
+    const zone = zoneAtEvent(e);
+    if (zone === "back") skip(-10);
+    else if (zone === "forward") skip(30);
+    else if (zone === "play") togglePlay();
   }, [skip, togglePlay]);
 
   /**
@@ -1302,6 +1319,43 @@ function Stage({ view }: { view: PlayerView }) {
     setBarHover(rect.height > 0 && rect.bottom - e.clientY <= PIP_BAR_REACH);
   }, []);
 
+  /**
+   * Lights the button that a click on the picture would press.
+   *
+   * The zones are deliberately invisible — no overlay, no icon — which leaves
+   * nothing to say they exist or which one the pointer is in. Borrowing the
+   * matching button's own hover state answers both, in the place the viewer
+   * is already looking, and costs the frame nothing.
+   */
+  const [hoverZone, setHoverZone] = useState<SurfaceZone | null>(null);
+
+  const trackZone = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const zone = zoneAtEvent(e);
+    // Returning the held value makes React bail out of the render, so a
+    // pointer crossing the frame renders three times rather than per pixel.
+    setHoverZone((held) => (held === zone ? held : zone));
+  }, []);
+
+  const onStageMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (poppedOut) trackBottomHover(e);
+    else resetHideTimer();
+    trackZone(e);
+  }, [poppedOut, trackBottomHover, resetHideTimer, trackZone]);
+
+  const onStageLeave = useCallback(() => {
+    setBarHover(false);
+    setHoverZone(null);
+  }, []);
+
+  /** Crossing onto the controls surrenders the borrowed highlight. */
+  const holdAndRelease = useCallback((held: boolean) => {
+    holdControls(held);
+    if (held) setHoverZone(null);
+  }, [holdControls]);
+
+  /** The hover a zone lends a button, matching its own `hover:bg-fill`. */
+  const lent = (zone: SurfaceZone) => (hoverZone === zone ? "bg-fill" : "");
+
   // Whichever root mounted this stage, the one video element belongs in its
   // host. Done here rather than in VideoPlayer so it cannot race the second
   // root's commit: by the time this runs, the host below exists.
@@ -1332,8 +1386,8 @@ function Stage({ view }: { view: PlayerView }) {
       // programme. Any movement brings both back.
       className={`dark fixed inset-0 z-50 bg-media flex items-center justify-center
         ${showControls ? "" : "cursor-none"}`}
-      onMouseMove={poppedOut ? trackBottomHover : resetHideTimer}
-      onMouseLeave={poppedOut ? () => setBarHover(false) : undefined}
+      onMouseMove={onStageMove}
+      onMouseLeave={onStageLeave}
       onClick={handleSurfaceClick}
     >
       {/* An empty host. The video element is not rendered here — it is made
@@ -1461,8 +1515,8 @@ function Stage({ view }: { view: PlayerView }) {
             holds the chrome up — see `cursorOnTransport`. */}
         <div
           className="flex flex-col gap-3 pointer-events-auto"
-          onMouseEnter={() => holdControls(true)}
-          onMouseLeave={() => holdControls(false)}
+          onMouseEnter={() => holdAndRelease(true)}
+          onMouseLeave={() => holdAndRelease(false)}
         >
 
           <div className="flex items-center gap-3">
@@ -1680,7 +1734,7 @@ function Stage({ view }: { view: PlayerView }) {
               <button
                 onClick={(e) => { e.stopPropagation(); skip(-10); }}
                 className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
-                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"}`}
+                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"} ${lent("back")}`}
                 title="Back 10s (Left arrow)"
                 aria-label="Back 10 seconds"
               >
@@ -1691,7 +1745,7 @@ function Stage({ view }: { view: PlayerView }) {
               <button
                 onClick={(e) => { e.stopPropagation(); togglePlay(); }}
                 className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
-                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${lent("play")}`}
                 title={paused ? "Play (Space)" : "Pause (Space)"}
               >
                 {paused
@@ -1702,7 +1756,7 @@ function Stage({ view }: { view: PlayerView }) {
               <button
                 onClick={(e) => { e.stopPropagation(); skip(30); }}
                 className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
-                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"}`}
+                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"} ${lent("forward")}`}
                 title="Forward 30s (Right arrow)"
                 aria-label="Forward 30 seconds"
               >
@@ -1764,14 +1818,19 @@ function Stage({ view }: { view: PlayerView }) {
                 </button>
               )}
 
-              <button
-                onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
-                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
-                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
-                title="Fullscreen (F)"
-              >
-                <Maximize className="w-4 h-4" aria-hidden />
-              </button>
+              {/* Not offered from a pop-out. A picture-in-picture window
+                  cannot take itself fullscreen — the request is refused there
+                  — so the button could only ever have done nothing. */}
+              {!poppedOut && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
+                  className="w-9 h-9 rounded-lg glass text-player-fg flex items-center
+                             justify-center hover:bg-fill transition"
+                  title="Fullscreen (F)"
+                >
+                  <Maximize className="w-4 h-4" aria-hidden />
+                </button>
+              )}
             </div>
           </div>
         </div>
