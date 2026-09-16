@@ -34,6 +34,15 @@ export interface AudioSink {
   readonly clockSeconds: number | null;
   /** Seconds the clock is ahead of the newest decoded frame. */
   starvedBy(newestFramePts: number | null): number;
+  /**
+   * Silence the output without stopping it.
+   *
+   * Muting must not touch the clock: the worklet keeps rendering, so time
+   * keeps advancing and video keeps playing. Suspending the context instead
+   * would freeze the picture along with the sound.
+   */
+  setMuted(muted: boolean): void;
+  readonly muted: boolean;
   /** Drop what is queued — for a seek. */
   flush(): void;
   resume(): Promise<void>;
@@ -47,10 +56,13 @@ export async function createAudioSink(
 ): Promise<AudioSink> {
   await context.audioWorklet.addModule(workletUrl);
   const node = new AudioWorkletNode(context, "pcm-processor", { outputChannelCount: [2] });
-  node.connect(context.destination);
+  const gain = context.createGain();
+  node.connect(gain);
+  gain.connect(context.destination);
 
   const state = createSinkState(context.sampleRate);
   node.port.onmessage = (event: MessageEvent<number>) => onSamplesPlayed(state, event.data);
+  let muted = false;
 
   return {
     push(chunk: DecodedAudioChunk) {
@@ -59,6 +71,11 @@ export async function createAudioSink(
     },
     get clockSeconds() { return sinkClockSeconds(state); },
     starvedBy: (newestFramePts: number | null) => starvedBy(state, newestFramePts),
+    setMuted(next: boolean) {
+      muted = next;
+      gain.gain.value = next ? 0 : 1;
+    },
+    get muted() { return muted; },
     flush() { node.port.postMessage(null); },
     resume: () => context.resume(),
     suspend: () => context.suspend(),
