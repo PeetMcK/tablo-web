@@ -45,3 +45,46 @@ describe("useSearch", () => {
     expect(spy).toHaveBeenCalledWith("broncos", expect.anything());
   });
 });
+
+import { render, screen, fireEvent } from "@testing-library/react";
+import { SearchResultRow } from "../components/SearchResultRow";
+import type { SearchItem } from "../api/tablo";
+
+const ITEM: SearchItem = {
+  kind: "airing", ref: "ch1|x", title: "Broncos at Chiefs",
+  subtitle: "Week 1", channel: "8.1 CBS",
+  start_epoch: 1_760_000_000, duration: 3600,
+  target: { tab: "grid", at: "2026-10-09T10:13:20Z" }, recorded: null,
+};
+
+describe("SearchResultRow", () => {
+  it("shows the title, station and subtitle", () => {
+    render(<SearchResultRow item={ITEM} selected={false} onActivate={() => {}} />);
+    expect(screen.getByText("Broncos at Chiefs")).toBeInTheDocument();
+    expect(screen.getByText("8.1 CBS")).toBeInTheDocument();
+    expect(screen.getByText(/Week 1/)).toBeInTheDocument();
+  });
+
+  it("says a past airing was recorded, so you know you did not miss it", () => {
+    render(
+      <SearchResultRow
+        item={{ ...ITEM, recorded: { object_id: 80888 } }}
+        selected={false}
+        onActivate={() => {}}
+      />,
+    );
+    expect(screen.getByText(/recorded/i)).toBeInTheDocument();
+  });
+
+  it("activates on click", () => {
+    const onActivate = vi.fn();
+    render(<SearchResultRow item={ITEM} selected={false} onActivate={onActivate} />);
+    fireEvent.click(screen.getByRole("option"));
+    expect(onActivate).toHaveBeenCalledWith(ITEM);
+  });
+
+  it("marks the selected row for assistive tech, not just visually", () => {
+    render(<SearchResultRow item={ITEM} selected onActivate={() => {}} />);
+    expect(screen.getByRole("option")).toHaveAttribute("aria-selected", "true");
+  });
+});
