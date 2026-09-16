@@ -3,13 +3,29 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # `host.docker.internal` answers with an AAAA as well as an A, and the
+    # container has no route to that IPv6 address. nginx round-robins the
+    # addresses a name gave it, so every other upstream connection opened with
+    # `connect() ... failed (101: Network unreachable)`, briefly marked the
+    # upstream down, and only then retried over IPv4. Requests still returned
+    # 200 — this cost a failed connect and a log pair each time, 30 of them in
+    # one session's log.
+    #
+    # A name resolved at startup cannot be filtered, so the origin goes through
+    # a variable instead: that defers resolution to request time and hands it to
+    # this resolver, which is Docker's embedded DNS with AAAA answers dropped.
+    # Neither location passes a URI after the origin, which is what keeps the
+    # request path identical to the literal form.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $backend_origin ${BACKEND_ORIGIN};
+
     # Exporting a recording is a multi-gigabyte file transfer, the opposite of
     # the streaming case below. Relaying it unbuffered halved throughput
     # (measured 210 MB/s direct against 102 MB/s proxied), so this one route
     # gets buffering and large buffers. A regex location takes precedence over
     # the /api/ prefix match regardless of order.
     location ~ ^/api/recordings/[0-9]+/download$ {
-        proxy_pass http://${BACKEND_ORIGIN};
+        proxy_pass http://$backend_origin;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $http_host;
@@ -29,7 +45,7 @@ server {
     # Proxy /api/* to the backend. BACKEND_ORIGIN is substituted at container
     # start, so the backend can run natively on the host for hardware encoding.
     location /api/ {
-        proxy_pass http://${BACKEND_ORIGIN};
+        proxy_pass http://$backend_origin;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $http_host;
