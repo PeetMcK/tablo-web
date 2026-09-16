@@ -5,6 +5,7 @@ import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
 import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
 import { parseRoute, writeRoute } from "../lib/route";
+import { formatAired } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
 
@@ -29,13 +30,6 @@ function formatBytes(n: number): string {
  * three of these start within hours of each other - so the kickoff time is what
  * actually distinguishes them.
  */
-function formatAired(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `${d.toLocaleDateString()} ${time}`;
-}
-
 /**
  * Runtime as `3h 35m`.
  *
@@ -229,11 +223,22 @@ export function LibraryView() {
                   {rec.pinned ? (
                     <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-emerald-600/90 text-[10px] font-bold text-white uppercase tracking-wider">
                       <CheckCircle2 className="w-3 h-3" aria-hidden />
-                      {rec.cache_state === "complete" ? "Offline" : `${Math.round(rec.cache_progress * 100)}%`}
+                      {rec.cache_state === "complete" ? "Cached" : `${Math.round(rec.cache_progress * 100)}%`}
                     </div>
                   ) : rec.cache_state === "complete" ? (
                     <div className="absolute top-3 left-3 px-2 py-1 rounded bg-accent/80 text-[10px] font-bold text-white uppercase tracking-wider">
                       Ready
+                    </div>
+                  ) : rec.cache_progress > 0 ? (
+                    // Watching transcodes as it goes, so a recording nobody
+                    // asked to keep is often substantially on disk already.
+                    // Deliberately not emerald and without the tick: that badge
+                    // means the copy is kept and outlives the Tablo deleting
+                    // it, and an incidental cache makes no such promise. The
+                    // colour carries the distinction now that both say cached.
+                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-black/80 text-[10px] font-bold text-white/70 uppercase tracking-wider tabular-nums"
+                         title="Transcoded so far. Keep it offline to fill in the rest.">
+                      {Math.max(1, Math.round(rec.cache_progress * 100))}% cached
                     </div>
                   ) : null}
                   {rec.offline_only && (
@@ -248,12 +253,15 @@ export function LibraryView() {
                   </div>
 
                   {/* Fill progress along the bottom edge — the corner badge
-                      alone was too easy to miss. */}
-                  {rec.pinned && rec.cache_state !== "complete" && (
+                      alone was too easy to miss. Shown for anything part-cached,
+                      not only for kept copies, so the bar and the badge above
+                      never disagree about whether there is work on disk. */}
+                  {rec.cache_state !== "complete" && rec.cache_progress > 0 && (
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-black/60">
                       <div
                         className={`h-full transition-[width] duration-1000 ease-linear
-                                    ${rec.paused ? "bg-white/40" : "bg-emerald-400"}`}
+                                    ${!rec.pinned ? "bg-white/30"
+                                      : rec.paused ? "bg-white/40" : "bg-emerald-400"}`}
                         style={{ width: `${Math.max(1, rec.cache_progress * 100)}%` }}
                       />
                     </div>

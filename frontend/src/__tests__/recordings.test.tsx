@@ -2,8 +2,37 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LibraryView } from "../components/LibraryView";
+import { formatAired } from "../lib/format";
 import { api } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
+
+const NBSP = "\u00a0";
+
+describe("formatAired", () => {
+  const WHEN = new Date("2026-09-13T21:25:00Z");
+
+  it("breaks only between the date and the time", () => {
+    // The card is narrow enough to wrap this stamp, and between the two halves
+    // is the only sensible place to do it. Breaking inside the time stranded
+    // "PM" alone on a line of its own.
+    const out = formatAired(WHEN.toISOString());
+    expect((out.match(/ /g) ?? []).length).toBe(1);
+  });
+
+  it("ties together every space the locale puts inside either half", () => {
+    // Not only the meridiem: a locale spelling the date "13 Sep 2026" must not
+    // come apart either.
+    const date = WHEN.toLocaleDateString();
+    const time = WHEN.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(formatAired(WHEN.toISOString())).toBe(
+      `${date.replace(/\s/g, NBSP)} ${time.replace(/\s/g, NBSP)}`,
+    );
+  });
+
+  it("returns nothing for an unparseable stamp", () => {
+    expect(formatAired("not a date")).toBe("");
+  });
+});
 
 const REC: Recording = {
   object_id: 80888,
@@ -178,6 +207,37 @@ describe("LibraryView", () => {
     expect(screen.queryByRole("link", { name: /as an mp4/i })).toBeNull();
   });
 
+  it("shows how much of an unkept recording is already cached", async () => {
+    // Watching transcodes as it goes, so a recording nobody asked to keep can
+    // still be substantially on disk. The badge only ever appeared for pinned
+    // copies, so those cards said nothing at all about the work already done.
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, cache_state: "partial", cache_progress: 0.27, pinned: false }],
+    }));
+    renderLibrary();
+    expect(await screen.findByText("27% cached")).toBeInTheDocument();
+  });
+
+  it("claims no cache for a recording that has none", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(list());   // cache_state absent
+    renderLibrary();
+    await screen.findByText("NFL Football");
+    expect(screen.queryByText(/cached/i)).toBeNull();
+  });
+
+  it("keeps the kept badge distinct from a merely cached one", async () => {
+    // Both badges now say "cached", so the wording alone no longer separates a
+    // copy that is kept from one that merely happens to be on disk. A kept copy
+    // in progress shows its bare percentage beside the tick; only the
+    // incidental one spells out "% cached".
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, cache_state: "partial", cache_progress: 0.42, pinned: true }],
+    }));
+    renderLibrary();
+    expect(await screen.findByText("42%")).toBeInTheDocument();
+    expect(screen.queryByText(/42% cached/)).toBeNull();
+  });
+
   it("reports truncation instead of silently dropping recordings", async () => {
     vi.spyOn(api, "recordings").mockResolvedValue(list({ returned: 50, total: 213 }));
     renderLibrary();
@@ -207,7 +267,7 @@ describe("LibraryView", () => {
     );
     renderLibrary();
     expect(await screen.findByText(/Only here/i)).toBeInTheDocument();
-    expect(await screen.findByText(/Offline/i)).toBeInTheDocument();
+    expect(await screen.findByText(/^Cached$/i)).toBeInTheDocument();
     // Device state is irrelevant for an offline copy — it must still play.
     const play = await screen.findAllByRole("button", { name: /play nfl football/i });
     expect(play[0]).not.toBeDisabled();
