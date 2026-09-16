@@ -449,7 +449,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
       <div
         ref={scrollerRef}
         onScroll={e => trackHour(e.currentTarget)}
-        className="flex-1 min-h-0 overflow-auto no-scrollbar"
+        className="flex-1 min-h-0 overflow-auto scroll-time-only"
       >
         {/* The scrolled surface. Explicit width so the timeline extends the
             full run of the guide whatever any individual channel lists — the
