@@ -6,9 +6,11 @@ and keeps a core busy, with nothing left that knows how to stop it. Two were
 found reparented to init after a restart, 23 and 10 minutes old.
 """
 
+import asyncio
 import subprocess
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -138,6 +140,72 @@ def test_the_backend_runs_the_sweep_on_its_own(monkeypatch):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_start_transcoder_spawns_and_registers(tmp_path, monkeypatch):
+    """Nothing drove this function before; the registry was filled by hand.
+
+    So the spawn — the part every live session depends on — had no coverage at
+    all, and the move onto a thread could have broken it silently.
+    """
+    monkeypatch.setattr(stream, "TRANSCODE_DIR", tmp_path)
+    monkeypatch.setattr(stream, "live_ffmpeg_cmd", lambda _dir, _url: ["sleep", "60"])
+
+    try:
+        await stream.start_transcoder("deadbeef", "http://device/pl.m3u8")
+        proc = stream.transcode_procs.get("deadbeef")
+        assert proc is not None, "the session was never registered"
+        assert proc.poll() is None, "FFmpeg was not started"
+        log = (tmp_path / "deadbeef" / "ffmpeg.log").read_text()
+        assert "http://device/pl.m3u8" in log, "the log records what was started"
+    finally:
+        proc = stream.transcode_procs.pop("deadbeef", None)
+        if proc and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_evicting_a_transcoder_leaves_the_loop_free(tmp_path, monkeypatch):
+    """Eviction gives FFmpeg two seconds to die. That wait used to happen on
+    the event loop, which stalled every other request in the process — segment
+    fetches for players already watching included."""
+    monkeypatch.setattr(stream, "TRANSCODE_DIR", tmp_path)
+    monkeypatch.setattr(stream, "live_ffmpeg_cmd", lambda _dir, _url: ["sleep", "60"])
+
+    class SlowToDie:
+        """Stands in for FFmpeg ignoring a kill for a second."""
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            time.sleep(1)
+
+    for i in range(stream.MAX_TRANSCODE_SESSIONS):
+        stream.transcode_procs[f"old{i}"] = SlowToDie()
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    beat = asyncio.create_task(ticker())
+    try:
+        await stream.start_transcoder("newborn", "http://device/pl.m3u8")
+        beat.cancel()
+        # A second of eviction at 10ms a tick. Held on the loop, this is 0.
+        assert ticks > 20, f"the loop was blocked through the eviction ({ticks} ticks)"
+    finally:
+        beat.cancel()
+        for key in [*stream.transcode_procs]:
+            proc = stream.transcode_procs.pop(key)
+            if isinstance(proc, subprocess.Popen) and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
 
 def test_live_ffmpeg_carries_the_marker_the_sweep_looks_for():
