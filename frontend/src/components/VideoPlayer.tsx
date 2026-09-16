@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
-  PictureInPicture2,
+  PictureInPicture2, Minimize2,
 } from "lucide-react";
 import { usePlayer } from "../hooks/usePlayer";
 import { api, previewUrl } from "../api/tablo";
@@ -82,6 +82,7 @@ const RECORDING_FRAG_TIMEOUT = 120_000;
  * demand cold windows the viewer may never reach.
  */
 const RECORDING_BUFFER_SECONDS = 180;
+
 
 /**
  * Legibility halo for chrome that sits bare on the gradient scrim.
@@ -178,8 +179,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const videoRef = useRef<HTMLVideoElement>(null);
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
-  /** Where the video sits, and returns to after a spell in its own window. */
+  /** Where the video sits. Kept as a host of its own for layout. */
   const videoHostRef = useRef<HTMLDivElement>(null);
+  /** The player's contents as one node — what moves into the PiP window. */
+  const stageRef = useRef<HTMLDivElement>(null);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -204,6 +207,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [apiError, setApiError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [muted, setMuted] = useState(false);
+  /** True while the stage is living in a picture-in-picture window. */
+  const [poppedOut, setPoppedOut] = useState(false);
   const [paused, setPaused] = useState(!openPlaying);
   const [waiting, setWaiting] = useState(false);
   const [position, setPosition] = useState(0);
@@ -878,37 +883,58 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   const togglePictureInPicture = useCallback(async () => {
     const video = videoRef.current;
-    const host = videoHostRef.current;
+    const root = rootRef.current;
+    const stage = stageRef.current;
     const dpip = (window as unknown as { documentPictureInPicture?: {
       requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
     } }).documentPictureInPicture;
-    if (!video || !host || !dpip) return;
+    if (!video || !root || !stage || !dpip) return;
 
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
     try {
-      // Proportioned to the picture so the window opens without letterboxing.
-      const w = await dpip.requestWindow({
-        width: 480,
-        height: Math.round(480 * (video.videoHeight / (video.videoWidth || 16 / 9) || 9 / 16)),
-      });
+      // No size, no position. The browser remembers where the viewer left the
+      // window and reopens it there, which is the behaviour they want and the
+      // only one available: `resizeTo` is refused on a picture-in-picture
+      // window and `requestWindow` takes no coordinates. Asking for a size
+      // here would only override a placement they had already chosen.
+      const w = await dpip.requestWindow();
       pipWindow.current = w;
-      w.document.body.style.cssText = "margin:0;background:#000;overflow:hidden";
-      video.style.cssText = "width:100vw;height:100vh;object-fit:contain";
-      w.document.body.append(video);
 
-      // Closing is the viewer's, not ours: the window has its own close
-      // button, and the tab needs its picture back whichever way it goes.
+      // The window arrives with no styles at all. Every class the chrome uses
+      // has to be carried over, or the transport lands there unstyled.
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          const css = Array.from(sheet.cssRules).map((r) => r.cssText).join("");
+          const style = w.document.createElement("style");
+          style.textContent = css;
+          w.document.head.append(style);
+        } catch {
+          // A cross-origin sheet cannot be read. Ours are all same-origin, so
+          // there is nothing here worth failing the pop-out over.
+        }
+      }
+      // Set in hope rather than expectation: the titlebar is the browser's and
+      // shows the origin. Costs nothing if it is ignored.
+      w.document.title = title;
+      w.document.body.style.cssText = "margin:0;overflow:hidden";
+      w.document.body.className = "dark";
+      w.document.body.append(stage);
+      setPoppedOut(true);
+
+      // However it closes — our button, the window's own close, the tab going
+      // away — the stage has to come home, or the player is left with nothing
+      // to show and a video element in a window nobody can see.
       w.addEventListener("pagehide", () => {
-        video.style.cssText = "";
-        host.append(video);
+        root.append(stage);
         pipWindow.current = null;
+        setPoppedOut(false);
       }, { once: true });
     } catch (e) {
       // Refused for want of a user gesture, or not implemented here after all.
       log.warn("picture-in-picture rejected", e);
     }
-  }, []);
+  }, [title]);
 
   // A player torn down while popped out would leave the window orphaned,
   // holding a video element that no longer belongs to anything.
@@ -1100,6 +1126,41 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       onMouseMove={resetHideTimer}
       onClick={handleSurfaceClick}
     >
+      {/* What the tab shows while the picture is away in its own window.
+          Mounted always and merely hidden, never conditionally rendered: while
+          the stage below is living in the other document, React must not have
+          cause to insert a sibling next to it — `insertBefore` against a node
+          in another document throws. */}
+      <div
+        hidden={!poppedOut}
+        className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+      >
+        <button
+          onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
+          className="w-20 h-20 rounded-full glass text-player-fg flex items-center
+                     justify-center hover:bg-fill transition"
+          title="Bring the picture back"
+          aria-label="Bring the picture back"
+        >
+          <PictureInPicture2 className="w-9 h-9" aria-hidden />
+        </button>
+        <p className="text-player-fg-muted text-sm">Playing in picture-in-picture</p>
+      </div>
+
+      {/* Everything else, as one child. The whole stage is what moves into the
+          picture-in-picture window, so the video element travels with its own
+          chrome and keeps the stream attached to it — and every conditional
+          overlay inside here moves with it, which is what keeps React's
+          insertions inside the subtree it still owns. */}
+      <div
+        ref={stageRef}
+        className={poppedOut
+          // Stacked rather than layered once popped out: a window the viewer
+          // has dragged to any shape letterboxes the picture, and that spare
+          // band is better spent on the transport than on black.
+          ? "relative w-full h-full bg-media flex flex-col"
+          : "relative w-full h-full flex items-center justify-center"}
+      >
       {/* No autoPlay attribute: usePlayer starts playback explicitly. Leaving it
           on let the browser resume by itself whenever the element received data
           after a stall, so pause would not stick and playback could jump. */}
@@ -1108,7 +1169,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           React owns this host's children and never inserts a sibling beside
           the video, so while the element is away there is no reference node
           for a later render to trip over. */}
-      <div ref={videoHostRef} className="w-full h-full">
+      <div
+        ref={videoHostRef}
+        className={poppedOut ? "flex-1 min-h-0 w-full" : "w-full h-full"}
+      >
         <video
           ref={videoRef}
           className="w-full h-full object-contain"
@@ -1191,9 +1255,16 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       )}
 
       <div
-        className={`absolute inset-0 flex flex-col justify-between p-6 transition-opacity duration-300 pointer-events-none
-          ${showControls ? "opacity-100" : "opacity-0"}`}
-        style={{
+        // Popped out, the chrome stops being an overlay and becomes the band
+        // under the picture, and it stops fading: the window is small, the
+        // cursor is usually somewhere else entirely, and a strip that empties
+        // itself after three seconds would leave the viewer with a control
+        // surface they cannot find.
+        className={poppedOut
+          ? "shrink-0 flex flex-col gap-2 px-3 pb-3 pt-1 bg-media"
+          : `absolute inset-0 flex flex-col justify-between p-6 transition-opacity duration-300 pointer-events-none
+             ${showControls ? "opacity-100" : "opacity-0"}`}
+        style={poppedOut ? undefined : {
           // Sized in pixels to the two bands that actually hold content — the
           // title block and the transport — rather than as a percentage, which
           // darkened a third of the frame at each end.
@@ -1210,8 +1281,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)",
         }}
       >
-        {/* Top bar — just the close affordance; the title sits under the bar */}
-        <div className="flex items-start justify-end pointer-events-auto">
+        {/* Top bar — just the close affordance; the title sits under the bar.
+            Gone once popped out: that window has a close button of its own,
+            and ours would sit over the picture. */}
+        <div hidden={poppedOut} className="flex items-start justify-end pointer-events-auto">
           <button
             onClick={onClose}
             className="w-10 h-10 shrink-0 rounded-full glass text-player-fg flex items-center justify-center hover:bg-fill transition"
@@ -1408,6 +1481,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             {/* What is playing, on the left. The transport is centered over it
                 absolutely, so a long title cannot push the controls off centre. */}
             <div
+              // Dropped once popped out: at that width the three cells of this
+              // row cannot all fit, and of the three the programme's name is
+              // the one the viewer least needs — they chose it, and the window
+              // is titled after it.
+              hidden={poppedOut}
               className="max-w-[30%] text-left pointer-events-none select-none"
               // A crisp outline rather than a blurred shadow: over flat white
               // content a soft shadow reads as a smudge. `paint-order: stroke`
@@ -1516,14 +1594,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 <button
                   onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
                   className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
-                  title="Picture in picture"
-                  aria-label="Picture in picture"
+                  title={poppedOut ? "Back to the tab" : "Picture in picture"}
+                  aria-label={poppedOut ? "Back to the tab" : "Picture in picture"}
                 >
-                  <PictureInPicture2 className="w-4 h-4" aria-hidden />
+                  {/* The glyph says which way the button goes. Popped out,
+                      this control renders inside the pop-out window itself, so
+                      offering to pop out again would be nonsense — inward
+                      arrows read as bringing it back. */}
+                  {poppedOut
+                    ? <Minimize2 className="w-4 h-4" aria-hidden />
+                    : <PictureInPicture2 className="w-4 h-4" aria-hidden />}
                 </button>
               )}
 
+              {/* Nothing to go fullscreen into from a pop-out window. */}
               <button
+                hidden={poppedOut}
                 onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
                 className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
                 title="Fullscreen (F)"
@@ -1533,6 +1619,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
