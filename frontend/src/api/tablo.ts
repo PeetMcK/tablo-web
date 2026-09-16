@@ -98,6 +98,39 @@ export interface GridChannel extends Omit<GuideChannel, 'current_program'> {
   airings: Program[];
 }
 
+/**
+ * One airing joined to its series — everything the show sheet renders.
+ *
+ * Read from the guide mirror, never the device, so this resolves at local
+ * speed. Almost every field is nullable: a channel with no EPG data yields a
+ * sheet that is mostly title and channel, which is honest rather than broken.
+ */
+export interface AiringDetail {
+  title: string | null;
+  episode_title: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  description: string | null;
+  start: string;
+  duration: number;
+  orig_air_date: string | null;
+  genres: string[];
+  rating: string | null;
+  /** Already a URL path, or null when the series has no cover art. */
+  image_url: string | null;
+  /** Computed server-side — the browser's clock may differ from the guide's. */
+  airing_now: boolean;
+  channel: {
+    identifier: string;
+    call_sign: string | null;
+    major: number | null;
+    minor: number | null;
+    network: string | null;
+    logo_url: string | null;
+    kind: string | null;
+  };
+}
+
 export type CacheState = "absent" | "partial" | "complete" | "failed";
 
 export interface Recording {
@@ -318,6 +351,18 @@ export const api = {
   refreshChannels: () =>
     req<{ channels: number; added: string[]; removed: string[] }>(
       "/channels/refresh", { method: "POST" },
+    ),
+
+  /**
+   * One airing's full detail, keyed the way the grid already holds it.
+   *
+   * (channel, start) is `guide_airing`'s primary key, so no new identifier
+   * has to be carried through the guide for this.
+   */
+  airingDetail: (channel: string, start: string) =>
+    req<AiringDetail>(
+      `/channels/airing-detail?channel=${encodeURIComponent(channel)}` +
+      `&start=${encodeURIComponent(start)}`,
     ),
 
   guide: () => req<GuideChannel[]>("/channels/guide"),
