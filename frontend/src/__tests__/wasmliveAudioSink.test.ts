@@ -1,0 +1,73 @@
+import { describe, it, expect } from "vitest";
+
+import {
+  createSinkState, notePts, onSamplesPlayed, sinkClockSeconds, starvedBy,
+} from "../lib/wasmlive/audioSink";
+
+describe("audio sink accounting", () => {
+  it("has no clock before any audio arrives", () => {
+    expect(sinkClockSeconds(createSinkState(48000))).toBeNull();
+  });
+
+  it("starts the clock at the first chunk's pts", () => {
+    const state = createSinkState(48000);
+    notePts(state, 12.5);
+    expect(sinkClockSeconds(state)).toBe(12.5);
+  });
+
+  it("keeps the first pts, not the latest", () => {
+    // The clock is an origin plus what has been played. Moving the origin with
+    // every chunk would make it jump backwards whenever audio ran ahead.
+    const state = createSinkState(48000);
+    notePts(state, 12.5);
+    notePts(state, 13.0);
+    expect(sinkClockSeconds(state)).toBe(12.5);
+  });
+
+  it("advances by the frames the worklet says it rendered", () => {
+    const state = createSinkState(48000);
+    notePts(state, 10);
+    onSamplesPlayed(state, 24000);
+    expect(sinkClockSeconds(state)).toBe(10.5);
+  });
+
+  it("accumulates across reports", () => {
+    const state = createSinkState(48000);
+    notePts(state, 0);
+    onSamplesPlayed(state, 48000);
+    onSamplesPlayed(state, 48000);
+    expect(sinkClockSeconds(state)).toBe(2);
+  });
+
+  it("restarts cleanly after a seek", () => {
+    const state = createSinkState(48000);
+    notePts(state, 10);
+    onSamplesPlayed(state, 48000);
+    createSinkState(48000);           // a seek makes a new state
+    const seeked = createSinkState(48000);
+    notePts(seeked, 900);
+    expect(sinkClockSeconds(seeked)).toBe(900);
+  });
+});
+
+describe("starvedBy", () => {
+  it("measures how far the clock has outrun the newest decoded frame", () => {
+    const state = createSinkState(48000);
+    notePts(state, 10);
+    onSamplesPlayed(state, 96000);    // clock = 12
+    expect(starvedBy(state, 11.5)).toBeCloseTo(0.5);
+  });
+
+  it("is zero while frames are ahead of the clock", () => {
+    const state = createSinkState(48000);
+    notePts(state, 10);
+    onSamplesPlayed(state, 96000);
+    expect(starvedBy(state, 12.5)).toBe(0);
+  });
+
+  it("is zero before anything has decoded, so startup is not starvation", () => {
+    const state = createSinkState(48000);
+    notePts(state, 10);
+    expect(starvedBy(state, null)).toBe(0);
+  });
+});
