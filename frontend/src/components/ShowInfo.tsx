@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, X } from "lucide-react";
+import { Circle, CircleSlash, Play, SlidersHorizontal, X } from "lucide-react";
 import { api } from "../api/tablo";
-import type { AiringDetail } from "../api/tablo";
+import type { AiringDetail, SeriesRule } from "../api/tablo";
 
 interface Props {
   /** Channel identifier, as the grid holds it. */
@@ -51,6 +51,25 @@ function formatRating(raw: string): string {
   return r.toUpperCase();
 }
 
+const RULES: { value: SeriesRule; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "new", label: "New" },
+  { value: "none", label: "None" },
+];
+
+/**
+ * What a scheduled recording is owed to — the series rule, or this episode.
+ *
+ * The device does not say which, so it is inferred: a series set to record
+ * anything is what put a scheduled episode there.
+ */
+function recordScope(d: AiringDetail): string {
+  const rule = d.series?.schedule_rule;
+  return rule === "all" || rule === "new"
+    ? "Record: All Episodes"
+    : "Record: This Episode Only";
+}
+
 /** `8.1`, or just the network when the device gave no channel number. */
 function channelNumber(ch: AiringDetail["channel"]): string | null {
   return ch.major ? `${ch.major}.${ch.minor ?? 0}` : null;
@@ -83,6 +102,8 @@ function whenLine(start: string, duration: number): string | null {
 export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Props) {
   const [detail, setDetail] = useState<AiringDetail | null>(null);
   const [failed, setFailed] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
   // Whatever had focus when the sheet opened, so closing can hand it back.
   const opener = useRef<Element | null>(null);
 
@@ -114,6 +135,32 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  /**
+   * Apply a write optimistically, and put the old state back if it fails.
+   *
+   * Optimistic because the common failure is the network rather than a
+   * refusal, and because the response carries the truth either way — every one
+   * of these endpoints answers with the full updated detail.
+   */
+  async function write(
+    optimistic: Partial<AiringDetail>,
+    work: () => Promise<AiringDetail>,
+  ) {
+    if (!detail) return;
+    const before = detail;
+    setDetail({ ...detail, ...optimistic });
+    setPending(true);
+    setWriteError(null);
+    try {
+      setDetail(await work());
+    } catch (e) {
+      setDetail(before);
+      setWriteError(e instanceof Error ? e.message : "The change did not stick.");
+    } finally {
+      setPending(false);
+    }
+  }
 
   /** A channel the guide has no listing for, rather than one still loading. */
   const noListing = start === null;
@@ -233,6 +280,83 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
               <Play className="w-4 h-4" aria-hidden />
               Watch Live
             </button>
+          )}
+
+          {/* Omitted rather than disabled: a dead button with no explanation
+              reads as broken, and the reason is worth a line. */}
+          {detail && !detail.schedulable && (
+            <p className="mt-6 text-xs text-fg-muted">
+              Recording isn't available on this channel.
+            </p>
+          )}
+
+          {detail?.schedulable && (
+            <div className="mt-6 space-y-2">
+              {detail.scheduled && (
+                <p className="text-xs font-semibold uppercase tracking-wide text-warning">
+                  REC · {recordScope(detail)}
+                </p>
+              )}
+
+              {/* Gated on `past`, never on `airing_now`: that is false for
+                  everything upcoming, which is most of what anyone records. */}
+              {!detail.past && (
+                <button
+                  disabled={pending}
+                  onClick={() => write(
+                    { scheduled: !detail.scheduled },
+                    () => api.scheduleAiring(channel, start!, !detail.scheduled),
+                  )}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                             text-sm font-semibold bg-fill-soft text-fg
+                             hover:bg-fill transition disabled:opacity-60
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  {detail.scheduled
+                    ? <CircleSlash className="w-4 h-4 shrink-0" aria-hidden />
+                    : <Circle className="w-4 h-4 shrink-0" aria-hidden />}
+                  {detail.scheduled ? "Don't Record Episode" : "Record Episode"}
+                </button>
+              )}
+
+              {/* Kept on a past airing: a rule is about every episode still to
+                  come, not about the one being looked at. */}
+              {detail.series && (
+                <div className="rounded-xl bg-fill-soft p-3">
+                  <p className="flex items-center gap-3 text-sm font-semibold text-fg">
+                    <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
+                    Edit Series Recording
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    {RULES.map(({ value, label }) => {
+                      const on = detail.series?.schedule_rule === value;
+                      return (
+                        <button
+                          key={value}
+                          aria-pressed={on}
+                          disabled={pending}
+                          onClick={() => write(
+                            { series: { ...detail.series!, schedule_rule: value } },
+                            () => api.scheduleSeries(channel, start!, value),
+                          )}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
+                                      transition disabled:opacity-60
+                                      focus:outline-none focus:ring-2 focus:ring-accent ${
+                            on ? "bg-accent text-accent-fg"
+                               : "bg-fill text-fg-secondary hover:text-fg"}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {writeError && (
+                <p role="alert" className="text-xs text-danger">{writeError}</p>
+              )}
+            </div>
           )}
         </div>
       </div>
