@@ -144,6 +144,17 @@ async def get_library():
         raise HTTPException(status_code=502, detail=f"Library error: {e}")
 
 
+@router.get("/airing-detail")
+async def airing_detail(channel: str = Query(...), start: str = Query(...)):
+    """One airing, joined to its series. Read from the mirror, never the device."""
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    detail = await _run_sync(store.airing_detail, channel, start)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Airing not found")
+    return detail
+
+
 @router.get("/image/{image_id}")
 async def guide_image(image_id: int):
     """Guide artwork, from the disk cache or the device on first ask.

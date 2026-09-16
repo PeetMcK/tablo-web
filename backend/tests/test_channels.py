@@ -224,3 +224,87 @@ def test_the_airing_mapping_tolerates_a_bare_record():
     assert got["title"] == "Bare"
     assert got["episode_title"] is None
     assert got["season_number"] is None
+
+
+def test_airing_detail_joins_the_series_and_says_whether_it_is_on(monkeypatch):
+    """The sheet reads only the mirror - it opens on a click and must not
+    wait on a device round trip."""
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 600))
+    store.save_guide([{
+        "identifier": "ch1", "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None, "kind": "ota",
+        "airings": [{
+            "title": "Finding Your Roots", "subtitle": None,
+            "description": "Mapping roots.", "start": start, "duration": 3600,
+            "genres": [], "kind": "episode", "episode_title": "Rags to Riches",
+            "season_number": 12, "episode_number": 10, "orig_air_date": None,
+            "series_path": "/guide/series/6472", "airing_path": None,
+            "schedule_state": None, "schedule_qualifier": None, "skip_reason": None,
+        }],
+    }], now=now)
+    store.save_series([{
+        "path": "/guide/series/6472", "identifier": "X", "title": "Finding Your Roots",
+        "description": None, "genres": ["Documentary"], "rating": "tvpg",
+        "orig_air_date": None, "episode_runtime": 3600, "cast": [],
+        "cover_image_id": 999, "thumbnail_image_id": None,
+        "background_image_id": None, "schedule_rule": "none",
+        "keep_rule": "none", "keep_count": None,
+    }])
+
+    resp = client.get("/api/channels/airing-detail",
+                      params={"channel": "ch1", "start": start})
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["episode_title"] == "Rags to Riches"
+    assert d["season_number"] == 12
+    assert d["rating"] == "tvpg"
+    assert d["image_url"] == "/api/channels/image/999"
+    assert d["airing_now"] is True
+    assert d["channel"]["call_sign"] == "KPAX"
+
+
+def test_airing_detail_without_a_series_has_no_artwork(monkeypatch):
+    """Four channels on a real device carry no EPG data at all."""
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 7200))
+    store.save_guide([{
+        "identifier": "ch2", "call_sign": "THENEST", "major": 13, "minor": 5,
+        "network": "THENEST", "display_name": "THENEST", "logo_url": None,
+        "kind": "ota",
+        "airings": [{"title": "Bare", "subtitle": None, "description": None,
+                     "start": start, "duration": 1800, "genres": [], "kind": None}],
+    }], now=now)
+
+    d = client.get("/api/channels/airing-detail",
+                   params={"channel": "ch2", "start": start}).json()
+    assert d["image_url"] is None
+    assert d["rating"] is None
+    assert d["airing_now"] is False
+
+
+def test_an_unknown_airing_is_a_404(monkeypatch):
+    from app.state import state
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+    resp = client.get("/api/channels/airing-detail",
+                      params={"channel": "nope", "start": "2026-01-01T00:00Z"})
+    assert resp.status_code == 404
+
+
+def test_airing_detail_requires_auth():
+    assert client.get("/api/channels/airing-detail",
+                      params={"channel": "ch1", "start": "x"}).status_code == 401

@@ -676,6 +676,55 @@ def airing_series_paths() -> list[str]:
     ]
 
 
+def airing_detail(channel: str, start: str, now: float | None = None) -> dict | None:
+    """Everything the show sheet renders, from the mirror alone.
+
+    `airing_now` is computed here rather than in the browser: the client's
+    clock can differ from the one the guide was built against, and a sheet
+    offering to tune to a programme that finished is worse than one that does
+    not offer at all.
+    """
+    air = db.query_one(
+        "SELECT * FROM guide_airing WHERE channel_id = ? AND start = ?",
+        (channel, start),
+    )
+    if air is None:
+        return None
+    ch = db.query_one(
+        "SELECT * FROM guide_channel WHERE identifier = ?", (channel,)
+    )
+    series = load_series(air["series_path"]) if air["series_path"] else None
+
+    at = now if now is not None else datetime.now(timezone.utc).timestamp()
+    start_epoch = _start_epoch(air["start"])
+    end_epoch = air["end_epoch"]
+
+    cover = (series or {}).get("cover_image_id")
+    return {
+        "title": air["title"],
+        "episode_title": air["episode_title"],
+        "season_number": air["season_number"],
+        "episode_number": air["episode_number"],
+        "description": air["description"] or (series or {}).get("description"),
+        "start": air["start"],
+        "duration": air["duration"],
+        "orig_air_date": air["orig_air_date"],
+        "genres": json.loads(air["genres"] or "[]") or (series or {}).get("genres") or [],
+        "rating": (series or {}).get("rating"),
+        "image_url": f"/api/channels/image/{cover}" if cover else None,
+        "airing_now": start_epoch <= at < end_epoch,
+        "channel": {
+            "identifier": channel,
+            "call_sign": ch["call_sign"] if ch else None,
+            "major": ch["major"] if ch else None,
+            "minor": ch["minor"] if ch else None,
+            "network": ch["network"] if ch else None,
+            "logo_url": ch["logo_url"] if ch else None,
+            "kind": ch["kind"] if ch else None,
+        },
+    }
+
+
 def guide_age_seconds(now: datetime | None = None) -> float | None:
     """Seconds since the guide was last written, or None if never."""
     raw = db.get_setting("guide_updated_at")
