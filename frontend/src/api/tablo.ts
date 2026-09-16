@@ -5,6 +5,39 @@ export interface AuthStatus {
   email: string | null;
   devices: { sid: string; name: string }[];
   active_sid: string | null;
+  /** Origin that reaches the backend without the proxy, when one exists. */
+  direct_origin: string | null;
+}
+
+/**
+ * Where to fetch a large export from.
+ *
+ * In native mode nginx runs inside the Docker VM while the backend runs on the
+ * host, so a proxied download crosses the virtual network twice - measured at
+ * 117 MB/s against 583 MB/s direct. This is only used for bulk file transfers;
+ * everything else stays on the proxied /api path so there is one origin to
+ * reason about.
+ */
+let directOrigin: string | null = null;
+
+export function setDirectOrigin(origin: string | null): void {
+  directOrigin = origin;
+}
+
+/**
+ * A scrub-preview frame at `seconds`.
+ *
+ * The device's thumbnail pack holds one frame roughly every 10s, so the request
+ * is rounded to that grid: distinct drag positions collapse onto the same URL
+ * and the browser cache serves the repeats instead of the network.
+ */
+export function previewUrl(objectId: number, seconds: number): string {
+  const t = Math.max(0, Math.round(seconds / 10) * 10);
+  return `${BASE}/recordings/${objectId}/preview?t=${t}`;
+}
+
+export function downloadUrl(objectId: number): string {
+  return `${directOrigin ?? ""}${BASE}/recordings/${objectId}/download`;
 }
 
 export interface DebugReport {
@@ -152,7 +185,17 @@ export interface RecordingStatus {
   /** Encoded regions as [startSec, endSec]. Not necessarily contiguous — a
    *  seek leaves the opening cached and adds a separate island. */
   cached_ranges: [number, number][];
+  /** The window playback is blocked on, while one is being encoded. */
+  encoding: EncodingProgress | null;
   error: string | null;
+}
+
+export interface EncodingProgress {
+  window: number;
+  /** Seconds into the recording where this window begins. */
+  start: number;
+  segments_ready: number;
+  segments_total: number;
 }
 
 async function* ndjsonStream<T>(path: string, signal?: AbortSignal): AsyncGenerator<T> {

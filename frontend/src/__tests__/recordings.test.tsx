@@ -116,7 +116,7 @@ describe("LibraryView", () => {
     });
     const status = vi.spyOn(api, "recordingStatus").mockResolvedValue({
       object_id: 80888, state: "partial", progress: 0.42, duration: 12615,
-      cached_seconds: 5298, cached_ranges: [[0, 5298]], error: null,
+      cached_seconds: 5298, cached_ranges: [[0, 5298]], encoding: null, error: null,
     });
 
     renderLibrary();
@@ -165,7 +165,7 @@ describe("LibraryView", () => {
     }));
     renderLibrary();
     const link = await screen.findByRole("link", { name: /save .* as an mp4/i });
-    expect(link).toHaveAttribute("href", "/api/recordings/80888/download");
+    expect(link).toHaveAttribute("href", expect.stringContaining("/api/recordings/80888/download"));
   });
 
   it("hides the MP4 export while the cache is still partial", async () => {

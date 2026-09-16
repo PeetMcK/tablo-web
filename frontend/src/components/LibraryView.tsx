@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/tablo";
+import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
 import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
@@ -362,7 +362,7 @@ export function LibraryView() {
                         // download, so a 7 GB file streams to disk instead of
                         // being buffered in a tab.
                         <a
-                          href={`/api/recordings/${rec.object_id}/download`}
+                          href={downloadUrl(rec.object_id)}
                           download
                           title="Save as a single MP4 file"
                           aria-label={`Save ${rec.title ?? "recording"} as an MP4 file`}

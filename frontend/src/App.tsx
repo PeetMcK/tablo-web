@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { api } from "./api/tablo";
+import { api, setDirectOrigin } from "./api/tablo";
 import { LoginScreen } from "./components/LoginScreen";
 import { ChannelGrid } from "./components/ChannelGrid";
 import { hydrateResume, flushResume } from "./lib/resume";
@@ -14,6 +14,7 @@ function Inner() {
     api.status()
       .then(s => {
         setAuthed(s.authenticated);
+        setDirectOrigin(s.direct_origin);
         // Positions live on the server now. Pull them in - and hand over
         // anything this browser still holds - before anything reads one.
         if (s.authenticated) void hydrateResume();

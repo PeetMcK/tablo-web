@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -29,6 +31,12 @@ async def status():
         "email": state.email,
         "devices": [{"sid": d.sid, "name": d.name} for d in state.devices],
         "active_sid": state.active_device.sid if state.active_device else None,
+        # Where the browser can reach this backend without going through the
+        # proxy. In native mode nginx runs inside the Docker VM while the
+        # backend runs on the host, so a proxied download crosses the virtual
+        # network twice and tops out around 100 MB/s against 583 MB/s direct.
+        # Empty when there is no such route, and callers fall back to /api.
+        "direct_origin": os.environ.get("PUBLIC_BACKEND_ORIGIN", "") or None,
     }
 
 

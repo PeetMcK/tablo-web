@@ -1,5 +1,6 @@
 """Recording listing, windowed cached playback, and thumbnails."""
 
+import asyncio
 import re
 
 from fastapi import APIRouter, HTTPException
@@ -35,6 +36,8 @@ def _decorate(item: dict, meta=None) -> dict:
     item["cached_seconds"] = cache.cached_seconds(oid)
     # Live throughput, so a download reads as working rather than just "7%".
     item["rate"] = cache.rate(oid)
+    # Scrub-preview thumbnails, fetched from the device and kept locally.
+    item["has_preview"] = cache.preview_available(oid)
     item.setdefault("offline_only", False)
     return item
 
@@ -98,6 +101,12 @@ async def watch_recording(object_id: int):
     # point of keeping one, since the device may no longer have the recording.
     meta = cache.read_meta(object_id)
     if meta and meta.pinned and cache.state(object_id) is CacheState.COMPLETE:
+        # This path returns before register(), which is where the thumbnail pack
+        # is normally fetched - so a finished offline copy, the one most worth
+        # scrubbing, was the only kind that never got previews. Backgrounded, and
+        # it simply fails if the device no longer has the recording.
+        if not cache.preview_available(object_id):
+            asyncio.create_task(cache.fetch_bif(object_id, meta.path))
         return {
             "object_id": object_id,
             "stream_url": f"/api/recordings/cache/{object_id}/playlist.m3u8",
@@ -159,6 +168,10 @@ async def recording_status(object_id: int, position: float | None = None):
         "cached_seconds": cache.cached_seconds(object_id),
         "cached_ranges": cache.cached_ranges(object_id),
         "rate": cache.rate(object_id),
+        # Real progress for the window playback is blocked on, so the player can
+        # show a bar rather than a spinner that only means "something is
+        # happening".
+        "encoding": cache.encoding_progress(object_id),
         "error": meta.error if meta else None,
     }
 
@@ -215,6 +228,26 @@ async def download_recording(object_id: int):
         path,
         media_type="video/mp4",
         filename=_download_name(meta),
+    )
+
+
+@router.get("/{object_id}/preview")
+async def recording_preview(object_id: int, t: float = 0.0):
+    """One scrub-preview thumbnail, at or just before ``t`` seconds.
+
+    Served from the device's own BIF pack, stored alongside the recording. The
+    frames sit ~10s apart, so the client rounds its request to that grid and the
+    browser cache does the rest of the work during a drag.
+    """
+    _require_auth()
+    frame = cache.preview_frame(object_id, t)
+    if frame is None:
+        raise HTTPException(status_code=404, detail="No preview available")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        # Immutable: a given frame of a finished recording never changes.
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
     )
 
 
