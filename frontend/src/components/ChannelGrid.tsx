@@ -121,6 +121,15 @@ export function ChannelGrid({ onLogout }: Props) {
   const [now, setNow] = useState(() => Date.now());
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Bumped on every library-target search activation, and used as
+  // LibraryView's `key` below. Library hands off through the hash alone
+  // (see `handleSearchActivate`), which LibraryView reads once at mount —
+  // that is enough when the activation also switches tabs, because the tab
+  // switch mounts LibraryView fresh. It is not enough from a click made
+  // while ALREADY on Library: the tab conditional below doesn't change, so
+  // LibraryView never remounts and never re-reads the hash. Changing its key
+  // forces that remount regardless of which tab the click came from.
+  const [libraryActivation, setLibraryActivation] = useState(0);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -241,9 +250,10 @@ export function ChannelGrid({ onLogout }: Props) {
   // parallel navigation path. For Live TV this plays the channel directly when
   // it is already in hand, or queues it as `pendingChannel` for the derived
   // `pendingMatch` above when the guide stream has not caught up yet; for
-  // Library it hands off through the same hash the page reads on mount (see
-  // `initialRoute` above and in LibraryView) since that panel remounts fresh
-  // on every tab switch.
+  // Library it hands off through the same hash LibraryView reads at mount
+  // (see `initialRoute` above and in LibraryView), plus bumping
+  // `libraryActivation` so that read happens even when Library was already
+  // the active tab and would not otherwise remount.
   const handleSearchActivate = useCallback((item: SearchItem) => {
     const { tab, watch } = item.target;
     setSearchOpen(false);
@@ -255,6 +265,7 @@ export function ChannelGrid({ onLogout }: Props) {
       else setPendingChannel(watch);
     } else if (tab === "library" && typeof watch === "number") {
       writeRoute({ tab: "library", watch: { kind: "recording", id: watch } });
+      setLibraryActivation(n => n + 1);
     }
     // `goToTab` only clears `pendingChannel` for a tab other than "live" —
     // this call is always "live" in the branch above that just set it, so
@@ -479,7 +490,7 @@ export function ChannelGrid({ onLogout }: Props) {
                 subtitle="Watch and manage your saved content"
                 now={now}
               />
-              <LibraryView />
+              <LibraryView key={libraryActivation} />
             </div>
           )}
 

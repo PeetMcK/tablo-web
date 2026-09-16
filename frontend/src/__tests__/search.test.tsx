@@ -383,6 +383,18 @@ const LIBRARY_RECORDING: Recording = {
   rate: { mbps: 0, realtime: 0 }, channel: null, scan: null, interlaced: false,
 };
 
+const REC_SEARCH_ITEM: SearchItem = {
+  kind: "recording", ref: "80888", title: "NFL Football", subtitle: null,
+  channel: "23.1 ABC", start_epoch: 1_760_000_000, duration: 12615,
+  target: { tab: "library", watch: 80888 }, recorded: null,
+};
+
+const REC_GROUPED: SearchResponse = {
+  query: "nfl",
+  coverage: { since: null, last_sync: null },
+  groups: [{ kind: "recording", total: 1, items: [REC_SEARCH_ITEM] }],
+};
+
 function mockLibraryApis() {
   vi.spyOn(api, "recordings").mockResolvedValue({
     recordings: [LIBRARY_RECORDING], returned: 1, total: 1, offline_only: 0,
@@ -395,6 +407,28 @@ function mockLibraryApis() {
 
 describe("ChannelGrid library search handoff", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("opens a recording activated from search while already on Library", async () => {
+    // The bug: Library's own hand-off assumed a tab switch always remounts
+    // the panel, which only holds when the click arrives from elsewhere.
+    // Starting already on Library is the case that assumption missed.
+    window.history.replaceState(null, "", "#/library");
+    mockChannelGridApis();
+    mockLibraryApis();
+    vi.spyOn(api, "search").mockResolvedValue(REC_GROUPED);
+    renderChannelGrid();
+
+    await screen.findByText("NFL Football");
+    expect(screen.queryByTestId("video-player")).not.toBeInTheDocument();
+
+    const input = screen.getByPlaceholderText(/search programs, channels/i);
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "nfl" } });
+    fireEvent.click(await screen.findByRole("option"));
+
+    expect(await screen.findByTestId("video-player")).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#/library/rec/80888"));
+  });
 
   it("does not let a topbar keystroke clobber a playing recording's URL", async () => {
     // ChannelGrid and LibraryView both write to the one hash. ChannelGrid's
