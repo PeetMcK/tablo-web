@@ -117,6 +117,23 @@ async def get_guide_grid():
         raise HTTPException(status_code=502, detail=f"Guide grid error: {e}")
 
 
+@router.post("/refresh")
+async def refresh_channels():
+    """Re-read the account's channel list and rebuild the guide from it.
+
+    POST rather than GET: it drops caches and writes a new guide sync, so it is
+    not safe to repeat blindly or to prefetch.
+    """
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        return await state.refresh_channel_list()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Channel refresh error: {e}")
+
+
 @router.get("/library")
 async def get_library():
     if not state.is_authenticated:

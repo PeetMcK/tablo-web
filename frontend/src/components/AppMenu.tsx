@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, RefreshCw } from "lucide-react";
 import { api } from "../api/tablo";
 import { ThemeControl } from "./ThemeControl";
 
@@ -30,6 +30,7 @@ interface Props {
 export function AppMenu({ email, onLogout }: Props) {
   const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const themeLabelId = useId();
@@ -55,6 +56,28 @@ export function AppMenu({ email, onLogout }: Props) {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  /**
+   * Re-read the channel list, then reload.
+   *
+   * The guide is fed by `useGridStream`, which runs once on mount and is not a
+   * react-query cache, so an open grid would keep showing the list the server
+   * has just replaced. A reload is near-transparent here — `route.ts` restores
+   * the tab and whatever is playing from the hash — and this is a rare
+   * maintenance action, which is a better trade than threading a refresh
+   * signal from this menu down into the grid.
+   */
+  const refreshChannels = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await api.refreshChannels();
+      window.location.reload();
+    } catch (e) {
+      console.error("Channel refresh failed:", e);
+      setRefreshing(false);
+      setOpen(false);
+    }
+  }, []);
 
   const generateDebugReport = useCallback(async () => {
     setGenerating(true);
@@ -149,6 +172,17 @@ export function AppMenu({ email, onLogout }: Props) {
           </div>
 
           <div className="p-2">
+            <button
+              onClick={refreshChannels}
+              disabled={refreshing}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-fg-secondary hover:text-fg hover:bg-fill-soft transition text-left disabled:opacity-50 disabled:cursor-wait"
+            >
+              <RefreshCw className={`w-4 h-4 shrink-0 ${refreshing ? "animate-spin" : ""}`} strokeWidth={2} aria-hidden />
+              {refreshing ? "Refreshing…" : "Refresh Channel List"}
+            </button>
+
+            <div className="my-1 border-t border-border-subtle" />
+
             <button
               onClick={generateDebugReport}
               disabled={generating}

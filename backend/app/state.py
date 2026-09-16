@@ -874,7 +874,14 @@ class AppState:
 
         if self.active_device is None:
             raise RuntimeError("No active device")
-        channels = await self.channels()
+        # refresh=True, because `self._channels` has no TTL of its own - it is
+        # only cleared when the device changes. Without this, a channel the
+        # account has since dropped survives every guide rebuild and only
+        # disappears when the process restarts, which made the hour-long guide
+        # TTL above look like it expired the channel list when it did not.
+        # Only reached when the stored guide was already stale, so this costs
+        # no extra device traffic at rest.
+        channels = await self.channels(refresh=True)
         logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
         rows = [
             self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
@@ -885,6 +892,49 @@ class AppState:
         except Exception as e:  # noqa: BLE001 - caching must not fail the request
             print(f"[db] could not store guide: {e}", flush=True)
         return rows
+
+    async def refresh_channel_list(self) -> dict:
+        """Re-fetch the account's channel list and rebuild the guide from it.
+
+        Not a tuner scan. `TabloClient.channels` is a GET against the Tablo
+        cloud guide for this device - the same list read on first connect - so
+        nothing here touches the antenna and a channel disabled in the Tablo
+        app disappears because their cloud stops listing it, not because the
+        broadcast changed.
+
+        Deliberately does not go through `get_grid_guide`, which returns the
+        stored guide whenever it is fresh and would make this a no-op for an
+        hour after any normal load. Every cache between the device and the grid
+        is dropped first, in order: the channel list, the enrichment cache, and
+        then the stored guide by way of `save_guide` stamping a newer sync -
+        `load_guide` returns only channels carrying the newest stamp, so a
+        dropped channel stops appearing while its airing history stays on disk
+        for the search index.
+        """
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        before = {c.identifier for c in (self._channels or [])}
+
+        self._channels = None
+        async with self._grid_cache_lock:
+            self._grid_cache = None
+            self._grid_cache_time = 0.0
+
+        channels = await self.channels(refresh=True)
+        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        rows = [
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            for c in channels
+        ]
+        await _run_sync(store.save_guide, rows)
+
+        after = {c.identifier for c in channels}
+        return {
+            "channels": len(rows),
+            "added": sorted(after - before),
+            "removed": sorted(before - after),
+        }
 
     async def _stored_guide(self) -> list[dict] | None:
         """The stored guide, if it is fresh and still has something to show.
@@ -930,7 +980,10 @@ class AppState:
         if self.active_device is None:
             raise RuntimeError("No active device")
 
-        channels = await self.channels()
+        # refresh=True for the same reason as `get_grid_guide`: only reached
+        # when the stored guide is already stale, and without it a dropped
+        # channel is pinned in memory until the process restarts.
+        channels = await self.channels(refresh=True)
 
         # Phase 1: channel stubs — grid rows appear immediately
         for c in channels:
