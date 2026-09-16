@@ -289,7 +289,7 @@ describe("ChannelGrid search wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guide" }));
 
     // Return to Live TV. This restarts the guide stream from scratch.
-    fireEvent.click(screen.getByRole("button", { name: "Live TV" }));
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
 
     // Only now does the (new) stream deliver the channel that was originally
     // queued.

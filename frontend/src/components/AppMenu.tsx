@@ -117,6 +117,7 @@ export function AppMenu({ email, onLogout }: Props) {
         ref={triggerRef}
         onClick={() => setOpen(v => !v)}
         aria-haspopup="true"
+        aria-label="Tablo-Web menu"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         className="group flex items-center gap-2.5 -m-1 p-1 rounded-xl hover:bg-fill-soft
@@ -138,9 +139,8 @@ export function AppMenu({ email, onLogout }: Props) {
             <path d="M8 21h8" />
           </svg>
         </div>
-        {/* No colour class: the wordmark inherits `text-fg` from <body>, which
-            is white in dark and ink in light. */}
-        <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
+        {/* The wordmark is gone — the mark alone carries the brand here, so the
+            button's name lives in `aria-label` instead of visible text. */}
         <ChevronDown
           className={`w-4 h-4 shrink-0 text-fg-muted group-hover:text-fg-secondary transition ${open ? "rotate-180" : ""}`}
           strokeWidth={2.5}
