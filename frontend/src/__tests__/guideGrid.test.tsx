@@ -298,6 +298,10 @@ describe("channels you can still tune", () => {
     // Without this the row is blank: nothing to click, and no way to reach the
     // channel from the guide at all. Four channels on a real device are in
     // this state.
+    //
+    // It opens the sheet rather than tuning, which is what every other row in
+    // the guide does. Tuning straight from the row made a brushed blank row
+    // the one click in the guide that started playback.
     const onPlay = vi.fn();
     mockStream([nest]);
     render(<GuideGridView onPlay={onPlay} />);
@@ -306,7 +310,46 @@ describe("channels you can still tune", () => {
     expect(cell).toHaveTextContent("Programming Not Available");
 
     fireEvent.click(cell);
-    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ identifier: nest.identifier }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it("tunes from that sheet's own button", async () => {
+    const onPlay = vi.fn();
+    mockStream([nest]);
+    render(<GuideGridView onPlay={onPlay} />);
+
+    fireEvent.click(await screen.findByRole("button",
+      { name: /THENEST 13\.5 — no programme information/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /watch live/i }));
+
+    expect(onPlay).toHaveBeenCalledWith(
+      expect.objectContaining({ identifier: nest.identifier }));
+  });
+
+  it("opens nothing when a drag ends on the blank row", async () => {
+    // The programme cells check this and the blank row did not, so a pan that
+    // happened to finish over an empty row tuned the channel under it.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
+    Element.prototype.releasePointerCapture = () => {};
+    const onPlay = vi.fn();
+    mockStream([nest]);
+    const { container } = render(<GuideGridView onPlay={onPlay} />);
+    const cell = await screen.findByRole("button",
+      { name: /THENEST 13\.5 — no programme information/ });
+
+    const surface = container.querySelector<HTMLElement>(".overflow-auto")!
+      .firstElementChild as HTMLElement;
+    const common = { pointerId: 1, pointerType: "mouse", button: 0 };
+    fireEvent.pointerDown(surface, { ...common, clientX: 400, clientY: 300 });
+    fireEvent.pointerMove(surface, { ...common, clientX: 340, clientY: 300 });
+    fireEvent.pointerUp(surface, { ...common, clientX: 340, clientY: 300 });
+    fireEvent.click(cell);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onPlay).not.toHaveBeenCalled();
   });
 
   it("does the same when every listing falls outside the window", async () => {
@@ -847,7 +890,7 @@ describe("the content filter pills", () => {
     // with nothing to say the rest were there. Eight short pills fit on two
     // lines at any width worth supporting.
     mockStream(longChannel(24));
-    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
     const pills = screen.getByRole("button", { name: /Movies/ }).parentElement!;

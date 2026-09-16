@@ -84,4 +84,42 @@ describe("ShowInfo", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
+
+  /**
+   * A channel the guide has no listing for at all.
+   *
+   * There is no airing to ask the device about, so the sheet has almost
+   * nothing to say — and says it, rather than the guide tuning the moment a
+   * blank row is brushed. Every other row in the guide opens this sheet; this
+   * one used to be the exception that jumped straight into playback.
+   */
+  describe("with no listing to show", () => {
+    it("asks the device for nothing", async () => {
+      const airingDetail = vi.spyOn(api, "airingDetail");
+      render(<ShowInfo channel="ch1" start={null} channelLabel="THENEST 13.5"
+                       onClose={() => {}} onTune={() => {}} />);
+
+      await screen.findByRole("dialog");
+      expect(airingDetail).not.toHaveBeenCalled();
+    });
+
+    it("names the channel and says why it is empty", async () => {
+      render(<ShowInfo channel="ch1" start={null} channelLabel="THENEST 13.5"
+                       onClose={() => {}} onTune={() => {}} />);
+
+      expect(await screen.findByText("THENEST 13.5")).toBeInTheDocument();
+      expect(screen.getByText(/no programme information/i)).toBeInTheDocument();
+    });
+
+    it("still offers to watch it", async () => {
+      // The whole point of the row: the channel is live and tunable, it is
+      // only its listings that are missing.
+      const onTune = vi.fn();
+      render(<ShowInfo channel="ch1" start={null} channelLabel="THENEST 13.5"
+                       onClose={() => {}} onTune={onTune} />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /watch live/i }));
+      expect(onTune).toHaveBeenCalled();
+    });
+  });
 });

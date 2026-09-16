@@ -197,7 +197,12 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   /** Which hour column the guide is scrolled to, for the jump control's label. */
   const [hourAt, setHourAt] = useState(0);
   // The open show sheet, keyed the way `guide_airing` is. Null when closed.
-  const [info, setInfo] = useState<{ channel: string; start: string } | null>(null);
+  // The open show sheet, keyed the way `guide_airing` is — except for a
+  // channel the guide has no listing for, where there is no airing to key and
+  // `start` is null. `label` names the channel in that case, since the sheet's
+  // own eyebrow is built from an airing it will not have.
+  const [info, setInfo] = useState<
+    { channel: string; start: string | null; label?: string } | null>(null);
   /** The `jumpTo` nonce whose sheet has been opened. See the jump block below. */
   const [shownJump, setShownJump] = useState<number | null>(null);
 
@@ -823,7 +828,17 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                    view however far along the timeline you have scrolled,
                    rather than sitting at hour zero and disappearing. */
                 <button
-                  onClick={() => onPlay(ch)}
+                  /* The sheet, not playback — every other row in the guide
+                     opens the sheet, and this one tuning on contact made a
+                     brushed blank row the single click that started a stream.
+                     Its own Watch Live does the tuning. `panned` for the same
+                     reason the programme cells check it: a pan that happens to
+                     end over a row is not a click on it. */
+                  onClick={() => {
+                    if (panned.current) return;
+                    setInfo({ channel: ch.identifier, start: null,
+                              label: channelLabel(ch) });
+                  }}
                   aria-label={`Watch ${channelLabel(ch)} — no programme information`}
                   className="absolute inset-y-2 left-0 flex items-center rounded-sm border-l border-border-subtle
                              hover:bg-fill-soft transition-colors group text-left"
@@ -899,6 +914,7 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
         <ShowInfo
           channel={info.channel}
           start={info.start}
+          channelLabel={info.label}
           onClose={() => setInfo(null)}
           onTune={() => {
             const ch = filteredGrid.find((c) => c.identifier === info.channel);
