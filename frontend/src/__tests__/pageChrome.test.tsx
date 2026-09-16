@@ -137,6 +137,21 @@ describe("the topbar search at phone width", () => {
     expect(screen.getByRole("button", { name: "Guide" })).toBeInTheDocument();
   });
 
+  it("ends the row, with the clock dropped to make the corner", () => {
+    // The time is in the phone's own status bar an inch above this, and the
+    // corner it frees is where a hand reaches for search.
+    restoreMedia = stubPhone(true);
+    renderShell();
+
+    const clock = document.querySelector("header .text-right")!.parentElement!;
+    expect(clock.className).toMatch(/\bhidden\b/);
+    expect(clock.className).not.toMatch(/\bflex\b/);
+
+    const row = document.querySelector("header > div")!;
+    const visible = [...row.children].filter(c => !c.className.includes("hidden"));
+    expect(visible.at(-1)).toBe(screen.getByRole("button", { name: "Search" }));
+  });
+
   it("takes the row when opened, so the field has somewhere to go", () => {
     restoreMedia = stubPhone(true);
     renderShell();
@@ -172,11 +187,24 @@ describe("the topbar search at phone width", () => {
     expect(fieldBox().className).toMatch(/\bhidden\b/);
   });
 
-  it("stays a plain field on anything wider", () => {
+  it("stays a plain field on anything wider, clock and all", () => {
     restoreMedia = stubPhone(false);
     renderShell();
 
     expect(screen.queryByRole("button", { name: "Search" })).not.toBeInTheDocument();
     expect(fieldBox().className).not.toMatch(/\bhidden\b/);
+    // A tablet has the width for the time, so it keeps it.
+    expect(document.querySelector("header .text-right")!.parentElement!.className)
+      .toMatch(/\bflex\b/);
+  });
+
+  it("keeps the mark off the field once it is open", () => {
+    // Expanded, the field is what sits next to the mark — flush against it
+    // without a margin of its own.
+    restoreMedia = stubPhone(true);
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(fieldBox().className).toMatch(/\bml-4\b/);
   });
 });
