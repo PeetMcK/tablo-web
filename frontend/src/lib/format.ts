@@ -19,6 +19,51 @@ const NBSP = " ";
  * under the time it belongs to. Tying the date matters too: plenty of locales
  * spell it "13 Sep 2026", which would otherwise come apart in three places.
  */
+/**
+ * One colour per weekday, indexed by `Date.getDay()` — Sunday first.
+ *
+ * Fixed rather than alternating, so a day always looks the same wherever it
+ * lands in the list. Red is deliberately absent: it means destructive here, and
+ * a heading is not a warning.
+ */
+export const DAY_COLORS = [
+  "#a78bfa", // Sunday — violet
+  "#5b8af5", // Monday — blue
+  "#22d3ee", // Tuesday — cyan
+  "#34d399", // Wednesday — green
+  "#fbbf24", // Thursday — amber
+  "#fb923c", // Friday — orange
+  "#f472b6", // Saturday — pink
+] as const;
+
+/** The colour for the day `iso` falls on. */
+export function dayColor(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? DAY_COLORS[0] : DAY_COLORS[d.getDay()];
+}
+
+/**
+ * Local calendar day of `iso`, as `2026-09-14`.
+ *
+ * Built from the local parts rather than `toISOString`, which would shift a
+ * late-evening recording into the next day for anyone west of UTC — exactly the
+ * recordings a "what aired last night" list is made of.
+ */
+export function dayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Heading for a day of recordings, as `Monday 9/14`. */
+export function formatDayHeading(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const weekday = d.toLocaleDateString([], { weekday: "long" });
+  return `${weekday} ${d.getMonth() + 1}/${d.getDate()}`;
+}
+
 export function formatAired(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";

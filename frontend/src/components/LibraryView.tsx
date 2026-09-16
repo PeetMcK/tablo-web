@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer } from "./VideoPlayer";
 import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
 import { parseRoute, writeRoute } from "../lib/route";
-import { formatAired } from "../lib/format";
+import { dayColor, dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
 
@@ -97,6 +97,25 @@ export function LibraryView() {
 
   const recordings = useMemo(() => data?.recordings ?? [], [data]);
   const truncated = data ? data.total > data.returned : false;
+
+  /**
+   * The recordings split into the days they aired on, newest day first.
+   *
+   * A flat wall of cards gave no sense of when anything was recorded; the
+   * heading rows are the only place the date is read at a glance.
+   */
+  const days = useMemo(() => {
+    const byDay = new Map<string, Recording[]>();
+    for (const rec of recordings) {
+      const key = dayKey(rec.start ?? "");
+      const bucket = byDay.get(key);
+      if (bucket) bucket.push(rec);
+      else byDay.set(key, [rec]);
+    }
+    return [...byDay.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([key, items]) => ({ key, items }));
+  }, [recordings]);
 
   // A recording named in the URL reopens as soon as the list contains it.
   // Derived rather than assigned from an effect, which would cascade renders.
@@ -195,7 +214,27 @@ export function LibraryView() {
             <p className="text-white/20 font-black tracking-widest uppercase">No Recordings Found</p>
           </div>
         ) : (
-          recordings.map((rec) => {
+          days.map(({ key, items }) => (
+            <Fragment key={key}>
+              {/* The day these aired, in that weekday's colour. Spans the grid,
+                  so the cards below it read as one evening's recordings. */}
+              <div className="col-span-full flex items-center gap-3 pt-2 first:pt-0">
+                <span
+                  className="text-[11px] font-black uppercase tracking-widest whitespace-nowrap"
+                  style={{ color: dayColor(items[0].start) }}
+                >
+                  {formatDayHeading(items[0].start)}
+                </span>
+                <span
+                  className="h-px flex-1 rounded-full"
+                  style={{
+                    background:
+                      `linear-gradient(to right, ${dayColor(items[0].start)}80, transparent)`,
+                  }}
+                />
+              </div>
+
+              {items.map((rec) => {
             const playable = isPlayable(rec);
             return (
               <div
@@ -443,7 +482,9 @@ export function LibraryView() {
                 </div>
               </div>
             );
-          })
+              })}
+            </Fragment>
+          ))
         )}
       </div>
     </>
