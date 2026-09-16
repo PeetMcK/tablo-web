@@ -793,7 +793,7 @@ class AppState:
             "cover_image_id": image_id("cover_image"),
             "thumbnail_image_id": image_id("thumbnail_image"),
             "background_image_id": image_id("background_image"),
-            # Captured, not yet exposed - see docs/tablo-device-api.md.
+            # Captured, not yet exposed - see docs/tablo-api.md.
             "schedule_rule": data.get("schedule_rule"),
             "keep_rule": keep.get("rule"),
             "keep_count": keep.get("count"),
@@ -860,7 +860,7 @@ class AppState:
         nothing.
 
         `airing_path` is the PATCH target for recording management (see
-        docs/tablo-device-api.md). It is captured now so that work needs no
+        docs/tablo-api.md). It is captured now so that work needs no
         migration and no re-sync.
         """
         ad = a.get("airing_details") or {}
@@ -879,7 +879,7 @@ class AppState:
             "episode_number": ep.get("number"),
             "orig_air_date": ep.get("orig_air_date"),
             "series_path": a.get("series_path"),
-            # Captured, not yet exposed - see docs/tablo-device-api.md.
+            # Captured, not yet exposed - see docs/tablo-api.md.
             "airing_path": a.get("path"),
             "schedule_state": sched.get("state"),
             "schedule_qualifier": sched.get("qualifier"),
