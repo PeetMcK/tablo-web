@@ -490,6 +490,38 @@ def prune_guide(now: float | None = None) -> int:
         return cur.rowcount
 
 
+def _airing_row(a) -> dict:
+    """A stored airing as the guide and the player both expect it."""
+    return {
+        "start": a["start"],
+        "duration": a["duration"],
+        "title": a["title"],
+        "subtitle": a["subtitle"],
+        "description": a["description"],
+        "genres": json.loads(a["genres"]) if a["genres"] else [],
+        "kind": a["kind"],
+    }
+
+
+def channel_airings(identifier: str, now: float | None = None) -> list[dict]:
+    """What is on this channel now and next, oldest first.
+
+    Answers the live player's question: it draws its scrubber over the airing
+    being watched, and re-scales to the following one when that ends. Airings
+    that have already finished are left out - the DVR window holds none of
+    them, so there is nothing the player could show for one.
+    """
+    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    return [
+        _airing_row(a)
+        for a in db.query(
+            "SELECT * FROM guide_airing WHERE channel_id = ? AND end_epoch >= ? "
+            "ORDER BY start",
+            (str(identifier), cutoff),
+        )
+    ]
+
+
 def load_guide(now: float | None = None) -> list[dict]:
     """The channels seen in the latest sync, excluding airings that have ended.
 
@@ -520,15 +552,7 @@ def load_guide(now: float | None = None) -> list[dict]:
     for a in db.query(
         "SELECT * FROM guide_airing WHERE end_epoch >= ? ORDER BY start", (cutoff,)
     ):
-        by_channel.setdefault(a["channel_id"], []).append({
-            "start": a["start"],
-            "duration": a["duration"],
-            "title": a["title"],
-            "subtitle": a["subtitle"],
-            "description": a["description"],
-            "genres": json.loads(a["genres"]) if a["genres"] else [],
-            "kind": a["kind"],
-        })
+        by_channel.setdefault(a["channel_id"], []).append(_airing_row(a))
 
     return [{
         "identifier": c["identifier"],

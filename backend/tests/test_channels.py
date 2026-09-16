@@ -14,6 +14,7 @@ PROTECTED_GETS = [
     "/api/channels/local-guide",
     "/api/channels/server-info",
     "/api/channels/airings",
+    "/api/channels/S1_008_02/airings",
 ]
 
 
@@ -80,3 +81,35 @@ def test_grid_rows_carry_the_channel_kind():
     rows = [state._assemble_grid_row(c, {}, {}, {}, {}) for c in (ota, ott)]
 
     assert [r["kind"] for r in rows] == ["ota", "ott"]
+
+
+def test_channel_airings_come_from_the_mirror(monkeypatch):
+    """The live player asks per channel; the device is never touched for it.
+
+    A miss returns an empty list rather than falling back to the device: the
+    player keeps the airing it was opened with, which beats blocking playback
+    on a guide fetch.
+    """
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    store.save_guide([{
+        "identifier": "ch1", "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None, "kind": "ota",
+        "airings": [{
+            "title": "On now", "subtitle": "", "description": "",
+            "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 900)),
+            "duration": 3600, "genres": [], "kind": "episode",
+        }],
+    }], now=now)
+
+    resp = client.get("/api/channels/ch1/airings")
+    assert resp.status_code == 200
+    assert [a["title"] for a in resp.json()["airings"]] == ["On now"]
+
+    assert client.get("/api/channels/nobody/airings").json()["airings"] == []
