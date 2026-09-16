@@ -6,15 +6,19 @@
  * `workerProtocol.ts` and `libavClient.ts`.
  */
 
+/// <reference lib="webworker" />
+
 import { createDecoder } from "./libavClient";
 import { createWorkerHandler } from "./workerProtocol";
 import type { ToWorker } from "./workerProtocol";
 
+const worker = self as unknown as DedicatedWorkerGlobalScope;
+
 const handle = createWorkerHandler(
   () => createDecoder(),
-  (message, transfer) => self.postMessage(message, transfer),
+  (message, transfer) => worker.postMessage(message, transfer),
 );
 
-self.onmessage = (event: MessageEvent<ToWorker>) => {
+worker.onmessage = (event: MessageEvent<ToWorker>) => {
   void handle(event.data);
 };

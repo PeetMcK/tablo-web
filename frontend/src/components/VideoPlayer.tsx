@@ -11,6 +11,8 @@ import {
   airingAt, clampSkip, covers, programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
 import { createHlsSurface, type PlaybackSurface } from "../lib/playbackSurface";
+import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
+import { openWasmSurface } from "../lib/wasmlive/open";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -178,6 +180,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const surfaceRef = useRef<PlaybackSurface | null>(null);
   /** Detaches the transport from the surface currently held. */
   const detachRef = useRef<(() => void) | null>(null);
+  /** Where the WASM path draws. Shown instead of the element while it plays. */
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [usingWasm, setUsingWasm] = useState(false);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -446,39 +451,84 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     let cancelled = false;
     const current = sourceRef.current;
 
-    /** Put a stream on the element and hand the player a surface over it. */
-    /** Put a stream on the element and wire the transport to it. */
+    /** Install a surface, replacing whatever was playing. */
+    const hold = (next: PlaybackSurface) => {
+      detachRef.current?.();
+      surfaceRef.current?.destroy();
+      surfaceRef.current = next;
+      detachRef.current = attachTransport(next);
+    };
+
+    /** Put a stream on the `<video>` element and wire the transport to it. */
     const openSurface = (url: string) => {
       const video = videoRef.current;
       if (!video) return;
-      detachRef.current?.();
-      surfaceRef.current?.destroy();
-      const next = createHlsSurface(video, load, url);
-      surfaceRef.current = next;
-      detachRef.current = attachTransport(next);
+      hold(createHlsSurface(video, load, url));
+    };
+
+    /**
+     * Hand the channel back to FFmpeg.
+     *
+     * One way, for the life of the session: a path that flapped between
+     * decoders would be worse than either. The viewer sees a rebuffer.
+     */
+    const fallBack = async (channel: Channel, reason: string) => {
+      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`);
+      setUsingWasm(false);
+      try {
+        const r = await api.startStream(channel.identifier, true, "transcode");
+        if (cancelled) return;
+        setSessionId(r.session_id);
+        setLiveTranscoded(true);
+        openSurface(r.stream_url);
+      } catch (e) {
+        if (!cancelled) setApiError(e instanceof Error ? e.message : String(e));
+      }
     };
 
     const start = async () => {
       try {
         if (current.kind === "live") {
-          // OTA broadcasts are MPEG-2. No browser's MSE implementation decodes
-          // MPEG-2 video — hls.js demuxes the container but the video track is
-          // unrenderable, leaving audio only. Always transcode OTA to H.264.
+          // OTA broadcasts are MPEG-2, which no browser's media stack decodes.
+          // Either this browser can decode it in WASM onto a canvas, or the
+          // backend transcodes it to H.264 the way it always has.
           //
           // Anything not known to be OTT counts as a broadcast: a guide row
           // that arrives without a kind used to fall through to the raw stream,
-          // which parses no fragment and buffers forever. Transcoding an OTT
-          // channel needlessly only costs CPU.
-          const transcode = current.channel.kind === "ott" ? undefined : true;
-          const r = await api.startStream(current.channel.identifier, transcode);
+          // which parses no fragment and buffers forever.
+          const eligibility = wasmLiveEligible(window, localStorage, current.channel.kind);
+          const { mode, wasm } = chooseLivePath(eligibility, current.channel.kind);
+          const r = await api.startStream(
+            current.channel.identifier, mode === "transcode", mode,
+          );
           if (cancelled) return;
           log.player(`open live ${current.channel.display_name}`, {
-            kind: current.channel.kind, transcode: !!transcode,
+            kind: current.channel.kind, mode, wasm,
+            why: eligibility.reason || "eligible",
             session: r.session_id, url: r.stream_url,
           });
           setSessionId(r.session_id);
-          setLiveTranscoded(!!r.transcoded);
-          openSurface(r.stream_url);
+          setLiveTranscoded(mode === "transcode");
+
+          if (wasm) {
+            setUsingWasm(true);
+            try {
+              const surface = await openWasmSurface({
+                playlistUrl: r.stream_url,
+                originMs: Date.parse(r.started_at ?? new Date().toISOString()),
+                canvas: canvasRef.current,
+                onFailure: (reason) => void fallBack(current.channel, reason),
+              });
+              if (cancelled) { surface.destroy(); return; }
+              hold(surface);
+            } catch (e) {
+              if (cancelled) return;
+              await fallBack(current.channel, e instanceof Error ? e.message : String(e));
+            }
+          } else {
+            setUsingWasm(false);
+            openSurface(r.stream_url);
+          }
         } else {
           const t0 = performance.now();
           const r = await api.watchRecording(current.recording.object_id);
@@ -974,7 +1024,20 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       {/* No autoPlay attribute: usePlayer starts playback explicitly. Leaving it
           on let the browser resume by itself whenever the element received data
           after a stall, so pause would not stick and playback could jump. */}
-      <video ref={videoRef} className="w-full h-full object-contain" playsInline />
+      <video
+        ref={videoRef}
+        className={`w-full h-full object-contain${usingWasm ? " hidden" : ""}`}
+        playsInline
+      />
+
+      {/* Where MPEG-2 decoded in WASM is drawn. Kept mounted rather than
+          conditionally rendered: the canvas has to exist before the session
+          starts, and a fallback to the transcode swaps which one is shown
+          without either being torn down. */}
+      <canvas
+        ref={canvasRef}
+        className={`w-full h-full object-contain${usingWasm ? "" : " hidden"}`}
+      />
 
       {/* A blocking sheet, not a see-through veil: it carries text and a button,
           so it uses the player's own panel rather than a scrim. In light that is

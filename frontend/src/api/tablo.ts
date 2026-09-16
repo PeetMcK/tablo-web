@@ -58,11 +58,24 @@ export interface Channel {
   display_name: string;
 }
 
+/**
+ * How a live stream reaches the browser.
+ *
+ * `transcode` runs FFmpeg as it always has. `raw` proxies the device's own
+ * HLS untouched, which plays for OTT and is unrenderable for MPEG-2. `ring`
+ * copies the device's segments into a DVR window of our own, for the WASM
+ * decoder to read.
+ */
+export type LiveMode = "transcode" | "raw" | "ring";
+
 export interface StreamStart {
   session_id: string;
   proxy_url: string;
   stream_url: string;
   transcoded?: boolean;
+  mode?: LiveMode;
+  /** When the backend opened the session; media time is measured from here. */
+  started_at?: string;
 }
 
 export interface TranscodeStatus {
@@ -376,12 +389,14 @@ export const api = {
   evictRecording: (objectId: number) =>
     req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),
 
-  startStream: (identifier: string, transcode?: boolean) => {
-    let url = `/stream/${identifier}`;
-    if (transcode !== undefined) {
-      url += `?transcode=${transcode}`;
-    }
-    return req<StreamStart>(url, { method: "POST" });
+  startStream: (identifier: string, transcode?: boolean, mode?: LiveMode) => {
+    const params = new URLSearchParams();
+    if (transcode !== undefined) params.set("transcode", String(transcode));
+    if (mode !== undefined) params.set("mode", mode);
+    const query = params.toString();
+    return req<StreamStart>(`/stream/${identifier}${query ? `?${query}` : ""}`, {
+      method: "POST",
+    });
   },
 
   stopStream: (sessionId: string) =>

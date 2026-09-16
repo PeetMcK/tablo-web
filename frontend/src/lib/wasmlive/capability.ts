@@ -36,7 +36,7 @@ function readFlag(storage: Pick<Storage, "getItem">): string | null {
 }
 
 export function wasmLiveEligible(
-  win: Pick<Window, "navigator"> & Record<string, unknown>,
+  win: { navigator: { userAgent: string } },
   storage: Pick<Storage, "getItem">,
   channelKind: string | null | undefined,
 ): Eligibility {
@@ -54,7 +54,7 @@ export function wasmLiveEligible(
   if (!isChromeFamily) return { eligible: false, reason: "unsupported browser" };
 
   for (const api of REQUIRED) {
-    if (!(api in win)) return { eligible: false, reason: `no ${api}` };
+    if (!(api in (win as object))) return { eligible: false, reason: `no ${api}` };
   }
   return { eligible: true, reason: "" };
 }
