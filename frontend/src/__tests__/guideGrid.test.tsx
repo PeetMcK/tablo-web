@@ -418,4 +418,58 @@ describe("revealing an airing the search found", () => {
     rerender(<GuideGridView onPlay={() => {}} jumpTo={jump(6, "ch1", 2)} />);
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
+
+  it("retries the row scroll the browser clamped while channels were still arriving", async () => {
+    // The bug this covers, measured in Chrome: the jump fires the moment the
+    // row appears, which is the moment the scroller is shortest. With nine of
+    // an eventual twenty-eight channels streamed in, a write of 485 clamped
+    // to 217 and the guide sat three rows above the show it was sent to.
+    //
+    // jsdom has no layout, so `scrollTop` there accepts anything and the
+    // clamp cannot occur on its own. Standing one in lets the retry be
+    // tested; `maxTop` grows the way real content does as rows arrive.
+    mockDetail();
+
+    // jsdom has no layout: `scrollTop` accepts anything and `offsetTop` is
+    // always 0, so neither the target nor the clamp exists on its own. Both
+    // are stood in. `maxTop` is how far the scroller can currently go, and
+    // grows the way real content does as rows arrive.
+    let maxTop = 100;
+    let stored = 0;
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get: () => stored,
+      set: (v: number) => { stored = Math.min(v, maxTop); },
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetTop", {
+      configurable: true, get: () => 500,
+    });
+
+    // The target channel arrives first and the rest of the guide after, which
+    // is the ordering that makes the first attempt the clamped one.
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    vi.spyOn(api, "guideGridStream").mockImplementation(async function* () {
+      for (const ch of longChannel(24)) yield ch;
+      await gate;
+      for (const ch of grid()) yield { ...ch, identifier: `late-${ch.identifier}` };
+    });
+
+    const { container } = render(
+      <GuideGridView onPlay={() => {}} jumpTo={jump(6)} />,
+    );
+    await screen.findByText("Hour 0");
+    // Asked for 500, got what the short scroller allowed.
+    await waitFor(() => expect(scroller(container).scrollTop).toBe(100));
+
+    maxTop = 2000;
+    release();
+
+    // More rows arrived, so the guide must finish the journey rather than
+    // sit where the clamp left it.
+    await waitFor(() => expect(scroller(container).scrollTop).toBe(500));
+
+    Reflect.deleteProperty(HTMLElement.prototype, "offsetTop");
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
+  });
 });

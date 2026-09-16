@@ -321,24 +321,49 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
   // on every grid update until the row is there. An effect, not render-time
   // work: it writes to the DOM and sets no state - `scrollLeft` fires the
   // scroller's own `onScroll`, which is what moves the jump control's label.
-  const jumped = useRef<number | null>(null);
+  //
+  // What it must survive is that the row appearing is the WORST moment to
+  // scroll: the scroller cannot scroll past its own content, and the content
+  // is still arriving, so the row is inside the last screenful and the
+  // browser clamps the write. Measured in the browser - a jump to 8.1 CBS
+  // wrote 485 and got 217, because nine channels had streamed in of an
+  // eventual twenty-eight, and the guide sat three rows short of the show it
+  // had been sent to. (The horizontal write escapes this: every channel
+  // carries the full fortnight, so `totalHours` is already right when the
+  // first one lands.) So each attempt records whether it actually landed,
+  // and an attempt that did not is retried on the next change to the rows or
+  // the filter - by which time there is more below the row to scroll past.
+  const attempt = `${jumpTo?.nonce ?? ""}|${grid.length}|${contentFilter}`;
+  const jumped = useRef<{ nonce: number; attempt: string; landed: boolean } | null>(null);
   useEffect(() => {
-    if (!jumpTo || jumped.current === jumpTo.nonce) return;
+    if (!jumpTo) return;
+    const last = jumped.current;
+    // Landed once, done for this nonce - a later render must not yank the
+    // guide back from wherever the viewer has since scrolled it.
+    if (last && last.nonce === jumpTo.nonce && (last.landed || last.attempt === attempt)) return;
+
     const el = scrollerRef.current;
     const row = el?.querySelector<HTMLElement>(
       `[data-channel="${CSS.escape(jumpTo.channel)}"]`,
     );
     if (!el || !row) return;
 
-    jumped.current = jumpTo.nonce;
     const at = new Date(jumpTo.start).getTime();
     if (Number.isFinite(at)) el.scrollLeft = timeOffset(at - JUMP_LEAD_MS, startTime);
     // `offsetTop` rather than a row-height constant: rows are a fixed height
     // today, but a second place to encode it is a second place to drift.
     // Sticky elements still take part in flow, so this already includes the
     // header - which is why it comes back off, leaving the row flush beneath.
-    el.scrollTop = Math.max(0, row.offsetTop - (headerRef.current?.offsetHeight ?? 0));
-  }, [jumpTo, grid, filteredGrid, startTime]);
+    const want = Math.max(0, row.offsetTop - (headerRef.current?.offsetHeight ?? 0));
+    el.scrollTop = want;
+    // Read back rather than assume: a clamped write is the whole problem.
+    // Within a pixel, because a scroll position is not always an integer.
+    jumped.current = {
+      nonce: jumpTo.nonce,
+      attempt,
+      landed: Math.abs(el.scrollTop - want) <= 1,
+    };
+  }, [jumpTo, attempt, startTime]);
 
   if (isLoading) {
     return (
