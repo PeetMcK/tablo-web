@@ -31,6 +31,21 @@ MATCH_WINDOW = 300
 # makes a five-item dropdown useful.
 _RANK = "bm25(search_fts, 10.0, 5.0, 1.0, 2.0)"
 
+# Breaks a bm25 tie upcoming-before-past, nearest-to-now first within each
+# side. Ties are the common case, not the exotic one: repeat airings of one
+# programme share title, subtitle, body and channel, so bm25 cannot tell them
+# apart. Every surface truncates, so which of several identical-rank rows
+# survive the cut IS the feature - plain ascending order (the previous
+# tiebreak) buried tonight's airing under a month of reruns that happened to
+# air earlier. Two orderings, not one: future rows sort soonest-first (0,
+# start_epoch ASC), past rows sort most-recent-first (1, start_epoch DESC).
+# Three `?` placeholders, all bound to the same `now`.
+_TIEBREAK = (
+    "CASE WHEN d.start_epoch >= ? THEN 0 ELSE 1 END, "
+    "CASE WHEN d.start_epoch >= ? THEN d.start_epoch END ASC, "
+    "CASE WHEN d.start_epoch >= ? THEN NULL ELSE d.start_epoch END DESC"
+)
+
 _WORD = re.compile(r"[^\w]+", re.UNICODE)
 
 
@@ -101,6 +116,7 @@ def search(q: str, limit: int = 5, kinds: list[str] | None = None) -> dict:
     if not match:
         return out
 
+    now = int(time.time())
     wanted = [k for k in KIND_ORDER if not kinds or k in kinds]
     for kind in wanted:
         total = db.query_one(
@@ -116,9 +132,9 @@ def search(q: str, limit: int = 5, kinds: list[str] | None = None) -> dict:
             "       d.start_epoch, d.duration, d.target "
             "FROM search_fts JOIN search_doc d ON d.rowid = search_fts.rowid "
             f"WHERE search_fts MATCH ? AND d.kind = ? ORDER BY {_RANK}, "
-            "       d.start_epoch IS NULL DESC, d.start_epoch "
+            f"       {_TIEBREAK} "
             "LIMIT ?",
-            (match, kind, limit),
+            (match, kind, now, now, now, limit),
         )
         out["groups"].append({
             "kind": kind,

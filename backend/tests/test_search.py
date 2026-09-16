@@ -209,6 +209,35 @@ def _doc(kind, ref, title, body="", channel="8.1 CBS", start=0):
         )
 
 
+def test_ties_rank_upcoming_before_past():
+    """Repeat airings of one programme share title, subtitle, body and
+    channel, so bm25 cannot break the tie - identical rank is the common case
+    here, not the exotic one. Every surface truncates, so which of several
+    tied rows survive IS the feature: an upcoming showing must not be buried
+    under stored history that happened to air earlier in calendar order.
+    """
+    now = int(time.time())
+    _doc("airing", "a|past", "Survivor", start=now - 3600)
+    _doc("airing", "a|future", "Survivor", start=now + 3600)
+
+    items = search_mod.search("survivor")["groups"][0]["items"]
+    assert [i["ref"] for i in items] == ["a|future", "a|past"]
+
+
+def test_past_ties_rank_most_recent_first():
+    """Among two past showings tied on rank, the nearer one to now wins.
+
+    Plain ascending order (the previous tiebreak) put the oldest of the two
+    first instead.
+    """
+    now = int(time.time())
+    _doc("airing", "a|older", "Survivor", start=now - 7200)
+    _doc("airing", "a|newer", "Survivor", start=now - 3600)
+
+    items = search_mod.search("survivor")["groups"][0]["items"]
+    assert [i["ref"] for i in items] == ["a|newer", "a|older"]
+
+
 def test_a_title_match_outranks_a_description_match():
     """Every surface truncates, so which results appear IS the feature."""
     _doc("airing", "a|1", "Broncos at Chiefs", body="afc west")
