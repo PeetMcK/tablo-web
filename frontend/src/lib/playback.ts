@@ -64,15 +64,35 @@ export function readyRange(
     : [t, t];
 }
 
+/** One HLS segment, matching the backend's `HLS_TIME` and `SEGMENT_SECONDS`. */
+export const SEGMENT_SECONDS = 6;
+
 /**
- * How far short of the frontier a clamped jump lands, in seconds.
+ * How far short of a settled end a clamped jump lands, in seconds.
  *
- * `hi` is the first instant that does *not* exist yet — the range is half-open,
- * the way `readyRange` tests it. Seeking exactly there stalls on the very
- * window the clamp exists to avoid, so a jump that would overshoot stops just
- * inside instead.
+ * `hi` is the last instant that exists. Seeking exactly onto it runs the
+ * playhead off the end of the media, so a jump that would overshoot stops just
+ * inside. Nothing more is needed where `hi` is a real ending — a recording
+ * that finished encoding is on disk to its last frame, and a wider cushion
+ * would only fence off the closing seconds.
  */
 const EDGE_MARGIN = 0.5;
+
+/**
+ * How far short of a *frontier* a clamped jump lands, in seconds.
+ *
+ * A live edge is not an end, it is the furthest the encoder has got. It
+ * advances one segment at a time, a segment apart, so a playhead parked just
+ * inside it plays for a moment and then waits — which is exactly what a skip
+ * is supposed to never do. Half a second of cushion bought half a second of
+ * video; the viewer tapped forward, hit the edge, and watched the encoder work
+ * for two to four seconds at a time.
+ *
+ * Wider than a segment on purpose. Landing exactly one behind leaves no slack
+ * for a segment that takes a moment longer than its own duration to appear,
+ * and the frontier would swallow the playhead again on the first hiccup.
+ */
+export const LIVE_EDGE_MARGIN = 10;
 
 /**
  * A jump of `delta` seconds from `from`, held inside `[lo, hi]`.
@@ -80,11 +100,21 @@ const EDGE_MARGIN = 0.5;
  * A skip is meant to be instant, so it stops at the last playable moment rather
  * than landing past the encoder or past the live edge. Going somewhere cold on
  * purpose is the scrubber's job.
+ *
+ * `margin` says what kind of thing `hi` is: pass `LIVE_EDGE_MARGIN` when it is
+ * a frontier still being produced, and leave it alone when it is a settled end.
+ * Overshooting returns the same landing spot every time, so a caller can tell
+ * a skip that goes nowhere from one that moves.
  */
-export function clampSkip(from: number, delta: number, [lo, hi]: [number, number]): number {
+export function clampSkip(
+  from: number,
+  delta: number,
+  [lo, hi]: [number, number],
+  margin: number = EDGE_MARGIN,
+): number {
   const target = from + delta;
   if (target <= lo) return lo;
-  if (target >= hi) return Math.max(lo, hi - EDGE_MARGIN);
+  if (target >= hi) return Math.max(lo, hi - margin);
   return target;
 }
 

@@ -8,7 +8,8 @@ import type {
 } from "../api/tablo";
 import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
 import {
-  airingAt, clampSkip, covers, programWindow, readyRange, type LiveAnchor,
+  airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, programWindow, readyRange,
+  type LiveAnchor,
 } from "../lib/playback";
 
 /**
@@ -664,7 +665,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       end: rangeEnd,
       whole: isLive || cacheState === "complete",
     });
-    seekTo(clampSkip(from, delta, range));
+    // A live edge is a frontier the encoder is still extending, so a skip has
+    // to stop well short of it. Anywhere else `hi` is a settled end.
+    const target = clampSkip(from, delta, range, isLive ? LIVE_EDGE_MARGIN : undefined);
+    // Already as far that way as there is anything to go. Seeking again would
+    // land on the spot it is already on, and every one of those announces
+    // itself as a stall — thirteen in a row, in the log that found this.
+    if (Math.abs(target - from) < 0.25) return;
+    seekTo(target);
   }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
 
   const goLive = useCallback(() => seekTo(rangeEnd), [seekTo, rangeEnd]);

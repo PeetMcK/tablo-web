@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-import { airingAt, clampSkip, mediaAt, programWindow, readyRange } from "../lib/playback";
+import {
+  airingAt, clampSkip, LIVE_EDGE_MARGIN, mediaAt, programWindow, readyRange,
+  SEGMENT_SECONDS,
+} from "../lib/playback";
 
 describe("readyRange", () => {
   const cached: [number, number][] = [[0, 600], [1800, 2400]];
@@ -163,6 +166,40 @@ describe("playing ahead of what the cache report knows", () => {
     // Narrowing live to what happens to be buffered would break the rewind
     // that already works there.
     expect(readyRange(605, { ...opts, whole: true })).toEqual([0, 3600]);
+  });
+});
+
+describe("skipping forward on a live edge", () => {
+  // A live encoder publishes one 6s segment every 6s, so the seekable end is a
+  // frontier rather than an end: there is nothing past it yet, and there will
+  // not be for another segment. Landing a half-second short of it buys a
+  // half-second of video and then a wait.
+  const edge: [number, number] = [0, 36];
+
+  it("stops a segment's worth short of the frontier, not a hair", () => {
+    const landed = clampSkip(21, 30, edge, LIVE_EDGE_MARGIN);
+    expect(landed).toBe(26);
+    // The cushion has to outlast the gap between segments, or the viewer is
+    // watching the encoder work.
+    expect(36 - landed).toBeGreaterThan(SEGMENT_SECONDS);
+  });
+
+  it("gives a repeat tap nowhere new to go", () => {
+    // Which is what makes the caller's no-op guard fire instead of seeking to
+    // the same spot again — thirteen times, in the log that prompted this.
+    const first = clampSkip(21, 30, edge, LIVE_EDGE_MARGIN);
+    expect(clampSkip(first, 30, edge, LIVE_EDGE_MARGIN)).toBe(first);
+  });
+
+  it("still rewinds freely from there", () => {
+    expect(clampSkip(26, -10, edge, LIVE_EDGE_MARGIN)).toBe(16);
+  });
+
+  it("leaves a finished recording able to reach its own ending", () => {
+    // Nothing is being produced there: the last second is on disk like every
+    // other, so the wide live cushion would only fence off the credits.
+    expect(clampSkip(3500, 30, [0, 3600])).toBe(3530);
+    expect(clampSkip(3590, 30, [0, 3600])).toBe(3599.5);
   });
 });
 
