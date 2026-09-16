@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -218,6 +218,19 @@ CREATE INDEX IF NOT EXISTS guide_airing_series ON guide_airing(series_path);
 """
 
 
+# Version 4 gives an airing its own artwork.
+#
+# A URL, not an image id, because this is for the airings that have no series
+# record to hang a `cover_image_id` on - the OTT/FAST channels, which exist
+# only in the cloud (see docs/tablo-api.md). The cloud hands back absolute CDN
+# URLs rather than device image ids, and the browser already loads channel
+# logos from that same host, so storing the URL keeps the artwork path free of
+# any server-side fetch.
+_SCHEMA_V4 = """
+ALTER TABLE guide_airing ADD COLUMN image_url TEXT;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -298,6 +311,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V2)
             if version < 3:
                 conn.executescript(_SCHEMA_V3)
+            if version < 4:
+                conn.executescript(_SCHEMA_V4)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

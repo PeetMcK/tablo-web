@@ -470,8 +470,8 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                     "    end_epoch, title, subtitle, description, genres, kind, "
                     "    episode_title, season_number, episode_number, orig_air_date, "
                     "    series_path, airing_path, schedule_state, schedule_qualifier, "
-                    "    skip_reason) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "    skip_reason, image_url) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(ch.get("identifier")), air.get("start"),
                         int(air.get("duration") or 0), end, air.get("title"),
@@ -481,7 +481,7 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                         air.get("episode_number"), air.get("orig_air_date"),
                         air.get("series_path"), air.get("airing_path"),
                         air.get("schedule_state"), air.get("schedule_qualifier"),
-                        air.get("skip_reason"),
+                        air.get("skip_reason"), air.get("image_url"),
                     ),
                 )
                 index_airing(conn, str(ch.get("identifier")), label, air)
@@ -529,6 +529,7 @@ def _airing_row(a) -> dict:
         "schedule_state": a["schedule_state"],
         "schedule_qualifier": a["schedule_qualifier"],
         "skip_reason": a["skip_reason"],
+        "image_url": a["image_url"],
     }
 
 
@@ -732,7 +733,12 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
     start_epoch = _start_epoch(air["start"])
     end_epoch = air["end_epoch"]
 
+    # The airing's own artwork wins: it is about this episode, where a series
+    # cover is about the whole run. It is also the only artwork an OTT airing
+    # has - those carry no series record at all, so without this every FAST
+    # sheet renders hero-less.
     cover = (series or {}).get("cover_image_id")
+    image_url = air["image_url"] or (f"/api/channels/image/{cover}" if cover else None)
     return {
         "title": air["title"],
         "episode_title": air["episode_title"],
@@ -744,7 +750,7 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
         "orig_air_date": air["orig_air_date"],
         "genres": json.loads(air["genres"] or "[]") or (series or {}).get("genres") or [],
         "rating": (series or {}).get("rating"),
-        "image_url": f"/api/channels/image/{cover}" if cover else None,
+        "image_url": image_url,
         "airing_now": start_epoch <= at < end_epoch,
         "channel": {
             "identifier": channel,

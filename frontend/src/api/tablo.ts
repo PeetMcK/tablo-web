@@ -116,7 +116,15 @@ export interface AiringDetail {
   orig_air_date: string | null;
   genres: string[];
   rating: string | null;
-  /** Already a URL path, or null when the series has no cover art. */
+  /**
+   * Ready to put in a `src`, or null when there is no artwork.
+   *
+   * Two shapes, deliberately not normalised: a local `/api/channels/image/{id}`
+   * for OTA, whose artwork lives on the device behind a signed request, and an
+   * absolute `lighthousetv-cdn` URL for OTT, which has no device artwork at
+   * all. Channel logos already come from that CDN, so both are the same kind
+   * of thing to an `<img>`.
+   */
   image_url: string | null;
   /** Computed server-side — the browser's clock may differ from the guide's. */
   airing_now: boolean;

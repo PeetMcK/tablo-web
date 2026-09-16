@@ -297,6 +297,35 @@ def test_airing_detail_without_a_series_has_no_artwork(monkeypatch):
     assert d["airing_now"] is False
 
 
+def test_an_airings_own_artwork_beats_the_series_cover(monkeypatch):
+    """An episode still is about this episode; a series cover is about the run.
+
+    It is also the only artwork OTT has - those airings carry no series record
+    at all, so without this every FAST sheet is a hero-less box.
+    """
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 600))
+    store.save_guide([{
+        "identifier": "ch9", "call_sign": "SCRIPPS", "major": 500, "minor": 1,
+        "network": "SCRIPPSNEWS", "display_name": "Scripps", "logo_url": None,
+        "kind": "ott",
+        "airings": [{"title": "Morning Rush", "subtitle": None, "description": None,
+                     "start": start, "duration": 3600, "genres": [], "kind": "episode",
+                     "image_url": "https://cdn/still.jpg"}],
+    }], now=now)
+
+    d = client.get("/api/channels/airing-detail",
+                   params={"channel": "ch9", "start": start}).json()
+    assert d["image_url"] == "https://cdn/still.jpg"
+
+
 def test_an_unknown_airing_is_a_404(monkeypatch):
     from app.state import state
     monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))

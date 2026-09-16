@@ -50,6 +50,17 @@ def test_episode_fields_round_trip():
     assert got["series_path"] == "/guide/series/6472"
 
 
+def test_an_airings_own_artwork_round_trips():
+    """OTT artwork is a URL on the airing, not an image id on a series."""
+    now = time.time()
+    air = _airing("M-1 Global Stars of MMA", int(now + 3600))
+    air["image_url"] = "https://lighthousetv-cdn.ewscloud.com/assets/p1.jpg"
+    store.save_guide([_channel("ch1", [air])], now=now)
+
+    got = store.load_guide(now=now)[0]["airings"][0]
+    assert got["image_url"] == "https://lighthousetv-cdn.ewscloud.com/assets/p1.jpg"
+
+
 def test_an_airing_without_episode_fields_still_saves():
     """Most airings have no episode data; nulls must not break the write."""
     now = time.time()

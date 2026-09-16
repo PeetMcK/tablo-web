@@ -107,6 +107,47 @@ def test_a_season_that_is_not_numbered_is_not_a_number():
     assert AppState._cloud_airing_row(a)["season_number"] is None
 
 
+def test_the_cloud_carries_its_own_artwork():
+    """OTT has no series record, so there is no cover_image_id to key off.
+
+    The cloud hands back direct CDN URLs instead, on the airing itself - and
+    the browser already loads channel logos from that same host, so this adds
+    no third party and needs no server-side fetch.
+    """
+    a = _cloud_airing()
+    a["images"] = [
+        {"kind": "stillSmall", "url": "https://cdn/still-small.jpg"},
+        {"kind": "poster", "url": "https://cdn/poster.jpg"},
+        {"kind": "stillLarge", "url": "https://cdn/still-large.jpg"},
+    ]
+    assert AppState._cloud_airing_row(a)["image_url"] == "https://cdn/still-large.jpg"
+
+
+def test_artwork_falls_back_through_the_kinds_it_has():
+    """Not every airing carries every kind; a 2:3 poster in a 16:9 frame is
+    the last resort rather than the first."""
+    a = _cloud_airing()
+    a["images"] = [{"kind": "poster", "url": "https://cdn/poster.jpg"},
+                   {"kind": "coverLarge", "url": "https://cdn/cover.jpg"}]
+    assert AppState._cloud_airing_row(a)["image_url"] == "https://cdn/cover.jpg"
+
+    a["images"] = [{"kind": "poster", "url": "https://cdn/poster.jpg"}]
+    assert AppState._cloud_airing_row(a)["image_url"] == "https://cdn/poster.jpg"
+
+
+def test_an_airing_with_no_artwork_has_none():
+    a = _cloud_airing()
+    a["images"] = []
+    assert AppState._cloud_airing_row(a)["image_url"] is None
+
+
+def test_an_unknown_image_kind_is_not_guessed_at():
+    """A kind we do not recognise may be any shape at all."""
+    a = _cloud_airing()
+    a["images"] = [{"kind": "bannerTiny", "url": "https://cdn/who-knows.jpg"}]
+    assert AppState._cloud_airing_row(a)["image_url"] is None
+
+
 def test_a_bare_cloud_record_still_maps():
     got = AppState._cloud_airing_row(
         {"channel": {"identifier": "x"}, "datetime": "2026-09-16T15:00:00Z",

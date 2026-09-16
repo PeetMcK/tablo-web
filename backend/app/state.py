@@ -352,6 +352,28 @@ class AppState:
                 continue
         return None
 
+    # Which cloud artwork the sheet wants, best first.
+    #
+    # The hero is a 16:9 frame, so the wide kinds come first and `poster` - a
+    # 2:3 portrait - is the last resort rather than the first. An episode still
+    # beats a series cover because it is about this episode. Kinds outside this
+    # list are ignored rather than guessed at: an unrecognised name could be
+    # any shape, and a banner stretched across the hero looks like a bug.
+    _CLOUD_IMAGE_KINDS = ("stillLarge", "coverLarge", "background",
+                          "stillSmall", "coverSmall", "poster")
+
+    @staticmethod
+    def _cloud_image_url(images: list | None) -> str | None:
+        """The best available artwork URL from a cloud airing, or None."""
+        by_kind = {
+            i.get("kind"): i.get("url")
+            for i in (images or []) if isinstance(i, dict) and i.get("url")
+        }
+        for kind in AppState._CLOUD_IMAGE_KINDS:
+            if by_kind.get(kind):
+                return by_kind[kind]
+        return None
+
     @staticmethod
     def _cloud_airing_row(a: dict) -> dict:
         """One cloud airing, in the shape the mirror stores.
@@ -400,6 +422,11 @@ class AppState:
             "season_number": season_number,
             "episode_number": ep.get("episodeNumber"),
             "orig_air_date": ep.get("originalAirDate"),
+            # An absolute CDN URL, not a device image id. OTT airings have no
+            # series record to hang a cover on, and the browser already loads
+            # channel logos from this host - so no proxy and no server-side
+            # fetch is involved. See docs/tablo-api.md.
+            "image_url": AppState._cloud_image_url(a.get("images")),
             # Display source only - the cloud carries no device handles.
             "series_path": None,
             "airing_path": None,
