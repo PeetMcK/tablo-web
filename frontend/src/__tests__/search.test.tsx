@@ -88,3 +88,24 @@ describe("SearchResultRow", () => {
     expect(screen.getByRole("option")).toHaveAttribute("aria-selected", "true");
   });
 });
+
+import { parseRoute, writeRoute } from "../lib/route";
+
+describe("search route", () => {
+  it("round-trips a query through the hash", () => {
+    expect(parseRoute("#/search?q=broncos")).toEqual({
+      tab: "search", watch: null, q: "broncos",
+    });
+  });
+
+  it("encodes a query with spaces", () => {
+    writeRoute({ tab: "search", watch: null, q: "denver broncos" });
+    expect(window.location.hash).toContain("q=denver%20broncos");
+  });
+
+  it("leaves the other tabs alone", () => {
+    expect(parseRoute("#/library/rec/80888")).toEqual({
+      tab: "library", watch: { kind: "recording", id: 80888 }, q: undefined,
+    });
+  });
+});
