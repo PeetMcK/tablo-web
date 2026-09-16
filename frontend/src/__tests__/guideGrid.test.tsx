@@ -1162,7 +1162,7 @@ describe("the guide at phone width", () => {
 
     const card = scroller(container).parentElement!;
 
-    expect(card.className).toMatch(/-mx-6/);          // out through main's padding
+    expect(card.className).toMatch(/-mx-4/);          // out through main's phone gutter
     expect(card.className).toMatch(/\bsm:mx-0\b/);    // and back inside it at sm
     expect(card.className).toMatch(/\brounded-none\b/);
     expect(card.className).toMatch(/\bsm:rounded-3xl\b/);
