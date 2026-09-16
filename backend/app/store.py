@@ -283,6 +283,68 @@ def _end_epoch(start: str | None, duration) -> int:
     return int(ts.timestamp() + (int(duration or 0)))
 
 
+def _start_epoch(start: str | None) -> int:
+    """The airing's start as a Unix epoch. `_end_epoch` with no duration."""
+    return _end_epoch(start, 0)
+
+
+# ---------------------------------------------------------------------------
+# Search index
+# ---------------------------------------------------------------------------
+
+def channel_label(ch: dict) -> str:
+    """How a station is written on screen, e.g. "8.1 CBS"."""
+    major, minor = ch.get("major"), ch.get("minor")
+    number = f"{major}.{minor}" if major else ""
+    name = ch.get("network") or ch.get("call_sign") or ""
+    return " ".join(p for p in (number, name) if p)
+
+
+def index_channel(conn, ch: dict) -> None:
+    """Put a channel in the search index.
+
+    Takes an open connection so it joins the caller's transaction: the index
+    and the row it describes must land together or not at all.
+    """
+    ident = str(ch.get("identifier"))
+    conn.execute(
+        "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+        "    channel, start_epoch, duration, target) "
+        "VALUES ('channel', ?, ?, ?, ?, ?, NULL, 0, ?)",
+        (
+            ident,
+            ch.get("display_name") or ch.get("call_sign"),
+            channel_label(ch),
+            " ".join(str(p) for p in (ch.get("network"), ch.get("call_sign")) if p),
+            channel_label(ch),
+            json.dumps({"tab": "live", "watch": ident}),
+        ),
+    )
+
+
+def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
+    """Put one airing in the search index, keyed the same way as guide_airing."""
+    genres = air.get("genres") or []
+    body = " ".join(
+        str(p) for p in (air.get("description"), *genres, label) if p
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+        "    channel, start_epoch, duration, target) "
+        "VALUES ('airing', ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            f"{channel_id}|{air.get('start')}",
+            air.get("title"),
+            air.get("subtitle") or "",
+            body,
+            label,
+            _start_epoch(air.get("start")),
+            int(air.get("duration") or 0),
+            json.dumps({"tab": "grid", "at": air.get("start")}),
+        ),
+    )
+
+
 def save_guide(rows: list[dict], now: float | None = None) -> None:
     """Merge the guide into the mirror, keeping everything already stored.
 
@@ -327,6 +389,8 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                     ch.get("logo_url"), ch.get("kind"), position, stamp,
                 ),
             )
+            index_channel(conn, ch)
+            label = channel_label(ch)
             for air in ch.get("airings") or []:
                 end = _end_epoch(air.get("start"), air.get("duration"))
                 conn.execute(
@@ -340,6 +404,7 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                         json.dumps(air.get("genres") or []), air.get("kind"),
                     ),
                 )
+                index_airing(conn, str(ch.get("identifier")), label, air)
     db.set_setting("guide_updated_at", stamp)
     db.set_setting("guide_synced_at", stamp)
 
@@ -354,6 +419,11 @@ def prune_guide(now: float | None = None) -> int:
     cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
     cutoff -= GUIDE_RETENTION_DAYS * 86_400
     with db.write() as conn:
+        conn.execute(
+            "DELETE FROM search_doc WHERE kind = 'airing' AND ref IN ("
+            "  SELECT channel_id || '|' || start FROM guide_airing WHERE end_epoch < ?)",
+            (cutoff,),
+        )
         cur = conn.execute("DELETE FROM guide_airing WHERE end_epoch < ?", (cutoff,))
         return cur.rowcount
 

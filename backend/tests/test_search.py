@@ -1,6 +1,8 @@
 """Search index, ranking and guide retention."""
 
-from app import db
+import time
+
+from app import db, store
 
 
 def test_schema_is_at_version_two():
@@ -36,3 +38,54 @@ def test_fts_follows_a_delete():
     with db.write() as conn:
         conn.execute("DELETE FROM search_doc WHERE ref = 'a|1'")
     assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'broncos'")
+
+
+def _ch(ident="ch1", **kw):
+    base = {
+        "identifier": ident, "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None,
+        "kind": "ota", "airings": [],
+    }
+    base.update(kw)
+    return base
+
+
+def test_saving_the_guide_indexes_channels_and_airings():
+    now = time.time()
+    store.save_guide([_ch(airings=[{
+        "title": "Survivor", "subtitle": "Finale", "description": "Last castaway",
+        "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600)),
+        "duration": 3600, "genres": ["reality"], "kind": "episode",
+    }])], now=now)
+
+    kinds = {r["kind"]: r for r in db.query("SELECT kind, title, channel FROM search_doc")}
+    assert kinds["channel"]["title"] == "KPAX"
+    assert kinds["airing"]["title"] == "Survivor"
+    assert kinds["airing"]["channel"] == "8.1 CBS"
+
+
+def test_reindexing_the_same_airing_does_not_duplicate_it():
+    now = time.time()
+    air = {
+        "title": "Survivor", "subtitle": "", "description": "",
+        "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600)),
+        "duration": 3600, "genres": [], "kind": "episode",
+    }
+    store.save_guide([_ch(airings=[air])], now=now)
+    store.save_guide([_ch(airings=[air])], now=now)
+
+    rows = db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+    assert len(rows) == 1
+
+
+def test_pruning_an_airing_removes_it_from_the_index():
+    now = time.time()
+    store.save_guide([_ch(airings=[{
+        "title": "Ancient", "subtitle": "", "description": "",
+        "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 32 * 86400)),
+        "duration": 3600, "genres": [], "kind": "episode",
+    }])], now=now)
+    store.prune_guide(now=now)
+
+    assert not db.query("SELECT 1 FROM search_doc WHERE title = 'Ancient'")
+    assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'ancient'")
