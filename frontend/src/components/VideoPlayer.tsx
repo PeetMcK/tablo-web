@@ -173,6 +173,8 @@ function clockTime(iso: string): string {
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
   const videoRef = useRef<HTMLVideoElement>(null);
+  /** The whole player. What goes fullscreen, so the chrome goes with it. */
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -829,13 +831,24 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     setMuted(video.muted);
   }, []);
 
-  // iOS Safari uses webkitEnterFullscreen on the video element itself;
-  // standard requestFullscreen() is not supported on iOS.
+  /**
+   * Fullscreen the player, not the picture inside it.
+   *
+   * Calling this on the `<video>` promotes that element alone, so the browser
+   * supplies its own transport and every part of ours — the programme-spanning
+   * bar, the cached bands, thumbnail scrubbing, the skip buttons — is left
+   * outside the fullscreen element and simply vanishes. Promoting the
+   * container takes the whole player up with it, and the chrome is the same
+   * chrome at both sizes.
+   *
+   * iOS is the exception and has to stay one: Safari there implements only
+   * `webkitEnterFullscreen`, on the video element, with its native controls.
+   * There is no arbitrary-element fullscreen to reach for.
+   */
   const enterFullscreen = useCallback(() => {
     const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
-    if (!video) return;
-    if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
-    else video.requestFullscreen?.();
+    if (video?.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return; }
+    (rootRef.current ?? video)?.requestFullscreen?.();
   }, []);
 
   /**
@@ -856,11 +869,31 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     else togglePlay();
   }, [skip, togglePlay]);
 
+  /**
+   * Keeps the chrome up while the cursor is resting on the transport.
+   *
+   * Fading out from under a hand that is on its way to the scrubber is the
+   * complaint; a pointer parked there is a viewer mid-decision, not an idle
+   * one. Held in a ref rather than state because the timer closure reads it
+   * and nothing renders from it.
+   *
+   * The region is the transport cluster itself, which sits inside the overlay's
+   * own gutter — so the true corners of the frame, outside the controls, go on
+   * timing out as before.
+   */
+  const cursorOnTransport = useRef(false);
+
   const resetHideTimer = useCallback(() => {
     setShowControls(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (cursorOnTransport.current) return;
     hideTimer.current = setTimeout(() => setShowControls(false), 3500);
   }, []);
+
+  const holdControls = useCallback((held: boolean) => {
+    cursorOnTransport.current = held;
+    resetHideTimer();
+  }, [resetHideTimer]);
 
   useEffect(() => { resetHideTimerRef.current = resetHideTimer; }, [resetHideTimer]);
 
@@ -882,9 +915,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     };
   }), [isLive, source, title, cacheState]);
 
+  // The opening fade, scheduled through the same timer every other reset uses.
+  // It used to keep a timer of its own, which knew nothing about the cursor
+  // resting on the transport and hid the controls out from under it — and
+  // which no reset could cancel, so it fired once whatever the viewer did.
   useEffect(() => {
-    const timer = setTimeout(() => setShowControls(false), 3500);
-    return () => clearTimeout(timer);
+    resetHideTimerRef.current?.();
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
   }, []);
 
   useEffect(() => {
@@ -990,7 +1027,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // as well as its own player-* family, which pinning the player tokens alone
     // would have missed. No call site in this file needs to know.
     <div
-      className="dark fixed inset-0 z-50 bg-media flex items-center justify-center"
+      ref={rootRef}
+      // The pointer goes with the chrome. A cursor left sitting over the
+      // picture is the one piece of interface that never faded, and on a
+      // fullscreen frame it is the only thing on screen that is not the
+      // programme. Any movement brings both back.
+      className={`dark fixed inset-0 z-50 bg-media flex items-center justify-center
+        ${showControls ? "" : "cursor-none"}`}
       onMouseMove={resetHideTimer}
       onClick={handleSurfaceClick}
     >
@@ -1098,8 +1141,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           </button>
         </div>
 
-        {/* Bottom: scrubber + transport */}
-        <div className="flex flex-col gap-3 pointer-events-auto">
+        {/* Bottom: scrubber + transport. Resting the cursor anywhere in here
+            holds the chrome up — see `cursorOnTransport`. */}
+        <div
+          className="flex flex-col gap-3 pointer-events-auto"
+          onMouseEnter={() => holdControls(true)}
+          onMouseLeave={() => holdControls(false)}
+        >
 
           <div className="flex items-center gap-3">
             <span
