@@ -135,6 +135,37 @@ describe("stalled on the encoder's frontier", () => {
   });
 });
 
+describe("playing ahead of what the cache report knows", () => {
+  // The published playlist names every segment of the recording, so hls.js
+  // keeps pulling 180s ahead and the backend transcodes each cold window on
+  // demand. Playback sails past the cached island without stalling. Meanwhile
+  // `cached_ranges` only grows a whole 60s window at a time and is polled every
+  // 3s, so for most of a minute the report says the playhead is nowhere.
+  const cached: [number, number][] = [[0, 600]];
+  const buffered: [number, number][] = [[480, 790]];
+  const opts = { ranges: cached, buffered, start: 0, end: 3600, whole: false };
+
+  it("trusts the buffer, which is the only thing that knows", () => {
+    expect(readyRange(605, opts)).toEqual([0, 790]);
+  });
+
+  it("skips both ways while the report still says nothing is here", () => {
+    expect(clampSkip(605, -10, readyRange(605, opts))).toBe(595);
+    expect(clampSkip(605, 30, readyRange(605, opts))).toBe(635);
+  });
+
+  it("holds still where neither the cache nor the buffer reaches", () => {
+    expect(readyRange(2000, opts)).toEqual([2000, 2000]);
+    expect(clampSkip(2000, -10, readyRange(2000, opts))).toBe(2000);
+  });
+
+  it("leaves live alone — its whole DVR window is served from disk", () => {
+    // Narrowing live to what happens to be buffered would break the rewind
+    // that already works there.
+    expect(readyRange(605, { ...opts, whole: true })).toEqual([0, 3600]);
+  });
+});
+
 describe("a skip never leaves what exists", () => {
   it("stops at the live edge even when the bar runs an hour past it", () => {
     // The bar spans 8:00–9:00; only 8:00–8:15 is on disk. Forward 30 from near

@@ -625,8 +625,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * Jump by `delta`, held inside what is playable right now.
    *
    * Live is the whole DVR window, ending at the live edge; a partially cached
-   * recording is the island the playhead stands in. The scrubber is still free
-   * to go anywhere and wait.
+   * recording is the run the playhead stands in, across both the encoder's
+   * report and the browser's own buffer. The buffer has to be in there: it is
+   * read fresh here while the report is a 3s poll of 60s windows, and playback
+   * routinely runs minutes past the last window the report knows about. The
+   * scrubber is still free to go anywhere and wait.
    */
   const skip = useCallback((delta: number) => {
     const video = videoRef.current;
@@ -634,6 +637,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     const from = video.currentTime;
     const range = readyRange(from, {
       ranges: cachedRangesRef.current,
+      buffered: timeRangesToArray(video.buffered),
       start: rangeStart,
       end: rangeEnd,
       whole: isLive || cacheState === "complete",
