@@ -9,19 +9,31 @@ what makes it safe to build against - a wrong value returns 400 rather than
 doing something unintended. See docs/tablo-api.md.
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import store
-from ..state import AppState, _run_sync, state
+from ..state import SERIES_SYNC_CONCURRENCY, AppState, _run_sync, state
 
 router = APIRouter(prefix="/api/schedule", tags=["schedule"])
+
+# The device's validator rejects anything else with a 400, but refusing here
+# keeps a typo off the wire. Confirmed by tools/probe_schedule_rules.py.
+RULES = ("all", "new", "none")
 
 
 class AiringIn(BaseModel):
     channel: str
     start: str
     scheduled: bool
+
+
+class SeriesIn(BaseModel):
+    channel: str
+    start: str
+    rule: str
 
 
 def _require_auth() -> None:
@@ -81,3 +93,71 @@ async def schedule_airing(body: AiringIn):
     await _run_sync(store.update_airing_schedule, body.channel, body.start,
                     AppState._airing_row(data))
     return await _run_sync(store.airing_detail, body.channel, body.start)
+
+
+@router.put("/series")
+async def schedule_series(body: SeriesIn):
+    """Set the series rule: record all episodes, new ones only, or none.
+
+    Nested, not flat: `{"schedule": {"rule": ...}}`. The GET also exposes a
+    top-level `schedule_rule`, but writing that key fails with "Must specify at
+    least one valid parameter".
+    """
+    _require_auth()
+    if body.rule not in RULES:
+        raise HTTPException(status_code=422, detail=f"Unknown rule: {body.rule}")
+
+    handles = await _handles(body.channel, body.start)
+    if not handles["series_path"]:
+        raise HTTPException(status_code=409,
+                            detail="This airing has no series to set a rule on.")
+
+    try:
+        status, data = await state.patch_device(
+            handles["series_path"], {"schedule": {"rule": body.rule}}
+        )
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    if status != 200:
+        raise _device_error(status, data)
+
+    await _run_sync(store.save_series, [AppState._series_row(data)])
+    # After the response, not before it: one rule change flips the state of
+    # every future episode, and re-reading them is tens of device requests.
+    asyncio.get_running_loop().create_task(
+        refresh_series_airings(handles["series_path"])
+    )
+    return await _run_sync(store.airing_detail, body.channel, body.start)
+
+
+async def refresh_series_airings(series_path: str) -> int:
+    """Re-read this series' future airings so sibling cells stop lying.
+
+    Bounded by the mirror's own list and run at the background sync's
+    concurrency - the Tablo is shared with playback and saturates around 10x
+    realtime, so a rule change must not turn into a burst.
+
+    Never raises and its result is never surfaced. The write already succeeded
+    on the device; a stumbling refresh is a staleness problem, which the next
+    sync fixes, not a failed write.
+    """
+    try:
+        rows = await _run_sync(store.series_future_airings, series_path)
+    except Exception as e:
+        print(f"[schedule] could not list {series_path}: {e}", flush=True)
+        return 0
+
+    sem = asyncio.Semaphore(SERIES_SYNC_CONCURRENCY)
+
+    async def one(row) -> int:
+        async with sem:
+            try:
+                data = await state.request_device("GET", row["airing_path"])
+                await _run_sync(store.update_airing_schedule, row["channel"],
+                                row["start"], AppState._airing_row(data))
+                return 1
+            except Exception:
+                return 0
+
+    return sum(await asyncio.gather(*[one(r) for r in rows]))

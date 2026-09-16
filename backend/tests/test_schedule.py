@@ -314,3 +314,102 @@ def test_scheduling_requires_auth():
     resp = client.put("/api/schedule/airing",
                       json={"channel": "ch1", "start": "x", "scheduled": True})
     assert resp.status_code == 401
+
+
+def _device_series(rule):
+    return {
+        "path": "/guide/series/6472", "identifier": "X",
+        "series": {"title": "Finding Your Roots", "description": None,
+                   "genres": [], "series_rating": "tvpg", "orig_air_date": None,
+                   "episode_runtime": 3600, "cast": []},
+        "schedule_rule": rule,
+        "keep": {"rule": "none", "count": None},
+    }
+
+
+async def _noop(*a, **kw):
+    return 0
+
+
+def test_setting_a_series_rule_patches_the_nested_shape(authed, monkeypatch):
+    """`{"schedule": {"rule": ...}}` - the top-level `schedule_rule` the GET
+    returns is rejected on a write."""
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+    sent = {}
+
+    async def fake_patch(path, payload):
+        sent.update(path=path, payload=payload)
+        return 200, _device_series("all")
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+    monkeypatch.setattr(schedule_routes, "refresh_series_airings", _noop)
+
+    resp = client.put("/api/schedule/series",
+                      json={"channel": "ch1", "start": start, "rule": "all"})
+
+    assert resp.status_code == 200
+    assert sent == {"path": "/guide/series/6472",
+                    "payload": {"schedule": {"rule": "all"}}}
+    assert resp.json()["series"]["schedule_rule"] == "all"
+
+
+def test_an_unknown_rule_never_reaches_the_device(authed, monkeypatch):
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+
+    async def fake_patch(path, payload):
+        raise AssertionError("the device must not be asked")
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+
+    resp = client.put("/api/schedule/series",
+                      json={"channel": "ch1", "start": start, "rule": "ZZZ"})
+    assert resp.status_code == 422
+
+
+def test_an_airing_with_no_series_is_a_409(authed):
+    now = time.time()
+    rows, start = _guide(now, series_path=None)
+    store.save_guide(rows, now=now)
+
+    resp = client.put("/api/schedule/series",
+                      json={"channel": "ch1", "start": start, "rule": "all"})
+    assert resp.status_code == 409
+
+
+def test_the_refresh_rereads_this_series_future_airings(monkeypatch):
+    now = time.time()
+    rows, start = _guide(now)
+    store.save_guide(rows, now=now)
+    asked = []
+
+    async def fake_request(method, path):
+        asked.append((method, path))
+        return _device_airing("scheduled")
+
+    monkeypatch.setattr(app_state, "request_device", fake_request)
+
+    got = asyncio.run(schedule_routes.refresh_series_airings("/guide/series/6472"))
+
+    assert got == 1
+    assert asked == [("GET", "/guide/series/episodes/67388")]
+    assert store.airing_detail("ch1", start, now=now)["schedule_state"] == "scheduled"
+
+
+def test_a_failing_refresh_is_swallowed(monkeypatch):
+    """The write already succeeded on the device. Reporting it as a failure
+    because a refresh stumbled would be a lie about the thing that matters."""
+    now = time.time()
+    rows, _ = _guide(now)
+    store.save_guide(rows, now=now)
+
+    async def fake_request(method, path):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(app_state, "request_device", fake_request)
+
+    assert asyncio.run(
+        schedule_routes.refresh_series_airings("/guide/series/6472")) == 0
