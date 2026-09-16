@@ -26,3 +26,6 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Claude Code worktrees are full checkouts; the skills beside them are not.
+.claude/worktrees/
