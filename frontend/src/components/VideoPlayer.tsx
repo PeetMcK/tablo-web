@@ -206,7 +206,7 @@ interface PlayerView {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   rootRef: React.RefObject<HTMLDivElement | null>;
   videoHostRef: React.RefObject<HTMLDivElement | null>;
-  placeVideo: (host: HTMLDivElement) => void;
+  placeVideo: (host: HTMLDivElement, forPip: boolean) => void;
   barRef: React.RefObject<HTMLDivElement | null>;
   showControls: boolean;
   resetHideTimer: () => void;
@@ -302,7 +302,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [openAt] = useState(startAt);
   const [openPlaying] = useState(autoPlay);
 
-  const { load, destroy, reattach, error: playerError } = usePlayer(videoRef, {
+  const { load, destroy, error: playerError } = usePlayer(videoRef, {
     // Live keeps the DVR window buffered so rewind has something to land on;
     // a cached recording is fully addressable server-side, so nothing needs
     // holding in memory.
@@ -992,16 +992,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * attachment; the window is furnished with the picture and nothing else,
    * which is what the browser's own version showed too.
    */
-  /**
-   * Whether the picture should be playing once it lands in its new home.
-   *
-   * Captured at the moment the move is asked for, because by the time it has
-   * happened the answer is gone: unmounting the stage takes the element out of
-   * the document, which queues a pause, so anything reading `paused` on the
-   * other side is reading the consequence of the move rather than the state
-   * the viewer chose.
-   */
-  const resumeAfterMove = useRef(false);
 
   /**
    * Put the one video element in `host`, and make it work there.
@@ -1013,19 +1003,57 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * resolving and the next append kills the stream outright. And resuming,
    * because taking a media element out of a document pauses it.
    */
-  const placeVideo = useCallback((host: HTMLDivElement) => {
-    const video = videoRef.current;
-    if (!video || video.parentElement === host) return;
-    host.append(video);
-    reattach();
-    if (!resumeAfterMove.current) return;
-    resumeAfterMove.current = false;
-    // On a later task: the pause the move causes is queued too, and a play()
-    // in this turn would simply be undone by it.
-    setTimeout(() => {
-      video.play().catch((e) => log.warn("resume after move refused", e));
-    }, 0);
-  }, [reattach]);
+  /**
+   * A second video element showing the same picture, for the pop-out window.
+   *
+   * Carrying the real element across was tried and cannot be made to work.
+   * Two independent walls: hls.js feeds it through a MediaSource published as
+   * a `blob:` URL owned by the document that created it, so the stream dies
+   * on arrival with a fatal bufferAppendError; and a picture-in-picture
+   * window is a fresh document with no user activation, so `play()` there is
+   * refused outright however it is timed.
+   *
+   * A mirror has neither problem. `captureStream` hands out the tracks the
+   * element is already decoding, the mirror plays them with no MediaSource of
+   * its own, and it is muted — the one case the autoplay policy allows
+   * without a gesture. The sound stays on the original, in the tab, where the
+   * gesture happened. The controls drive the original too; this element only
+   * ever shows.
+   */
+  const mirrorRef = useRef<HTMLVideoElement | null>(null);
+
+  const openMirror = useCallback(() => {
+    const video = videoRef.current as (HTMLVideoElement & {
+      captureStream?: () => MediaStream;
+    }) | null;
+    if (!video?.captureStream) return false;
+    const mirror = document.createElement("video");
+    mirror.className = "w-full h-full object-contain";
+    mirror.playsInline = true;
+    mirror.muted = true;
+    mirror.autoplay = true;
+    mirror.srcObject = video.captureStream();
+    mirrorRef.current = mirror;
+    return true;
+  }, []);
+
+  const closeMirror = useCallback(() => {
+    const mirror = mirrorRef.current;
+    if (!mirror) return;
+    (mirror.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());
+    mirror.srcObject = null;
+    mirror.remove();
+    mirrorRef.current = null;
+  }, []);
+
+  /**
+   * Put the right element in `host`: the real one in the tab, the mirror in
+   * the pop-out. Neither ever crosses between documents.
+   */
+  const placeVideo = useCallback((host: HTMLDivElement, forPip: boolean) => {
+    const el = forPip ? mirrorRef.current : videoRef.current;
+    if (el && el.parentElement !== host) host.append(el);
+  }, []);
 
   const pipWindow = useRef<Window | null>(null);
   /** The live shortcut handler, so a new pop-out can be given it too. */
@@ -1046,10 +1074,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
     } }).documentPictureInPicture;
     if (!video || !host || !dpip) return;
-
-    // Asked for now, while the answer is still true. Both directions go
-    // through here, and the window's own close button is caught below.
-    resumeAfterMove.current = !video.paused;
 
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
@@ -1082,6 +1106,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       // which is exactly what happened. A root here listens here.
       const mount = w.document.createElement("div");
       w.document.body.append(mount);
+      openMirror();
       pipRoot.current = createRoot(mount);
       if (keyHandler.current) w.addEventListener("keydown", keyHandler.current);
       setPoppedOut(true);
@@ -1090,11 +1115,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       // — the root has to come down and the video come home, or the player is
       // left with nothing to show.
       w.addEventListener("pagehide", () => {
-        // Closed from the window itself rather than our button, so the state
-        // has not been captured yet — and the root coming down is what takes
-        // the element out of the document and pauses it.
-        resumeAfterMove.current = !video.paused;
         pipRoot.current?.unmount();
+        closeMirror();
         pipRoot.current = null;
         pipWindow.current = null;
         setPoppedOut(false);
@@ -1119,7 +1141,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   // this it would show the moment it was opened at, frozen.
   useEffect(() => {
     const view = viewRef.current;
-    if (pipRoot.current && view) pipRoot.current.render(<Stage view={view} owns />);
+    if (pipRoot.current && view) pipRoot.current.render(<Stage view={view} pip />);
   });
 
   /**
@@ -1350,7 +1372,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
         </div>
       )}
-      <Stage view={view} owns={!poppedOut} />
+      <Stage view={view} pip={false} />
     </>
   );
 }
@@ -1364,7 +1386,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
  * into another document fires them where nothing is listening. Everything in
  * here is presentation; the state and the handlers belong to VideoPlayer.
  */
-function Stage({ view, owns }: { view: PlayerView; owns: boolean }) {
+function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
   const {
     rootRef, videoHostRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
@@ -1444,18 +1466,16 @@ function Stage({ view, owns }: { view: PlayerView; owns: boolean }) {
   // the other root's commit: by the time this runs, the host below exists.
   useEffect(() => {
     const host = videoHostRef.current;
-    // One element, one home. Both stages stay mounted so the picture is never
-    // between documents — that gap is what pauses it — but only the one the
-    // viewer is looking at may claim it, or the two effects take it from each
-    // other on every render.
-    if (owns && host) placeVideo(host);
+    // The tab hosts the real element and the pop-out hosts the mirror, so
+    // each stage fills its own host and nothing is ever taken from the other.
+    if (host) placeVideo(host, pip);
   });
 
-  // Not the stage the viewer is looking at: all it owes anyone is a host for
-  // the picture to come back to. Rendering its chrome as well would put a
-  // second set of controls and a second close button in the document — the
-  // duplicates would answer queries, take clicks, and read as a bug.
-  if (!owns) {
+  // The tab's stage while the picture is out: all it owes anyone is a home
+  // for the real element, which keeps playing there and feeds the mirror.
+  // Drawing its chrome too would put a second set of controls in the document
+  // — duplicates that answer queries, take clicks, and read as a bug.
+  if (!pip && poppedOut) {
     return (
       <div className="dark fixed inset-0 z-50 bg-media flex items-center justify-center">
         <div ref={videoHostRef} className="w-full h-full" />
