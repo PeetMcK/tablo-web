@@ -1222,3 +1222,59 @@ describe("the guide's channel tile says it plays", () => {
     expect(p.className).toMatch(/group-hover\/tile:bg-accent-soft/);
   });
 });
+
+describe("the guide marks what is being recorded", () => {
+  const topOfHour = () => {
+    const t = new Date();
+    t.setMinutes(0, 0, 0);
+    return t;
+  };
+
+  beforeEach(() => {
+    mockStream(grid());
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({
+      recordings: [{
+        object_id: 86113,
+        channel_identifier: "ch1",
+        start: topOfHour().toISOString(),
+        duration: 3600,
+        // Twelve minutes late, so the cell shows a gap at its left edge that
+        // the ordinary progress bar could never express.
+        recording_started: new Date(topOfHour().getTime() + 720_000).toISOString(),
+        recorded_seconds: 600,
+        expected_seconds: 2880,
+        title: "Survivor",
+      }],
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says which programme is recording", async () => {
+    render(<GuideGridView onPlay={() => {}} />);
+
+    expect(await screen.findByLabelText(/recording now: survivor/i)).toBeInTheDocument();
+  });
+
+  it("draws coverage on that cell, not clock progress", async () => {
+    // The ordinary bar starts flush left because the clock started at the top
+    // of the hour. Coverage starts where the tuner did — twelve minutes in.
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByLabelText(/recording now: survivor/i);
+
+    // `.inset-y-0` picks the bar rather than the pulsing dot, which shares the
+    // colour class.
+    const fill = container.querySelector<HTMLElement>(".bg-danger.inset-y-0");
+    expect(fill).not.toBeNull();
+    expect(parseFloat(fill!.style.left)).toBeCloseTo(20, 0);
+  });
+
+  it("leaves every other cell exactly as it was", async () => {
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByLabelText(/recording now: survivor/i);
+
+    // One marked cell, and the rest keep the accent progress bar.
+    expect(container.querySelectorAll(".bg-danger.inset-y-0")).toHaveLength(1);
+    expect(container.querySelectorAll(".accent-gradient-x").length).toBeGreaterThan(0);
+  });
+});

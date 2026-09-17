@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { recordingFor, useRecordingsInProgress } from "../lib/useRecordingsInProgress";
+import { recordedSpan } from "../lib/recording";
 import { api, type GridChannel, type Program } from "../api/tablo";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
@@ -200,6 +202,9 @@ function useGridStream() {
 }
 
 export function GuideGridView({ onPlay, jumpTo }: Props) {
+  // What is recording right now, from the same hook Live uses so the two views
+  // cannot disagree about it. Keyed `(channel_identifier, start)`.
+  const inProgress = useRecordingsInProgress(true);
   const { grid, loading: isLoading } = useGridStream();
   const [now, setNow] = useState(() => Date.now());
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
@@ -1016,6 +1021,13 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                   ? Math.max(0, Math.min(100, ((now - airStart) / (air.duration * 1000)) * 100))
                   : 0;
                 const isOnNow = progress > 0 && progress < 100;
+                // What has actually been captured, when this airing is being
+                // recorded. The bar above says how far through the programme
+                // the clock is; once a recording exists the useful question is
+                // how much of it there is, and a tuner that joined late will
+                // never catch the opening.
+                const recording = recordingFor(inProgress, ch.identifier, air.start);
+                const captured = recording ? recordedSpan(recording) : null;
 
                 return (
                   <button
@@ -1030,13 +1042,31 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                     style={{ left, width: width - 4 }}
                   >
                     <p className="text-[11px] font-bold text-fg-secondary truncate group-hover:text-accent-strong transition-colors">
+                      {recording && (
+                        <span
+                          className="inline-flex relative w-1.5 h-1.5 mr-1.5 align-middle"
+                          aria-label={`Recording now: ${recording.title ?? air.title}`}
+                        >
+                          <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger opacity-60" />
+                          <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-danger" />
+                        </span>
+                      )}
                       {air.title}
                     </p>
                     <p className="text-[10px] text-fg-muted line-clamp-1 mt-0.5">
                       {air.description || "Live TV Event"}
                     </p>
-                    {/* Per-airing progress bar */}
-                    {isOnNow && (
+                    {/* Per-airing progress bar, or coverage where something is
+                        recording this: the same geometry the Library card and
+                        the Live card draw, from the same function. */}
+                    {captured ? (
+                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-fill-soft">
+                        <div
+                          className="bg-danger h-full absolute inset-y-0"
+                          style={{ left: `${captured.left}%`, width: `${captured.width}%` }}
+                        />
+                      </div>
+                    ) : isOnNow && (
                       <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-fill-soft">
                         {/* A bar, not a label: the brand ramp is allowed here. */}
                         <div className="accent-gradient-x h-full opacity-70" style={{ width: `${progress}%` }} />
