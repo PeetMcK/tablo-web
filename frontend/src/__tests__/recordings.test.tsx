@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LibraryView } from "../components/LibraryView";
 import { formatAired } from "../lib/format";
 import { api } from "../api/tablo";
+import { saveResume, __resetResumeForTests } from "../lib/resume";
 import type { Recording, RecordingList } from "../api/tablo";
 
 const NBSP = "\u00a0";
@@ -791,5 +792,73 @@ describe("reaching a recording's information", () => {
     await screen.findByText("NFL Football");
 
     expect(screen.queryByRole("button", { name: /information about/i })).toBeNull();
+  });
+});
+
+describe("what the artwork offers", () => {
+  const resumed = (key: string, seconds: number) => saveResume(key, seconds, 3600);
+
+  function renderWith(rec: Recording) {
+    vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [rec], returned: 1, total: 1, offline_only: 0,
+    });
+    return renderLibrary();
+  }
+
+  const IN_FLIGHT: Recording = {
+    ...REC, object_id: 90001, title: "Carl the Collector", state: "recording",
+    start: "2026-09-17T17:00:00Z", duration: 1800, slot_seconds: 1800,
+    recording_started: "2026-09-17T17:09:18Z",
+    recorded_seconds: 780, expected_seconds: 1242,
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers all three places on a recording you have already watched some of", async () => {
+    // Resuming, starting over and jumping to the frontier are three different
+    // intentions, and while it is still recording all three are available.
+    resumed("recording:90001", 300);
+    renderWith(IN_FLIGHT);
+
+    expect(await screen.findByRole("button", { name: /resume/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /from start/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^live$/i })).toBeInTheDocument();
+  });
+
+  it("drops Resume when there is nothing to resume", async () => {
+    renderWith({ ...IN_FLIGHT, object_id: 90002 });
+
+    expect(await screen.findByRole("button", { name: /from start/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^live$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /resume/i })).toBeNull();
+  });
+
+  it("offers Resume and From start on a finished recording you left partway", async () => {
+    // No Live: there is no frontier to jump to once it has finished.
+    resumed("recording:90003", 900);
+    renderWith({ ...REC, object_id: 90003, state: "finished" });
+
+    expect(await screen.findByRole("button", { name: /resume/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /from start/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^live$/i })).toBeNull();
+  });
+
+  it("keeps the single play button when a finished recording has no position", async () => {
+    renderWith({ ...REC, object_id: 90004, state: "finished" });
+
+    // Two carry that label: the artwork's puck and the footer's small mark.
+    expect(await screen.findAllByRole("button", { name: /^Play NFL Football$/ })).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /from start/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /resume/i })).toBeNull();
   });
 });

@@ -453,58 +453,80 @@ export function LibraryView() {
                       Tablo
                     </div>
                   )}
-                  {isRecording(rec) ? (
-                    // Two places to start, because for something still being
-                    // written they are genuinely different: the beginning of
-                    // the show, or whatever is going out now. Guessing either
-                    // one is wrong half the time, so the card asks.
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2
-                                    bg-scrim-soft opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
-                      <button
-                        onClick={() => { setStartMode(resumeFor(rec) > 0 ? "resume" : "beginning"); setPlaying(rec); }}
-                        className="accent-gradient flex items-center gap-2 pl-3 pr-4 h-10 rounded-full
-                                   text-brand-fg text-xs font-bold shadow-lg
-                                   hover:scale-105 hover:shadow-2xl hover:brightness-110
-                                   active:scale-95 transition-all duration-150"
-                      >
-                        <Play className="w-4 h-4" fill="currentColor" aria-hidden />
-                        {resumeFor(rec) > 0
-                          ? `Resume ${formatClock(resumeFor(rec))}`
-                          : "From start"}
-                      </button>
-                      <button
-                        onClick={() => { setStartMode("live"); setPlaying(rec); }}
-                        className="flex items-center gap-2 pl-3 pr-4 h-10 rounded-full glass
-                                   text-media-fg text-xs font-bold shadow-lg
-                                   hover:scale-105 hover:bg-fill active:scale-95 transition-all duration-150"
-                        title="Jump to what is being recorded right now"
-                      >
-                        <Radio className="w-4 h-4" aria-hidden />
-                        Live
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => { setStartMode("resume"); setPlaying(rec); }}
-                      disabled={!playable}
-                      className="absolute inset-0 flex items-center justify-center bg-scrim-soft
-                                 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition
-                                 disabled:cursor-not-allowed w-full"
-                      aria-label={`Play ${rec.title ?? "recording"}`}
-                    >
-                      {/* The mark answers its own hover — it grows, lifts and
-                          brightens — while the press belongs to the whole
-                          artwork: clicking the picture and clicking the puck
-                          are the same act, so they look the same. Same split as
-                          the Live TV card's info mark, and `group/art` so the
-                          card's own group still owns the reveal. */}
-                      <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
-                                      shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
-                                      group-active/art:scale-95 transition-all duration-150">
-                        <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
+                  {(() => {
+                    // Resuming, starting over and jumping to the frontier are
+                    // three different intentions. Which exist depends on the
+                    // recording: only one still being written has a frontier,
+                    // and only one already watched has somewhere to resume to.
+                    // `loadResume` already ignores the first thirty seconds and
+                    // the last minute, so an offer to resume always means one.
+                    const at = resumeFor(rec);
+                    const live = isRecording(rec);
+
+                    // Nothing to choose between: the whole picture is the
+                    // button, as it has always been.
+                    if (!at && !live) {
+                      return (
+                        <button
+                          onClick={() => { setStartMode("resume"); setPlaying(rec); }}
+                          disabled={!playable}
+                          className="absolute inset-0 flex items-center justify-center bg-scrim-soft
+                                     opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition
+                                     disabled:cursor-not-allowed w-full"
+                          aria-label={`Play ${rec.title ?? "recording"}`}
+                        >
+                          {/* The mark answers its own hover — it grows, lifts
+                              and brightens — while the press belongs to the
+                              whole artwork: clicking the picture and clicking
+                              the puck are the same act, so they look the same. */}
+                          <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
+                                          shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
+                                          group-active/art:scale-95 transition-all duration-150">
+                            <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
+                          </div>
+                        </button>
+                      );
+                    }
+
+                    const chip = "flex items-center gap-2 pl-3 pr-4 h-10 rounded-full text-xs font-bold"
+                      + " shadow-lg hover:scale-105 active:scale-95 transition-all duration-150";
+                    return (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2
+                                      bg-scrim-soft opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+                        {/* Where you left off leads: it is the likeliest thing
+                            wanted, and the only one that needs no thought. */}
+                        {at > 0 && (
+                          <button
+                            onClick={() => { setStartMode("resume"); setPlaying(rec); }}
+                            className={`${chip} accent-gradient text-brand-fg hover:shadow-2xl hover:brightness-110`}
+                          >
+                            <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                            Resume {formatClock(at)}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { setStartMode("beginning"); setPlaying(rec); }}
+                          className={at > 0
+                            ? `${chip} glass text-media-fg hover:bg-fill`
+                            : `${chip} accent-gradient text-brand-fg hover:shadow-2xl hover:brightness-110`}
+                        >
+                          <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                          From start
+                        </button>
+                        {live && (
+                          <button
+                            onClick={() => { setStartMode("live"); setPlaying(rec); }}
+                            className={`${chip} glass text-media-fg hover:bg-fill`}
+                            title="Jump to what is being recorded right now"
+                          >
+                            <Radio className="w-4 h-4" aria-hidden />
+                            Live
+                          </button>
+                        )}
                       </div>
-                    </button>
-                  )}
+                    );
+                  })()}
+
                   {/* Recording wins the corner outright. Nothing else a card can
                       say about itself matters as much as the fact that it is
                       still growing — and the cache badges cannot apply anyway,

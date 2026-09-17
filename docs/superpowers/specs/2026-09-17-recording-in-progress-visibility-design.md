@@ -105,9 +105,12 @@ official app writes it. Measured: of eight recordings, only the Saturday Night
 Live watched on a phone carried a position (33s); everything watched in our own
 player read zero, because we keep resume in `localStorage`.
 
-So the two clients each hold half the picture, and ours is lost with the
-browser cache. **Position should be written to the device**, which makes it the
-one place both agree and removes our need to store it at all.
+So the two clients each hold half the picture. Ours is *not* in localStorage —
+an earlier draft of this document said so and was wrong; positions already moved
+to our own server, with localStorage kept only as a one-shot legacy import. The
+argument is therefore about agreement between clients, not durability: our
+server and the device each know something the other does not, and only the
+device is shared with the phone. **Position should be written to the device.**
 
 The write works, and its shape is not the read's:
 
