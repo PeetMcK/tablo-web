@@ -483,6 +483,22 @@ export const api = {
   watchRecording: (objectId: number) =>
     req<RecordingWatch>(`/recordings/${objectId}/watch`, { method: "POST" }),
 
+  /**
+   * Follow a recording's own MPEG-2 segments, for the WASM decoder.
+   *
+   * A recording is MPEG-2 video with AC-3 audio - the same thing the live path
+   * decodes - so playing it needs no transcode at all. The transcode is what
+   * caching is for.
+   */
+  watchRecordingRaw: (objectId: number) =>
+    req<{
+      object_id: number;
+      session_id: string;
+      stream_url: string;
+      origin_ms: number;
+      mode: string;
+    }>(`/recordings/${objectId}/watch-raw`, { method: "POST" }),
+
   /** Doubles as the "still watching" heartbeat that bounds server-side prefetch. */
   recordingStatus: (objectId: number, position?: number) =>
     req<RecordingStatus>(

@@ -9,10 +9,31 @@ import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
 
-/** A recording still being written has no complete source to transcode. */
+/**
+ * Whether there is something to play.
+ *
+ * A recording still being written plays fine: the device serves it as HLS from
+ * the first moment, which is how its own app lets you start a show that is
+ * still recording. Verified against a recording in progress - `state:
+ * recording`, `duration: 0` - which still answered `POST .../watch` with a
+ * playlist. This used to refuse them on the assumption that a transcode needs
+ * a complete file, and the result was the one thing the device is best at
+ * being the one thing we could not do.
+ */
 function isPlayable(rec: Recording): boolean {
   // An offline copy plays regardless of what the device reports — it may not
   // be on the device at all any more.
+  if (rec.offline_only) return true;
+  return !rec.error;
+}
+
+/**
+ * Whether an offline copy can be made.
+ *
+ * Unlike playback this really does need a finished recording: caching copies
+ * the whole thing, and the whole thing does not exist yet.
+ */
+function isKeepable(rec: Recording): boolean {
   if (rec.offline_only) return true;
   return rec.state !== "recording" && !rec.error;
 }
@@ -295,6 +316,7 @@ export function LibraryView() {
 
               {items.map((rec) => {
             const playable = isPlayable(rec);
+            const keepable = isKeepable(rec);
             return (
               <div
                 key={rec.object_id}
@@ -525,7 +547,7 @@ export function LibraryView() {
                             onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
                           });
                         }}
-                        disabled={!playable || keep.isPending}
+                        disabled={!keepable || keep.isPending}
                         title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
                         aria-label={rec.pinned ? `Stop keeping ${rec.title ?? "recording"}` : `Keep ${rec.title ?? "recording"} offline`}
                         className={`w-8 h-8 rounded-full flex items-center justify-center transition disabled:opacity-30

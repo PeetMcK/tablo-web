@@ -244,17 +244,32 @@ describe("LibraryView", () => {
     expect(await screen.findByText(/Showing 50 of 213/)).toBeInTheDocument();
   });
 
-  it("does not offer playback for an in-progress recording", async () => {
+  it("offers playback for a recording that is still being written", async () => {
+    // The device serves an in-progress recording as HLS from the first moment,
+    // which is how its own app lets you start a show that is still recording.
+    // Verified against a real one - `state: recording`, `duration: 0` - which
+    // still answered `POST .../watch` with a playlist. Refusing them here made
+    // the one thing the device is best at the one thing this could not do.
     vi.spyOn(api, "recordings").mockResolvedValue(
       list({ recordings: [{ ...REC, state: "recording" }] }),
     );
-    const watch = vi.spyOn(api, "watchRecording");
 
     renderLibrary();
     const buttons = await screen.findAllByRole("button", { name: /play nfl football/i });
-    buttons.forEach((b) => expect(b).toBeDisabled());
-    fireEvent.click(buttons[0]);
-    expect(watch).not.toHaveBeenCalled();
+    buttons.forEach((b) => expect(b).toBeEnabled());
+  });
+
+  it("will not keep a recording that is still being written", async () => {
+    // Unlike playback, an offline copy really does need a finished recording:
+    // caching copies the whole thing, and the whole thing does not exist yet.
+    vi.spyOn(api, "recordings").mockResolvedValue(
+      list({ recordings: [{ ...REC, state: "recording" }] }),
+    );
+
+    renderLibrary();
+    await screen.findByText("NFL Football");
+    expect(screen.getByRole("button", { name: /^Keep NFL Football offline$/ }))
+      .toBeDisabled();
   });
 
   it("marks a copy the Tablo no longer has, and keeps it playable", async () => {
@@ -374,9 +389,10 @@ describe("the library's controls answer the pointer", () => {
     renderLibrary();
     await screen.findByText("NFL Football");
 
-    const play = screen.getAllByRole("button", { name: /^Play NFL Football$/ }).at(-1)!;
-    expect(play).toBeDisabled();
-    expect(play.className).not.toMatch(/(?<!enabled:)hover:scale-110/);
+    // The keep button, which an in-progress recording really does disable.
+    const keep = screen.getByRole("button", { name: /^Keep NFL Football offline$/ });
+    expect(keep).toBeDisabled();
+    expect(keep.className).not.toMatch(/(?<!enabled:)hover:scale-110/);
   });
 
   it("presses the artwork's play puck from anywhere on the artwork", async () => {

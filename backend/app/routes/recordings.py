@@ -2,13 +2,17 @@
 
 import asyncio
 import re
+import uuid
+from datetime import datetime, timezone
 from functools import partial
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
 from .. import store
 from ..state import _run_sync, state
+from . import stream as stream_routes
 from ..transcode_cache import (
     CacheFull,
     CacheState,
@@ -102,6 +106,58 @@ async def list_recordings():
         # fetched, rather than silently truncating.
         "total": state.recordings_total + len(orphans),
         "offline_only": len(orphans),
+    }
+
+
+@router.post("/{object_id}/watch-raw")
+async def watch_recording_raw(object_id: int):
+    """Follow a recording's own MPEG-2 segments, for the WASM decoder.
+
+    The ordinary `/watch` hands the recording to FFmpeg and serves H.264. This
+    serves what the device already has: the recording is MPEG-2 video with AC-3
+    audio - `video_details.container_format` says so - which is exactly what the
+    browser-side decoder eats. No transcode, no tuner beyond the one the device
+    is already using, and the picture keeps its own sample aspect rather than
+    depending on an encoder to carry it.
+
+    A recording still being written is the natural case: the device publishes it
+    as a live-shaped playlist with no ENDLIST, which is the shape `RingFollower`
+    was built for.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        sess = await state.start_recording_session(path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    playlist_url = sess.get("playlist_url")
+    if not playlist_url:
+        raise HTTPException(status_code=502, detail="Device gave no playlist")
+
+    session_id = uuid.uuid4().hex
+    started_at = datetime.now(timezone.utc)
+    # Registered so the keepalive and the idle reaper cover it exactly as they
+    # cover a live ring: the device expires a session in 165 seconds otherwise.
+    state.streams[session_id] = SimpleNamespace(
+        stream=SimpleNamespace(token=sess.get("token")),
+    )
+    await stream_routes._start_ring_session(session_id, playlist_url, started_at)
+    stream_routes.touch_session(session_id)
+
+    return {
+        "object_id": object_id,
+        "session_id": session_id,
+        "stream_url": f"/api/raw/{session_id}/playlist.m3u8",
+        "origin_ms": int(started_at.timestamp() * 1000),
+        "mode": "ring",
     }
 
 

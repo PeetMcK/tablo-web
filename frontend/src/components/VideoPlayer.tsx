@@ -753,6 +753,51 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             openSurface(r.stream_url);
           }
         } else {
+          // A recording is the same MPEG-2 and AC-3 the live path decodes, so
+          // when this browser can decode it there is no reason to transcode:
+          // it plays from what the device already has, costs no encoder, and
+          // keeps its own sample aspect rather than relying on one to carry it.
+          // The transcode is what *caching* is for.
+          const eligibility = wasmLiveEligible(window, localStorage, "ota");
+          if (eligibility.eligible) {
+            try {
+              const raw = await api.watchRecordingRaw(current.recording.object_id);
+              if (cancelled) {
+                api.stopStream(raw.session_id).catch(() => {});
+                return;
+              }
+              log.player(`open recording ${current.recording.object_id} as mpeg-2`, {
+                session: raw.session_id, url: raw.stream_url,
+              });
+              setSessionId(raw.session_id);
+              setUsingWasm(true);
+              const surface = await openWasmSurface({
+                playlistUrl: raw.stream_url,
+                originMs: raw.origin_ms,
+                canvas: canvasRef.current,
+                onFailure: (reason) => {
+                  log.warn(`recording wasm gave up (${reason}) — using the transcode`);
+                  api.stopStream(raw.session_id).catch(() => {});
+                  setUsingWasm(false);
+                  void api.watchRecording(current.recording.object_id)
+                    .then((t) => { if (!cancelled) openSurface(t.stream_url); })
+                    .catch(() => {});
+                },
+              });
+              if (cancelled) { surface.destroy(); return; }
+              hold(surface);
+              setLoading(false);
+              return;
+            } catch (e) {
+              // Anything at all here means the transcode below runs instead.
+              log.warn(
+                `recording mpeg-2 unavailable (${e instanceof Error ? e.message : String(e)})`
+                + " — using the transcode",
+              );
+            }
+          }
+          setUsingWasm(false);
+
           const t0 = performance.now();
           const r = await api.watchRecording(current.recording.object_id);
           if (cancelled) return;
