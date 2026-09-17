@@ -458,6 +458,15 @@ def index_recordings(items: list[dict], *, prune: bool = False) -> None:
                 conn.execute("DELETE FROM search_doc WHERE kind = 'recording'")
 
 
+def _flag(value) -> int | None:
+    """A device boolean as SQLite sees it, keeping "not told" distinct.
+
+    `bool(None)` is False, which would turn an absent fact into a stated one
+    and defeat the COALESCE that protects these columns from stub syncs.
+    """
+    return None if value is None else int(bool(value))
+
+
 def save_guide(
     rows: list[dict],
     now: float | None = None,
@@ -499,21 +508,38 @@ def save_guide(
         stamp = db.get_setting("guide_synced_at") or stamp
     with db.write() as conn:
         for position, ch in enumerate(rows):
+            # `COALESCE(excluded.x, guide_channel.x)` on the three device facts,
+            # and a plain overwrite on everything else.
+            #
+            # They arrive from a different fetch than the lineup does, and
+            # `stream_guide_data` deliberately does not await it - it emits bare
+            # stubs first so the tab paints, then richer records as the lineup
+            # details land. A save therefore legitimately carries no scan for a
+            # channel that has one, and overwriting would blank the column on
+            # every cold start. Null here means "not told", not "false".
             conn.execute(
                 "INSERT INTO guide_channel(identifier, call_sign, major, minor, "
                 "                          network, display_name, logo_url, kind, "
+                "                          scan, interlaced, favourite, "
                 "                          position, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(identifier) DO UPDATE SET "
                 "  call_sign=excluded.call_sign, major=excluded.major, "
                 "  minor=excluded.minor, network=excluded.network, "
                 "  display_name=excluded.display_name, logo_url=excluded.logo_url, "
-                "  kind=excluded.kind, position=excluded.position, "
+                "  kind=excluded.kind, "
+                "  scan=COALESCE(excluded.scan, guide_channel.scan), "
+                "  interlaced=COALESCE(excluded.interlaced, guide_channel.interlaced), "
+                "  favourite=COALESCE(excluded.favourite, guide_channel.favourite), "
+                "  position=excluded.position, "
                 "  updated_at=excluded.updated_at",
                 (
                     str(ch.get("identifier")), ch.get("call_sign"), ch.get("major"),
                     ch.get("minor"), ch.get("network"), ch.get("display_name"),
-                    ch.get("logo_url"), ch.get("kind"), position, stamp,
+                    ch.get("logo_url"), ch.get("kind"),
+                    ch.get("scan"),
+                    _flag(ch.get("interlaced")), _flag(ch.get("favourite")),
+                    position, stamp,
                 ),
             )
             index_channel(conn, ch)
@@ -657,6 +683,13 @@ def load_guide(now: float | None = None) -> list[dict]:
         "display_name": c["display_name"],
         "logo_url": c["logo_url"],
         "kind": c["kind"],
+        # What only the device knows. `scan` stays null where it never said;
+        # the two flags read back as false, which is what a client wants for a
+        # checkbox, while the column keeps null so a stub sync cannot clobber a
+        # known value.
+        "scan": c["scan"],
+        "interlaced": bool(c["interlaced"]),
+        "favourite": bool(c["favourite"]),
         "airings": by_channel.get(c["identifier"], []),
     } for c in channels]
 

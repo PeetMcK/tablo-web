@@ -381,3 +381,65 @@ def test_import_does_not_clobber_existing_positions():
 
 def test_import_skips_malformed_keys():
     assert store.import_resume({"bogus": 1.0, "": 2.0, "recording:5": 100.0}) == 1
+
+
+def test_the_mirror_keeps_what_the_device_says_about_a_channel():
+    """Scan type, interlacing and favourite live only on the device.
+
+    The cloud's channel record has none of them - verified against the live
+    account, where the union of every key across all 28 channels had nothing
+    about resolution, scan or favourites. They were fetched per request and
+    held in memory, so they did not survive a restart, and nothing noticed only
+    because the Live card re-rendered them on every load. Once the card stopped
+    showing the scan, that would have rotted silently.
+    """
+    from app import store
+
+    store.save_guide([{
+        "identifier": "ch1", "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None, "kind": "ota",
+        "scan": "1080i", "interlaced": True, "favourite": True,
+        "airings": [],
+    }])
+
+    got = store.load_guide()[0]
+    assert got["scan"] == "1080i"
+    assert got["interlaced"] is True
+    assert got["favourite"] is True
+
+
+def test_a_channel_the_device_never_described_reads_back_empty():
+    """The five OTT channels are not in the device lineup at all."""
+    from app import store
+
+    store.save_guide([{
+        "identifier": "ch2", "call_sign": "FAST", "major": 0, "minor": 0,
+        "network": "SCRIPPS", "display_name": "Scripps", "logo_url": None,
+        "kind": "ott", "airings": [],
+    }])
+
+    got = store.load_guide()[0]
+    assert got["scan"] is None
+    assert got["interlaced"] is False
+    assert got["favourite"] is False
+
+
+def test_a_later_sync_without_device_facts_does_not_erase_them():
+    """Channel details are fetched separately and can be slow or absent.
+
+    `stream_guide_data` starts the lineup fetch without awaiting it and emits
+    bare stubs first, so a save can legitimately carry no scan for a channel
+    that has one. Treating that as "set it to null" would blank the column on
+    every cold start.
+    """
+    from app import store
+
+    base = {
+        "identifier": "ch3", "call_sign": "KSPS", "major": 7, "minor": 1,
+        "network": "PBS", "display_name": "KSPS", "logo_url": None, "kind": "ota",
+        "airings": [],
+    }
+    store.save_guide([{**base, "scan": "720p", "interlaced": False}])
+    store.save_guide([base])          # a stub pass, carrying no device facts
+
+    assert store.load_guide()[0]["scan"] == "720p"

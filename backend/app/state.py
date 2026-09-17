@@ -1546,7 +1546,7 @@ class AppState:
                 "every row would fall back to its current programme"
             )
 
-    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict) -> dict:
+    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict, details: dict | None = None) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
         airings = channel_to_airings.get(c_path, []) if c_path else []
         # OTT/FAST channels have no device schedule at all, so the cloud is not
@@ -1570,6 +1570,19 @@ class AppState:
             "kind": c.kind,
             "display_name": c.display_name,
             "logo_url": logo_map.get(c.identifier),
+            # Only the device knows these, and this row is what `save_guide`
+            # writes - so without them the schema-5 columns stay null and the
+            # facts go on living in memory alone, which is the state they were
+            # given columns to escape.
+            #
+            # Absent rather than false when the lineup has not answered:
+            # `save_guide` COALESCEs these, and a stated false would let a stub
+            # pass overwrite a known value.
+            **(
+                _channel_extras(details.get(c.identifier))
+                if details and c.identifier in details
+                else {"scan": None, "interlaced": None, "favourite": None}
+            ),
             "airings": airings,
         }
 
@@ -1607,8 +1620,10 @@ class AppState:
         logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(
             max_airings=max_airings, concurrency=concurrency, strict=strict
         )
+        details = await self.channel_details()
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings,
+                                    cloud_schedule, details)
             for c in channels
         ]
         try:
@@ -1648,8 +1663,10 @@ class AppState:
 
         channels = await self.channels(refresh=True)
         logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment()
+        details = await self.channel_details()
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings,
+                                    cloud_schedule, details)
             for c in channels
         ]
         await _run_sync(store.save_guide, rows)
@@ -1699,7 +1716,9 @@ class AppState:
             raise RuntimeError("No active device")
         channels = await self.channels()
         logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(max_airings=15000)
-        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule) for c in channels]
+        details = await self.channel_details()
+        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings,
+                                        cloud_schedule, details) for c in channels]
 
     async def stream_grid_guide_data(self):
         """Async generator for NDJSON grid guide streaming.
@@ -1746,8 +1765,10 @@ class AppState:
         except Exception as e:
             print(f"[guide-grid] Phase 2 failed: {type(e).__name__}: {e}")
             return
+        details = await self.channel_details()
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings,
+                                    cloud_schedule, details)
             for c in channels
         ]
         for row in rows:

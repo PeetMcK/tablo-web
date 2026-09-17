@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -231,6 +231,27 @@ ALTER TABLE guide_airing ADD COLUMN image_url TEXT;
 """
 
 
+# What the device knows about a channel and the cloud does not: its scan type,
+# whether it is interlaced, and whether it is marked a favourite. Verified
+# against the live account - the union of every key across all 28 cloud channel
+# records had nothing about resolution, scan or favourites, while the device
+# has all three at `/guide/channels/{id}`.
+#
+# They were fetched per request and held in memory only, so they did not
+# survive a restart. That was invisible while the Live card displayed the scan
+# on every render; once the card's badge started naming the station instead,
+# the only thing keeping the data alive stopped looking at it.
+#
+# `interlaced` and `favourite` are nullable rather than NOT NULL DEFAULT 0:
+# null means "the device has not told us", which is a different thing from
+# false and is what lets a stub sync avoid overwriting a known value.
+_SCHEMA_V5 = """
+ALTER TABLE guide_channel ADD COLUMN scan TEXT;
+ALTER TABLE guide_channel ADD COLUMN interlaced INTEGER;
+ALTER TABLE guide_channel ADD COLUMN favourite INTEGER;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -313,6 +334,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V3)
             if version < 4:
                 conn.executescript(_SCHEMA_V4)
+            if version < 5:
+                conn.executescript(_SCHEMA_V5)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

@@ -411,3 +411,44 @@ def test_a_channel_with_nothing_on_stays_empty():
     # hands this None rather than a programme.
     from app.state import AppState
     assert AppState._with_poster(None) is None
+
+
+def test_the_row_the_sync_stores_carries_the_device_facts(monkeypatch):
+    """Scan, interlacing and favourite reach the mirror, or they never persist.
+
+    `_assemble_grid_row` builds exactly what `save_guide` writes. The columns
+    added in schema 5 are only worth having if this fills them - otherwise they
+    sit null forever and the data still lives nowhere but memory, which is the
+    state this was meant to fix.
+    """
+    from types import SimpleNamespace
+
+    from app.state import state
+
+    c = SimpleNamespace(identifier="ch1", call_sign="KPAX", major=8, minor=1,
+                        network="CBS", kind="ota", display_name="KPAX")
+    details = {"ch1": {"scan": "1080i", "interlaced": True, "favourite": True}}
+
+    row = state._assemble_grid_row(c, {}, {}, {}, {}, details)
+
+    assert row["scan"] == "1080i"
+    assert row["interlaced"] is True
+    assert row["favourite"] is True
+
+
+def test_a_row_the_device_never_described_carries_no_scan():
+    """The lineup fetch is started without being awaited, so it can be absent.
+
+    A stated false would defeat the COALESCE in `save_guide` that stops a stub
+    pass blanking a known value, so "not told" has to stay distinguishable.
+    """
+    from types import SimpleNamespace
+
+    from app.state import state
+
+    c = SimpleNamespace(identifier="ch9", call_sign="FAST", major=0, minor=0,
+                        network="SCRIPPS", kind="ott", display_name="Scripps")
+
+    row = state._assemble_grid_row(c, {}, {}, {}, {}, {})
+
+    assert row["scan"] is None
