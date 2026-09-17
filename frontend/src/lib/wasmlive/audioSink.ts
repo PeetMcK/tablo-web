@@ -13,7 +13,10 @@ import type { DecodedAudioChunk } from "./types";
 export type SinkState = AudioClockState;
 
 export function createSinkState(sampleRate: number): SinkState {
-  return { firstPtsSeconds: null, samplesPlayed: 0, sampleRate, anchorContextTime: null };
+  return {
+    firstPtsSeconds: null, samplesPlayed: 0, sampleRate,
+    anchorContextTime: null, epoch: 0,
+  };
 }
 
 /** The first chunk sets where the clock begins; later ones do not move it. */
@@ -25,11 +28,30 @@ export function onSamplesPlayed(
   state: SinkState,
   framesPlayed: number,
   contextTime?: number,
+  epoch?: number,
 ): void {
+  // A report the worklet posted before it was told to flush describes the old
+  // position. Added to counters the seek has just zeroed, it moves the clock
+  // ahead of the sound by up to a tenth of a second — permanently, because
+  // nothing ever corrects it.
+  if (epoch !== undefined && epoch !== state.epoch) return;
   state.samplesPlayed += framesPlayed;
   // Re-anchored on every report, so interpolation between them corrects
   // rather than accumulates.
   if (contextTime !== undefined) state.anchorContextTime = contextTime;
+}
+
+/**
+ * What a seek does to the accounting.
+ *
+ * Cleared rather than re-based: the next chunk to arrive anchors the clock,
+ * which is the same path a fresh session takes.
+ */
+export function flushState(state: SinkState): void {
+  state.firstPtsSeconds = null;
+  state.samplesPlayed = 0;
+  state.anchorContextTime = null;
+  state.epoch += 1;
 }
 
 export const sinkClockSeconds = audioClockSeconds;
@@ -51,6 +73,15 @@ export interface AudioSink {
   readonly bufferedSeconds: number;
   /** Seconds the clock is ahead of the newest decoded frame. */
   starvedBy(newestFramePts: number | null): number;
+  /**
+   * Whether the context is actually rendering.
+   *
+   * A suspended context renders no samples, so the clock does not advance and
+   * no field is ever due — which looks exactly like a decoder producing
+   * nothing, and used to be failed as one before the viewer had a chance to
+   * click.
+   */
+  readonly contextState: AudioContextState;
   /**
    * Silence the output without stopping it.
    *
@@ -87,9 +118,31 @@ export async function createAudioSink(
   /** Frames handed to the worklet, so buffer depth can be derived. */
   let framesSent = 0;
 
-  node.port.onmessage = (event: MessageEvent<number | { calls: number; queued: number }>) => {
+  /**
+   * Audio written to the output but not yet audible.
+   *
+   * Read once per message rather than per clock read: it is a property of the
+   * device, and reading it sixty times a second on the main thread buys
+   * nothing. `outputLatency` is the whole path where the browser reports it;
+   * `baseLatency` is the part it always knows.
+   */
+  const latency = () =>
+    (context as AudioContext & { outputLatency?: number }).outputLatency
+    ?? context.baseLatency ?? 0;
+
+  type Report = { rendered: number; at: number; epoch: number };
+  node.port.onmessage = (
+    event: MessageEvent<number | Report | { calls: number; queued: number }>,
+  ) => {
+    // A bare number is the old shape; kept because the worklet is a separate
+    // file that a stale service worker can serve for a while after a deploy.
     if (typeof event.data === "number") {
       onSamplesPlayed(state, event.data, context.currentTime);
+      return;
+    }
+    if ("rendered" in event.data) {
+      const report = event.data;
+      onSamplesPlayed(state, report.rendered, report.at, report.epoch);
       return;
     }
     heartbeat = event.data;
@@ -106,9 +159,10 @@ export async function createAudioSink(
     get bufferedSeconds() {
       return Math.max(0, (framesSent - state.samplesPlayed) / state.sampleRate);
     },
-    get clockSeconds() { return sinkClockSeconds(state, context.currentTime); },
+    get clockSeconds() { return sinkClockSeconds(state, context.currentTime, latency()); },
+    get contextState() { return context.state; },
     starvedBy: (newestFramePts: number | null) =>
-      starvedBy(state, newestFramePts, context.currentTime),
+      starvedBy(state, newestFramePts, context.currentTime, latency()),
     setMuted(next: boolean) {
       muted = next;
       gain.gain.value = next ? 0 : 1;
@@ -122,14 +176,12 @@ export async function createAudioSink(
       // seconds ahead of every frame arriving. Measured: `starvedBy` reporting
       // the size of the seek, the starvation rule firing twice, and the channel
       // handed back to the transcode on the first press of Back 10s.
-      //
-      // Cleared, not re-based: the next chunk to arrive anchors it, which is
-      // the same path a fresh session takes.
-      state.firstPtsSeconds = null;
-      state.samplesPlayed = 0;
-      state.anchorContextTime = null;
+      flushState(state);
       framesSent = 0;
-      node.port.postMessage(null);
+      // The epoch goes with it, so a report the worklet posted a moment ago —
+      // already on its way here — is discarded rather than added to counters
+      // that have just been zeroed.
+      node.port.postMessage({ flush: true, epoch: state.epoch });
     },
     diagnostics: () => ({
       audioContext: context.state,
@@ -142,7 +194,8 @@ export async function createAudioSink(
       bufferedSeconds: Math.round(
         Math.max(0, (framesSent - state.samplesPlayed) / state.sampleRate) * 10,
       ) / 10,
-      clockSeconds: sinkClockSeconds(state, context.currentTime),
+      clockSeconds: sinkClockSeconds(state, context.currentTime, latency()),
+      outputLatency: Number(latency().toFixed(4)),
     }),
     resume: () => context.resume(),
     suspend: () => context.suspend(),
