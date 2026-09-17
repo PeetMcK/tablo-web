@@ -54,6 +54,8 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     starvedBy: vi.fn(() => 0),
     setMuted: vi.fn(),
     muted: false,
+    setVolume: vi.fn(),
+    volume: 1,
     flush: vi.fn(),
     resume: vi.fn(async () => {}),
     suspend: vi.fn(async () => {}),
