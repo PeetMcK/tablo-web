@@ -24,6 +24,42 @@ import workletUrl from "./pcmWorklet.js?url";
  */
 const FETCH_TIMEOUT_MS = 8000;
 
+/**
+ * Resume the audio context on the viewer's next gesture, whatever it is.
+ *
+ * Chrome refuses to start a context without user activation behind it, and the
+ * one we create is always after an await — opening the channel is a click, but
+ * the activation is spent by the time the sink exists. The refusal is not an
+ * error anywhere: the context simply stays suspended, the worklet renders
+ * nothing, the clock never advances, and because video is presented against
+ * that clock the picture freezes on the first field while the player's
+ * controls insist it is playing.
+ *
+ * So anything counts as the unlock — a click on the page, a key, a touch —
+ * rather than only the play button, which a viewer has no reason to press when
+ * the player already says it is playing. jsmpeg does the same thing under the
+ * name `unlock`.
+ *
+ * `once` per event and all three removed on the first success, so this costs
+ * nothing after it has worked.
+ */
+function unlockOnGesture(context: AudioContext): () => void {
+  if (context.state === "running") return () => {};
+
+  const events = ["pointerdown", "keydown", "touchstart"] as const;
+  const stop = () => {
+    for (const type of events) document.removeEventListener(type, resume, true);
+  };
+  const resume = () => {
+    void context.resume().then(stop).catch(() => {});
+  };
+  // Capture phase: the player stops some of these before they reach the
+  // document, and an unlock that depends on which control was hit is not an
+  // unlock.
+  for (const type of events) document.addEventListener(type, resume, true);
+  return stop;
+}
+
 export interface OpenOptions {
   /** The ring playlist to follow. */
   playlistUrl: string;
@@ -48,15 +84,16 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
   });
 
   let audio;
+  let releaseUnlock = () => {};
   try {
     const context = new AudioContext({ sampleRate: 48000 });
     audio = await createAudioSink(context, workletUrl);
     // An AudioContext created after an await has no user activation behind it,
     // so it starts suspended — and a suspended context renders no samples, so
     // the clock never advances and video freezes on whatever was due at the
-    // first timestamp. Resuming here covers the usual case; pressing play
-    // resumes it again if the browser refused this one.
+    // first timestamp. Resuming here covers the usual case.
     await context.resume().catch(() => {});
+    releaseUnlock = unlockOnGesture(context);
   } catch (e) {
     worker.terminate();
     renderer.destroy();
@@ -130,6 +167,7 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     on: (event, handler) => surface.on(event, handler),
     destroy() {
       cancelAnimationFrame(frame);
+      releaseUnlock();
       surface.destroy();
       renderer.destroy();
     },
