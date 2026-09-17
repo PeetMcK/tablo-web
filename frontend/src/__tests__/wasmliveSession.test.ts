@@ -1147,3 +1147,49 @@ describe("seeking at or past the end of a recording", () => {
     expect(session.currentTime).not.toBe(0);
   });
 });
+
+describe("a seek whose decoder never opens", () => {
+  const VOD = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-PROGRAM-DATE-TIME:2026-09-16T20:00:00+00:00
+#EXTINF:6.000,
+00000.ts
+#EXTINF:6.000,
+00001.ts
+#EXTINF:6.000,
+00002.ts
+#EXT-X-ENDLIST
+`;
+
+  it("keeps reporting the seek target, not the start of the recording", async () => {
+    // Observed on a 31:15 recording: a burst of skips reached the end, the
+    // seek committed, the decoder rebuilt and then failed to open. No audio
+    // ever rendered, so `mediaClock()` stayed null; the seek had nulled
+    // `anchorMedia`; and nothing was fed, so it was never re-set. The playhead
+    // fell through to `playlistStart()` - zero - and the next tap of Forward
+    // 30 computed 0 + 30 and threw the viewer from 31:12 to 0:30.
+    //
+    // The clamp was never at fault. It was handed an origin of zero and held
+    // it perfectly.
+    const { session, setClock } = harness({
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+      // Nothing decodes and nothing anchors: the exact state the log showed.
+      fetchBytes: async () => { throw new Error("decoder not open"); },
+    });
+    setClock(null);
+    await session.start();
+
+    session.seek(17);
+
+    // The window the log caught: `seek` has nulled the anchor and the offset,
+    // no poll has run, no segment has been fed, and nothing has decoded. This
+    // is where the next tap reads its origin from.
+    expect(session.currentTime).toBe(17);
+
+    // Still true once a poll has run and failed to feed anything.
+    await session.poll();
+    expect(session.currentTime).toBeGreaterThan(11);
+  });
+});

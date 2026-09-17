@@ -302,6 +302,21 @@ export function createSession(deps: SessionDeps): LiveSession {
   let paused = false;
   let stopPolling: (() => void) | null = null;
   let seekTarget: number | null = null;
+  /**
+   * Where the last seek asked to go, held until the clock catches up.
+   *
+   * Distinct from `seekTarget`, which a poll consumes the moment it resolves a
+   * segment — long before any audio renders. Without this, `currentTime` fell
+   * through to `playlistStart()` in the window between, which for a recording
+   * is zero: a seek near the end reported the playhead at the beginning.
+   *
+   * That is not cosmetic. The skip buttons read `currentTime` to decide where
+   * to jump from, so a tap landing in that window computed `0 + 30` and threw
+   * a viewer at 31:12 back to 0:30. Seen when a rebuilt decoder failed to
+   * open, which leaves the clock unanchored indefinitely rather than for a
+   * few hundred milliseconds.
+   */
+  let seekedTo: number | null = null;
 
   deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const message = event.data;
@@ -505,7 +520,9 @@ export function createSession(deps: SessionDeps): LiveSession {
         if (deps.audio.bufferedSeconds > COMFORTABLE_BUFFER_SECONDS
             && deps.presenter.queued > QUEUE_HIGH_WATER) break;
 
-        if (anchorMedia === null) anchorMedia = at;
+        // The timeline has a place again, so the seek's own answer is no
+        // longer needed.
+        if (anchorMedia === null) { anchorMedia = at; seekedTo = null; }
         const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
         // The seek race, in the one place it actually bites: this fetch was
         // outstanding when the viewer pressed Back 10s, so the worker would
@@ -707,6 +724,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       // going: the decoder restarts, the audio queue is dropped, and the
       // presenter's fields go with it.
       seekTarget = mediaSeconds;
+      seekedTo = mediaSeconds;
       // The decoder restarts, so the timeline it emits does too: both the
       // anchor and the offset have to be re-derived from the next segment.
       ptsOffset = null;
@@ -737,7 +755,10 @@ export function createSession(deps: SessionDeps): LiveSession {
     get volume() { return deps.audio.volume; },
 
     get currentTime() {
-      return mediaClock() ?? anchorMedia ?? playlistStart();
+      // `seekedTo` sits above `playlistStart()` so that a seek whose decoder
+      // has not yet produced anything reports where it was sent, not the front
+      // of the recording.
+      return mediaClock() ?? anchorMedia ?? seekedTo ?? playlistStart();
     },
 
     get seekable() {
