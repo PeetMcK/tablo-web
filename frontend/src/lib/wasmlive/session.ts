@@ -23,6 +23,16 @@ import type { FromWorker, ToWorker } from "./workerProtocol";
 const STARVED_SECONDS = 1;
 
 /**
+ * How long a picture that was playing may stop dead before the channel goes
+ * back to the transcode.
+ *
+ * Generous: a rebuffer is not a failure, and the fallback costs a tuner change.
+ * But a still picture with no end is worse than either, and it is what a
+ * stopped clock produces.
+ */
+const FROZEN_MS = 6000;
+
+/**
  * How much decoded media to keep ahead of the clock.
  *
  * Decode runs at about 8x realtime, so without a limit the session swallows
@@ -64,6 +74,14 @@ const MIN_BUFFER_SECONDS = 0.5;
  * twenty, and then gave up with "repeated starvation".
  */
 const COMFORTABLE_BUFFER_SECONDS = 1.5;
+
+/**
+ * Segments a poll may feed while the clock is stopped for want of sound.
+ *
+ * Enough to restart it, few enough that startup - where the buffer is empty
+ * for the same reason - cannot swallow the window while decode is in flight.
+ */
+const WEDGED_SEGMENTS_PER_POLL = 2;
 
 /**
  * How far ahead it may feed while the buffer is empty.
@@ -204,6 +222,11 @@ export function createSession(deps: SessionDeps): LiveSession {
   let fallback: FallbackState = initialFallbackState(deps.nowMs());
   /** Whether the worker's script ran at all, as opposed to the decoder opening. */
   let workerBooted = false;
+  /** Whether any audio has ever arrived, which separates startup from a stall. */
+  let sawAudio = false;
+  /** For the frozen-picture watchdog, which starvation cannot detect. */
+  let lastPresentedCount = 0;
+  let lastProgressAtMs = 0;
   /** The worker's last word on what the decoder is doing. */
   let decoderStats: Record<string, unknown> | null = null;
   /**
@@ -233,6 +256,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       if (ptsOffset === null && anchorMedia !== null && chunks.length) {
         ptsOffset = anchorMedia - chunks[0].ptsSeconds;
       }
+      if (chunks.length) sawAudio = true;
       for (const chunk of chunks) deps.audio.push(chunk);
       return;
     }
@@ -308,6 +332,7 @@ export function createSession(deps: SessionDeps): LiveSession {
 
     // Where the decoder has already been fed up to, in media seconds.
     let at = windowStart;
+    let fedThisPoll = 0;
     for (let index = 0; index < playlist.segments.length; index++) {
       const sequence = playlist.mediaSequence + index;
       const duration = playlist.segments[index].duration;
@@ -327,7 +352,22 @@ export function createSession(deps: SessionDeps): LiveSession {
         // Starvation widens the lookahead; it does not remove it.
         const starving = deps.audio.bufferedSeconds < MIN_BUFFER_SECONDS;
         const limit = starving ? STARVED_LOOKAHEAD_SECONDS : LOOKAHEAD_SECONDS;
-        if (fedAhead > limit) break;
+
+        // Except when the sound has run out entirely, which is the one state
+        // the lookahead cannot be trusted in: the clock only moves while audio
+        // renders, so an empty buffer freezes it, `fedAhead` is then measured
+        // against a stopped clock and stays over its limit for ever, and
+        // nothing is fetched again. Measured: a session wedged at buffered 0
+        // with 78 fields queued and not one drawn for forty-six seconds - and
+        // no fallback, because a stopped clock is never ahead of anything for
+        // the starvation rule to notice.
+        //
+        // Feeding a bounded amount per poll breaks the cycle without letting
+        // startup, where the buffer is also empty, swallow the window.
+        const wedged = sawAudio && deps.audio.bufferedSeconds <= 0;
+        if (wedged) {
+          if (fedThisPoll >= WEDGED_SEGMENTS_PER_POLL) break;
+        } else if (fedAhead > limit) break;
         // And whatever the media says, do not decode into a full queue - but
         // only once there is enough sound to keep the clock moving while we
         // wait, because the clock is what drains the queue in the first place.
@@ -355,6 +395,7 @@ export function createSession(deps: SessionDeps): LiveSession {
         });
         post({ type: "segment", bytes }, [bytes]);
         takenThrough = sequence;
+        fedThisPoll += 1;
         fedThroughMedia = at + duration;
       }
       at += duration;
@@ -403,6 +444,23 @@ export function createSession(deps: SessionDeps): LiveSession {
     if (!paused && deps.audio.starvedBy(deps.presenter.newestPts) > STARVED_SECONDS) {
       fallback = reduceFallback(fallback, { kind: "starved", atMs: nowMs });
       emit("waiting");
+    }
+
+    // A stopped clock is the one failure starvation cannot see: it measures how
+    // far the clock has outrun the newest frame, and a clock that is not moving
+    // never outruns anything. A session wedged at buffered zero with a full
+    // queue therefore sat there indefinitely, showing a still picture, with
+    // nothing to hand the channel back to the transcode.
+    if (!paused && deps.presenter.presentedCount > 0) {
+      if (deps.presenter.presentedCount !== lastPresentedCount) {
+        lastPresentedCount = deps.presenter.presentedCount;
+        lastProgressAtMs = nowMs;
+      } else if (nowMs - lastProgressAtMs > FROZEN_MS) {
+        failureDetail =
+          `nothing drawn for ${Math.round((nowMs - lastProgressAtMs) / 1000)}s` +
+          ` (queued ${deps.presenter.queued}, buffered ${deps.audio.bufferedSeconds.toFixed(1)}s)`;
+        fallback = reduceFallback(fallback, { kind: "decode-error" });
+      }
     }
     if (fallback.failed && !failureLogged) {
       failureLogged = true;

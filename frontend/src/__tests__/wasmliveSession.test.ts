@@ -420,11 +420,32 @@ describe("createSession", () => {
     let nowMs = 0;
     const { session, presenter } = harness({ nowMs: () => nowMs });
     await session.start();
-    presenter.presentedCount = 3;
-    session.tick();
-    nowMs = 60000;
-    session.tick();
+    // Frames flowing means the count keeps moving; a count that stands still
+    // while the clock runs is the frozen picture, which is a different test.
+    for (let i = 1; i <= 60; i++) {
+      presenter.presentedCount = i * 3;
+      nowMs = i * 1000;
+      session.tick();
+    }
     expect(session.failure).toBeNull();
+  });
+
+  it("gives up on a picture that has stopped dead", async () => {
+    // The one failure starvation cannot see. It measures how far the clock has
+    // outrun the newest frame, and a stopped clock never outruns anything - so
+    // a session wedged with a full queue and an empty audio buffer sat on a
+    // still picture indefinitely, with nothing to hand the channel back.
+    let nowMs = 0;
+    const { session, presenter } = harness({ nowMs: () => nowMs });
+    await session.start();
+    presenter.presentedCount = 120;      // it was playing
+    session.tick();
+
+    nowMs = 30000;                        // and then it was not
+    session.tick();
+
+    expect(session.failure).toBe("decode error");
+    expect(String(session.diagnostics().failureDetail)).toMatch(/nothing drawn/);
   });
 
   it("terminates the worker and tears down audio on destroy", async () => {
