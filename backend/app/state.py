@@ -848,6 +848,10 @@ class AppState:
                             "duration": duration,
                             "genres": ad.get("genres") or [],
                             "kind": ad.get("event_type"),
+                            # Kept so the Live card can resolve its poster from
+                            # the mirror. `_airing_row` already keeps it on the
+                            # grid path; this was the only builder discarding it.
+                            "series_path": a.get("series_path"),
                         }
             except Exception:
                 continue
@@ -871,7 +875,7 @@ class AppState:
         guide = []
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
-            current_program = (
+            current_program = AppState._with_poster(
                 (channel_airing_map.get(c_path) if c_path else None)
                 or AppState._airing_on_now(cloud_schedule.get(c.identifier) or [])
             )
@@ -955,7 +959,7 @@ class AppState:
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
             airings = channel_to_airings.get(c_path, []) if c_path else []
-            current_program = (
+            current_program = AppState._with_poster(
                 AppState._airing_on_now(airings)
                 or AppState._airing_on_now(cloud_schedule.get(c.identifier) or [])
             )
@@ -1286,6 +1290,53 @@ class AppState:
 
         got = await asyncio.gather(*[one(i) for i in missing])
         return sum(1 for g in got if g)
+
+    @staticmethod
+    def _poster_image_id(series_path: str | None) -> int | None:
+        """The series poster for an airing, or None.
+
+        Read from the mirror, never the device. An airing record carries
+        `series_path` and never a `series` object - verified on 30 of 30
+        airings sampled across the full list - and this generation has no batch
+        endpoint (docs/tablo-api.md), so resolving these against the device
+        would be one signed round trip per channel on every guide build. The
+        guide sync has already fetched them into `guide_series`.
+
+        None is the ordinary answer for roughly one airing in five: measured on
+        the live mirror, 9,054 of 10,655 airings carry a series path and 8,747
+        resolve to a thumbnail, the gap being mostly movies and sports, which
+        are separate record types with no series row. The Live card reads None
+        as "show the channel logo", so this must never raise into the guide.
+        """
+        if not series_path:
+            return None
+        try:
+            row = store.load_series(series_path)
+        except Exception:
+            return None
+        return (row or {}).get("thumbnail_image_id")
+
+    @staticmethod
+    def _with_poster(program: dict | None) -> dict | None:
+        """A programme with its poster id attached, for the Live card's tile.
+
+        Applied where the current programme is *chosen* rather than where the
+        airings are built, because there are two of each and only one pairing
+        matters: `get_guide_data` and `stream_guide_data` must agree, or the
+        Live tab shows posters on a warm cache and logos on a cold one - a
+        difference that would be reported as flicker and debugged as a caching
+        bug.
+
+        Returns a copy. The grid path's airing rows are held in
+        `self._grid_cache`, so writing into one would poison the cache for
+        every later request.
+        """
+        if not program:
+            return program
+        return {
+            **program,
+            "poster_image_id": AppState._poster_image_id(program.get("series_path")),
+        }
 
     @staticmethod
     def _airing_row(a: dict) -> dict:

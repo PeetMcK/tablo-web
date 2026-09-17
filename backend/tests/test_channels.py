@@ -338,3 +338,76 @@ def test_an_unknown_airing_is_a_404(monkeypatch):
 def test_airing_detail_requires_auth():
     assert client.get("/api/channels/airing-detail",
                       params={"channel": "ch1", "start": "x"}).status_code == 401
+
+
+def _series(path: str, thumbnail_image_id: int | None) -> dict:
+    """One mirrored series row, defaulted so a test names only what it means."""
+    return {
+        "path": path, "identifier": path.rsplit("/", 1)[-1], "title": "Show",
+        "description": None, "genres": [], "rating": None, "orig_air_date": None,
+        "episode_runtime": 1800, "cast": [], "cover_image_id": None,
+        "thumbnail_image_id": thumbnail_image_id, "background_image_id": None,
+        "schedule_rule": "none", "keep_rule": "none", "keep_count": None,
+    }
+
+
+def test_the_live_card_resolves_its_poster_from_the_mirror():
+    """The tile's artwork must not cost a device round trip.
+
+    Airing records carry `series_path` and never a `series` object - verified
+    against the device on 30 of 30 airings sampled across the full list - and
+    this generation has no batch endpoint, so resolving posters against the
+    device would be one signed request per channel. The mirror already holds
+    what the guide sync fetched.
+    """
+    from app import store
+    from app.state import AppState
+
+    store.save_series([_series("/guide/series/42", thumbnail_image_id=5007)])
+
+    assert AppState._poster_image_id("/guide/series/42") == 5007
+
+
+def test_a_programme_without_a_poster_says_so_rather_than_failing():
+    """Roughly one airing in five has no poster.
+
+    Measured on the live mirror: 10,655 airings, 9,054 with a `series_path`,
+    8,747 resolving to a thumbnail. The gap is mostly movies and sports, which
+    are separate record types with no series row. The card reads None as "show
+    the channel logo", so this is the ordinary path and must never raise into
+    the guide.
+    """
+    from app import store
+    from app.state import AppState
+
+    store.save_series([_series("/guide/series/7", thumbnail_image_id=None)])
+
+    assert AppState._poster_image_id("/guide/series/7") is None   # series, no art
+    assert AppState._poster_image_id("/guide/series/nope") is None  # not mirrored
+    assert AppState._poster_image_id(None) is None                 # movie or sport
+
+
+def test_attaching_a_poster_does_not_write_into_the_cached_airing():
+    """The grid path's airing rows live in `_grid_cache`.
+
+    Writing the poster into one would poison that cache for every later
+    request, and the symptom - a stale poster surviving a programme change -
+    would look like a device problem rather than an aliasing bug.
+    """
+    from app import store
+    from app.state import AppState
+
+    store.save_series([_series("/guide/series/11", thumbnail_image_id=77)])
+    cached = {"title": "Now", "series_path": "/guide/series/11"}
+
+    got = AppState._with_poster(cached)
+
+    assert got["poster_image_id"] == 77
+    assert "poster_image_id" not in cached, "the cached row was mutated"
+
+
+def test_a_channel_with_nothing_on_stays_empty():
+    # Four channels on a real device carry no EPG data at all, so the guide
+    # hands this None rather than a programme.
+    from app.state import AppState
+    assert AppState._with_poster(None) is None
