@@ -1566,6 +1566,51 @@ class AppState:
         with _lock:
             self.streams.pop(session_id, None)
 
+    def session_token(self, session_id: str) -> str | None:
+        """The device-side player token for one of our sessions, if any."""
+        sess = self.streams.get(session_id)
+        return getattr(getattr(sess, "stream", None), "token", None)
+
+    async def keepalive_stream_session(self, token: str) -> bool:
+        """Push a watch session's expiry out.
+
+        A session the device hands us expires in ``keepalive`` seconds -
+        measured at **165** on this device - and nothing here ever refreshed
+        one. So a live session died under us just under three minutes in, and
+        the symptom was the device answering 404 for every segment: the ring
+        stopped filling, the player polled an empty playlist twice a second and
+        showed nothing, and the WASM path was blamed for it.
+
+        `POST /player/sessions/{token}/keepalive`, which is what the published
+        client calls and what this device answers.
+        """
+        try:
+            await self._request_device_raw("POST", f"/player/sessions/{token}/keepalive")
+            return True
+        except Exception as e:
+            print(f"[session] keepalive failed for {token[:8]}: {e}", flush=True)
+            return False
+
+    async def release_stream_session(self, session_id: str) -> bool:
+        """Tell the device we have finished with a session, then forget it.
+
+        Without this a session is only ever released by the device's own
+        expiry, so every stream this backend opened - and every restart of it -
+        left one behind. `DELETE /player/sessions/{token}` answers with an
+        empty body, so it goes through the raw request rather than the JSON
+        one.
+        """
+        token = self.session_token(session_id)
+        self.stop_session(session_id)
+        if not token:
+            return False
+        try:
+            await self._request_device_raw("DELETE", f"/player/sessions/{token}")
+            return True
+        except Exception as e:
+            print(f"[session] release failed for {token[:8]}: {e}", flush=True)
+            return False
+
     @property
     def is_authenticated(self) -> bool:
         return self.auth is not None

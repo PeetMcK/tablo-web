@@ -132,3 +132,121 @@ def test_stopping_a_session_cancels_its_follower_and_clears_its_disk(ring_sessio
     assert SESSION not in stream.ring_sessions
     assert task.cancelled
     assert not directory.exists()
+
+
+def test_two_windows_on_one_channel_share_a_tuner(ring_session, monkeypatch):
+    """Five windows on one channel must not take five of the four tuners.
+
+    Nothing about the ring needs a tuner per viewer: the follower fetches each
+    segment from the device exactly once and every viewer reads the same files
+    off disk. But `start_stream` opened a fresh device watch and minted a new
+    session id per request, so identical bytes cost a tuner each and the fifth
+    window got a 503.
+    """
+    task, _directory = ring_session
+    stream.ring_for_channel["S1_007_01"] = SESSION
+    stream.ring_channel_of[SESSION] = "S1_007_01"
+    stream.ring_viewers[SESSION] = 1
+    # The join must happen before the device is touched, so the only thing
+    # standing in the way here is the auth gate in front of it.
+    monkeypatch.setattr(type(stream.state), "is_authenticated",
+                        property(lambda self: True))
+    try:
+        with TestClient(app) as client:
+            resp = client.post("/api/stream/S1_007_01?transcode=false&mode=ring")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["session_id"] == SESSION
+        assert body["shared"] is True
+        assert stream.ring_viewers[SESSION] == 2
+        assert not task.cancelled
+    finally:
+        stream.ring_for_channel.pop("S1_007_01", None)
+        stream.ring_channel_of.pop(SESSION, None)
+        stream.ring_viewers.pop(SESSION, None)
+
+
+def test_one_window_closing_leaves_the_others_watching(ring_session):
+    task, directory = ring_session
+    stream.ring_for_channel["S1_007_01"] = SESSION
+    stream.ring_channel_of[SESSION] = "S1_007_01"
+    stream.ring_viewers[SESSION] = 3
+    try:
+        stream.ring_viewers[SESSION] -= 1        # what the DELETE branch does
+        assert stream.ring_viewers[SESSION] == 2
+        assert SESSION in stream.ring_sessions
+        assert not task.cancelled
+        assert directory.exists()
+    finally:
+        stream.ring_for_channel.pop("S1_007_01", None)
+        stream.ring_channel_of.pop(SESSION, None)
+        stream.ring_viewers.pop(SESSION, None)
+
+
+def test_ending_a_ring_forgets_its_channel(ring_session):
+    """Or the next viewer joins a session that no longer exists."""
+    _task, _directory = ring_session
+    stream.ring_for_channel["S1_007_01"] = SESSION
+    stream.ring_channel_of[SESSION] = "S1_007_01"
+    stream.ring_viewers[SESSION] = 1
+
+    stream._stop_ring(SESSION)
+
+    assert "S1_007_01" not in stream.ring_for_channel
+    assert SESSION not in stream.ring_channel_of
+    assert SESSION not in stream.ring_viewers
+
+
+def test_keepalive_skips_a_session_nobody_is_watching(ring_session, monkeypatch):
+    """The expiry is the backstop, so it must not be refreshed away.
+
+    Renewing every session we hold would keep an abandoned one alive for ever -
+    the tuner locked out until the process ended - which is the opposite of
+    what the loop is for. Only a session whose heartbeat is current is
+    refreshed, so "nobody is watching" and "let it lapse" are the same thing.
+    """
+    import asyncio as _asyncio
+
+    refreshed: list[str] = []
+    monkeypatch.setattr(stream.state, "session_token", lambda sid: f"token-{sid}")
+
+    async def fake_keepalive(token):
+        refreshed.append(token)
+        return True
+
+    monkeypatch.setattr(stream.state, "keepalive_stream_session", fake_keepalive)
+    monkeypatch.setattr(stream, "KEEPALIVE_INTERVAL", 0.01)
+
+    stream.session_touched[SESSION] = time.monotonic() - stream.LIVE_IDLE_SECONDS - 1
+
+    async def run_once():
+        task = _asyncio.create_task(stream.keepalive_forever())
+        await _asyncio.sleep(0.05)
+        task.cancel()
+
+    _asyncio.run(run_once())
+    assert refreshed == [], "an abandoned session was kept alive"
+
+
+def test_keepalive_refreshes_a_session_being_watched(ring_session, monkeypatch):
+    import asyncio as _asyncio
+
+    refreshed: list[str] = []
+    monkeypatch.setattr(stream.state, "session_token", lambda sid: f"token-{sid}")
+
+    async def fake_keepalive(token):
+        refreshed.append(token)
+        return True
+
+    monkeypatch.setattr(stream.state, "keepalive_stream_session", fake_keepalive)
+    monkeypatch.setattr(stream, "KEEPALIVE_INTERVAL", 0.01)
+
+    stream.session_touched[SESSION] = time.monotonic()
+
+    async def run_once():
+        task = _asyncio.create_task(stream.keepalive_forever())
+        await _asyncio.sleep(0.05)
+        task.cancel()
+
+    _asyncio.run(run_once())
+    assert f"token-{SESSION}" in refreshed

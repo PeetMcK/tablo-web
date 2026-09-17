@@ -67,6 +67,28 @@ server {
         proxy_set_header If-Range $http_if_range;
     }
 
+    # nginx's bundled mime.types maps `js` but not `mjs`, so an ES module with
+    # that extension was served as application/octet-stream — and a module
+    # script is subject to strict MIME checking, so the browser refuses it
+    # outright: "Expected a JavaScript-or-Wasm module script".
+    #
+    # That is fatal rather than cosmetic here. libav.js loads its emscripten
+    # runtime with a dynamic import(), and Vite emits that runtime as a .mjs
+    # asset, so the WASM decoder could not start at all and every OTA channel
+    # fell back to the transcode with "decode error".
+    #
+    # It only ever broke in the container: the dev server and `vite preview`
+    # both set the type themselves, so this passed every test that did not go
+    # through nginx.
+    #
+    # Done as a location rather than a `types` block because `types` inside
+    # `server` replaces the inherited map wholesale, which would take
+    # text/css and application/wasm down with it.
+    location ~ \.mjs$ {
+        default_type application/javascript;
+        try_files $uri =404;
+    }
+
     # Never cache index.html so browsers always pick up the new hashed JS/CSS bundles
     location = /index.html {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
