@@ -425,3 +425,55 @@ it("shows where it is going before it gets there", async () => {
 
 **Open:** the buttons are Back **10** and Forward **30** today, not 20/30.
 Whether back should become 20 is a separate decision from the debounce.
+
+---
+
+### Task 10: What happens when a recording ends
+
+**Files:**
+- Modify: `frontend/src/components/VideoPlayer.tsx`
+- Modify: `backend/app/routes/recordings.py` (a `watched` write)
+- Create: a next-episode lookup — source undecided, see below
+- Test: `frontend/src/__tests__/playerChrome.test.tsx`, `backend/tests/test_recordings.py`
+
+Today a recording plays to its end, the frame holds, and nothing happens.
+Three things should.
+
+**1. Mark it watched.** The device never does this itself — a recording played
+to 43% still read `watched: false`, which is what made the manual toggle in
+6c necessary in the first place. Reaching the end is the unambiguous case.
+Same flat PATCH as `position` (`{"watched": true}`); the nested form answers
+200 and does nothing.
+
+**2. Offer the next one, with a ten-second countdown.** The card appears at
+the end, names the next episode, and starts it when the count runs out.
+Cancelling it leaves the player where it is.
+
+**Opt-in later.** An autoplay setting is coming and this must respect it, so
+build the countdown so it can be defaulted off without unpicking anything.
+Until the setting exists the countdown runs — that is the behaviour being
+asked for now, not a permanent default.
+
+**3. Close to the Library when there is no next.** The end of the last episode
+is the end of the session.
+
+**The open question is what "next" means.** There is no such notion in the app
+yet. Candidates, none chosen:
+
+- Same series, next by season and episode number. The mirror has both
+  (`guide_airing.season_number`, `episode_number`), but recordings are not
+  ordered by them anywhere.
+- Same series, next by recording date. Cruder, and right more often than it
+  sounds for series recorded off a rule.
+- Whatever the Library's own sort puts next. Cheapest, and matches what the
+  viewer just scrolled past.
+
+Settle this before building; the countdown is trivial and the lookup is not.
+
+- [ ] **Step 1: Decide what "next" means.** Write the answer here first.
+- [ ] **Step 2: `POST /{id}/watched`**, flat shape, with the read-shape trap
+  documented as `position` has it.
+- [ ] **Step 3: Mark watched on reaching the end**, once per playback.
+- [ ] **Step 4: The countdown card**, cancellable, ten seconds.
+- [ ] **Step 5: Close to the Library when the lookup finds nothing.**
+- [ ] **Step 6: Run both suites. Commit.**
