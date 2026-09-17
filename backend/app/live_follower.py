@@ -105,6 +105,7 @@ class RingFollower:
         max_seconds: float,
         now: Clock = _utcnow,
         interval: float = 2.0,
+        verbose: bool = False,
     ) -> None:
         self.ring = ring
         self.directory = Path(directory)
@@ -113,6 +114,7 @@ class RingFollower:
         self.max_seconds = max_seconds
         self.now = now
         self.interval = interval
+        self.verbose = verbose
         self.directory.mkdir(parents=True, exist_ok=True)
         # The device's own sequence number of the newest segment taken. Kept
         # rather than a set of names because the device's window slides: a
@@ -155,10 +157,12 @@ class RingFollower:
                 payload = await self.fetch(
                     urljoin(media_url, segment.uri), segment.byte_range,
                 )
-            except Exception:
+            except Exception as exc:
                 # Leave _taken_through where it is so the next poll retries this
                 # segment. Skipping past it would leave a hole in the ring that
                 # nothing ever fills.
+                if self.verbose:
+                    print(f"[ring]   segment {sequence} failed: {exc}", flush=True)
                 break
 
             name = self.ring.next_name()
@@ -193,15 +197,35 @@ class RingFollower:
 
         while self.ring.held_seconds < seconds:
             try:
-                await self.poll_once()
+                # Bounded by the deadline, not merely checked against it. A
+                # device that accepts the connection and then says nothing
+                # leaves this poll outstanding for ever, and a deadline tested
+                # only between polls never gets to run - which is exactly what
+                # held a request open past its own timeout the first time this
+                # met a busy tuner.
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.wait_for(self.poll_once(), timeout=remaining)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except TimeoutError:
+                if self.verbose:
+                    print("[ring]   priming: device did not answer in time", flush=True)
+                break
+            except Exception as exc:
                 # Same reasoning as `run`: a transient device failure is not the
                 # end of the session, and the deadline below bounds the retrying.
-                pass
+                if self.verbose:
+                    print(f"[ring]   priming: poll failed: {exc}", flush=True)
             if self.ring.held_seconds >= seconds or loop.time() >= deadline:
                 break
+            if self.verbose:
+                print(
+                    f"[ring]   priming: {self.ring.held_seconds:.1f}/{seconds:.1f}s"
+                    f" in {len(self.ring.segments)} segments",
+                    flush=True,
+                )
             await asyncio.sleep(self.interval)
 
         return self.ring.held_seconds

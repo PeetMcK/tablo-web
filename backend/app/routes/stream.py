@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -55,6 +56,8 @@ RAW_DIR.mkdir(exist_ok=True)
 # for its first playlist segment behind the same spinner.
 RING_PRIME_SECONDS = float(os.environ.get("RING_PRIME_SECONDS", "8"))
 RING_PRIME_TIMEOUT_SECONDS = float(os.environ.get("RING_PRIME_TIMEOUT_SECONDS", "15"))
+# How long any single device request may take before it is abandoned.
+DEVICE_TIMEOUT_SECONDS = float(os.environ.get("DEVICE_TIMEOUT_SECONDS", "10"))
 
 # A session id is hex, and a raw segment is the five-digit name the ring gave
 # it. Both are matched rather than sanitised: anything else is not ours.
@@ -260,6 +263,8 @@ async def _start_ring_session(
 
     Returns the ring, or ``None`` if the session was stopped while priming.
     """
+    started = time.monotonic()
+    print(f"[ring] {session_id} opening from {playlist_url}", flush=True)
     ring = SegmentRing(origin=started_at)
     follower = RingFollower(
         ring=ring,
@@ -267,20 +272,29 @@ async def _start_ring_session(
         playlist_url=playlist_url,
         fetch=fetch or _fetch_bytes,
         max_seconds=float(LIVE_DVR_SECONDS),
+        verbose=True,
         **({"interval": interval} if interval is not None else {}),
     )
     # Registered before the wait, not after: a player closed mid-open calls
     # DELETE, and there has to be something there for it to remove.
     ring_sessions[session_id] = (ring, follower, None)
 
-    await follower.prime(
-        RING_PRIME_SECONDS if prime_seconds is None else prime_seconds,
+    want = RING_PRIME_SECONDS if prime_seconds is None else prime_seconds
+    held = await follower.prime(
+        want,
         RING_PRIME_TIMEOUT_SECONDS if prime_timeout is None else prime_timeout,
+    )
+    print(
+        f"[ring] {session_id} primed {held:.1f}s of {want:.1f}s wanted"
+        f" in {len(ring.segments)} segments, {time.monotonic() - started:.1f}s elapsed"
+        + ("" if held >= want else " - TIMED OUT, the client may fall back"),
+        flush=True,
     )
 
     # Stopped while we were filling. Starting the poller now would hold the
     # tuner for the life of the process with nobody watching.
     if session_id not in ring_sessions:
+        print(f"[ring] {session_id} stopped while priming, not starting the poller", flush=True)
         return None
 
     ring_sessions[session_id] = (ring, follower, asyncio.create_task(follower.run()))
@@ -298,7 +312,13 @@ async def _fetch_bytes(url: str, byte_range: tuple[int, int] | None = None) -> b
     if byte_range is not None:
         headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
 
-    resp = await state.http.get(url, headers=headers, follow_redirects=True)
+    # Bounded. A tuner that is busy or wedged accepts the connection and then
+    # says nothing; without a timeout that blocks the session open for as long
+    # as the process lives, and no deadline above it can interrupt an await
+    # that never returns.
+    resp = await state.http.get(
+        url, headers=headers, follow_redirects=True, timeout=DEVICE_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
 
     if byte_range is not None and resp.status_code != 206:
@@ -340,7 +360,12 @@ async def stop_stream(session_id: str):
     # A ring session holds a tuner through its polling task, so stopping it is
     # not optional housekeeping - a leaked follower keeps fetching for ever.
     if entry := ring_sessions.pop(session_id, None):
-        _ring, _follower, task = entry
+        ring, _follower, task = entry
+        print(
+            f"[ring] {session_id} stopping, held {ring.held_seconds:.1f}s"
+            f" in {len(ring.segments)} segments",
+            flush=True,
+        )
         if task is not None:
             task.cancel()
     shutil.rmtree(RAW_DIR / session_id, ignore_errors=True)

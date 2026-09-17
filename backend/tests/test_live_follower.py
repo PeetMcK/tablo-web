@@ -403,3 +403,29 @@ def test_prime_does_not_refetch_what_run_then_polls(tmp_path):
     names = [s.name for s in follower.ring.segments]
     assert len(names) == len(set(names))
     assert len(follower.ring.segments) >= before
+
+
+def test_prime_gives_up_on_a_device_that_accepts_and_then_says_nothing(tmp_path):
+    """A hung fetch must not outlive the deadline it was started under.
+
+    The first live run met a busy tuner: the connection was accepted, no bytes
+    ever came, and a deadline tested only between polls never got a turn - so
+    the session open blocked past its own timeout with nothing to show for it.
+    """
+
+    class Wedged:
+        async def fetch(self, url, byte_range=None):
+            await asyncio.sleep(3600)
+
+    follower = _follower(tmp_path, Wedged())
+    follower.interval = 0.0
+
+    async def drive():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        held = await follower.prime(seconds=6.0, timeout=0.2)
+        return held, loop.time() - started
+
+    held, elapsed = asyncio.run(drive())
+    assert held == 0.0
+    assert elapsed < 2.0

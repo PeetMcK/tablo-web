@@ -472,9 +472,17 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
      * One way, for the life of the session: a path that flapped between
      * decoders would be worse than either. The viewer sees a rebuffer.
      */
-    const fallBack = async (channel: Channel, reason: string) => {
-      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`);
+    const fallBack = async (channel: Channel, reason: string, staleSession?: string) => {
+      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`, { staleSession });
       setUsingWasm(false);
+      // The ring session is finished with, and nothing else knows its id. Left
+      // open it holds a tuner and keeps copying segments to disk for the life
+      // of the process — an hour of 1080i per abandoned channel.
+      if (staleSession) {
+        api.stopStream(staleSession).catch((e) => {
+          log.warn(`could not release the ring session ${staleSession}`, String(e));
+        });
+      }
       try {
         const r = await api.startStream(channel.identifier, true, "transcode");
         if (cancelled) return;
@@ -523,13 +531,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 playlistUrl: r.stream_url,
                 originMs: Date.parse(r.started_at ?? new Date().toISOString()),
                 canvas: canvasRef.current,
-                onFailure: (reason) => void fallBack(current.channel, reason),
+                onFailure: (reason) => void fallBack(current.channel, reason, r.session_id),
               });
               if (cancelled) { surface.destroy(); return; }
               hold(surface);
             } catch (e) {
               if (cancelled) return;
-              await fallBack(current.channel, e instanceof Error ? e.message : String(e));
+              await fallBack(
+                current.channel, e instanceof Error ? e.message : String(e), r.session_id,
+              );
             }
           } else {
             setUsingWasm(false);
