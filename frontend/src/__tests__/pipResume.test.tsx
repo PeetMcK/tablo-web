@@ -7,6 +7,9 @@ import { api } from "../api/tablo";
 import type { Channel, Program } from "../api/tablo";
 import type { FrameSource, PlaybackSurface } from "../lib/playbackSurface";
 
+/** The one surface method these tests watch, typed so `satisfies` can see it. */
+type SetFrameSourceMock = ReturnType<typeof vi.fn<(next: FrameSource) => void>>;
+
 /**
  * Both modules the WASM path is chosen and built by, under test control.
  *
@@ -17,7 +20,7 @@ import type { FrameSource, PlaybackSurface } from "../lib/playbackSurface";
 const wasm = vi.hoisted(() => ({
   /** Off by default, so the transcode-path tests here are untouched. */
   eligible: false,
-  surface: null as (PlaybackSurface & { setFrameSource: ReturnType<typeof vi.fn> }) | null,
+  surface: null as (PlaybackSurface & { setFrameSource: SetFrameSourceMock }) | null,
   open: vi.fn(),
 }));
 
@@ -207,8 +210,8 @@ describe("popping out the picture the WASM path is drawing", () => {
       diagnostics: () => ({ kind: "wasm" }),
       on: () => () => {},
       destroy: vi.fn(),
-      setFrameSource: vi.fn(),
-    } satisfies PlaybackSurface & { setFrameSource: ReturnType<typeof vi.fn> };
+      setFrameSource: vi.fn<(next: FrameSource) => void>(),
+    } satisfies PlaybackSurface & { setFrameSource: SetFrameSourceMock };
   }
 
   beforeEach(() => {
