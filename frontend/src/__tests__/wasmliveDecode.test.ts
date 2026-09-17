@@ -23,6 +23,11 @@ const FIXTURE = resolve("src/lib/wasmlive/__fixtures__/1080i-1s.ts.bin");
 const WASM = pathToFileURL(
   resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm"),
 ).href;
+// libav.js imports its own emscripten runtime at this url. In the browser Vite
+// emits it as an asset; node needs a file:// one it can import directly.
+const GLUE = pathToFileURL(
+  resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs"),
+).href;
 
 async function decodeFixture() {
   // Output arrives through the callback as it is decoded, not as a return
@@ -31,7 +36,7 @@ async function decodeFixture() {
   const video: DecodedVideoFrame[] = [];
   const audio: DecodedAudioChunk[] = [];
   const decoder = await createDecoder({
-    wasmUrl: WASM,
+    wasmUrl: WASM, glueUrl: GLUE,
     onOutput: (out) => { video.push(...out.video); audio.push(...out.audio); },
   });
 
@@ -98,7 +103,7 @@ describe("libavClient", () => {
     // What a seek does: part of a stream, then start over somewhere else.
     let video: DecodedVideoFrame[] = [];
     const decoder = await createDecoder({
-      wasmUrl: WASM,
+      wasmUrl: WASM, glueUrl: GLUE,
       onOutput: (out) => { video.push(...out.video); },
     });
 

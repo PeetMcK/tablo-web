@@ -22,3 +22,8 @@ const handle = createWorkerHandler(
 worker.onmessage = (event: MessageEvent<ToWorker>) => {
   void handle(event.data);
 };
+
+// Last, and deliberately: by the time this is sent the handler is installed, so
+// a page that hears it knows the worker is live and anything that goes quiet
+// afterwards went quiet inside the decoder rather than before it started.
+worker.postMessage({ type: "booted" });

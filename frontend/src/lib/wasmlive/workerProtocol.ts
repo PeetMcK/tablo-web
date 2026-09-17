@@ -15,6 +15,16 @@ export type ToWorker =
   | { type: "close" };
 
 export type FromWorker =
+  /**
+   * Posted the instant the worker's module body runs, before anything is
+   * asked of it.
+   *
+   * It separates the two silences that look identical from the page: a worker
+   * whose script never executed, and a worker that executed and then hung
+   * loading the decoder. Without it the only way to tell them apart is to
+   * reproduce the failure by hand in the console.
+   */
+  | { type: "booted" }
   | { type: "opened" }
   | { type: "video"; frames: DecodedVideoFrame[] }
   | { type: "audio"; chunks: DecodedAudioChunk[] }

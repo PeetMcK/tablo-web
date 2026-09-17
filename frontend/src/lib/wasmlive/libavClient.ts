@@ -21,7 +21,7 @@
  */
 
 import libavLoader from "./vendor/libav-6.10.9.0-tablo-mpeg2.mjs";
-import libavFactory from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs";
+import glueUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs?url";
 import wasmUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm?url";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
@@ -119,6 +119,14 @@ export interface DecoderOptions {
    */
   wasmUrl?: string;
   /**
+   * Where the emscripten runtime is.
+   *
+   * Same story as `wasmUrl`: bundled by default, and the decode test — which
+   * runs in node, with no server to resolve a root-relative path against —
+   * passes a `file://` one.
+   */
+  glueUrl?: string;
+  /**
    * Deinterlace inside WASM with `bwdif`. Off, and measured: it costs about
    * nine tenths of the pipeline's budget. Kept so the comparison can be re-run
    * if libav.js ever gains SIMD.
@@ -134,6 +142,19 @@ type Libav = any;
 type LibavFrame = any;
 type LibavStream = any;
 
+/**
+ * Resolve a bundled asset path against wherever this is running.
+ *
+ * Vite hands back a root-relative path, and libav.js imports it from its own
+ * module scope rather than ours — where a bare "/assets/..." is fine but an
+ * unresolved relative path is not. Left alone in node, which has no location.
+ */
+function absolute(url: string): string {
+  const base = typeof self !== "undefined" ? self.location?.href : undefined;
+  if (!base || /^[a-z]+:/i.test(url)) return url;
+  return new URL(url, base).href;
+}
+
 function ptsSeconds(frame: LibavFrame): number {
   const base = frame.time_base_num / frame.time_base_den;
   const raw = (frame.ptshi ?? 0) * 4294967296 + (frame.pts ?? 0);
@@ -145,24 +166,56 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   const emit = options.onOutput ?? (() => {});
 
   /**
-   * The loader is imported rather than fetched, and handed the wasm factory
-   * directly.
+   * The runtime is imported at load time, not bundled into this chunk.
    *
-   * Left in `public/`, the artifacts could not be imported at all: Vite
-   * refuses to serve a public file as a module ("should not be imported from
-   * source code"), and inside a module worker libav.js has neither
-   * `importScripts` nor a document to fall back on. Bundling them makes both
-   * problems go away, and the wasm binary still travels as a plain asset.
+   * Handing libav.js a statically imported `factory` looks tidier and works
+   * everywhere except the one place that matters. Bundled into the worker
+   * chunk, the emscripten runtime loads and then wedges: it answers nothing,
+   * never fetches its own wasm, and blocks its thread so completely that a
+   * timer set beside it never fires — so there is no error to catch and no way
+   * to tell, from the page, that anything happened at all. In dev, where Vite
+   * serves the same modules separately, it opens in under half a second.
+   *
+   * Given `toImport` instead, libav.js imports the runtime itself at the URL
+   * we name, which is how it expects to be loaded. `?url` makes Vite emit the
+   * file as a plain asset rather than bundling it, exactly as for the wasm
+   * binary beside it.
+   *
+   * `noworker`: this already runs inside our own worker, so libav.js should be
+   * synchronous with it rather than starting a second one.
    */
   const openLibav = () => (libavLoader as Libav).LibAV({
-    // `noworker`: this already runs inside our own worker, so libav.js should
-    // be synchronous with it rather than starting a second one.
     noworker: true,
-    factory: libavFactory,
-    wasmurl: options.wasmUrl ?? wasmUrl,
+    toImport: options.glueUrl ?? absolute(glueUrl),
+    wasmurl: options.wasmUrl ?? absolute(wasmUrl),
   });
 
-  let libav: Libav = await openLibav();
+  /**
+   * Loading the runtime, bounded.
+   *
+   * Emscripten reports a failure to instantiate by calling `abort()` from
+   * inside a callback, which throws on a stack nobody is awaiting: the factory
+   * promise is simply never settled. The result is a decoder that never
+   * finishes being created, and above it a session that waits for frames from
+   * a thing that does not exist yet — silently, until its deadline.
+   */
+  const loadLibav = async (): Promise<Libav> => {
+    const limit = options.openDeadlineMs ?? OPEN_DEADLINE_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`libav runtime did not load within ${limit}ms`)),
+        limit,
+      );
+    });
+    try {
+      return await Promise.race([openLibav(), expired]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  };
+
+  let libav: Libav = await loadLibav();
 
   let queue: Uint8Array[] = [];
   let atEof = false;
@@ -490,7 +543,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       starved = false;
       pumpError = null;
       frameDuration = DEFAULT_FRAME_DURATION;
-      libav = await openLibav();
+      libav = await loadLibav();
     },
 
     close: teardown,

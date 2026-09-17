@@ -26,6 +26,11 @@ const AUDIO_ONLY = resolve("src/lib/wasmlive/__fixtures__/audio-only-1s.ts.bin")
 const WASM = pathToFileURL(
   resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm"),
 ).href;
+// libav.js imports its own emscripten runtime at this url. In the browser Vite
+// emits it as an asset; node needs a file:// one it can import directly.
+const GLUE = pathToFileURL(
+  resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs"),
+).href;
 
 /** Bytes that are not a transport stream, in quantity. */
 function noise(length: number): Uint8Array {
@@ -42,7 +47,7 @@ describe("decoder diagnosis", () => {
     // well-formed transport stream carrying only sound. It used to build no
     // video decoder, read packets for ever, emit nothing, and say nothing —
     // which from the page is indistinguishable from a decoder that is slow.
-    const decoder = await createDecoder({ wasmUrl: WASM, openDeadlineMs: 20_000 });
+    const decoder = await createDecoder({ wasmUrl: WASM, glueUrl: GLUE, openDeadlineMs: 20_000 });
 
     const bytes = new Uint8Array(readFileSync(AUDIO_ONLY));
     let thrown: unknown = null;
@@ -62,7 +67,7 @@ describe("decoder diagnosis", () => {
   }, 120_000);
 
   it("refuses bytes that are not a transport stream at all", async () => {
-    const decoder = await createDecoder({ wasmUrl: WASM, openDeadlineMs: 20_000 });
+    const decoder = await createDecoder({ wasmUrl: WASM, glueUrl: GLUE, openDeadlineMs: 20_000 });
 
     const bytes = noise(1024 * 1024);
     let thrown: unknown = null;
@@ -85,7 +90,7 @@ describe("decoder diagnosis", () => {
   it("gives up on an open that never completes", async () => {
     // A trickle too thin to demux: the failure the deadline used to catch,
     // caught here by name and with the byte count that proves it.
-    const decoder = await createDecoder({ wasmUrl: WASM, openDeadlineMs: 300 });
+    const decoder = await createDecoder({ wasmUrl: WASM, glueUrl: GLUE, openDeadlineMs: 300 });
 
     let thrown: unknown = null;
     try {
@@ -102,7 +107,7 @@ describe("decoder diagnosis", () => {
   }, 120_000);
 
   it("counts what it was fed and what it got open on", async () => {
-    const decoder = await createDecoder({ wasmUrl: WASM });
+    const decoder = await createDecoder({ wasmUrl: WASM, glueUrl: GLUE });
     expect(decoder.stats().opened).toBe(false);
     expect(decoder.stats().bytesFed).toBe(0);
 
@@ -131,7 +136,7 @@ describe("decoder diagnosis", () => {
     // The standing theory for the cold-channel failure was that the demuxer
     // probe needed more than a cold ring could give it. It does not: one
     // segment is ample, with no end of stream to help it along.
-    const decoder = await createDecoder({ wasmUrl: WASM });
+    const decoder = await createDecoder({ wasmUrl: WASM, glueUrl: GLUE });
     const bytes = new Uint8Array(readFileSync(FIXTURE));
     for (let at = 0; at < bytes.length; at += 64 * 1024) {
       await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
