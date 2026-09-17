@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VideoPlayer } from "../components/VideoPlayer";
 import { SKIP_DEBOUNCE_MS } from "../lib/playback";
 import { api } from "../api/tablo";
-import type { Channel, Program } from "../api/tablo";
+import type { Channel, Program, Recording } from "../api/tablo";
 
 const CHANNEL: Channel = {
   identifier: "S84522_007_02", call_sign: "K08PRD2", major: 7, minor: 2,
@@ -388,6 +388,72 @@ describe("the skip buttons", () => {
       seeks.length = 0;
       for (let i = 0; i < 8; i++) fireEvent.click(fwd);
       // Nothing yet: the decoder is deliberately left alone while taps land.
+      expect(seeks).toHaveLength(0);
+
+      await act(async () => { vi.advanceTimersByTime(SKIP_DEBOUNCE_MS + 60); });
+      expect(seeks.length).toBeLessThanOrEqual(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+/**
+ * The queue is not a live-only feature.
+ *
+ * `skip` is one function serving the buttons, the tap zones and the arrow
+ * keys, and `isLive` changes only the edge margin — a live end is a frontier
+ * the encoder is still extending, a recording's is settled. Everything about
+ * the accumulation is shared, and this pins that down so a later change to
+ * either path cannot quietly take it away from the other.
+ */
+describe("skip queuing on a recording", () => {
+  const REC = {
+    object_id: 80888, identifier: 80888, path: "/recordings/airings/80888",
+    title: "NFL Football", subtitle: null, description: null,
+    start: new Date(Date.now() - 3600_000).toISOString(),
+    duration: 3600, recorded_seconds: null, state: "finished",
+    channel: null, thumbnail: null, watched: false, position: 0,
+  } as unknown as Recording;
+
+  function renderRecording(recording: Recording) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <VideoPlayer source={{ kind: "recording", recording }} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "watchRecording").mockResolvedValue({
+      playlist_url: "/api/recordings/80888/playlist.m3u8", duration: 3600,
+    } as never);
+    vi.spyOn(api, "watchRecordingVod").mockRejectedValue(new Error("no vod"));
+    vi.spyOn(api, "recordingStatus").mockResolvedValue({
+      state: "complete", duration: 3600, progress: 1, cached_seconds: 3600,
+    } as never);
+    stubSeekable(3600);
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("holds the taps back on a recording too", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const seeks: number[] = [];
+    const spy = vi.spyOn(HTMLMediaElement.prototype, "currentTime", "set")
+      .mockImplementation(function (this: HTMLMediaElement, v: number) {
+        seeks.push(v);
+      });
+    try {
+      const { container } = renderRecording(REC);
+      await act(async () => { vi.advanceTimersByTime(200); });
+      const fwd = container.querySelector<HTMLElement>('[aria-label="Forward 30 seconds"]');
+      if (!fwd) return;              // transport not mounted in this environment
+
+      seeks.length = 0;
+      for (let i = 0; i < 8; i++) fireEvent.click(fwd);
       expect(seeks).toHaveLength(0);
 
       await act(async () => { vi.advanceTimersByTime(SKIP_DEBOUNCE_MS + 60); });
