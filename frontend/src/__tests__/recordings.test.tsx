@@ -46,6 +46,7 @@ const REC: Recording = {
   recorded_seconds: null,
   expected_seconds: null,
   recording_started: null,
+  slot_seconds: 10800,
   thumbnail: "/api/recordings/80888/thumbnail",
   width: 1280,
   height: 720,
@@ -428,6 +429,7 @@ describe("a recording still being written", () => {
     // Booked for an hour at 15:00Z; the tuner began 15 seconds early, which is
     // what `recorded_offsets` reports and why the expected length is 3615.
     duration: 3600,
+    slot_seconds: 3600,
     recorded_seconds: 1920,
     expected_seconds: 3615,
     recording_started: "2026-09-17T14:59:45Z",
@@ -508,6 +510,7 @@ describe("a recording whose tuner started late", () => {
     title: "Good Morning America",
     state: "recording",
     duration: 7200,
+    slot_seconds: 7200,
     expected_seconds: 3473,
     recorded_seconds: 1794,
     recording_started: "2026-09-17T14:03:06Z",
@@ -558,6 +561,7 @@ describe("the progress bar on a recording in progress", () => {
     state: "recording",
     start: "2026-09-17T16:00:00Z",
     duration: 3600,
+    slot_seconds: 3600,
     recording_started: "2026-09-17T16:20:59Z",
     recorded_seconds: 1020,          // 17 minutes in
     expected_seconds: 2341,          // 3600 - 1259
@@ -635,5 +639,97 @@ describe("the progress bar on a recording in progress", () => {
 
     const strip = container.querySelector<HTMLElement>(".bg-ink\\/60")!;
     expect(strip).toHaveAttribute("title", expect.stringMatching(/scheduled 1h 0m/i));
+  });
+});
+
+describe("a finished recording's coverage", () => {
+  const finished = (over: Partial<Recording>): Recording => ({
+    ...REC, state: "finished", recorded_seconds: null, expected_seconds: null, ...over,
+  });
+
+  const strip = (c: HTMLElement) => c.querySelector<HTMLElement>(".bg-ink\\/60");
+  const fill = (c: HTMLElement) =>
+    c.querySelector<HTMLElement>(".bg-ink\\/60 > div:first-child");
+
+  function renderWith(rec: Recording) {
+    vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [rec], returned: 1, total: 1, offline_only: 0,
+    });
+    return renderLibrary();
+  }
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows what a recording missed, after the fact", async () => {
+    // Saturday Night Live: the tuner began 916s into its hour, so the first
+    // fifteen minutes are gone. Nothing said so before this bar.
+    const { container } = renderWith(finished({
+      title: "Saturday Night Live", start: "2026-09-17T07:00:00Z",
+      slot_seconds: 3600, duration: 2684,
+      recording_started: "2026-09-17T07:15:16Z",
+    }));
+    await screen.findByText("Saturday Night Live");
+
+    expect(parseFloat(fill(container)!.style.left)).toBeCloseTo(25.4, 0);
+  });
+
+  it("marks where the slot ended when a recording overran it", async () => {
+    // NFL pads by thirty minutes deliberately. Without the tick the bar just
+    // looks full, and the padding is invisible.
+    const { container } = renderWith(finished({
+      slot_seconds: 10800, duration: 12615,
+      recording_started: "2026-09-15T00:14:45Z", start: "2026-09-15T00:15:00Z",
+    }));
+    await screen.findByText("NFL Football");
+
+    const tick = container.querySelector<HTMLElement>(".w-px");
+    expect(tick).not.toBeNull();
+    expect(parseFloat(tick!.style.left)).toBeCloseTo(85.6, 0);
+  });
+
+  it("calls a four-second recording incomplete, because the device will not", async () => {
+    // `error` is null and `warnings` empty on all three measured failures, so
+    // the card has to work it out from how little of the slot exists.
+    renderWith(finished({
+      title: "First Civilizations", start: "2026-09-16T02:00:00Z",
+      slot_seconds: 3600, duration: 8,
+      recording_started: "2026-09-16T02:56:41Z",
+    }));
+
+    expect(await screen.findByText("Incomplete")).toBeInTheDocument();
+  });
+
+  it("leaves a recording that merely started late alone", async () => {
+    renderWith(finished({
+      slot_seconds: 3600, duration: 2684,
+      recording_started: "2026-09-15T00:30:16Z", start: "2026-09-15T00:15:00Z",
+    }));
+    await screen.findByText("NFL Football");
+
+    expect(screen.queryByText("Incomplete")).toBeNull();
+  });
+
+  it("gives the strip to coverage rather than to the download", async () => {
+    // Cache progress keeps the corner badge, the percentage row and the rate;
+    // it was the only bar with a duplicate, and coverage has none.
+    const { container } = renderWith(finished({
+      slot_seconds: 10800, duration: 10800, cache_progress: 0.4,
+      cache_state: "partial", recording_started: "2026-09-15T00:15:00Z",
+    }));
+    await screen.findByText("NFL Football");
+
+    // Full coverage, not the 40% a cache bar would draw.
+    expect(parseFloat(fill(container)!.style.width)).toBeCloseTo(100, 0);
+    expect(strip(container)).toHaveAttribute("title", expect.stringMatching(/scheduled/i));
   });
 });

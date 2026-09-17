@@ -154,19 +154,73 @@ it("has no info button when the channel is unknown", async () => {
 
 ---
 
-### Task 5: Settle whether a recording can be stopped
+### Task 5: Settle whether a recording can be stopped — DONE
 
-**Not code. Do this before Task 6, and write the answer into the spec.**
+Answered 2026-09-17 without sacrificing anything: the user descheduled Let's
+Make a Deal mid-recording of their own accord.
 
-- [ ] Ask which recording may be sacrificed. **Do not pick one unprompted** —
-  this destroys content and cannot be undone.
-- [ ] `PUT /api/schedule/airing` with `scheduled: false` against it.
-- [ ] Watch `video_details.state` and `recorded_offsets`: does it leave
-  `recording`, and is the captured portion kept and playable?
-- [ ] Record the result in the spec's Risks section.
+- [x] It **stops** the recording. `state` went `recording` → `finished`, the
+  captured 2106s were kept and remain playable, and the tuner was released.
+- [x] `recorded_offsets` came back `{start: 1259, end: -235}` — `end` goes
+  negative on an early stop, and 3600 − 1259 − 235 = 2106 matches the reported
+  duration exactly.
+- [x] Recorded in the spec. **Stop Recording ships.**
 
-If it does not stop an in-progress recording, Task 6 ships without the Stop
-control and says so.
+---
+
+### Task 5b: Coverage on a finished recording
+
+**Files:**
+- Modify: `frontend/src/lib/recording.ts` (from Task 3)
+- Modify: `frontend/src/components/LibraryView.tsx`
+- Test: `frontend/src/__tests__/recordingSpan.test.ts`, `recordings.test.tsx`
+
+**Interfaces:**
+- `recordedSpan` gains `{ left, width, slotEnd: number | null }`. `slotEnd` is
+  where the scheduled slot finished as a percentage, or null when there is no
+  overrun worth marking.
+- A finished recording passes `recorded_seconds = duration` — what it captured.
+
+- [ ] **Step 1: Write the failing tests, with the measured numbers**
+
+```ts
+it("spans the union of the slot and what was captured", () => {
+  // NFL pads by thirty minutes on purpose: slot 10800, captured 12615 from
+  // -15. Clamping to the slot would hide that the padding is there at all.
+  const s = recordedSpan({ start: S, duration: 10800,
+                           recording_started: minus15, recorded_seconds: 12615 })!;
+  expect(s.left).toBeCloseTo(0, 1);
+  expect(s.width).toBeCloseTo(100, 1);
+  expect(s.slotEnd).toBeCloseTo(85.6, 0);   // the tick
+});
+
+it("marks no slot end when the overrun is not worth seeing", () => {
+  // GMA ran 59s past its slot — a tick on the last pixel is noise.
+  expect(recordedSpan(GMA)!.slotEnd).toBeNull();
+});
+
+it("shows a four-second recording as the sliver it is", () => {
+  const s = recordedSpan({ start: S, duration: 3600,
+                           recording_started: plus3401, recorded_seconds: 8 })!;
+  expect(s.left).toBeCloseTo(94.5, 1);
+  expect(s.width).toBeLessThan(1);
+});
+```
+
+- [ ] **Step 2: Run them, watch them fail**
+
+- [ ] **Step 3: Implement the union span and the tick.** The strip covers
+  `[min(0, startOffset), max(slot, startOffset + captured)]`; the tick is drawn
+  only when the overrun exceeds 2% of the strip.
+
+- [ ] **Step 4: Draw it for finished recordings too**, and hand the strip over
+  from cache progress — which keeps its badge, its detail row and its rate.
+
+- [ ] **Step 5: The `Incomplete` badge.** Under a tenth of the slot captured,
+  the card says so where `Recording` sits. Measured, that is exactly the three
+  broken recordings and none of the good ones.
+
+- [ ] **Step 6: Run the suite. Commit**
 
 ---
 

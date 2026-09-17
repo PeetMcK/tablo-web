@@ -221,8 +221,21 @@ export interface Recording {
    * could never fill.
    */
   expected_seconds: number | null;
-  /** When recording actually began, ISO, or null once finished. */
+  /**
+   * When the tuner actually began, ISO — for finished recordings too.
+   *
+   * Taken from the device's `recorded_offsets`, which is signed: a recording
+   * that started early reports a time before `start`.
+   */
   recording_started: string | null;
+  /**
+   * The scheduled slot, in seconds, always.
+   *
+   * `duration` stops meaning this the moment a recording finishes and becomes
+   * what was actually captured, so the coverage bar is drawn against this
+   * instead — a 3h game padded to 3h30 has a 3h slot and a 3h30 duration.
+   */
+  slot_seconds: number;
   thumbnail: string | null;
   width: number | null;
   height: number | null;

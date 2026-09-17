@@ -993,7 +993,9 @@ class AppState:
         # Only a recording in progress has these: everything else is described
         # by `duration`, which by then is what was actually recorded.
         in_progress = vd.get("state") == "recording"
-        began = AppState._began_recording(ad, vd) if in_progress else None
+        # Known whatever the state: a finished recording's coverage bar needs
+        # the same origin an in-progress one does.
+        began = AppState._began_recording(ad, vd)
         height = vd.get("height")
         scan = f"{height}{'i' if interlaced else 'p'}" if height else None
         return {
@@ -1011,6 +1013,11 @@ class AppState:
             "start": ad.get("datetime"),
             "duration": vd.get("duration") or ad.get("duration") or 0,
             "recorded_seconds": AppState._recorded_so_far(ad, vd),
+            # The scheduled slot, always - which `duration` stops being the
+            # moment a recording finishes and becomes what was captured. The
+            # coverage bar is drawn against this, so it cannot be inferred from
+            # `duration` on a finished recording.
+            "slot_seconds": ad.get("duration") or 0,
             # What the progress bar counts against: the length this recording
             # will actually be, which is not the scheduled slot when the tuner
             # started late. None once finished, when `duration` is the answer.

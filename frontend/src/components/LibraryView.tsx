@@ -3,11 +3,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Radio, Trash2 } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Radio, Trash2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
+import { isIncomplete, recordedSpan } from "../lib/recording";
+import type { Coverage } from "../lib/recording";
 
 /**
  * Whether there is something to play.
@@ -38,6 +40,23 @@ function isKeepable(rec: Recording): boolean {
   return rec.state !== "recording" && !rec.error;
 }
 
+/**
+ * A recording as the coverage bar sees it.
+ *
+ * The one subtlety is which number is "captured": while recording the server
+ * derives it, and once finished `duration` *is* it — the device replaces the
+ * slot with the real length at that moment, which is why `slot_seconds` exists
+ * separately.
+ */
+function coverageOf(rec: Recording): Coverage {
+  return {
+    start: rec.start,
+    duration: rec.slot_seconds,
+    recording_started: rec.recording_started,
+    recorded_seconds: isRecording(rec) ? rec.recorded_seconds : rec.duration,
+  };
+}
+
 /** Still being written, and so still growing under anyone watching it. */
 function isRecording(rec: Recording): boolean {
   return rec.state === "recording";
@@ -52,39 +71,6 @@ function isRecording(rec: Recording): boolean {
  * card offers both rather than guessing.
  */
 type StartMode = "resume" | "beginning" | "live";
-
-/**
- * Which part of the scheduled slot has actually been captured, as percentages.
- *
- * The strip is the show's booked hour end to end, and this is the stretch of it
- * that exists — positioned where it falls rather than flush left. A recording
- * started twenty minutes late then reads as twenty minutes late at a glance;
- * drawn from the left edge it was indistinguishable from one that caught the
- * whole show, which is the thing most worth knowing before pressing play.
- *
- * Null when there is nothing to place, which leaves an empty strip — the safer
- * way to be wrong about something that has only just started.
- */
-function recordedSpan(rec: Recording): { left: number; width: number } | null {
-  const slot = rec.duration;
-  if (!slot || !rec.start) return null;
-
-  const scheduled = new Date(rec.start).getTime();
-  if (Number.isNaN(scheduled)) return null;
-
-  const began = rec.recording_started ? new Date(rec.recording_started).getTime() : scheduled;
-  if (Number.isNaN(began)) return null;
-
-  // Where the tuner actually started, as a position in the scheduled hour. A
-  // recording that began early sits at the left edge rather than off it.
-  const from = Math.min(1, Math.max(0, (began - scheduled) / 1000 / slot));
-  // And how far it has got. Taken from the server's own count rather than this
-  // browser's clock: the two agree to a second, and a laptop with a skewed
-  // clock would otherwise draw a bar that disagrees with the label beside it.
-  const to = Math.min(1, from + (rec.recorded_seconds ?? 0) / slot);
-
-  return { left: from * 100, width: Math.max(1, (to - from) * 100) };
-}
 
 /**
  * Why the card can say how far along something still recording is.
@@ -427,7 +413,11 @@ export function LibraryView() {
               {items.map((rec) => {
             const playable = isPlayable(rec);
             const keepable = isKeepable(rec);
-            const span = isRecording(rec) ? recordedSpan(rec) : null;
+            // Coverage is worth drawing whether or not it is still recording:
+            // three recordings on one device captured seconds of an hour, and
+            // the device called none of them an error.
+            const span = recordedSpan(coverageOf(rec));
+            const broken = !isRecording(rec) && isIncomplete(coverageOf(rec));
             return (
               <div
                 key={rec.object_id}
@@ -513,6 +503,17 @@ export function LibraryView() {
                       </span>
                       Recording
                     </div>
+                  ) : broken ? (
+                    // Four seconds of an hour is not a short recording, it is a
+                    // broken one. The device does not agree - `error` is null
+                    // and `warnings` empty on all three measured failures - so
+                    // this is inferred from how little of the slot exists, and
+                    // said out loud rather than left to a sliver on the strip.
+                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-warning-solid text-[10px] font-bold text-warning-fg uppercase tracking-wider"
+                         title="Only a fraction of the scheduled programme was captured.">
+                      <AlertTriangle className="w-3 h-3" aria-hidden />
+                      Incomplete
+                    </div>
                   ) : rec.pinned ? (
                     <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-success-solid text-[10px] font-bold text-success-fg uppercase tracking-wider">
                       <CheckCircle2 className="w-3 h-3" aria-hidden />
@@ -558,32 +559,38 @@ export function LibraryView() {
                       alone was too easy to miss. Shown for anything part-cached,
                       not only for kept copies, so the bar and the badge above
                       never disagree about whether there is work on disk. */}
-                  {isRecording(rec) ? (
-                    // How far through its slot, in the same strip the cache bar
-                    // uses. They never appear together: a recording in progress
-                    // cannot be kept, so there is no copy to report on.
-                    // The strip is the show's scheduled hour, end to end, and
-                    // the filled part is what was actually captured of it —
-                    // positioned where it falls, not flush left. A recording
-                    // that started twenty minutes late reads as twenty minutes
-                    // late at a glance; drawn from the left edge it looked
-                    // identical to one that caught the whole show.
+                  {/* The strip is the scheduled slot, widened to hold anything
+                      captured outside it, and the filled part is what actually
+                      exists — positioned where it falls, not flush left. A
+                      recording that started twenty minutes late reads as twenty
+                      minutes late at a glance; drawn from the left edge it was
+                      indistinguishable from one that caught the whole show.
+
+                      Coverage owns this strip outright, recording or finished.
+                      It used to show cache progress, which still has the corner
+                      badge, the percentage row and the live transfer rate — and
+                      which mattered more when a transcode was the only way to
+                      watch a recording at all. Measured on one device, three
+                      recordings had captured four seconds, eight seconds and
+                      3.7 minutes of an hour, and the device reported no error
+                      for any of them: this bar is the only thing that says so. */}
+                  {span && (
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60" title={progressTitle(rec)}>
-                      {span && (
+                      <div
+                        className={`h-full absolute inset-y-0 transition-[width,left] duration-1000 ease-linear
+                                    ${isRecording(rec) ? "bg-danger" : broken ? "bg-warning" : "bg-media-fg/40"}`}
+                        style={{ left: `${span.left}%`, width: `${span.width}%` }}
+                      />
+                      {/* Where the booked slot ended, when something ran past
+                          it. Sports pad by half an hour on purpose, and without
+                          the mark the bar just looks full. */}
+                      {span.slotEnd !== null && (
                         <div
-                          className="h-full bg-danger transition-[width,left] duration-1000 ease-linear absolute inset-y-0"
-                          style={{ left: `${span.left}%`, width: `${span.width}%` }}
+                          className="absolute inset-y-0 w-px bg-media-fg/70"
+                          style={{ left: `${span.slotEnd}%` }}
+                          aria-hidden
                         />
                       )}
-                    </div>
-                  ) : rec.cache_state !== "complete" && rec.cache_progress > 0 && (
-                    <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60">
-                      <div
-                        className={`h-full transition-[width] duration-1000 ease-linear
-                                    ${!rec.pinned ? "bg-media-fg/30"
-                                      : rec.paused ? "bg-media-fg/40" : "bg-success"}`}
-                        style={{ width: `${Math.max(1, rec.cache_progress * 100)}%` }}
-                      />
                     </div>
                   )}
                 </div>

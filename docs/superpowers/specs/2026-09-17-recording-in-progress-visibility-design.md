@@ -105,18 +105,99 @@ and the figure move rather than freezing at whatever they were when it opened.
 - **No new artwork** for the Library card's info route: the sheet fetches the
   airing's own image as it already does.
 
+## Coverage on a finished recording
+
+The same bar, for the same reason, and it turns out to matter more here than on
+something still recording.
+
+Surveyed across all fourteen recordings on the device, 2026-09-17:
+
+```
+  oid   slot    dur  start    end          covers  title
+86113   3600   2106   1259   -235   35.0%- 93.5%  Let's Make a Deal  (stopped by hand)
+86087   3600   2684    916      0   25.4%-100.0%  Saturday Night Live
+86105   7200   3473   3786     59   52.6%-100.8%  Good Morning America
+86040   3600      8   3401   -191   94.5%- 94.7%  First Civilizations
+86043   3600      4   3422   -174   95.1%- 95.2%  First Civilizations
+86045   3600    222   3429     51   95.2%-101.4%  First Civilizations
+80888  10800  12615    -15   1800   -0.1%-116.7%  NFL Football
+```
+
+Three of those captured **four seconds, eight seconds and 3.7 minutes** of an
+hour, each starting ~95% of the way through its slot. Their cards read "0m" and
+"4m" today and look unremarkable. The device does not help: `error` is null and
+`warnings` is empty on all three, so it does not consider them failures. The
+only way to know is the coverage arithmetic.
+
+**Decisions:**
+
+- **The strip is coverage, everywhere.** Cache progress gives it up, and keeps
+  the corner badge, the `45% · 27m of 1h 0m` detail row and the live transfer
+  rate — three other places it is already reported. The strip's own comment
+  says it exists because "the corner badge alone was too easy to miss", written
+  when caching was the only way to watch a recording; the MPEG-2 path ended
+  that. Nothing about caching is removed or disabled, only this 1px bar
+  reassigned. Stacking two strips was considered and rejected: two adjacent 1px
+  lines in different colours read as one striped texture rather than two facts,
+  and it spends 2px of every card on a line that is empty on 10 of 14 of them.
+
+- **An overrun extends the strip.** The strip spans the union of the scheduled
+  slot and what was captured, with a tick where the slot ended. Sports pad by
+  thirty minutes deliberately — 116% of the slot — and clamping would hide that
+  the padding is there. The tick is drawn only when the overrun is worth seeing
+  (>2% of the strip), so GMA's 59 seconds does not put a mark on the edge.
+
+- **A recording that captured less than a tenth of its slot says so**, with an
+  `Incomplete` badge where `Recording` sits. Measured, that threshold catches
+  exactly the three broken ones (0.1%, 0.2%, 6.2%) and leaves alone the
+  deliberately-stopped Deal (58.5%) and the late-starting SNL (74.6%). A
+  four-second recording is not a short recording, it is a broken one, and a
+  sliver on a 1px strip leaves too much to inference.
+
+- **No slot, or no offsets, means no bar.** It does not occur in this library —
+  every recording has both — but a manual recording on a channel with no EPG
+  could lack them, and there is then nothing honest to draw. The badge still
+  reports the duration, as it does today.
+
 ## Risks and unknowns
 
-1. **Whether `scheduled: false` stops an in-progress recording** is asserted by
-   a docstring and tested by nothing. The only way to find out is to stop a real
-   recording. If it turns out only to unschedule future episodes, Stop Recording
-   is a lie and the block ships without it until the device offers something
-   better. **Must be settled before the control ships.**
-2. **A recording with no guide airing.** Something recorded from a channel whose
+1. ~~**Whether `scheduled: false` stops an in-progress recording.**~~
+   **Settled 2026-09-17, on Let's Make a Deal.** It stops it. `state` went
+   `recording` → `finished`, the captured 2106 seconds were kept and remain
+   playable, and the tuner was released (`/server/tuners` fell to zero in use).
+   `recorded_offsets` came back `{start: 1259, end: -235}` — `end` goes
+   **negative** when a recording is cut short, which also confirms the
+   expected-length arithmetic on an early stop: 3600 − 1259 − 235 = 2106,
+   exactly the reported duration. Stop Recording is real and ships.
+2. **What a series rule does to the episode already airing — open, and to be
+   settled before Task 6 ships its controls.**
+
+   Observed: setting a series to record *All* does not start recording the
+   episode on air right now, and does not offer to. Two endpoints exist and
+   they are separate — `PUT /schedule/series` sets the rule, `PUT
+   /schedule/airing` schedules one episode — so the device is behaving
+   consistently; the question is whether that is what a person means.
+
+   The case for the current behaviour: a rule is about the future, and
+   silently starting a recording of a show already half-finished produces a
+   partial recording nobody asked for — precisely the thing the coverage bar
+   now exists to make visible.
+
+   The case against: someone pressing *Record All* while watching the show
+   almost certainly wants this one too.
+
+   Neither is obviously right, so the sheet should probably *ask*, which is
+   also the only option that needs no guess about intent. Wants deciding with
+   real behaviour in front of us: what the device does to an in-flight episode
+   when a rule is set, unset, or changed, and what "stop" means against a rule
+   that will simply re-schedule it. **Grill this once the current work is
+   deployed, then write the answer here.**
+
+3. **A recording with no guide airing.** Something recorded from a channel whose
    EPG has since rolled over has no `(channel, start)` to match, so Live and
    Guide simply will not mark it — correct, since there is no row to mark. The
    Library card is unaffected: it holds the recording itself.
-3. **Manual recordings started mid-show** carry a `recorded_offsets.start` of
+4. **Manual recordings started mid-show** carry a `recorded_offsets.start` of
    twenty minutes or more. The coverage bar is the only thing in the app that
    makes that visible, which is the point, but it means an in-progress card can
    legitimately show a bar that starts a third of the way along and will never

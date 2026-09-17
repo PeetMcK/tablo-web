@@ -191,10 +191,24 @@ def test_progress_cannot_exceed_what_the_recording_will_be():
     assert out["recorded_seconds"] == out["expected_seconds"] == 3473
 
 
-def test_a_finished_recording_carries_none_of_this():
+def test_a_finished_recording_needs_no_expected_length():
+    """Its `duration` already is what was captured."""
+    assert AppState._recording_fields(DEVICE_RECORDING)["expected_seconds"] is None
+
+
+def test_every_recording_says_when_it_really_began():
+    """Finished ones too, because they get the same coverage bar.
+
+    A recording that started fifteen minutes into its slot is missing fifteen
+    minutes whether or not it is still going, and that is worth seeing most
+    after the fact - when it is too late to do anything but know.
+    """
     out = AppState._recording_fields(DEVICE_RECORDING)
-    assert out["expected_seconds"] is None
-    assert out["recording_started"] is None
+
+    # -15s: the tuner began just before the slot, as it routinely does.
+    assert out["recording_started"] == "2026-09-15T00:15:00Z"
+    assert out["slot_seconds"] == 10800, "the slot, not the 12615s captured"
+    assert out["duration"] == 12615
 
 
 def test_sports_description_comes_from_event():
