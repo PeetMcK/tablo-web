@@ -289,6 +289,105 @@ beside it kills the other one's FFmpeg for exactly the want of that check.
 say what happened if it does not. Until that passes, `tablo.wasmlive` stays off
 by default and every viewer gets the transcode exactly as before.
 
+## The device run, and what it took
+
+It played, and then it stuttered for four hours. Everything below was found by
+measuring; not one of these was visible by reading the code, and several
+contradicted a confident diagnosis made minutes earlier.
+
+Field presentations reaching the screen, in order of fix:
+
+| | fields/s |
+|---|---|
+| first live run of the production build | 3 |
+| queue evicting from the far end instead of the front | 8 |
+| audio clock interpolated between worklet reports | 23 |
+| starvation widening the lookahead instead of removing it | 41 |
+| polling faster than the lookahead drains | 47 |
+| drawing the oldest due field instead of the newest | 55 |
+| joining the device at its live edge | 56 |
+| not decoding into a full queue, and sizing the queue for a burst | **59.9** |
+
+Against 59.94 offered. Thirty seconds sustained, nothing below 50.
+
+### The production build had never worked
+
+Bundled into the worker chunk, the libav runtime loaded and then wedged: it
+answered nothing, never fetched its own wasm, and blocked its thread so
+completely that a timer set beside it never fired. No error, no frames, no way
+to tell from the page. Dev worked throughout, because Vite serves those modules
+separately there — so every previous session's "cold channel produces nothing"
+was this, and the cold/warm distinction was never real.
+
+Bisected by loading the built worker by hand and posting it an `open`: booted,
+then silence, in both module and classic form, minified and unminified. Loading
+the runtime from a URL instead of a bundled import fixes it, and shrinks the
+worker chunk from 231KB to 31KB.
+
+### The device is a DVR, and its playlist is the recording
+
+Its media playlist carried **2336 segments** — close to an hour. The follower
+took all of it, so the ring ingested history as fast as it could be fetched:
+70 seconds of media for every 20 seconds of wall clock, 3.5x realtime. The
+ring's live edge ran away from the viewer at two and a half seconds per second,
+and playback that began ten seconds back was, two minutes later, 284 seconds
+behind the broadcast — while appearing from inside the player to be following
+live and merely stuttering. It also meant priming exhausted its fifteen second
+timeout on every session; taking only the newest twelve seconds, it completes
+in 3.8s.
+
+Nothing was duplicated. Every segment was distinct and the timestamps ran
+continuously — checked by cksum and by ffprobe across segment boundaries. It
+was simply the past, arriving quickly.
+
+### The queue cap was destroying content, not limiting it
+
+Pacing the fetch does not pace the decoder: decode runs at about a thousand
+frames a second here, thirty-five times realtime, so a segment becomes fifty or
+sixty frames in fifty milliseconds. Those land together on a queue draining one
+field at a time, it reaches its cap, and the excess is refused — and a refused
+field is a hole in the timeline, not a short queue. At 100ms resolution:
+presentation falling to zero for 300ms with 104 fields queued, every one in the
+future, the oldest 0.286s ahead, while the clock crossed the gap.
+
+The transport now declines to hand over a segment the queue cannot take, and
+the cap holds a whole burst above the working buffer. Both bounds were measured
+against the device: less than a burst's room overflows anyway, too much starves
+the sound.
+
+### Smaller, and each one worth the measurement
+
+- **The field queue evicted from the front** — the next field due — to make
+  room for one a second and a half away.
+- **The audio clock advanced in 100ms steps**, because the worklet reports every
+  4800 frames. Video presented against it could be drawn ten times a second
+  however many fields were ready: 60 animation frames, a clock that moved on
+  twelve of them.
+- **An empty buffer bypassed pacing outright**, and at startup the buffer is
+  empty by definition, so the first poll swallowed the whole primed window.
+- **Polling ran at 1.5s against a 1.25s lookahead** — a quarter second short
+  every cycle, for ever. They are a pair now, with a test saying so.
+- **Presentation skipped to the newest due field on every tick**, discarding
+  about one field in five as ordinary 60Hz-against-59.94 jitter.
+- **Playback started 25s inside the DVR window**, so live TV behaved like a
+  recording and every fresh session replayed the same content.
+- **`fallBack` leaked the ring session**: a tuner held and an hour of 1080i
+  accumulating per fallback. Found mid-soak with three leaked sessions holding
+  1.5GB and the device refusing to open another.
+- **No device request had a timeout**, so a busy tuner held a session open past
+  its own deadline — a deadline that could not fire, being tested only between
+  polls rather than bounding them.
+
+### What made the difference
+
+Logging, almost entirely. The `booted` message separated "the worker never ran"
+from "the worker hung"; the decoder's counters separated never-fed from
+never-opened from opened-on-the-wrong-stream; `fedAhead` beside `buffered`
+showed two numbers measuring the same quantity disagreeing by five seconds; and
+sampling the seekable window against the wall clock produced the 3.5x that
+unravelled the largest bug of the night. Three separate confident diagnoses
+were wrong until a number contradicted them.
+
 ### Device playlist depth — not yet run
 
 Deferred deliberately. It needs a tuner held open against the live device, and
