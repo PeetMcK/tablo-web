@@ -32,13 +32,26 @@ const READ_LIMIT = 256 * 1024;
  * How much the demuxer may read before it must name the streams.
  *
  * Bounded because the default is 5MB or EOF, which on a live feed is seconds
- * of black. Not bounded too hard: a cold ring's first segments are where the
- * PAT and PMT have to be found, and 512KB was not enough for them on a freshly
- * opened channel - the pump sat waiting and produced nothing at all.
+ * of black. This is a ceiling, not a target: measured against this device's
+ * output with no end of stream to help it along, avformat names both streams
+ * on well under one second of media — about a megabyte — and the ceiling is
+ * never reached. It exists so that a stream which is *not* demuxable fails
+ * promptly instead of reading for ever.
  */
 const PROBE_BYTES = 2 * 1024 * 1024;
 /** How much media it may analyse for stream parameters, in microseconds. */
 const ANALYZE_MICROSECONDS = 2_000_000;
+
+/**
+ * How long the demuxer gets to name the streams once bytes start arriving.
+ *
+ * The failure this guards against was silent: fed a trickle, the reader device
+ * blocks, `ff_init_demuxer_file` never returns, and the pipeline produces
+ * nothing at all with no error to say why — indistinguishable, from the page,
+ * from a decoder that is merely slow. Generous, because it is measured from
+ * the first byte and one second of media is enough.
+ */
+const OPEN_DEADLINE_MS = 10_000;
 
 /** AVFrame flags, from FFmpeg 9's `libavutil/frame.h`. */
 const AV_FRAME_FLAG_INTERLACED = 1 << 3;
@@ -55,6 +68,29 @@ export interface DecodeOutput {
   audio: DecodedAudioChunk[];
 }
 
+/**
+ * What the decoder can say about itself.
+ *
+ * Every number here exists because its absence cost a debugging session: with
+ * no counters, a decoder producing nothing looks the same whether it was never
+ * fed, never opened, opened on a stream with no video in it, or opened fine and
+ * is merely behind.
+ */
+export interface DecoderStats {
+  /** Bytes handed to `push`. */
+  bytesFed: number;
+  /** Bytes the demuxer has actually taken off the queue. */
+  bytesDelivered: number;
+  opened: boolean;
+  /** What it took to name the streams, once it has. */
+  bytesAtOpen: number | null;
+  msToOpen: number | null;
+  videoStream: boolean;
+  audioStream: boolean;
+  videoFrames: number;
+  audioChunks: number;
+}
+
 export interface LibavDecoder {
   /** Feed bytes. Output arrives through `onOutput`, as it is decoded. */
   push(bytes: Uint8Array): Promise<void>;
@@ -63,6 +99,7 @@ export interface LibavDecoder {
   /** Tear down and rebuild — for a seek or a stream discontinuity. */
   reset(): Promise<void>;
   close(): Promise<void>;
+  stats(): DecoderStats;
 }
 
 export interface DecoderOptions {
@@ -87,6 +124,8 @@ export interface DecoderOptions {
    * if libav.js ever gains SIMD.
    */
   deinterlace?: boolean;
+  /** Override the open deadline. For tests, which cannot wait ten seconds. */
+  openDeadlineMs?: number;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- libav.js ships no types
@@ -145,9 +184,20 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   let audioAnchorPts: number | null = null;
   let audioFramesEmitted = 0;
 
+  let bytesFed = 0;
+  let bytesDelivered = 0;
+  let opened = false;
+  let bytesAtOpen: number | null = null;
+  let msToOpen: number | null = null;
+  let firstByteAtMs: number | null = null;
+  let videoFrames = 0;
+  let audioChunks = 0;
+
   const feed = () => {
     if (queue.length) {
-      libav.ff_reader_dev_send(DEVICE, queue.shift());
+      const chunk = queue.shift()!;
+      bytesDelivered += chunk.length;
+      libav.ff_reader_dev_send(DEVICE, chunk);
       return;
     }
     if (atEof) {
@@ -164,6 +214,22 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     feed();
   };
 
+  /** Rejects if the demuxer has not named the streams in time. */
+  const openDeadline = (): Promise<never> => {
+    const limit = options.openDeadlineMs ?? OPEN_DEADLINE_MS;
+    return new Promise((_resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(
+          `demuxer did not open within ${limit}ms` +
+          ` (fed ${bytesFed} bytes, delivered ${bytesDelivered})`,
+        ));
+      }, limit);
+      // Node keeps the process alive for a pending timer; the browser does not
+      // care either way. Either way this must not outlive the decode.
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
+  };
+
   const open = async () => {
     await libav.mkreaderdev(DEVICE);
     libav.onread = feed;
@@ -176,13 +242,33 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     opts = await libav.av_dict_set_js(opts, "probesize", String(PROBE_BYTES), 0);
     opts = await libav.av_dict_set_js(opts, "analyzeduration", String(ANALYZE_MICROSECONDS), 0);
 
-    const [ctx, streams] = await libav.ff_init_demuxer_file(DEVICE, {
-      format: "mpegts",
-      open_input_options: opts,
-    });
+    // Raced against a deadline. The reader device blocks until it is given
+    // data, so a feed too thin to demux leaves this call outstanding for ever
+    // — and an open that never returns is invisible from the page: no frames,
+    // no audio, no error, just a session that times out with nothing to say.
+    const [ctx, streams] = await Promise.race([
+      libav.ff_init_demuxer_file(DEVICE, { format: "mpegts", open_input_options: opts }),
+      openDeadline(),
+    ]);
     fmtCtx = ctx;
+    opened = true;
+    bytesAtOpen = bytesDelivered;
+    msToOpen = firstByteAtMs === null ? null : Date.now() - firstByteAtMs;
+
     videoStream = streams.find((s: LibavStream) => s.codec_type === libav.AVMEDIA_TYPE_VIDEO) ?? null;
     audioStream = streams.find((s: LibavStream) => s.codec_type === libav.AVMEDIA_TYPE_AUDIO) ?? null;
+
+    // Without this the pump reads packets for ever and emits nothing: no
+    // decoder is built, so no frame can ever come out, and nothing says so.
+    // A stream that names no video is not something to wait through — it is
+    // the wrong stream, or a tuner that has not locked, and either way the
+    // fallback should hear about it now rather than in eight seconds' time.
+    if (!videoStream) {
+      throw new Error(
+        `no video stream after ${bytesDelivered} bytes` +
+        ` (streams: ${streams.length}, audio: ${audioStream ? "yes" : "no"})`,
+      );
+    }
 
     if (videoStream) {
       [, vctx, vpkt, vframe] = await libav.ff_init_decoder(videoStream.codec_id, {
@@ -310,7 +396,11 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
 
       // Emitted here, the moment they exist. Holding them for the next `push`
       // would delay every frame until the following segment arrived.
-      if (out.video.length || out.audio.length) emit(out);
+      if (out.video.length || out.audio.length) {
+        videoFrames += out.video.length;
+        audioChunks += out.audio.length;
+        emit(out);
+      }
 
       if (result === libav.AVERROR_EOF) return;
       // -EAGAIN only means the output limit was reached; go round again.
@@ -357,15 +447,33 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     lastVideoPts = null;
     audioAnchorPts = null;
     audioFramesEmitted = 0;
+    opened = false;
+    bytesAtOpen = null;
+    msToOpen = null;
+    firstByteAtMs = null;
   };
 
   return {
     async push(bytes: Uint8Array) {
+      if (firstByteAtMs === null) firstByteAtMs = Date.now();
+      bytesFed += bytes.length;
       queue.push(bytes);
       start();
       wake();
       return settle();
     },
+
+    stats: () => ({
+      bytesFed,
+      bytesDelivered,
+      opened,
+      bytesAtOpen,
+      msToOpen,
+      videoStream: Boolean(videoStream),
+      audioStream: Boolean(audioStream),
+      videoFrames,
+      audioChunks,
+    }),
 
     async flush() {
       atEof = true;

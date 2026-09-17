@@ -5,7 +5,7 @@
  * testable code rather than something that needs a real Worker to exercise.
  */
 
-import type { DecodeOutput, LibavDecoder } from "./libavClient";
+import type { DecodeOutput, DecoderStats, LibavDecoder } from "./libavClient";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
 export type ToWorker =
@@ -18,6 +18,7 @@ export type FromWorker =
   | { type: "opened" }
   | { type: "video"; frames: DecodedVideoFrame[] }
   | { type: "audio"; chunks: DecodedAudioChunk[] }
+  | { type: "stats"; stats: DecoderStats }
   | { type: "error"; message: string };
 
 export function createWorkerHandler(
@@ -65,6 +66,11 @@ export function createWorkerHandler(
           // dropped: there is nothing to decode it with.
           if (!decoder) return;
           await decoder.push(new Uint8Array(message.bytes));
+          // Sent with every segment rather than on request, so that whatever
+          // the page reports is current at the moment it is read. What it
+          // costs is nine numbers; what it buys is the difference between "the
+          // decoder produced nothing" and knowing which of the four reasons.
+          post({ type: "stats", stats: decoder.stats() }, []);
           return;
 
         case "reset":

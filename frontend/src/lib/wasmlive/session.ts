@@ -110,6 +110,16 @@ export function createSession(deps: SessionDeps): LiveSession {
   /** Media time the decoder has been fed up to, which paces fetching. */
   let fedThroughMedia: number | null = null;
   let fallback: FallbackState = initialFallbackState(deps.nowMs());
+  /** The worker's last word on what the decoder is doing. */
+  let decoderStats: Record<string, unknown> | null = null;
+  /**
+   * What actually went wrong, as opposed to which rule tripped.
+   *
+   * The fallback machine records a category — "decode error", "no first frame"
+   * — which is enough to fail over and useless for finding out why. This keeps
+   * the message beside it.
+   */
+  let failureDetail: string | null = null;
   let paused = false;
   let stopPolling: (() => void) | null = null;
   let seekTarget: number | null = null;
@@ -130,10 +140,30 @@ export function createSession(deps: SessionDeps): LiveSession {
       for (const chunk of chunks) deps.audio.push(chunk);
       return;
     }
+    if (message.type === "stats") {
+      decoderStats = message.stats as unknown as Record<string, unknown>;
+      return;
+    }
     if (message.type === "error") {
+      failureDetail = message.message;
       fallback = reduceFallback(fallback, { kind: "decode-error" });
       emit("error");
     }
+  };
+
+  // A worker that fails to load says nothing through `onmessage` — no frames,
+  // no audio, no error — which is the same silence a broken decoder produces
+  // and used to be indistinguishable from it. A module worker whose script or
+  // wasm asset 404s lands here and nowhere else.
+  deps.worker.onerror = (event: ErrorEvent | Event) => {
+    failureDetail = (event as ErrorEvent).message || "worker failed to load";
+    fallback = reduceFallback(fallback, { kind: "init-failed" });
+    emit("error");
+  };
+  deps.worker.onmessageerror = () => {
+    failureDetail = "worker message could not be deserialised";
+    fallback = reduceFallback(fallback, { kind: "decode-error" });
+    emit("error");
   };
 
   /** Resolve a segment uri against the playlist it came from. */
@@ -306,6 +336,10 @@ export function createSession(deps: SessionDeps): LiveSession {
       fedThroughMedia,
       takenThrough,
       failure: fallback.failed,
+      failureDetail,
+      // What the decoder itself says. Null here means the worker has never
+      // answered — a different problem from a decoder that answered badly.
+      decoder: decoderStats,
     }),
 
     on(event, handler) {

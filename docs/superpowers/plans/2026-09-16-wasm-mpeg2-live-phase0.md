@@ -204,14 +204,90 @@ first segment fed, so a cold ring failed before there was anything to decode.
 On a channel whose ring has been filling for a while, the WASM path plays and
 keeps playing. On a freshly opened channel the decoder sometimes produces
 nothing at all from the first few seconds of media and the session falls back.
-The probe limits have been loosened once (512KB → 2MB, 0.5s → 2s of analysis)
-on the theory that a cold ring's opening segments are where PAT and PMT have to
-be found, but that has not yet been confirmed against the device.
 
-**Next step:** instrument the worker's demuxer open on a cold channel and find
-out whether it is the probe, a mid-GOP start, or something else. Until that is
-answered, `tablo.wasmlive` stays off by default and every viewer gets the
-transcode exactly as before.
+## Chasing the cold-channel failure on the bench
+
+The standing theory was the demuxer probe: that a cold ring's opening segments
+are where PAT and PMT have to be found and avformat gave up first. The probe
+limits had been loosened once on that theory (512KB → 2MB, 0.5s → 2s) without
+ever being tested.
+
+**The theory is wrong, and the test that killed it needs no device.** The
+committed fixture is one second of this device's output, cut from the middle of
+a broadcast — which is exactly what tuning into a live channel looks like. Fed
+in 64KB chunks with **no end of stream**, which is the condition live playback
+actually runs under and which the existing decode test never exercised because
+it calls `flush()`:
+
+| fed | frames out |
+|---|---|
+| 1,056,936 bytes (~1s), no EOF | 25 video, 29 audio |
+| three of those, a second apart | 87 video, growing each round |
+
+So avformat names both streams on well under a megabyte, with nothing to help
+it along. `PROBE_BYTES` is a ceiling that is never reached, and the loosening
+was unnecessary — harmless, but it was never the problem.
+
+Two more suspects went the same way. Every decoded frame and audio chunk owns
+its own `ArrayBuffer` — no aliasing, no view into a shared buffer — so the
+transfer lists cannot throw; and running the worker handler with a real
+`structuredClone(message, { transfer })` in place of `postMessage` posts video
+and audio without error.
+
+### What was actually wrong: three silences
+
+The decoder had three ways to produce nothing and say nothing, and from the
+page they were indistinguishable from each other and from a decoder that was
+merely slow. All three are now loud.
+
+1. **A stream with no video in it.** `open()` only built a decoder `if
+   (videoStream)`. With no video PID — a tuner that has not locked yet — it
+   built none, then read packets for ever and emitted nothing. No error, no
+   frames, no audio: exactly the reported symptom. It now throws, naming the
+   byte count and whether audio was found. Pinned by a fixture: the same second
+   of broadcast with the video PID stripped out.
+2. **An open that never completes.** The reader device blocks until it is given
+   data, so a feed too thin to demux leaves `ff_init_demuxer_file` outstanding
+   indefinitely. Now raced against a deadline that reports how many bytes were
+   fed and how many the demuxer took.
+3. **A worker that never loads.** A module worker whose script or wasm asset
+   fails reports through `onerror`, which nothing was listening to. The session
+   sat in the same silence until its deadline. Now an immediate, named failover.
+
+Beside them, `stats()` — bytes fed, bytes delivered, whether it opened, what it
+opened on, which streams it found, frames and chunks emitted — rides to the
+page with every segment, so `tabloDebug()` distinguishes never-fed from
+never-opened from opened-but-wrong-stream from merely-behind.
+
+### Removing the cold start rather than surviving it
+
+MPEG-TS has no header. It describes itself periodically, so opening a live
+stream means listening until the tables come round — and a browser handed a
+ring holding one segment gets a trickle, a segment per poll interval. That is
+the only condition this path has ever failed to start under.
+
+`POST /api/stream?mode=ring` now fills the ring before it answers:
+`RingFollower.prime()` polls until the ring holds `RING_PRIME_SECONDS` (8) or
+`RING_PRIME_TIMEOUT_SECONDS` (15) elapses, and only then starts the background
+poller. Every channel therefore opens under the conditions a warm one already
+works under. The wait is not new — the transcode path already waits up to
+twelve seconds for its first playlist segment, behind the same spinner — and a
+device that will not fill still yields a session, because the client falls back
+on its own.
+
+A session stopped while priming does not start its poller: a player closed
+mid-open would otherwise hold a tuner for the life of the process.
+
+Ring directories orphaned by a crash are swept at startup, but only if nothing
+has written to them for a minute. A live follower writes every couple of
+seconds, so the sweep cannot take the ring out from under a second backend
+sharing the directory — which is not hypothetical, since running one beside the
+user's own is the documented way to test this path, and the transcode cleanup
+beside it kills the other one's FFmpeg for exactly the want of that check.
+
+**Next step:** a device run to confirm it, with the counters now available to
+say what happened if it does not. Until that passes, `tablo.wasmlive` stays off
+by default and every viewer gets the transcode exactly as before.
 
 ### Device playlist depth — not yet run
 

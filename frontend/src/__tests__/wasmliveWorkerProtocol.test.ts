@@ -20,9 +20,16 @@ function fakeDecoder(
     flush: vi.fn(async () => {}),
     reset: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
+    stats: vi.fn(() => ({
+      bytesFed: 0, bytesDelivered: 0, opened: true, bytesAtOpen: 0, msToOpen: 0,
+      videoStream: true, audioStream: true, videoFrames: 0, audioChunks: 0,
+    })),
     ...overrides,
   };
 }
+
+/** Everything but the stats heartbeat, which rides along with every segment. */
+const media = (messages: FromWorker[]) => messages.filter((m) => m.type !== "stats");
 
 describe("createWorkerHandler", () => {
   it("answers open with opened", async () => {
@@ -37,7 +44,7 @@ describe("createWorkerHandler", () => {
     const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));
     await handle({ type: "open" });
     await handle({ type: "segment", bytes: new ArrayBuffer(8) });
-    expect(posted.map((m) => m.type)).toEqual(["opened", "video", "audio"]);
+    expect(media(posted).map((m) => m.type)).toEqual(["opened", "video", "audio"]);
   });
 
   it("transfers frame buffers rather than copying them", async () => {
@@ -57,7 +64,7 @@ describe("createWorkerHandler", () => {
     const handle = createWorkerHandler(async () => decoder, (m) => posted.push(m));
     await handle({ type: "open" });
     await handle({ type: "segment", bytes: new ArrayBuffer(8) });
-    expect(posted).toEqual([{ type: "opened" }]);
+    expect(media(posted)).toEqual([{ type: "opened" }]);
   });
 
   it("reports a decode failure as an error message", async () => {
@@ -110,7 +117,7 @@ describe("createWorkerHandler", () => {
     release();
     await Promise.all([first, second]);
 
-    expect(posted.map((m) => m.type)).toEqual(["opened", "video", "audio"]);
+    expect(media(posted).map((m) => m.type)).toEqual(["opened", "video", "audio"]);
   });
 
   it("ignores a segment that arrives before open", async () => {
@@ -126,6 +133,20 @@ describe("createWorkerHandler", () => {
     await handle({ type: "open" });
     await handle({ type: "open" });
     expect(make).toHaveBeenCalledOnce();
+  });
+
+  it("reports the decoder's own counters with every segment", async () => {
+    // Read synchronously by the page's diagnostics, so it has to be current
+    // whenever it is read rather than fetched on request. The silence this
+    // answers - no frames, no audio, no error - has four different causes.
+    const posted: FromWorker[] = [];
+    const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));
+    await handle({ type: "open" });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+
+    const stats = posted.find((m) => m.type === "stats");
+    expect(stats).toBeDefined();
+    expect(stats).toMatchObject({ type: "stats", stats: { opened: true, videoStream: true } });
   });
 
   it("stops decoding after close", async () => {

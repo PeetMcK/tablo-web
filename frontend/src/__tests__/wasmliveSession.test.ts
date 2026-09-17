@@ -37,6 +37,8 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     postMessage: (m: { type: string }) => posted.push(m),
     terminate: vi.fn(),
     onmessage: null as ((e: MessageEvent) => void) | null,
+    onerror: null as ((e: Event) => void) | null,
+    onmessageerror: null as ((e: Event) => void) | null,
   };
 
   const audio = {
@@ -408,5 +410,59 @@ describe("createWasmSurface", () => {
     const surface = createWasmSurface(session);
     worker.onmessage?.({ data: { type: "error", message: "bad packet" } } as MessageEvent);
     expect(surface.error).toBe("decode error");
+  });
+});
+
+describe("saying why it failed", () => {
+  it("fails over when the worker itself will not load", async () => {
+    // A module worker whose script or wasm asset 404s reports through onerror
+    // and nowhere else: onmessage stays silent, so without this the session
+    // looks exactly like a decoder producing nothing, and times out instead of
+    // failing over at once.
+    const { session, worker } = harness();
+    await session.start();
+
+    worker.onerror?.({ message: "Failed to fetch worker" } as unknown as Event);
+
+    expect(session.failure).toBe("init failed");
+    expect(session.diagnostics().failureDetail).toBe("Failed to fetch worker");
+  });
+
+  it("names a worker error even when the event carries no message", async () => {
+    const { session, worker } = harness();
+    await session.start();
+
+    worker.onerror?.({} as Event);
+
+    expect(session.failure).toBe("init failed");
+    expect(session.diagnostics().failureDetail).toBe("worker failed to load");
+  });
+
+  it("keeps the decoder's reason beside the fallback's category", async () => {
+    const { session, worker } = harness();
+    await session.start();
+
+    worker.onmessage?.({
+      data: { type: "error", message: "no video stream after 917504 bytes" },
+    } as MessageEvent);
+
+    // "decode error" says a rule tripped; the detail says what to go and fix.
+    expect(session.failure).toBe("decode error");
+    expect(session.diagnostics().failureDetail).toBe("no video stream after 917504 bytes");
+  });
+
+  it("reports the decoder's counters once the worker has sent them", async () => {
+    const { session, worker } = harness();
+    await session.start();
+
+    expect(session.diagnostics().decoder).toBe(null);
+
+    worker.onmessage?.({
+      data: { type: "stats", stats: { opened: true, bytesFed: 4096, videoStream: false } },
+    } as MessageEvent);
+
+    expect(session.diagnostics().decoder).toEqual({
+      opened: true, bytesFed: 4096, videoStream: false,
+    });
   });
 });
