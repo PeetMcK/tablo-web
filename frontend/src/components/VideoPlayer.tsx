@@ -19,7 +19,9 @@ import {
   programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
-import { createHlsSurface, type PlaybackSurface } from "../lib/playbackSurface";
+import {
+  createHlsSurface, DOCUMENT_FRAMES, type PlaybackSurface,
+} from "../lib/playbackSurface";
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
 
@@ -1397,19 +1399,24 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const mirrorRef = useRef<HTMLVideoElement | null>(null);
 
   const openMirror = useCallback(() => {
-    const video = videoRef.current as (HTMLVideoElement & {
-      captureStream?: () => MediaStream;
-    }) | null;
-    if (!video?.captureStream) return false;
+    // Whichever element is drawing the picture. `captureStream` is the same
+    // method on both, handing out a MediaStream of one video track, and a
+    // mirror cannot tell the two apart — so the WASM path pops out the canvas
+    // and the transcode path pops out the element, with nothing downstream
+    // learning which it got. Mirroring the (hidden, empty) video element while
+    // the canvas is the one with the picture would pop out a black rectangle.
+    const source = (usingWasm ? canvasRef.current : videoRef.current) as
+      (HTMLElement & { captureStream?: () => MediaStream }) | null;
+    if (!source?.captureStream) return false;
     const mirror = document.createElement("video");
     mirror.className = "w-full h-full object-contain";
     mirror.playsInline = true;
     mirror.muted = true;
     mirror.autoplay = true;
-    mirror.srcObject = video.captureStream();
+    mirror.srcObject = source.captureStream();
     mirrorRef.current = mirror;
     return true;
-  }, []);
+  }, [usingWasm]);
 
   const closeMirror = useCallback(() => {
     const mirror = mirrorRef.current;
@@ -1427,9 +1434,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const placeVideo = useCallback((host: HTMLDivElement, forPip: boolean) => {
     const el = forPip ? mirrorRef.current : videoRef.current;
     if (el && el.parentElement !== host) host.append(el);
-    // The canvas travels with it, and only into the tab's own stage: the
-    // pop-out is fed by a mirror of the video element's stream, which a canvas
-    // has no part in. Picture-in-picture on the WASM path is a known gap.
+    // The canvas belongs to the tab's own stage and never leaves it. The
+    // pop-out is fed by a mirror of whatever is drawing — the canvas included
+    // — so it needs the stream, not the element.
     const canvas = canvasRef.current;
     if (!forPip && canvas && canvas.parentElement !== host) host.append(canvas);
   }, []);
@@ -1492,6 +1499,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       const mount = w.document.createElement("div");
       w.document.body.append(mount);
       openMirror();
+      // The canvas is painted by an animation frame loop, and this document is
+      // about to be the hidden one — which runs none. Whatever the surface was
+      // presenting from, it presents from the window on screen now. Optional
+      // on both sides: the element-backed surface has no loop to move.
+      surfaceRef.current?.setFrameSource?.({
+        request: (callback) => w.requestAnimationFrame(callback),
+        cancel: (handle) => w.cancelAnimationFrame(handle),
+      });
       pipRoot.current = createRoot(mount);
       if (keyHandler.current) w.addEventListener("keydown", keyHandler.current);
       setPoppedOut(true);
@@ -1502,6 +1517,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       w.addEventListener("pagehide", () => {
         pipRoot.current?.unmount();
         closeMirror();
+        // Back to this document's clock: the tab's stage is on screen again,
+        // and the window that was driving the loop is going away with its
+        // `requestAnimationFrame` still holding an outstanding handle.
+        surfaceRef.current?.setFrameSource?.(DOCUMENT_FRAMES);
         pipRoot.current = null;
         pipWindow.current = null;
         setPoppedOut(false);

@@ -11,7 +11,9 @@ import { createRenderer } from "./deinterlace";
 import { createPresenter } from "./presenter";
 import { createSession } from "./session";
 import { createWasmSurface } from "./wasmSurface";
-import type { PlaybackSurface } from "../playbackSurface";
+import {
+  startFrameLoop, type FrameSource, type PlaybackSurface,
+} from "../playbackSurface";
 import workletUrl from "./pcmWorklet.js?url";
 
 /**
@@ -76,6 +78,8 @@ export interface OpenOptions {
    * and the decode path is not one of them.
    */
   vod?: { durationSeconds: number; growing?: boolean };
+  /** Where animation frames come from. Defaults to the main document's. */
+  frames?: FrameSource;
 }
 
 export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSurface> {
@@ -142,20 +146,20 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     },
   });
 
+  await session.start();
+
   // Presentation is driven by the display, and timed against the audio clock.
-  let frame = 0;
-  const loop = () => {
+  // Which display is not fixed, though: the picture can be popped out into a
+  // window of its own, and the document left behind runs no animation frames
+  // at all once it is hidden — so the loop can be pointed at another window.
+  const loop = startFrameLoop(() => {
     session.tick();
     if (session.failure) {
-      cancelAnimationFrame(frame);
       options.onFailure(session.failure);
-      return;
+      return false;
     }
-    frame = requestAnimationFrame(loop);
-  };
-
-  await session.start();
-  frame = requestAnimationFrame(loop);
+    return true;
+  }, options.frames);
 
   const surface = createWasmSurface(session);
   // Delegated property by property rather than spread: spreading would read
@@ -175,8 +179,9 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     get error() { return surface.error; },
     diagnostics: () => surface.diagnostics(),
     on: (event, handler) => surface.on(event, handler),
+    setFrameSource: (next: FrameSource) => loop.setFrameSource(next),
     destroy() {
-      cancelAnimationFrame(frame);
+      loop.stop();
       releaseUnlock();
       surface.destroy();
       renderer.destroy();

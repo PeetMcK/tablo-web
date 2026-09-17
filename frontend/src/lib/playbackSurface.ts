@@ -11,6 +11,79 @@ export type SurfaceEvent =
   | "ready" | "timeupdate" | "waiting" | "playing" | "paused" | "ended" | "error"
   | "volumechange";
 
+/**
+ * Where animation frames come from.
+ *
+ * `requestAnimationFrame` is a property of a window, and a document that is
+ * hidden runs none — so a surface that paints rather than decodes has to be
+ * told which window is actually on screen. Two functions rather than the
+ * window itself: a test can then drive the loop by hand, with no display and
+ * no clock involved.
+ */
+export interface FrameSource {
+  request(callback: FrameRequestCallback): number;
+  cancel(handle: number): void;
+}
+
+/**
+ * The tab's own clock, which is where every surface starts.
+ *
+ * Shared so that handing the loop back is the same operation as handing it
+ * away, and neither side has to spell out what the default was.
+ */
+export const DOCUMENT_FRAMES: FrameSource = {
+  request: (callback) => requestAnimationFrame(callback),
+  cancel: (handle) => cancelAnimationFrame(handle),
+};
+
+/** A running presentation loop, with the window it runs on still to be decided. */
+export interface FrameLoop {
+  /** Present from a different window's frames from now on. */
+  setFrameSource(next: FrameSource): void;
+  /** Stop, cancelling on whichever source is current. */
+  stop(): void;
+}
+
+/**
+ * Run `step` once per animation frame, on a source that can be changed under
+ * it, until it returns false or the loop is stopped.
+ *
+ * The bookkeeping is the whole reason this is not four lines at the call site:
+ * a handle belongs to the source that issued it, so a swap has to cancel on
+ * the outgoing source before requesting from the incoming one. Miss that and
+ * the old request survives — two loops then step the same session every
+ * frame, which shows up as clock drift rather than as anything visible.
+ */
+export function startFrameLoop(
+  step: () => boolean,
+  initial: FrameSource = DOCUMENT_FRAMES,
+): FrameLoop {
+  let frames = initial;
+  let handle = 0;
+  let running = true;
+
+  const tick = () => {
+    if (!running) return;
+    if (!step()) { running = false; return; }
+    handle = frames.request(tick);
+  };
+  handle = frames.request(tick);
+
+  return {
+    setFrameSource(next: FrameSource) {
+      if (!running) { frames = next; return; }
+      frames.cancel(handle);
+      frames = next;
+      handle = frames.request(tick);
+    },
+    stop() {
+      if (!running) return;
+      running = false;
+      frames.cancel(handle);
+    },
+  };
+}
+
 export interface PlaybackSurface {
   play(): Promise<void>;
   pause(): void;
@@ -38,6 +111,14 @@ export interface PlaybackSurface {
   diagnostics(): Record<string, unknown>;
   /** Subscribe; the returned function unsubscribes. */
   on(event: SurfaceEvent, handler: () => void): () => void;
+  /**
+   * Present from a different window's frames from now on.
+   *
+   * Optional, and absent on the element-backed surface: a `<video>` decodes
+   * on the media stack's own clock and keeps producing frames wherever its
+   * document is. Only the painted surface has a loop to redirect.
+   */
+  setFrameSource?(next: FrameSource): void;
   destroy(): void;
 }
 

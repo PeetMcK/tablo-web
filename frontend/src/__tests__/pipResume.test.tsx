@@ -5,6 +5,36 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VideoPlayer } from "../components/VideoPlayer";
 import { api } from "../api/tablo";
 import type { Channel, Program } from "../api/tablo";
+import type { FrameSource, PlaybackSurface } from "../lib/playbackSurface";
+
+/**
+ * Both modules the WASM path is chosen and built by, under test control.
+ *
+ * Hoisted because `vi.mock` is: the factories below run before any `const` in
+ * this file would have been evaluated, so the switch they read has to exist
+ * earlier than the file's own top level.
+ */
+const wasm = vi.hoisted(() => ({
+  /** Off by default, so the transcode-path tests here are untouched. */
+  eligible: false,
+  surface: null as (PlaybackSurface & { setFrameSource: ReturnType<typeof vi.fn> }) | null,
+  open: vi.fn(),
+}));
+
+vi.mock("../lib/wasmlive/capability", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/wasmlive/capability")>();
+  return {
+    ...actual,
+    // jsdom has neither WebGL2 nor OffscreenCanvas nor a Chrome user agent, so
+    // the real check can only ever say no here. Which path is taken is the
+    // premise of these tests, not their subject.
+    wasmLiveEligible: () => (wasm.eligible
+      ? { eligible: true, reason: "" }
+      : { eligible: false, reason: "test" }),
+  };
+});
+
+vi.mock("../lib/wasmlive/open", () => ({ openWasmSurface: wasm.open }));
 
 const CHANNEL: Channel = {
   identifier: "S84522_007_02", call_sign: "K08PRD2", major: 7, minor: 2,
@@ -141,5 +171,200 @@ describe("popping out leaves the playing element alone", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(close).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The same pop-out, on the path that draws into a canvas.
+ *
+ * Nothing here is about MPEG-2. It is about the two facts that make the canvas
+ * different from the element: it is not what `videoRef` points at, and it is
+ * painted by an animation frame loop that a hidden document does not run.
+ */
+describe("popping out the picture the WASM path is drawing", () => {
+  let canvasCapture: ReturnType<typeof vi.fn>;
+  let videoCapture: ReturnType<typeof vi.fn>;
+
+  /** A stream, shaped only as far as `closeMirror` reads it. */
+  const stubStream = () =>
+    ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream;
+
+  /** A surface the player can hold, with the one method under test spied. */
+  function stubSurface() {
+    return {
+      play: vi.fn().mockResolvedValue(undefined),
+      pause: vi.fn(),
+      seek: vi.fn(),
+      currentTime: 0,
+      seekable: [0, 60] as const,
+      duration: null,
+      paused: false,
+      muted: false,
+      setMuted: vi.fn(),
+      volume: 1,
+      setVolume: vi.fn(),
+      error: null,
+      diagnostics: () => ({ kind: "wasm" }),
+      on: () => () => {},
+      destroy: vi.fn(),
+      setFrameSource: vi.fn(),
+    } satisfies PlaybackSurface & { setFrameSource: ReturnType<typeof vi.fn> };
+  }
+
+  beforeEach(() => {
+    wasm.eligible = true;
+    wasm.surface = stubSurface();
+    wasm.open.mockReset();
+    wasm.open.mockResolvedValue(wasm.surface);
+
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "startStream").mockResolvedValue({
+      session_id: "ring-1", proxy_url: "/a", stream_url: "/ring.m3u8", transcoded: false,
+    });
+    vi.spyOn(api, "stopStream").mockResolvedValue({ ok: true });
+    vi.spyOn(api, "channelAirings").mockResolvedValue({ airings: [NEWS_HOUR] });
+
+    videoCapture = vi.fn(stubStream);
+    canvasCapture = vi.fn(stubStream);
+    (HTMLMediaElement.prototype as unknown as Record<string, unknown>)
+      .captureStream = videoCapture;
+    (HTMLCanvasElement.prototype as unknown as Record<string, unknown>)
+      .captureStream = canvasCapture;
+    (window as unknown as Record<string, unknown>).documentPictureInPicture = {
+      requestWindow: vi.fn(),
+    };
+  });
+
+  afterEach(() => {
+    wasm.eligible = false;
+    vi.restoreAllMocks();
+    delete (window as unknown as Record<string, unknown>).documentPictureInPicture;
+    delete (HTMLCanvasElement.prototype as unknown as Record<string, unknown>).captureStream;
+    delete (HTMLMediaElement.prototype as unknown as Record<string, unknown>).captureStream;
+  });
+
+  /**
+   * A pop-out window with its own frame clock.
+   *
+   * The clock is the point: a document that is hidden runs no animation
+   * frames, so what the canvas is driven by while popped out has to be this
+   * window's, not the tab's.
+   */
+  function fakePipWindow() {
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const pipDoc = frame.contentDocument!;
+    const w = {
+      document: pipDoc,
+      close: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      requestAnimationFrame: vi.fn(() => 7),
+      cancelAnimationFrame: vi.fn(),
+    } as unknown as Window;
+    (window as unknown as Record<string, unknown>).documentPictureInPicture = {
+      requestWindow: vi.fn().mockResolvedValue(w),
+    };
+    return { w, pipDoc };
+  }
+
+  async function renderWasmLivePlayer() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <VideoPlayer
+          source={{ kind: "live", channel: CHANNEL, program: NEWS_HOUR }}
+          onClose={() => {}}
+        />
+      </QueryClientProvider>,
+    );
+    // Not just that the stream started: the canvas has to be the visible
+    // element before any of this means anything.
+    await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(view.container.querySelector("canvas")?.hidden).toBe(false);
+    });
+    return view;
+  }
+
+  it("mirrors the canvas rather than the empty video element", async () => {
+    // The pop-out shows a mirror of whatever is producing pixels. On this path
+    // that is the canvas; a mirror of the hidden `<video>` would pop out a
+    // black rectangle, which is what the gap looked like.
+    await renderWasmLivePlayer();
+    const { pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+
+    expect(canvasCapture).toHaveBeenCalled();
+    expect(videoCapture).not.toHaveBeenCalled();
+  });
+
+  it("offers the pop-out on this path too", async () => {
+    // The button is gated on the browser API, not on which decoder is running.
+    // Worth pinning: the two paths differ in what they draw with, and a gate
+    // added to one would be invisible from the other.
+    await renderWasmLivePlayer();
+    expect(screen.getByTitle("Picture in picture (P)")).toBeInTheDocument();
+  });
+
+  it("leaves the canvas in the tab", async () => {
+    // Same rule as the video element: nothing crosses documents. The pop-out
+    // window is destroyed when it closes, and a canvas inside it would go with
+    // it, taking the WebGL context the renderer holds.
+    const { container } = await renderWasmLivePlayer();
+    const canvas = container.querySelector("canvas")!;
+    const { pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+
+    expect(canvas.ownerDocument).toBe(document);
+    expect(pipDoc.body.querySelector("canvas")).toBeNull();
+  });
+
+  it("drives the presentation loop from the window that is on screen", async () => {
+    // A hidden document runs no animation frames, so the canvas would freeze
+    // the moment the tab went behind something — which is the whole occasion
+    // for popping out.
+    await renderWasmLivePlayer();
+    const { w, pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+
+    await waitFor(() => expect(wasm.surface!.setFrameSource).toHaveBeenCalled());
+    const installed = wasm.surface!.setFrameSource.mock.calls.at(-1)![0] as FrameSource;
+    installed.request(() => {});
+    expect(w.requestAnimationFrame).toHaveBeenCalled();
+    installed.cancel(7);
+    expect(w.cancelAnimationFrame).toHaveBeenCalledWith(7);
+  });
+
+  it("hands the loop back to the tab when the pop-out closes", async () => {
+    // The tab's stage is on screen again, and the window whose clock was
+    // driving the canvas no longer exists.
+    await renderWasmLivePlayer();
+    const { w, pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+    await waitFor(() => expect(wasm.surface!.setFrameSource).toHaveBeenCalled());
+
+    // However it closes, the same handler runs; the window's own close button
+    // is the case our button cannot cover.
+    const pagehide = (w.addEventListener as ReturnType<typeof vi.fn>).mock.calls
+      .find(([type]) => type === "pagehide")![1] as () => void;
+    pagehide();
+
+    expect(wasm.surface!.setFrameSource).toHaveBeenCalledTimes(2);
+    const restored = wasm.surface!.setFrameSource.mock.calls.at(-1)![0] as FrameSource;
+    const before = (w.requestAnimationFrame as ReturnType<typeof vi.fn>).mock.calls.length;
+    const handle = restored.request(() => {});
+    restored.cancel(handle);
+    expect((w.requestAnimationFrame as ReturnType<typeof vi.fn>).mock.calls.length)
+      .toBe(before);
   });
 });
