@@ -3,6 +3,7 @@
 import asyncio
 import signal
 import time
+from datetime import datetime, timedelta, timezone
 from collections import deque
 
 import pytest
@@ -63,6 +64,111 @@ GAME = 12615
 def test_duration_prefers_recorded_over_scheduled():
     """airing_details.duration is the scheduled slot and understates the file."""
     assert AppState._recording_fields(DEVICE_RECORDING)["duration"] == 12615
+
+
+def _in_progress(minutes_ago: float, scheduled: int = 3600) -> dict:
+    began = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    return {
+        **DEVICE_RECORDING,
+        "airing_details": {
+            "datetime": began.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration": scheduled,
+            "show_title": "Today 3rd Hour",
+        },
+        # What the device really reports mid-recording: the slot, not the file.
+        "video_details": {**DEVICE_RECORDING["video_details"],
+                          "state": "recording", "duration": 0},
+    }
+
+
+def test_a_finished_recording_reports_no_progress():
+    """Its `duration` already is what was recorded; a second number would only
+    be another thing to keep in step."""
+    assert AppState._recording_fields(DEVICE_RECORDING)["recorded_seconds"] is None
+
+
+def test_a_recording_in_progress_reports_how_much_exists():
+    out = AppState._recording_fields(_in_progress(32))
+
+    # Wall clock, to the nearest few seconds. The device publishes no such
+    # figure while recording - `duration` stays the scheduled slot until it
+    # finishes - and the exact one costs a device session to read.
+    assert out["recorded_seconds"] == pytest.approx(32 * 60, abs=5)
+    assert out["duration"] == 3600, "the slot is still what the card counts against"
+
+
+def test_progress_never_exceeds_the_slot():
+    """A tuner that started late or dropped out must not read as overrunning.
+
+    Measured: one two-hour slot yielded 57.9 minutes of video. Wall clock alone
+    would have claimed the full two hours right up to the end.
+    """
+    assert AppState._recording_fields(_in_progress(200, scheduled=3600))["recorded_seconds"] == 3600
+
+
+def test_progress_is_absent_when_the_start_is_unknown():
+    data = _in_progress(10)
+    data["airing_details"] = {**data["airing_details"], "datetime": None}
+    assert AppState._recording_fields(data)["recorded_seconds"] is None
+
+
+def _with_offsets(minutes_ago: float, start: int, end: int = 0, scheduled: int = 7200) -> dict:
+    data = _in_progress(minutes_ago, scheduled=scheduled)
+    data["video_details"] = {**data["video_details"],
+                             "recorded_offsets": {"start": start, "end": end}}
+    return data
+
+
+def test_a_late_start_is_taken_from_the_device_not_the_schedule():
+    """The real numbers from a recording that began 63 minutes into its slot.
+
+    Booked 13:00Z for two hours, `recorded_offsets: {start: 3786}`, really began
+    14:03:06Z - three seconds from what its own playlist said. Counting from the
+    scheduled start would have claimed two hours of video where 57.9 minutes
+    existed, and claimed it for the whole final hour.
+    """
+    # 93 minutes into the slot, less the 3786s late start, is 1794s of video —
+    # not the 5580s that counting from the schedule would have claimed.
+    out = AppState._recording_fields(_with_offsets(93, start=3786))
+
+    assert out["recorded_seconds"] == pytest.approx(93 * 60 - 3786, abs=5)
+    assert out["recorded_seconds"] < 93 * 60
+    assert out["recording_started"] is not None
+
+
+def test_an_early_start_reads_as_more_recorded_not_less():
+    """`start` is signed: -15 is a tuner that began fifteen seconds early."""
+    out = AppState._recording_fields(_with_offsets(10, start=-15, scheduled=3600))
+    assert out["recorded_seconds"] == pytest.approx(10 * 60 + 15, abs=5)
+
+
+def test_the_bar_counts_against_what_the_recording_will_be():
+    """Not the slot.
+
+    A show that starts 63 minutes into a two-hour slot will be 57 minutes long,
+    and a bar drawn against two hours could never fill. Verified against the
+    finished recording: 7200 - 3786 + 59 = 3473, and its `duration` was 3473.
+    """
+    assert AppState._recording_fields(_with_offsets(93, start=3786, end=59))[
+        "expected_seconds"] == 3473
+
+
+def test_end_padding_is_absent_until_it_finishes():
+    """`end` reads 0 mid-recording, so this runs slightly short until the end."""
+    assert AppState._recording_fields(_with_offsets(93, start=3786))[
+        "expected_seconds"] == 7200 - 3786
+
+
+def test_progress_cannot_exceed_what_the_recording_will_be():
+    """A tuner that stopped early must not read as growing for ever."""
+    out = AppState._recording_fields(_with_offsets(500, start=3786, end=59))
+    assert out["recorded_seconds"] == out["expected_seconds"] == 3473
+
+
+def test_a_finished_recording_carries_none_of_this():
+    out = AppState._recording_fields(DEVICE_RECORDING)
+    assert out["expected_seconds"] is None
+    assert out["recording_started"] is None
 
 
 def test_sports_description_comes_from_event():

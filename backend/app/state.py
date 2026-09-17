@@ -990,6 +990,10 @@ class AppState:
         # known without probing the stream. Verified against ffmpeg's idet on
         # all six recordings: the flag and the detection agreed every time.
         interlaced = "interlaced" in (vd.get("flags") or [])
+        # Only a recording in progress has these: everything else is described
+        # by `duration`, which by then is what was actually recorded.
+        in_progress = vd.get("state") == "recording"
+        began = AppState._began_recording(ad, vd) if in_progress else None
         height = vd.get("height")
         scan = f"{height}{'i' if interlaced else 'p'}" if height else None
         return {
@@ -1006,6 +1010,14 @@ class AppState:
             ),
             "start": ad.get("datetime"),
             "duration": vd.get("duration") or ad.get("duration") or 0,
+            "recorded_seconds": AppState._recorded_so_far(ad, vd),
+            # What the progress bar counts against: the length this recording
+            # will actually be, which is not the scheduled slot when the tuner
+            # started late. None once finished, when `duration` is the answer.
+            "expected_seconds": AppState._expected_length(ad, vd) if in_progress else None,
+            # When recording really began, so the UI can say where its figure
+            # comes from rather than presenting elapsed time as measured.
+            "recording_started": began.isoformat().replace("+00:00", "Z") if began else None,
             "thumbnail": f"/api/recordings/{object_id}/thumbnail" if image_id else None,
             "width": vd.get("width"),
             "height": vd.get("height"),
@@ -1021,6 +1033,90 @@ class AppState:
             "scan": scan,
             "interlaced": interlaced,
         }
+
+    @staticmethod
+    def _began_recording(ad: dict, vd: dict) -> "datetime | None":
+        """When recording actually started, not when it was scheduled to.
+
+        `video_details.recorded_offsets.start` is the device's own offset, in
+        seconds, from the scheduled start to the moment the tuner began - signed,
+        so a recording that started early is negative.
+
+        This is not a detail. Measured 2026-09-17: a two-hour slot booked for
+        13:00Z reported `recorded_offsets: {start: 3786}` and really began at
+        14:03:06Z, 63 minutes late, yielding 57.9 minutes of video. Anything
+        counting from the scheduled start would have called it a full two hours
+        for its entire final hour. A second recording the same day reported
+        `start: -15` and began 15 seconds early - so the schedule is usually
+        near-exact and occasionally wildly wrong, which is the combination that
+        makes guessing worst.
+
+        Checked against the only independent source, the first
+        PROGRAM-DATE-TIME in each recording's own playlist: 14:03:06Z against
+        14:03:09Z, and 14:59:45Z against 14:59:48Z. Three seconds out on both,
+        and unlike the playlist this needs no device session, so every card is
+        right on first paint rather than after someone plays it.
+        """
+        scheduled = AppState._parse_stamp(ad.get("datetime"))
+        if scheduled is None:
+            return None
+        offsets = vd.get("recorded_offsets") or {}
+        return scheduled + timedelta(seconds=offsets.get("start") or 0)
+
+    @staticmethod
+    def _expected_length(ad: dict, vd: dict) -> int | None:
+        """How long a recording in progress will be when it finishes.
+
+        The slot, less the late start, plus whatever padding runs past the end.
+        Verified exactly on a finished recording: 7200 - 3786 + 59 = 3473, and
+        `video_details.duration` came out at 3473.
+
+        It is what the progress bar counts against, rather than the scheduled
+        slot: a show that starts fifteen minutes into its hour will be
+        forty-five minutes long, and a bar drawn against the hour could never
+        fill. `end` reads 0 until the recording completes, so this runs slightly
+        short mid-recording and lands exactly right at the end.
+        """
+        scheduled = ad.get("duration") or 0
+        if not scheduled:
+            return None
+        offsets = vd.get("recorded_offsets") or {}
+        total = scheduled - (offsets.get("start") or 0) + (offsets.get("end") or 0)
+        return max(0, int(total))
+
+    @staticmethod
+    def _recorded_so_far(ad: dict, vd: dict) -> int | None:
+        """How much of a recording in progress exists, in seconds.
+
+        None unless it is actually recording: a finished recording's `duration`
+        already is what was recorded, and a second figure would only be another
+        thing to keep in step.
+
+        The origin is the device's own measurement, so the only estimate left is
+        that recording has run continuously since it began - which is why the UI
+        still says the figure is derived rather than reported.
+        """
+        if vd.get("state") != "recording":
+            return None
+
+        began = AppState._began_recording(ad, vd)
+        if began is None:
+            return None
+
+        elapsed = (datetime.now(timezone.utc) - began).total_seconds()
+        expected = AppState._expected_length(ad, vd)
+        # Cannot exceed what the recording will be: a tuner that stopped early
+        # would otherwise read as still growing, for ever.
+        if expected:
+            elapsed = min(elapsed, expected)
+        return max(0, int(elapsed))
+
+    @staticmethod
+    def _parse_stamp(value) -> "datetime | None":
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return None
 
     @staticmethod
     def _channel_fields(ad: dict) -> dict | None:
