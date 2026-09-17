@@ -92,13 +92,24 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
             thing that plays it. Nothing moves, nothing is covered, and the
             square keeps its own shape throughout.
 
+            `bg-logo-plate`, which is dark in both themes, and not a surface
+            token that follows the theme. `ChannelLogo` draws its own dark
+            plate — it has to, because station marks are broadcast artwork we
+            do not control and are overwhelmingly white-on-transparent. A tile
+            that went pale in light mode therefore framed that dark plate in a
+            near-white one, and the pair read as a black box floating in a
+            white box: the nested rounded shape the rest of this design spent
+            its effort removing. One colour for both and they merge into the
+            single square this comment describes.
+
             Keyed to `group/tile`, not to the card: the channel's mark is how
             you find the channel, and swapping it for a triangle the moment a
             cursor crosses anywhere on the card takes that away while you are
             still reading. It changes when the pointer is actually on the half
             that plays. */}
-        <div className="relative w-16 h-12 flex items-center justify-center rounded-lg p-1.5
-                        bg-recess-soft border border-border-subtle
+        <div data-plate
+             className="relative w-16 h-12 flex items-center justify-center rounded-lg p-1.5
+                        bg-logo-plate border border-border-subtle
                         group-hover/tile:bg-accent-soft group-hover/tile:border-accent/30
                         group-active/tile:scale-95 transition-all duration-100">
           {/* The logo blurs back rather than leaving. A station's mark is

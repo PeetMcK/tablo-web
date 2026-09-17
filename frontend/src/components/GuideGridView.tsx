@@ -941,10 +941,15 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
 
                   `group/tile` rather than a bare group because the row and
                   the blank-listing cell both carry groups of their own; the
-                  plate must answer to the tile it lives in and nothing else. */}
+                  plate must answer to the tile it lives in and nothing else.
+
+                  `bg-logo-plate` rather than a surface token, for the reason
+                  `ChannelCard` sets out at length: the logo carries its own
+                  dark plate, so a tile that followed the theme put a black
+                  box inside a white one in light mode. */}
               <div data-plate
                    className="relative w-12 h-9 flex items-center justify-center rounded p-1
-                              bg-surface-sunken border border-border-subtle
+                              bg-logo-plate border border-border-subtle
                               group-hover/tile:bg-accent-soft group-hover/tile:border-accent/30
                               group-active/tile:scale-95 transition-all duration-100">
                 {/* Dimmed, not blurred. A station's mark is mostly colour and

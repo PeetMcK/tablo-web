@@ -1221,6 +1221,15 @@ describe("the guide's channel tile says it plays", () => {
     expect(p.className).toMatch(/group-active\/tile:scale-95/);
     expect(p.className).toMatch(/group-hover\/tile:bg-accent-soft/);
   });
+
+  it("keeps the plate dark in both themes", async () => {
+    // The same fix the Live card needs, for the same reason: `ChannelLogo`
+    // carries its own dark plate, so a tile that followed the theme wrapped it
+    // in a pale one and light mode showed a black box inside a white box.
+    const p = await plate();
+    expect(p.className).toMatch(/\bbg-logo-plate\b/);
+    expect(p.className).not.toMatch(/bg-surface-sunken/);
+  });
 });
 
 describe("the guide marks what is being recorded", () => {
