@@ -98,6 +98,46 @@ controls:
 It refreshes on the same poll as everything else while it is open, so the bar
 and the figure move rather than freezing at whatever they were when it opened.
 
+### Resume position belongs on the device
+
+The device already tracks it, in `user_info.position`, in seconds — and the
+official app writes it. Measured: of eight recordings, only the Saturday Night
+Live watched on a phone carried a position (33s); everything watched in our own
+player read zero, because we keep resume in `localStorage`.
+
+So the two clients each hold half the picture, and ours is lost with the
+browser cache. **Position should be written to the device**, which makes it the
+one place both agree and removes our need to store it at all.
+
+The write works, and its shape is not the read's:
+
+```
+PATCH /recordings/series/episodes/{id}  {"position": 618}            → takes
+PATCH /recordings/series/episodes/{id}  {"user_info": {"position": 618}}
+                                                → 200, silently ignored
+```
+
+The nested form is the shape the GET returns, answers `200`, and does nothing —
+the same trap `schedule.py` documents for `scheduled`. Verified by writing 618
+to a recording and reading it back, then restoring zero.
+
+`watched` sits beside it and is presumably writable the same way; worth
+settling when this is built, since "finished watching" and "stopped here" are
+different states and the Library shows neither today.
+
+### A past airing should say what happened, not what it will do
+
+`REC · RECORD: THIS EPISODE ONLY` renders on any airing where `scheduled` is
+true, which stays true after the airing has recorded. `recordScope` then
+describes the scope from the *series* rule, so a programme that finished hours
+ago is labelled with a future intent — and when the series rule is None, it
+reads "Record: This Episode Only" underneath a series control set to None,
+which is both stale and self-contradictory.
+
+A past airing should report its outcome: `Recorded`, with a way into the
+recording it produced, or nothing at all when none exists. The scope label
+belongs only on something not yet recorded.
+
 ### Scope held out, deliberately
 
 - **What the play buttons do on Live and Guide is unchanged.** Explicitly out,

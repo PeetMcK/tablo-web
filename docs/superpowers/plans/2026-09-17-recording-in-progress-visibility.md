@@ -269,6 +269,33 @@ it("shows no recording block for an airing that is merely scheduled", async () =
 
 ---
 
+### Task 6b: Resume position lives on the device
+
+**Files:**
+- Modify: `backend/app/routes/recordings.py` (accept a position write)
+- Modify: `frontend/src/components/LibraryView.tsx` (write on stop, read on open)
+- Test: `backend/tests/test_recordings.py`
+
+The device tracks `user_info.position` and the phone writes it; we keep ours in
+`localStorage`, so the two clients disagree and ours dies with the cache.
+
+- [ ] **Step 1: Write the failing test** — posting a position PATCHes the
+  device with the flat shape, not the nested one.
+
+The shape matters and is not the read's. Verified against the device:
+`{"position": 618}` takes, `{"user_info": {"position": 618}}` answers 200 and
+is silently ignored.
+
+- [ ] **Step 2: Run it, watch it fail**
+- [ ] **Step 3: `POST /api/recordings/{id}/position`**, PATCHing the device.
+- [ ] **Step 4: Write it where the local resume is already saved**, which is
+  on close and on the existing position heartbeat.
+- [ ] **Step 5: Prefer the device's position when opening**, falling back to
+  the local one so nothing regresses if the device is unreachable.
+- [ ] **Step 6: Run both suites. Commit**
+
+---
+
 ### Task 7: Live and Guide show what is recording
 
 **Files:**
