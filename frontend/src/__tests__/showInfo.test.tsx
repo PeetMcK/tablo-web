@@ -341,3 +341,4 @@ describe("starting a recording is confirmed", () => {
     await waitFor(() => expect(sched).toHaveBeenCalled());
   });
 });
+

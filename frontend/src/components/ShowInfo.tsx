@@ -263,7 +263,12 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
         )}
 
         {/* Rendered only when there is art. A placeholder box at hero size
-            reads as a failed image rather than as an absent one. */}
+            reads as a failed image rather than as an absent one.
+
+            16:9 is right, and measured rather than assumed: the device's
+            `cover_image` and `background_image` are both 1920x1080. Only
+            `thumbnail_image` is a portrait 240x360 poster, and nothing here
+            asks for that one. */}
         {detail?.image_url && (
           <img
             src={detail.image_url}
