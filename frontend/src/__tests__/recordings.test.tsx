@@ -43,6 +43,9 @@ const REC: Recording = {
   description: "AFC West matchup at Arrowhead Stadium.",
   start: "2026-09-15T00:15:00Z",
   duration: 12615,
+  recorded_seconds: null,
+  expected_seconds: null,
+  recording_started: null,
   thumbnail: "/api/recordings/80888/thumbnail",
   width: 1280,
   height: 720,
@@ -399,12 +402,148 @@ describe("the library's controls answer the pointer", () => {
     const { container } = await controls();
 
     const art = screen.getAllByRole("button", { name: /^Play NFL Football$/ })[0];
-    expect(art.className).toMatch(/group\/art/);
+    // `group/art` sits on the artwork wrapper rather than the button itself: a
+    // recording in progress puts two buttons inside that wrapper, and a button
+    // inside a button is invalid. `:active` still reaches the wrapper from the
+    // button, so the puck's press response is unchanged.
+    expect(art.closest(".group\\/art")).not.toBeNull();
+    expect(art.className).toMatch(/absolute inset-0/);
 
     const puck = container.querySelector<HTMLElement>(".accent-gradient")!;
     expect(puck.className).toMatch(/group-active\/art:scale-95/);
     // And it answers its own hover, the way the card's info mark does.
     expect(puck.className).toMatch(/hover:scale-110/);
     expect(puck.className).toMatch(/hover:brightness-110/);
+  });
+});
+
+describe("a recording still being written", () => {
+  const IN_PROGRESS: Recording = {
+    ...REC,
+    object_id: 86108,
+    title: "Today 3rd Hour",
+    state: "recording",
+    // The device reports the scheduled slot until it finishes; the server
+    // estimates what exists so far from the wall clock.
+    // Booked for an hour at 15:00Z; the tuner began 15 seconds early, which is
+    // what `recorded_offsets` reports and why the expected length is 3615.
+    duration: 3600,
+    recorded_seconds: 1920,
+    expected_seconds: 3615,
+    recording_started: "2026-09-17T14:59:45Z",
+    cache_state: "absent",
+    cache_progress: 0,
+  };
+
+  const progressList = () => ({
+    recordings: [IN_PROGRESS], returned: 1, total: 1, offline_only: 0,
+  });
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says how much exists, not just how long the slot is", async () => {
+    // "1h 0m" on something half an hour old promised a scrubber that was not
+    // there, which is what sent someone looking for a bug in the timeline.
+    vi.spyOn(api, "recordings").mockResolvedValue(progressList());
+    renderLibrary();
+
+    expect(await screen.findByText("32m of 1h 0m")).toBeInTheDocument();
+  });
+
+  it("marks itself as recording", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(progressList());
+    renderLibrary();
+
+    expect(await screen.findByText("Recording")).toBeInTheDocument();
+  });
+
+  it("offers both a beginning and a live edge to start from", async () => {
+    // They are genuinely different places for something still being written,
+    // and guessing either one is wrong half the time.
+    vi.spyOn(api, "recordings").mockResolvedValue(progressList());
+    renderLibrary();
+
+    expect(await screen.findByRole("button", { name: /from start/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^live$/i })).toBeInTheDocument();
+  });
+
+  it("offers no such choice once it has finished", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(list());
+    renderLibrary();
+
+    await screen.findByText("NFL Football");
+    expect(screen.queryByRole("button", { name: /from start/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^live$/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("Recording")).not.toBeInTheDocument();
+  });
+
+  it("cannot be kept offline while it is still growing", async () => {
+    // The copy would be of something that does not exist yet. The control is
+    // present but refuses, rather than vanishing — a button that disappears
+    // between visits reads as a missing feature.
+    vi.spyOn(api, "recordings").mockResolvedValue(progressList());
+    renderLibrary();
+
+    await screen.findByText("Today 3rd Hour");
+    expect(screen.getByRole("button", { name: /^Keep Today 3rd Hour offline$/ })).toBeDisabled();
+  });
+});
+
+describe("a recording whose tuner started late", () => {
+  // Good Morning America, 2026-09-17: booked 13:00Z for two hours, the tuner
+  // began at 14:03:06Z, and the finished recording was 3473s — 57.9 minutes.
+  const LATE: Recording = {
+    ...REC,
+    object_id: 86105,
+    title: "Good Morning America",
+    state: "recording",
+    duration: 7200,
+    expected_seconds: 3473,
+    recorded_seconds: 1794,
+    recording_started: "2026-09-17T14:03:06Z",
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+    vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [LATE], returned: 1, total: 1, offline_only: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("counts against what the recording will be, not the slot it was booked in", async () => {
+    // Against the two-hour slot this would read "30m of 2h 0m" and the bar
+    // could never fill, because the recording will only ever be 58 minutes.
+    renderLibrary();
+
+    expect(await screen.findByText("30m of 58m")).toBeInTheDocument();
+    expect(screen.queryByText(/of 2h 0m/)).not.toBeInTheDocument();
+  });
+
+  it("says on hover where the figure comes from", async () => {
+    // It is the one number on the card that is not simply reported: the device
+    // gives the start and the expected length, and elapsed is inferred.
+    renderLibrary();
+
+    const badge = await screen.findByText("30m of 58m");
+    expect(badge).toHaveAttribute("title", expect.stringMatching(/started recording at/i));
+    expect(badge).toHaveAttribute("title", expect.stringMatching(/derived/i));
   });
 });

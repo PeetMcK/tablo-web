@@ -30,10 +30,20 @@ export type PlaybackSource =
   | { kind: "live"; channel: Channel; program?: Program | null }
   | { kind: "recording"; recording: Recording };
 
+/**
+ * Ask to open at the newest thing that exists, rather than at a known second.
+ *
+ * For a recording still being written, "now" is not a number the caller has:
+ * how much exists is only known once the stream is open, and it has moved on
+ * by then anyway. Negative so it can never collide with a real position, and
+ * the same convention hls.js already uses for `startPosition`.
+ */
+export const LIVE_EDGE = -1;
+
 interface Props {
   source: PlaybackSource;
   onClose: () => void;
-  /** Resume point, in seconds. Used when restoring after a refresh. */
+  /** Resume point in seconds, or `LIVE_EDGE` for the newest thing recorded. */
   startAt?: number;
   /** False when restoring: start paused so audio is not blocked. */
   autoPlay?: boolean;
@@ -809,6 +819,30 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               });
               if (cancelled) { surface.destroy(); return; }
               hold(surface);
+
+              // Open somewhere other than the first frame.
+              //
+              // The MPEG-2 path ignored `openAt` entirely, so a recording
+              // resumed from a saved position or a reopened URL started over
+              // from the beginning — `startPosition` below reaches only the
+              // transcode. A seek costs one wasted segment fetch, since the
+              // session has already begun feeding from zero, which is cheap
+              // against silently discarding where the viewer was.
+              //
+              // LIVE_EDGE means the newest thing recorded, which is only known
+              // now: `raw.duration` is what existed when the session opened.
+              // Landing a margin short of it, for the same reason Go Live does
+              // — the frontier is still being written and seeking onto it waits.
+              const target = openAt === LIVE_EDGE
+                ? Math.max(0, raw.duration - LIVE_EDGE_MARGIN)
+                : openAt;
+              if (target > 0) {
+                log.player(`opening at ${fmt(target)}`, {
+                  reason: openAt === LIVE_EDGE ? "live edge" : "resume",
+                  recorded: fmt(raw.duration),
+                });
+                surface.seek(target);
+              }
               setLoading(false);
               return;
             } catch (e) {

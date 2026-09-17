@@ -2,8 +2,8 @@ import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from "rea
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
-import { VideoPlayer } from "./VideoPlayer";
-import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
+import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
+import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Radio, Trash2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -36,6 +36,74 @@ function isPlayable(rec: Recording): boolean {
 function isKeepable(rec: Recording): boolean {
   if (rec.offline_only) return true;
   return rec.state !== "recording" && !rec.error;
+}
+
+/** Still being written, and so still growing under anyone watching it. */
+function isRecording(rec: Recording): boolean {
+  return rec.state === "recording";
+}
+
+/**
+ * Which point a card asked the player to open at.
+ *
+ * "resume" is every ordinary case — the saved position, or the start if there
+ * is none. The other two exist only for a recording in progress, where "the
+ * start" and "what is happening now" are genuinely different places and the
+ * card offers both rather than guessing.
+ */
+type StartMode = "resume" | "beginning" | "live";
+
+/**
+ * How far into its slot a recording in progress has got, 0-1.
+ *
+ * Zero when the server has not estimated it, which reads as an empty bar
+ * rather than a full one — the safer way to be wrong about something that has
+ * only just started.
+ */
+function recordedFraction(rec: Recording): number {
+  const total = rec.expected_seconds || rec.duration;
+  if (!rec.recorded_seconds || !total) return 0;
+  return Math.min(1, rec.recorded_seconds / total);
+}
+
+/**
+ * Why the card can say how far along something still recording is.
+ *
+ * Worth spelling out on hover, because it is the one number here that is not
+ * simply reported: the device gives the start and the expected length, and the
+ * elapsed part assumes recording has run without interruption since.
+ */
+function progressTitle(rec: Recording): string {
+  const began = rec.recording_started
+    ? new Date(rec.recording_started).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : null;
+  const total = rec.expected_seconds || rec.duration;
+  return [
+    began ? `Started recording at ${began}.` : null,
+    total ? `Expected to run ${formatDuration(total)}.` : null,
+    "Elapsed time is derived from that start, not measured from the file.",
+  ].filter(Boolean).join(" ");
+}
+
+/**
+ * The saved position for a recording, or 0.
+ *
+ * Read at render because the in-progress card labels its own button with it —
+ * "Resume 12:20" rather than "From start" — and that label has to be right
+ * before anything is playing. The player's own resume point is still read once
+ * per recording, where feeding it back on every tick used to reload the stream.
+ */
+function resumeFor(rec: Recording): number {
+  return loadResume(resumeKey("recording", rec.object_id));
+}
+
+/** A position as `12:20`, or `1:02:20` past the hour. */
+function formatClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 }
 
 function formatBytes(n: number): string {
@@ -79,6 +147,8 @@ function dayTint(iso: string, alpha?: number): string {
 
 export function LibraryView() {
   const [playing, setPlaying] = useState<Recording | null>(null);
+  /** Which entry point the card asked for; only in-progress recordings ask. */
+  const [startMode, setStartMode] = useState<StartMode>("resume");
   const [initialRoute] = useState(parseRoute);
   const [restoreDone, setRestoreDone] = useState(false);
   const positionRef = useRef(0);
@@ -122,10 +192,17 @@ export function LibraryView() {
     refetchOnWindowFocus: false,
     // Poll quickly while a copy is being made so progress actually moves;
     // back off once nothing is in flight.
+    //
+    // Something still recording is the other reason to keep looking: its
+    // progress comes from the server, so the card is only ever as current as
+    // the last poll. Fifteen seconds rather than four - a bar creeping across
+    // an hour does not need the cadence a download does, and this is the whole
+    // recordings list.
     refetchInterval: (q) => {
       const rows = q.state.data?.recordings ?? [];
-      const busy = rows.some(r => r.pinned && !r.paused && r.cache_state !== "complete");
-      return busy ? 4_000 : 30_000;
+      const copying = rows.some(r => r.pinned && !r.paused && r.cache_state !== "complete");
+      if (copying) return 4_000;
+      return rows.some(isRecording) ? 15_000 : 30_000;
     },
   });
 
@@ -174,6 +251,18 @@ export function LibraryView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [nowPlaying?.object_id],
   );
+
+  /**
+   * Where to open, once the card has been asked.
+   *
+   * Only a recording in progress has a choice to make, and only then does the
+   * card ask: everything else resumes where it was left, which is what the
+   * saved position is for. `LIVE_EDGE` defers the decision to the player, which
+   * is the only thing that knows how much exists by the time the stream opens.
+   */
+  const openAt = startMode === "live" ? LIVE_EDGE
+    : startMode === "beginning" ? 0
+    : resumeAt;
 
   useEffect(() => {
     playingRef.current = nowPlaying;
@@ -257,7 +346,7 @@ export function LibraryView() {
           // Resume where this recording was left, whether opened fresh or
           // restored by a refresh. Only a refresh starts paused — a reload
           // carries no user activation, so autoplay would be forced to mute.
-          startAt={resumeAt}
+          startAt={openAt}
           autoPlay={Boolean(playing)}
           onPosition={handlePosition}
           onClose={closePlayer}
@@ -322,12 +411,12 @@ export function LibraryView() {
                 key={rec.object_id}
                 className="group flex flex-col bg-surface-raised border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition shadow-lg"
               >
-                <button
-                  onClick={() => playable && setPlaying(rec)}
-                  disabled={!playable}
-                  className="group/art aspect-video bg-surface-sunken relative block w-full disabled:cursor-not-allowed"
-                  aria-label={`Play ${rec.title ?? "recording"}`}
-                >
+                {/* A div, not a button: a recording in progress puts two
+                    buttons inside this, and a button inside a button is
+                    invalid and unreachable by keyboard. The ordinary case
+                    keeps its full-bleed button below, so nothing changes for
+                    it — the whole picture is still the target. */}
+                <div className="group/art aspect-video bg-surface-sunken relative block w-full">
                   {rec.thumbnail ? (
                     <img src={rec.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
                   ) : (
@@ -335,20 +424,74 @@ export function LibraryView() {
                       Tablo
                     </div>
                   )}
-                  <div className="absolute inset-0 flex items-center justify-center bg-scrim-soft opacity-0 group-hover:opacity-100 transition">
-                    {/* The mark answers its own hover — it grows, lifts and
-                        brightens — while the press belongs to the whole
-                        artwork: clicking the picture and clicking the puck
-                        are the same act, so they look the same. Same split as
-                        the Live TV card's info mark, and `group/art` so the
-                        card's own group still owns the reveal. */}
-                    <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
-                                    shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
-                                    group-active/art:scale-95 transition-all duration-150">
-                      <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
+                  {isRecording(rec) ? (
+                    // Two places to start, because for something still being
+                    // written they are genuinely different: the beginning of
+                    // the show, or whatever is going out now. Guessing either
+                    // one is wrong half the time, so the card asks.
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2
+                                    bg-scrim-soft opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+                      <button
+                        onClick={() => { setStartMode(resumeFor(rec) > 0 ? "resume" : "beginning"); setPlaying(rec); }}
+                        className="accent-gradient flex items-center gap-2 pl-3 pr-4 h-10 rounded-full
+                                   text-brand-fg text-xs font-bold shadow-lg
+                                   hover:scale-105 hover:shadow-2xl hover:brightness-110
+                                   active:scale-95 transition-all duration-150"
+                      >
+                        <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                        {resumeFor(rec) > 0
+                          ? `Resume ${formatClock(resumeFor(rec))}`
+                          : "From start"}
+                      </button>
+                      <button
+                        onClick={() => { setStartMode("live"); setPlaying(rec); }}
+                        className="flex items-center gap-2 pl-3 pr-4 h-10 rounded-full glass
+                                   text-media-fg text-xs font-bold shadow-lg
+                                   hover:scale-105 hover:bg-fill active:scale-95 transition-all duration-150"
+                        title="Jump to what is being recorded right now"
+                      >
+                        <Radio className="w-4 h-4" aria-hidden />
+                        Live
+                      </button>
                     </div>
-                  </div>
-                  {rec.pinned ? (
+                  ) : (
+                    <button
+                      onClick={() => { setStartMode("resume"); setPlaying(rec); }}
+                      disabled={!playable}
+                      className="absolute inset-0 flex items-center justify-center bg-scrim-soft
+                                 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition
+                                 disabled:cursor-not-allowed w-full"
+                      aria-label={`Play ${rec.title ?? "recording"}`}
+                    >
+                      {/* The mark answers its own hover — it grows, lifts and
+                          brightens — while the press belongs to the whole
+                          artwork: clicking the picture and clicking the puck
+                          are the same act, so they look the same. Same split as
+                          the Live TV card's info mark, and `group/art` so the
+                          card's own group still owns the reveal. */}
+                      <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
+                                      shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
+                                      group-active/art:scale-95 transition-all duration-150">
+                        <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
+                      </div>
+                    </button>
+                  )}
+                  {/* Recording wins the corner outright. Nothing else a card can
+                      say about itself matters as much as the fact that it is
+                      still growing — and the cache badges cannot apply anyway,
+                      since keeping a copy needs a finished recording. */}
+                  {isRecording(rec) ? (
+                    <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded bg-danger-solid text-[10px] font-bold text-danger-fg uppercase tracking-wider">
+                      <span className="relative flex w-2 h-2" aria-hidden>
+                        {/* The pulse is the only motion on the card, and it
+                            stops for reduced motion — where the dot alone
+                            still reads as recording. */}
+                        <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger-fg opacity-60" />
+                        <span className="relative inline-flex w-2 h-2 rounded-full bg-danger-fg" />
+                      </span>
+                      Recording
+                    </div>
+                  ) : rec.pinned ? (
                     <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-success-solid text-[10px] font-bold text-success-fg uppercase tracking-wider">
                       <CheckCircle2 className="w-3 h-3" aria-hidden />
                       {rec.cache_state === "complete" ? "Cached" : `${Math.round(rec.cache_progress * 100)}%`}
@@ -376,15 +519,34 @@ export function LibraryView() {
                       Only here
                     </div>
                   )}
-                  <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg tabular-nums">
-                    {formatDuration(rec.duration)}
+                  {/* While recording, the slot is not what exists — it is what
+                      is promised. Showing `1h 0m` on something eight minutes old
+                      invited exactly the wrong expectation of the scrubber. */}
+                  <div
+                    className="absolute bottom-3 right-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg tabular-nums"
+                    title={isRecording(rec) ? progressTitle(rec) : undefined}
+                  >
+                    {isRecording(rec) && rec.recorded_seconds !== null
+                      ? `${formatDuration(rec.recorded_seconds)} of `
+                        + `${formatDuration(rec.expected_seconds || rec.duration)}`
+                      : formatDuration(rec.duration)}
                   </div>
 
                   {/* Fill progress along the bottom edge — the corner badge
                       alone was too easy to miss. Shown for anything part-cached,
                       not only for kept copies, so the bar and the badge above
                       never disagree about whether there is work on disk. */}
-                  {rec.cache_state !== "complete" && rec.cache_progress > 0 && (
+                  {isRecording(rec) ? (
+                    // How far through its slot, in the same strip the cache bar
+                    // uses. They never appear together: a recording in progress
+                    // cannot be kept, so there is no copy to report on.
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60" title={progressTitle(rec)}>
+                      <div
+                        className="h-full bg-danger transition-[width] duration-1000 ease-linear"
+                        style={{ width: `${Math.max(1, recordedFraction(rec) * 100)}%` }}
+                      />
+                    </div>
+                  ) : rec.cache_state !== "complete" && rec.cache_progress > 0 && (
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60">
                       <div
                         className={`h-full transition-[width] duration-1000 ease-linear
@@ -394,7 +556,7 @@ export function LibraryView() {
                       />
                     </div>
                   )}
-                </button>
+                </div>
 
                 <div className="p-5 flex flex-col gap-1">
                   <h3 className="font-bold text-fg truncate leading-tight">{rec.title || "Untitled Recording"}</h3>

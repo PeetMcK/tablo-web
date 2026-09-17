@@ -376,7 +376,9 @@ describe("ChannelGrid search wiring", () => {
 const LIBRARY_RECORDING: Recording = {
   object_id: 80888, identifier: 80888, path: "/recordings/sports/events/80888",
   title: "NFL Football", subtitle: null, description: null,
-  start: "2026-09-15T00:15:00Z", duration: 12615, thumbnail: null,
+  start: "2026-09-15T00:15:00Z", duration: 12615, recorded_seconds: null,
+  expected_seconds: null,
+  recording_started: null, thumbnail: null,
   width: null, height: null, state: "finished", error: null,
   watched: false, position: 0, cache_state: "absent", cache_progress: 0,
   pinned: false, offline_only: false, paused: false, cached_seconds: 0,

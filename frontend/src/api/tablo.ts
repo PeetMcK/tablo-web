@@ -202,8 +202,27 @@ export interface Recording {
   subtitle: string | null;
   description: string | null;
   start: string;
-  /** Seconds actually recorded, including padding — not the scheduled slot. */
+  /** Seconds actually recorded, including padding — not the scheduled slot.
+   *  While `state` is "recording" the device has not settled this yet and it
+   *  reads as the scheduled slot; `recorded_seconds` is what exists so far. */
   duration: number;
+  /**
+   * Seconds recorded so far, or null once finished — when `duration` is it.
+   *
+   * Counted from when the tuner actually started, which the device reports; the
+   * only assumption left is that recording has run continuously since.
+   */
+  recorded_seconds: number | null;
+  /**
+   * How long this recording will be when it finishes, or null once it has.
+   *
+   * Not the scheduled slot: a show whose tuner started 63 minutes late will be
+   * an hour shorter than booked, and a progress bar drawn against the slot
+   * could never fill.
+   */
+  expected_seconds: number | null;
+  /** When recording actually began, ISO, or null once finished. */
+  recording_started: string | null;
   thumbnail: string | null;
   width: number | null;
   height: number | null;
