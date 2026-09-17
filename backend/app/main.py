@@ -68,10 +68,20 @@ async def lifespan(app: FastAPI):
     # for is the one where no request is ever coming again to notice them.
     reap_task = asyncio.create_task(stream.reap_forever())
 
+    # The device expires a watch session in 165 seconds unless it is refreshed,
+    # and nothing here ever refreshed one - which is what killed a live session
+    # at about three and a half minutes with a flood of 404s.
+    keepalive_task = asyncio.create_task(stream.keepalive_forever())
+
     yield
 
+    keepalive_task.cancel()
     reap_task.cancel()
     guide_task.cancel()
+    # Before the HTTP client closes: each live stream holds a session on the
+    # device whose token exists only in this process, so one not handed back
+    # here is one nothing can ever release.
+    await stream.release_all_sessions()
     # Before anything that can block: a live transcode holds a tuner on the
     # device, and one left running after this process goes keeps holding it.
     stream.shutdown_transcoders()
