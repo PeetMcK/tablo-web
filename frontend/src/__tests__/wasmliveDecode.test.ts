@@ -99,6 +99,26 @@ describe("libavClient", () => {
     expect(audio.some((c) => c.samples.some((s) => s !== 0))).toBe(true);
   });
 
+  it("times audio against the stream rather than counting on from the first frame",
+    { timeout: 120_000 }, async () => {
+    // The clock the whole pipeline runs on. It used to read the decoder's own
+    // timestamp exactly once and synthesise every one after it from a sample
+    // count, so a single AC-3 frame lost to a CRC error biased every later
+    // timestamp by 32ms for the life of the session.
+    //
+    // On a clean fixture the two agree, which is what this pins: the
+    // correction must be inert when there is nothing to correct, or it would
+    // be trading a slow drift for a jittery clock.
+    const { audio, video } = await decodeFixture();
+
+    const gaps = audio.slice(1).map((c, i) => c.ptsSeconds - audio[i].ptsSeconds);
+    expect(gaps.every((g) => Math.abs(g - 1536 / 48000) < 0.001)).toBe(true);
+
+    // And on the same timeline as the picture, which is what makes lip sync a
+    // property of the design rather than something to keep correcting.
+    expect(audio[0].ptsSeconds).toBeCloseTo(video[0].ptsSeconds, 0);
+  });
+
   it("can be reset mid-stream and decode again", { timeout: 120_000 }, async () => {
     // What a seek does: part of a stream, then start over somewhere else.
     let video: DecodedVideoFrame[] = [];

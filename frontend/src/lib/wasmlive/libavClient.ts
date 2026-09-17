@@ -20,6 +20,7 @@
  * to start video mid-GOP.
  */
 
+import { createTimeline, noteDecoded, noteEmitted, nextOutputPts } from "./audioTimeline";
 import libavLoader from "./vendor/libav-6.10.9.0-tablo-mpeg2.mjs";
 import glueUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs?url";
 import wasmUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm?url";
@@ -155,6 +156,22 @@ function absolute(url: string): string {
   return new URL(url, base).href;
 }
 
+/**
+ * Sample frames in a decoded audio frame, however libav.js chose to hand it over.
+ *
+ * `nb_samples` is the answer when it is there. When it is not, the shape of
+ * `data` says: planar formats — which AC-3 decodes to — give one array per
+ * channel, so the first plane's length is the frame count; a packed format
+ * gives one interleaved array, which has to be divided by the channel count.
+ */
+function sampleFramesOf(frame: LibavFrame): number {
+  if (typeof frame.nb_samples === "number") return frame.nb_samples;
+  const data = frame.data;
+  if (Array.isArray(data)) return data[0]?.length ?? 0;
+  const channels = frame.channels ?? 2;
+  return data.length / Math.max(1, channels);
+}
+
 function ptsSeconds(frame: LibavFrame): number {
   const base = frame.time_base_num / frame.time_base_den;
   const raw = (frame.ptshi ?? 0) * 4294967296 + (frame.pts ?? 0);
@@ -233,9 +250,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   let asrc = 0, asink = 0;
   let frameDuration = DEFAULT_FRAME_DURATION;
   let lastVideoPts: number | null = null;
-  /** First decoded audio timestamp, and samples emitted since. */
-  let audioAnchorPts: number | null = null;
-  let audioFramesEmitted = 0;
+  /** The output timeline, corrected from the decoder's own timestamps. */
+  let audioTimeline = createTimeline();
 
   let bytesFed = 0;
   let bytesDelivered = 0;
@@ -423,14 +439,23 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
         const decoded = await libav.ff_decode_multi(actx, apkt, aframe, audioPackets, { fin });
         if (decoded.length) {
           if (!asink) await openAudioGraph(decoded[0]);
-          // Anchored on the decoder's own timestamps, before the graph.
+          // Accounted before the graph, where the timestamps mean something.
           // buffersink re-bases what it emits onto the filter's timeline, and
           // that timeline is not the stream's: on a live feed it reported
           // audio at 30.6s while video from the same instant read 69.6s, which
           // is a 39-second lip-sync error dressed up as a starving decoder.
-          if (audioAnchorPts === null) {
-            audioAnchorPts = ptsSeconds(decoded[0]);
-            audioFramesEmitted = 0;
+          //
+          // So the output timeline counts samples and takes its corrections
+          // from here: a frame that lands where it was not expected is a drop
+          // or a discontinuity, and either way the media really is somewhere
+          // other than the sample count believes.
+          for (const frame of decoded) {
+            noteDecoded(
+              audioTimeline,
+              ptsSeconds(frame),
+              sampleFramesOf(frame),
+              frame.sample_rate ?? 48000,
+            );
           }
 
           const filtered = await libav.ff_filter_multi(asrc, asink, aframe, decoded, { fin });
@@ -440,9 +465,9 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
             out.audio.push({
               samples: frame.data,
               sampleRate: rate,
-              ptsSeconds: audioAnchorPts + audioFramesEmitted / rate,
+              ptsSeconds: nextOutputPts(audioTimeline, rate),
             });
-            audioFramesEmitted += frames;
+            noteEmitted(audioTimeline, frames);
           }
         }
       }
@@ -498,8 +523,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     vsrc = vsink = 0;
     asrc = asink = 0;
     lastVideoPts = null;
-    audioAnchorPts = null;
-    audioFramesEmitted = 0;
+    audioTimeline = createTimeline();
     opened = false;
     bytesAtOpen = null;
     msToOpen = null;
