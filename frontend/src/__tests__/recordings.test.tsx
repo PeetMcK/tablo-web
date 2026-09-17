@@ -62,7 +62,7 @@ const REC: Recording = {
   cached_seconds: 0,
   rate: { mbps: 0, realtime: 0 },
   // Matches the real recording: ABC broadcasts 720p60 progressive.
-  channel: { call_sign: "KTMFABC", network: "ABC", number: "23.1" },
+  channel: { identifier: "S34654_008_01", call_sign: "KTMFABC", network: "ABC", number: "23.1" },
   scan: "720p",
   interlaced: false,
 };
@@ -174,7 +174,7 @@ describe("LibraryView", () => {
     // CBS and NBC broadcast 1080i; it must be deinterlaced on the way to H.264,
     // which halves throughput and roughly doubles the cached size.
     vi.spyOn(api, "recordings").mockResolvedValue(list({
-      recordings: [{ ...REC, channel: { call_sign: "KPAX", network: "CBS", number: "8.1" },
+      recordings: [{ ...REC, channel: { identifier: "S34654_008_01", call_sign: "KPAX", network: "CBS", number: "8.1" },
                      scan: "1080i", interlaced: true }],
     }));
     renderLibrary();
@@ -731,5 +731,65 @@ describe("a finished recording's coverage", () => {
     // Full coverage, not the 40% a cache bar would draw.
     expect(parseFloat(fill(container)!.style.width)).toBeCloseTo(100, 0);
     expect(strip(container)).toHaveAttribute("title", expect.stringMatching(/scheduled/i));
+  });
+});
+
+describe("reaching a recording's information", () => {
+  const withChannel = (over: Partial<Recording> = {}): Recording => ({
+    ...REC,
+    channel: { identifier: "S34654_008_01", call_sign: "KPAX",
+               network: "CBS", number: "8.1" },
+    ...over,
+  });
+
+  function renderWith(rec: Recording) {
+    vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [rec], returned: 1, total: 1, offline_only: 0,
+    });
+    return renderLibrary();
+  }
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("opens the show's information from the card", async () => {
+    // The sheet already holds the artwork, the synopsis and the record
+    // controls; the Library was the one view with no way into it.
+    const airing = vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: null, start: REC.start, duration: 10800,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: true, scheduled: false, past: true,
+      schedule_state: "none", skip_reason: null, series: null,
+      channel: { identifier: "S34654_008_01", call_sign: "KPAX", major: 8,
+                 minor: 1, network: "CBS", logo_url: null, kind: "ota" },
+    });
+
+    renderWith(withChannel());
+    fireEvent.click(await screen.findByRole("button", { name: /information about/i }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    // Keyed by the identifier and the scheduled start, which is how the guide
+    // addresses the very same airing.
+    expect(airing).toHaveBeenCalledWith("S34654_008_01", REC.start);
+  });
+
+  it("offers nothing to open when the channel is unknown", async () => {
+    // An offline copy of something the device has since deleted has no airing
+    // left to describe, and a button that opens an error is worse than none.
+    renderWith(withChannel({ channel: { identifier: null, call_sign: "KPAX",
+                                        network: "CBS", number: "8.1" } }));
+    await screen.findByText("NFL Football");
+
+    expect(screen.queryByRole("button", { name: /information about/i })).toBeNull();
   });
 });

@@ -267,6 +267,13 @@ export interface Recording {
 }
 
 export interface RecordingChannel {
+  /**
+   * The key the guide and the info sheet are addressed by.
+   *
+   * Null for an offline copy of something the device has since deleted: the
+   * airing that described it is gone too, so there is nothing to look up.
+   */
+  identifier: string | null;
   call_sign: string;
   network: string | null;
   /** Virtual channel, e.g. "8.1". */

@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Radio, Trash2 } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Info, Loader2, Pause, Radio, Trash2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { ShowInfo } from "./ShowInfo";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
 import { isIncomplete, recordedSpan } from "../lib/recording";
 import type { Coverage } from "../lib/recording";
@@ -156,6 +157,8 @@ export function LibraryView() {
   const [playing, setPlaying] = useState<Recording | null>(null);
   /** Which entry point the card asked for; only in-progress recordings ask. */
   const [startMode, setStartMode] = useState<StartMode>("resume");
+  /** The recording whose information sheet is open, if any. */
+  const [infoFor, setInfoFor] = useState<Recording | null>(null);
   const [initialRoute] = useState(parseRoute);
   const [restoreDone, setRestoreDone] = useState(false);
   const positionRef = useRef(0);
@@ -343,6 +346,20 @@ export function LibraryView() {
   return (
     <>
       <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} />
+
+      {infoFor?.channel?.identifier && (
+        <ShowInfo
+          channel={infoFor.channel.identifier}
+          start={infoFor.start}
+          channelLabel={infoFor.channel.call_sign ?? undefined}
+          onClose={() => setInfoFor(null)}
+          // "Watch Live" only renders while the airing is actually on, which
+          // for the Library means a recording still being written. Its live
+          // edge is the same pictures, and we already hold them — so this
+          // plays the recording there rather than tuning a second stream.
+          onTune={() => { setStartMode("live"); setPlaying(infoFor); setInfoFor(null); }}
+        />
+      )}
 
       {nowPlaying && (
         <VideoPlayer
@@ -596,7 +613,28 @@ export function LibraryView() {
                 </div>
 
                 <div className="p-5 flex flex-col gap-1">
-                  <h3 className="font-bold text-fg truncate leading-tight">{rec.title || "Untitled Recording"}</h3>
+                  <div className="flex items-start gap-2">
+                    <h3 className="font-bold text-fg truncate leading-tight flex-1">
+                      {rec.title || "Untitled Recording"}
+                    </h3>
+                    {/* The way into everything the card has no room for —
+                        artwork, synopsis, rating, and the record controls. The
+                        sheet is keyed by the airing, so a recording with no
+                        channel identifier has nothing to open: that is an
+                        offline copy of something the device has since deleted,
+                        and its airing is gone with it. */}
+                    {rec.channel?.identifier && (
+                      <button
+                        onClick={() => setInfoFor(rec)}
+                        className="shrink-0 -mt-0.5 p-1 rounded-lg text-fg-muted
+                                   hover:text-fg hover:bg-fill transition"
+                        title="Show information"
+                        aria-label={`Information about ${rec.title ?? "this recording"}`}
+                      >
+                        <Info className="w-4 h-4" aria-hidden />
+                      </button>
+                    )}
+                  </div>
                   {rec.subtitle && (
                     <p className="text-xs font-medium text-accent truncate">{rec.subtitle}</p>
                   )}
