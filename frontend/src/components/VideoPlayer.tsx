@@ -738,45 +738,89 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     };
 
     /**
-     * Hand the channel back to FFmpeg.
+     * Tell the server a WASM session failed, as well as the console.
      *
-     * One way, for the life of the session: a path that flapped between
-     * decoders would be worse than either. The viewer sees a rebuffer.
+     * The reason exists only in the browser, and whoever needs it is usually
+     * not at that browser — which has meant reading consoles back a line at a
+     * time for every diagnosis of this path. Fire and forget: a failure to
+     * report a failure must not become one.
      */
-    const fallBack = async (channel: Channel, reason: string, staleSession?: string) => {
+    const reportWasmFailure = (reason: string, outcome: "rebuilding" | "gave up") => {
       const diagnostics = surfaceRef.current?.diagnostics?.();
-      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`, {
-        staleSession, diagnostics,
-      });
-      // And to the server's log, where the ring's own account of the same
-      // moment already is. The reason exists only in the browser, and whoever
-      // needs it is usually not at that browser — which has meant reading
-      // consoles back a line at a time for every diagnosis of this path.
-      // Fire and forget: a failure to report a failure must not become one.
       void fetch("/api/debug/wasm-fallback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           reason,
+          outcome,
           detail: diagnostics?.failureDetail ?? null,
           diagnostics,
         }),
       }).catch(() => {});
-      setUsingWasm(false);
-      // The ring session is finished with, and nothing else knows its id. Left
-      // open it holds a tuner and keeps copying segments to disk for the life
-      // of the process — an hour of 1080i per abandoned channel.
+    };
+
+    /**
+     * One rebuild per player session, for either kind of source.
+     *
+     * The transcode used to catch these. That swapped the picture the device
+     * actually broadcast for a re-encode of it and said nothing, and it hid
+     * real faults besides: a path that starves is never seen starving if the
+     * player quietly stops using it. A rebuild costs a rebuffer; a second
+     * failure is reported rather than papered over.
+     */
+    let rebuilt = false;
+
+    /** Open the ring and decode it here. Also the rebuild path. */
+    const openLiveWasm = async (channel: Channel, staleSession?: string) => {
+      // A ring session nothing is reading is still holding a tuner and still
+      // copying segments to disk for the life of the process — an hour of
+      // 1080i per abandoned channel — and its id is about to be forgotten.
       if (staleSession) {
         api.stopStream(staleSession).catch((e) => {
           log.warn(`could not release the ring session ${staleSession}`, String(e));
         });
       }
+      const r = await api.startStream(channel.identifier, false, "ring");
+      // Closed, or reopened, while the request was in flight. The session
+      // exists on the server and holds a tuner, and nothing else will ever
+      // learn its id — so it has to be released here.
+      if (cancelled) {
+        api.stopStream(r.session_id).catch(() => {});
+        return;
+      }
+      log.player(`open live ${channel.display_name}`, {
+        kind: channel.kind, mode: "ring", wasm: true,
+        session: r.session_id, url: r.stream_url,
+      });
+      setSessionId(r.session_id);
+      setLiveTranscoded(false);
+      setUsingWasm(true);
+      const surface = await openWasmSurface({
+        playlistUrl: r.stream_url,
+        originMs: Date.parse(r.started_at ?? new Date().toISOString()),
+        canvas: canvasRef.current,
+        onFailure: (reason) => void onLiveFailure(channel, reason, r.session_id),
+      });
+      if (cancelled) { surface.destroy(); return; }
+      hold(surface);
+    };
+
+    const onLiveFailure = async (channel: Channel, reason: string, staleSession?: string) => {
+      if (rebuilt) {
+        reportWasmFailure(reason, "gave up");
+        log.warn(`wasm live gave up (${reason})`, { staleSession });
+        if (staleSession) api.stopStream(staleSession).catch(() => {});
+        if (!cancelled) setApiError(`Live decoding stopped: ${reason}`);
+        return;
+      }
+      rebuilt = true;
+      reportWasmFailure(reason, "rebuilding");
+      // At the live edge rather than where it died: reopening onto the packet
+      // that killed it is the one place certain to fail the same way. The
+      // rewind position is the price, and it is cheaper than the programme.
+      log.warn(`wasm live failed (${reason}) — rebuilding at the live edge`, { staleSession });
       try {
-        const r = await api.startStream(channel.identifier, true, "transcode");
-        if (cancelled) return;
-        setSessionId(r.session_id);
-        setLiveTranscoded(true);
-        openSurface(r.stream_url);
+        await openLiveWasm(channel, staleSession);
       } catch (e) {
         if (!cancelled) setApiError(e instanceof Error ? e.message : String(e));
       }
@@ -787,49 +831,33 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         if (current.kind === "live") {
           // OTA broadcasts are MPEG-2, which no browser's media stack decodes.
           // Either this browser can decode it in WASM onto a canvas, or the
-          // backend transcodes it to H.264 the way it always has.
+          // backend transcodes it to H.264 the way it always has — and the
+          // transcode is now only for browsers that cannot do the first,
+          // never a rescue for one that tried and failed.
           //
           // Anything not known to be OTT counts as a broadcast: a guide row
           // that arrives without a kind used to fall through to the raw stream,
           // which parses no fragment and buffers forever.
           const eligibility = wasmLiveEligible(window, localStorage, current.channel.kind);
           const { mode, wasm } = chooseLivePath(eligibility, current.channel.kind);
-          const r = await api.startStream(
-            current.channel.identifier, mode === "transcode", mode,
-          );
-          // Closed, or reopened, while the request was in flight. The session
-          // exists on the server and holds a tuner, and nothing else will ever
-          // learn its id — so it has to be released here.
-          if (cancelled) {
-            api.stopStream(r.session_id).catch(() => {});
-            return;
-          }
-          log.player(`open live ${current.channel.display_name}`, {
-            kind: current.channel.kind, mode, wasm,
-            why: eligibility.reason || "eligible",
-            session: r.session_id, url: r.stream_url,
-          });
-          setSessionId(r.session_id);
-          setLiveTranscoded(mode === "transcode");
 
           if (wasm) {
-            setUsingWasm(true);
-            try {
-              const surface = await openWasmSurface({
-                playlistUrl: r.stream_url,
-                originMs: Date.parse(r.started_at ?? new Date().toISOString()),
-                canvas: canvasRef.current,
-                onFailure: (reason) => void fallBack(current.channel, reason, r.session_id),
-              });
-              if (cancelled) { surface.destroy(); return; }
-              hold(surface);
-            } catch (e) {
-              if (cancelled) return;
-              await fallBack(
-                current.channel, e instanceof Error ? e.message : String(e), r.session_id,
-              );
-            }
+            await openLiveWasm(current.channel);
           } else {
+            const r = await api.startStream(
+              current.channel.identifier, mode === "transcode", mode,
+            );
+            if (cancelled) {
+              api.stopStream(r.session_id).catch(() => {});
+              return;
+            }
+            log.player(`open live ${current.channel.display_name}`, {
+              kind: current.channel.kind, mode, wasm,
+              why: eligibility.reason || "eligible",
+              session: r.session_id, url: r.stream_url,
+            });
+            setSessionId(r.session_id);
+            setLiveTranscoded(mode === "transcode");
             setUsingWasm(false);
             openSurface(r.stream_url);
           }
@@ -880,28 +908,59 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 vod: { durationSeconds: raw.duration, growing: raw.growing },
                 canvas: canvasRef.current,
                 onFailure: (reason) => {
-                  // Where the viewer actually was, read before anything is torn
-                  // down. `openAt` is captured at mount, so handing the
-                  // transcode that would restart a recording from wherever this
-                  // session *opened* - which is zero unless it was resumed, and
-                  // is how a failure twenty-one minutes in came back as the
-                  // first frame. The hand-off is meant to cost a rebuffer, not
-                  // the viewer's place.
+                  // Where the viewer actually was, read before anything is
+                  // torn down. `openAt` is captured at mount, so rebuilding
+                  // from that would restart a recording from wherever this
+                  // session *opened* — which is zero unless it was resumed,
+                  // and is how a failure twenty-one minutes in came back as
+                  // the first frame. A rebuild costs a rebuffer, not the
+                  // viewer's place.
+                  //
+                  // At the playhead rather than the live edge, unlike live:
+                  // VOD can seek anywhere, and the packet that failed is not
+                  // necessarily the one the viewer is sitting on.
                   const at = surfaceRef.current?.currentTime ?? 0;
-                  log.warn(`recording wasm gave up (${reason}) — using the transcode`, {
+                  if (rebuilt) {
+                    reportWasmFailure(reason, "gave up");
+                    log.warn(`recording wasm gave up (${reason})`, { at: fmt(at) });
+                    api.stopStream(raw.session_id).catch(() => {});
+                    if (!cancelled) setApiError(`Decoding stopped: ${reason}`);
+                    return;
+                  }
+                  rebuilt = true;
+                  reportWasmFailure(reason, "rebuilding");
+                  log.warn(`recording wasm failed (${reason}) — rebuilding`, {
                     resumingAt: fmt(at),
                   });
                   api.stopStream(raw.session_id).catch(() => {});
-                  setUsingWasm(false);
-                  void api.watchRecording(current.recording.object_id)
-                    .then((t) => {
-                      if (cancelled) return;
-                      openSurface(t.stream_url);
-                      // After the attach: the element has no duration yet, so
-                      // a seek before this is dropped on the floor.
-                      if (at > 0) surfaceRef.current?.seek(at);
+                  void api.watchRecordingVod(current.recording.object_id)
+                    .then(async (again) => {
+                      if (cancelled) {
+                        api.stopStream(again.session_id).catch(() => {});
+                        return;
+                      }
+                      setSessionId(again.session_id);
+                      const next = await openWasmSurface({
+                        playlistUrl: again.stream_url,
+                        originMs: Date.now(),
+                        vod: { durationSeconds: again.duration, growing: again.growing },
+                        canvas: canvasRef.current,
+                        onFailure: (why) => {
+                          reportWasmFailure(why, "gave up");
+                          log.warn(`recording wasm gave up (${why})`);
+                          api.stopStream(again.session_id).catch(() => {});
+                          if (!cancelled) setApiError(`Decoding stopped: ${why}`);
+                        },
+                      });
+                      if (cancelled) { next.destroy(); return; }
+                      hold(next);
+                      if (at > 0) next.seek(at);
                     })
-                    .catch(() => {});
+                    .catch((e) => {
+                      if (!cancelled) {
+                        setApiError(e instanceof Error ? e.message : String(e));
+                      }
+                    });
                 },
               });
               if (cancelled) { surface.destroy(); return; }
@@ -933,11 +992,23 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               setLoading(false);
               return;
             } catch (e) {
-              // Anything at all here means the transcode below runs instead.
-              log.warn(
-                `recording mpeg-2 unavailable (${e instanceof Error ? e.message : String(e)})`
-                + " — using the transcode",
-              );
+              const why = e instanceof Error ? e.message : String(e);
+              // The transcode is not a rescue any more. It runs here only
+              // when what it would play is a copy worth playing: one that is
+              // complete, or the only one left because the device no longer
+              // holds the recording. Otherwise this is a failure, and saying
+              // so beats quietly serving a worse picture.
+              const worthPlaying = current.recording.cache_state === "complete"
+                || current.recording.offline_only;
+              if (!worthPlaying) {
+                log.warn(`recording mpeg-2 unavailable (${why}) — nothing else to play`);
+                if (!cancelled) {
+                  setApiError(`This recording could not be decoded: ${why}`);
+                  setLoading(false);
+                }
+                return;
+              }
+              log.warn(`recording mpeg-2 unavailable (${why}) — using the local copy`);
             }
           }
           setUsingWasm(false);
