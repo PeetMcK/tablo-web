@@ -678,6 +678,7 @@ export function ChannelGrid({ onLogout }: Props) {
                       key={ch.identifier}
                       channel={ch}
                       now={now}
+                      infoOpen={cardInfo?.channel === ch.identifier}
                       onPlay={() => setPlaying(ch)}
                       onInfo={() => setCardInfo({
                         channel: ch.identifier,

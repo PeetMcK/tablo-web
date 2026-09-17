@@ -9,6 +9,15 @@ interface Props {
   onPlay: () => void;
   /** Open the programme's sheet. The content's job. */
   onInfo: () => void;
+  /**
+   * This card's sheet is the one currently open.
+   *
+   * Hover alone cannot carry that: opening the sheet moves the pointer off the
+   * card, so the mark that was just clicked would blink out from under it and
+   * the card behind the sheet would look untouched. While the sheet is up, its
+   * card holds the same state the hover gave it.
+   */
+  infoOpen?: boolean;
 }
 
 /** `7.1 PBS`, or the call sign alone where the device gave no number. */
@@ -26,7 +35,7 @@ function label(ch: GuideChannel): string {
  * nowhere else. A card is a channel and a programme sitting together; they are
  * two different things to want.
  */
-export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
+export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false }: Props) {
   const program = channel.current_program;
 
   // Calculate progress
@@ -42,9 +51,9 @@ export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
                  bg-surface-raised border border-border
                  hover:border-accent/40 hover:channel-glow transition-all duration-200"
     >
-      {/* Watch. Its visible content is a logo and a number, neither of which
-          announces anything, hence the label — the same reason the guide's
-          tile carries one.
+      {/* The channel, and what it will tell you about itself. Its visible
+          content is a logo and a number, neither of which announces anything,
+          hence the label.
 
           The hover wash is the whole left box, rounded like the card itself.
           A hairline between the halves said the same thing in a thinner voice
@@ -59,52 +68,85 @@ export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
       <button
         onClick={onPlay}
         aria-label={`Watch ${label(channel)}`}
-        className="relative flex flex-col items-center gap-2 shrink-0 p-1.5 -m-1.5 rounded-xl
-                   transition-colors group-hover:bg-accent-soft
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        className="group/tile relative flex flex-col items-center gap-2 shrink-0 p-1.5 -m-1.5
+                   rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
-        <div className="w-16 h-12 flex items-center justify-center bg-recess-soft rounded-lg p-1.5 border border-border-subtle">
-          <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
-        </div>
-        <span className="text-[10px] font-black tracking-tighter text-fg-muted uppercase">
-          {channel.major > 0 ? `${channel.major}.${channel.minor}` : "OTT"}
-        </span>
+        {/* The plate is the play button. Not a puck laid over it and not a
+            badge beside it — the logo crossfades to the triangle in place, so
+            the thing you already aim at when you want this channel is the
+            thing that plays it. Nothing moves, nothing is covered, and the
+            square keeps its own shape throughout.
 
-        {/* Under the channel, not over it. The puck used to sit on the plate,
-            covering the logo — the one thing on this half that says which
-            channel this is, and the reason anyone aims here.
+            Keyed to `group/tile`, not to the card: the channel's mark is how
+            you find the channel, and swapping it for a triangle the moment a
+            cursor crosses anywhere on the card takes that away while you are
+            still reading. It changes when the pointer is actually on the half
+            that plays. */}
+        <div className="relative w-16 h-12 flex items-center justify-center rounded-lg p-1.5
+                        bg-recess-soft border border-border-subtle
+                        group-hover/tile:bg-accent-soft group-hover/tile:border-accent/30
+                        group-active/tile:scale-95 transition-all duration-100">
+          {/* The logo blurs back rather than leaving. A station's mark is
+              mostly colour — the red of BUSTED, the PBS blue — and that colour
+              is how the row is scanned. Held at a hint behind the triangle, the
+              channel is still identifiable while the plate is saying "play".
 
-            It costs no layout to put it below: the tile column runs 71px
-            inside a 97px box on every card, measured, because the programme
-            side is always the taller of the two. A 24px puck lives in that
-            slack, so nothing moves when it appears. Absolute, for the same
-            reason — in the flow it would grow the column and shift the card
-            on hover. */}
-        <span className="absolute bottom-0 left-1/2 -translate-x-1/2 opacity-0
-                         group-hover:opacity-100 transition-opacity pointer-events-none">
-          <span className="accent-gradient w-6 h-6 rounded-full flex items-center justify-center
-                           shadow-lg scale-90 group-hover:scale-100 transition-transform">
+              The two halves end up opposite on purpose: this one keeps its
+              colour and loses its edges, the copy on the right keeps its edges
+              and loses its contrast. Each keeps what it is read by.
+
+              On a wrapper, not through `ChannelLogo`: that puts a caller's
+              class on the mark inside its own opaque plate, so treating the
+              mark alone leaves the plate sitting there. */}
+          <span className="w-full h-full transition-opacity duration-150
+                           group-hover/tile:opacity-[0.35]">
+            <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
+          </span>
+          {/* Just the triangle. A second shape inside the square would be one
+              rounded thing inside another, which is what the puck was. */}
+          <svg className="absolute w-7 h-7 text-accent opacity-0 transition-opacity duration-150
+                          group-hover/tile:opacity-100"
+               fill="currentColor" viewBox="0 0 24 24" aria-hidden>
             {/* Centred on its own box: 7.5..17.5 puts the middle at 12.5, half
                 a unit right of the viewBox's 12, which is the optical
-                correction a right-pointing triangle wants and all it wants.
-                The old glyph ran 8..19 — centre 13.5 — and carried another 2px
-                of transform, so it sat 3.5px right inside its puck. */}
-            <svg className="w-3.5 h-3.5 text-brand-fg" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
-              <path d="M7.5 5 17.5 12 7.5 19 Z" />
-            </svg>
+                correction a right-pointing triangle wants and all it wants. */}
+            <path d="M7.5 5 17.5 12 7.5 19 Z" />
+          </svg>
+        </div>
+        {/* The channel's identity: its number, and what it broadcasts in.
+            Both stay put through the hover — nothing is laid over them any
+            more, so there is no reason to take them away. */}
+        <span className="flex flex-col items-center gap-1">
+          <span className="text-xs font-black tracking-tight text-fg-secondary uppercase
+                           tabular-nums">
+            {channel.major > 0 ? `${channel.major}.${channel.minor}` : "OTT"}
           </span>
+          {/* From the device, which is the only thing that knows: the cloud's
+              channel record has no resolution in it at all. */}
+          {channel.scan && (
+            <span className="px-1.5 py-px rounded-full bg-fill-soft border border-border-subtle
+                             text-[9px] font-bold tracking-wide text-fg-muted tabular-nums">
+              {channel.scan}
+            </span>
+          )}
         </span>
+
       </button>
 
-      {/* What is on. Opens the sheet, which is where the artwork and the rest
-          of what the device knows about this programme lives. */}
+      {/* What is on, and everything the device knows about it. Click the words
+          to read; click the channel beside them to watch. */}
       <button
         onClick={onInfo}
         aria-label={program ? `About ${program.title}` : `About ${label(channel)}`}
-        className="relative flex-1 min-w-0 text-left p-1.5 -m-1.5 rounded-xl
-                   transition-colors group-hover:bg-accent-soft
+        className="group/body relative flex-1 min-w-0 text-left p-1.5 -m-1.5 rounded-xl
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
+        {/* The copy dims rather than blurring. It keeps its edges — the words
+            are still words while the mark sits over them — and because it
+            fades toward the card's own ground it goes dark in dark and pale in
+            light without a second colour being chosen for either. */}
+        <span className={`block transition-opacity duration-150
+                          ${infoOpen ? "opacity-[0.35]" : "group-hover:opacity-[0.35]"}`}>
         <p className="text-sm font-bold text-fg-secondary truncate mb-0.5">
           {program?.title || "No Information"}
         </p>
@@ -130,15 +172,33 @@ export function ChannelCard({ channel, now, onPlay, onInfo }: Props) {
             </div>
           </div>
         )}
+        </span>
 
-        {/* The word that names what this half does. The wash under it is the
-            button's own background now, so the chip is all that is left to
-            place. */}
-        <span className="absolute top-0 right-0 opacity-0 group-hover:opacity-100
-                         transition-opacity pointer-events-none">
-          <span className="px-2 py-0.5 rounded-full bg-surface-raised border border-border
-                           text-[10px] font-bold tracking-widest uppercase text-accent">
-            Info
+        {/* Centred on the box it describes, where the play mark used to be —
+            the two halves now each carry one mark, in the place the eye
+            already goes.
+
+            The mark takes the pointer rather than refusing it, so that resting
+            on the mark itself answers back: it grows and lifts, and presses in
+            on click. Clicking it is still clicking the half — it is a child of
+            that button, not a rival to it — so the whole area works exactly as
+            before and the mark is simply the part that knows you are there. */}
+        <span className={`absolute inset-0 flex items-center justify-center
+                          group-active/body:scale-95 transition-all duration-150
+                          ${infoOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+          <span className={`accent-gradient w-16 h-16 rounded-full flex items-center justify-center
+                            shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
+                            transition-all duration-150
+                            ${infoOpen ? "scale-100" : "scale-90 group-hover:scale-100"}`}>
+            {/* Three quarters of the puck, so the ring is the mark rather than
+                a small thing floating in a big disc. The stroke thins as the
+                glyph grows — it scales with the viewBox, and at this size the
+                old weight drew a band instead of a line. */}
+            <svg className="w-12 h-12 text-brand-fg" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden>
+              <circle cx="12" cy="12" r="9.6" />
+              <path d="M12 11.1v5.6M12 7.5v.2" />
+            </svg>
           </span>
         </span>
       </button>

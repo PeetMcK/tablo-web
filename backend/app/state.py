@@ -37,6 +37,54 @@ CLOUD_GUIDE_DAYS = int(os.environ.get("TABLO_CLOUD_GUIDE_DAYS", "14"))
 CLOUD_GUIDE_CONCURRENCY = int(os.environ.get("TABLO_CLOUD_GUIDE_CONCURRENCY", "4"))
 
 
+def _scan_label(resolution: str | None, flags: list[str]) -> str | None:
+    """`1080i`, `720p`, `480i` — what a station is actually broadcasting.
+
+    The device gives `resolution` as `hd_1080`, `hd_720` or `sd`, and puts
+    `interlaced` in `flags` when it applies. Measured across all 23 channels on
+    a real lineup: hd_1080 x4, every one interlaced; hd_720 x5, not one of them
+    interlaced; sd x14, every one interlaced.
+
+    `sd` carries no height of its own, and OTA standard definition is 480
+    lines, so that one is spelled out — deriving the number from the string
+    would print "sdi".
+    """
+    heights = {"hd_1080": 1080, "hd_720": 720, "sd": 480}
+    height = heights.get((resolution or "").strip().lower())
+    if not height:
+        return None
+    return f"{height}{'i' if 'interlaced' in flags else 'p'}"
+
+
+async def _settled(task) -> dict:
+    """Whatever a started task has to give, without letting it break the caller.
+
+    The lineup's extras are worth having and worth nothing next to the guide
+    itself, so a device that refuses or stalls costs an empty dict rather than
+    a failed stream.
+    """
+    try:
+        return await task
+    except Exception as e:  # noqa: BLE001
+        print(f"[channels] lineup extras unavailable: {e}", flush=True)
+        return {}
+
+
+def _channel_extras(detail: dict | None) -> dict:
+    """The device's channel facts, in the shape every guide payload carries.
+
+    Always the same three keys, present whether the device answered or not: a
+    client that has to ask "did this field arrive?" ends up with a resolution
+    pill that appears a second after the card it belongs to.
+    """
+    d = detail or {}
+    return {
+        "scan": d.get("scan"),
+        "interlaced": bool(d.get("interlaced")),
+        "favourite": bool(d.get("favourite")),
+    }
+
+
 def _unescape(text: str | None) -> str | None:
     """Undo the cloud's HTML escaping. The device sends none.
 
@@ -69,6 +117,9 @@ class AppState:
         self.devices: list[TabloDevice] = []
         self.active_device: TabloDevice | None = None
         self._channels: list[TabloChannel] | None = None
+        # Scan type, interlacing and favourites, by channel identifier. Lives
+        # and dies with `_channels`: both describe the lineup.
+        self._channel_details: dict[str, dict] | None = None
         self.streams: dict[str, StreamSession] = {}  # session_id → session
         self._http = httpx.AsyncClient(timeout=30)
         # Grid enrichment cache — avoids re-fetching 800 airing details on every guide load
@@ -146,6 +197,7 @@ class AppState:
         self.devices = []
         self.active_device = None
         self._channels = None
+        self._channel_details = None
         self.streams.clear()
 
     # ------------------------------------------------------------------
@@ -160,6 +212,7 @@ class AppState:
         self.devices = devices
         self.active_device = devices[0] if len(devices) == 1 else None
         self._channels = None
+        self._channel_details = None
         self.save_config(email, password)
         # Persist the tokens discovery just produced. They, not the password,
         # are what every later request uses - so a restart can skip the cloud.
@@ -172,12 +225,69 @@ class AppState:
             raise ValueError(f"Device {sid} not found")
         self.active_device = dev
         self._channels = None
+        self._channel_details = None
         store.set_active_device(sid)
         return dev
 
     # ------------------------------------------------------------------
     # Channels
     # ------------------------------------------------------------------
+
+    async def channel_details(self, refresh: bool = False) -> dict[str, dict]:
+        """Per-channel facts the cloud guide does not carry, keyed by identifier.
+
+        The cloud's channel record is six fields - identifier, kind, logos,
+        name, and an `ota`/`ott` block with the number and network. Verified
+        against the live account: the union of every key across all 28 channels
+        was exactly that, with nothing about resolution, scan or favourites.
+
+        The device has all of it, per channel, at `/guide/channels/{id}`:
+
+            {"channel": {"call_sign": "KSPS-HD", "resolution": "hd_1080",
+                         "flags": ["mpeg2", "interlaced", "canRecord"],
+                         "favourite": false,
+                         "channel_identifier": "S79600_007_01", ...}}
+
+        `channel_identifier` is the join - it is what the cloud calls
+        `identifier`, and nothing else in the device record is.
+
+        One pass over the lineup, cached with the channel list itself, because
+        this is 23 signed round trips on a real device and none of it changes
+        until the lineup does. Fetched concurrently: sequentially it is about a
+        second and a half, which is a second and a half of the guide.
+        """
+        if self._channel_details is not None and not refresh:
+            return self._channel_details
+        if self.active_device is None:
+            return {}
+
+        try:
+            paths = await self.request_device("GET", "/guide/channels")
+        except Exception as e:  # noqa: BLE001 - see the docstring on failure
+            print(f"[channels] device lineup unavailable: {e}", flush=True)
+            return {}
+
+        gate = asyncio.Semaphore(8)
+
+        async def one(path: str) -> tuple[str, dict] | None:
+            async with gate:
+                try:
+                    rec = (await self.request_device("GET", path)).get("channel") or {}
+                except Exception:  # noqa: BLE001 - one bad channel, not the lineup
+                    return None
+            ident = rec.get("channel_identifier")
+            if not ident:
+                return None
+            flags = rec.get("flags") or []
+            return ident, {
+                "scan": _scan_label(rec.get("resolution"), flags),
+                "interlaced": "interlaced" in flags,
+                "favourite": bool(rec.get("favourite")),
+            }
+
+        found = await asyncio.gather(*(one(p) for p in paths if isinstance(p, str)))
+        self._channel_details = {ident: d for ident, d in filter(None, found)}
+        return self._channel_details
 
     async def channels(self, refresh: bool = False, include_ott: bool = True) -> list[TabloChannel]:
         """Get channels from Tablo (OTA + OTT)."""
@@ -695,6 +805,7 @@ class AppState:
 
         channels = await self.channels()
         logo_map, path_to_ident, channel_airing_map, cloud_schedule = await self._fetch_guide_enrichment()
+        details = await self.channel_details()
 
         guide = []
         for c in channels:
@@ -713,6 +824,7 @@ class AppState:
                 "display_name": c.display_name,
                 "logo_url": logo_map.get(c.identifier),
                 "current_program": current_program,
+                **_channel_extras(details.get(c.identifier)),
             })
 
         return guide
@@ -728,6 +840,14 @@ class AppState:
 
         channels = await self.channels()
 
+        # Started, not awaited: the lineup's scan types and favourites are 23
+        # signed round trips on a cold cache, and the first paint is not going
+        # to wait on them. Phase 1 goes out without them; every later phase
+        # carries whatever has landed by then, and the client merges by
+        # identifier the same way it does for logos.
+        details_task = asyncio.create_task(self.channel_details())
+        details: dict[str, dict] = {}
+
         def _stub(c, logo_url=None, current_program=None):
             return json.dumps({
                 "identifier": c.identifier,
@@ -739,6 +859,7 @@ class AppState:
                 "display_name": c.display_name,
                 "logo_url": logo_url,
                 "current_program": current_program,
+                **_channel_extras(details.get(c.identifier)),
             }) + "\n"
 
         # Phase 1: bare stubs so the UI renders immediately on cold start.
@@ -754,12 +875,14 @@ class AppState:
 
         # Phase 2: cloud logos fast path — only when enrichment cache is cold
         if not cache_warm:
+            details = await _settled(details_task)
             cloud_logo_map, _ = await self._fetch_cloud_channels()
             for c in channels:
                 if c.identifier in cloud_logo_map:
                     yield _stub(c, logo_url=cloud_logo_map[c.identifier])
 
         # Phase 3: full enrichment via shared grid cache (instant on hit, ~90s on cold start)
+        details = await _settled(details_task)
         try:
             logo_map, path_to_ident, channel_to_airings, cloud_schedule = await asyncio.wait_for(
                 self._build_grid_enrichment(), timeout=90
@@ -1218,6 +1341,7 @@ class AppState:
         before = {c.identifier for c in (self._channels or [])}
 
         self._channels = None
+        self._channel_details = None
         async with self._grid_cache_lock:
             self._grid_cache = None
             self._grid_cache_time = 0.0

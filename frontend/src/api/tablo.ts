@@ -92,6 +92,21 @@ export interface GuideChannel {
   display_name: string;
   logo_url: string | null;
   current_program: Program | null;
+  /**
+   * Scan type as the station broadcasts it, e.g. `1080i`, `720p`, `480i`.
+   *
+   * From the device, not the cloud: the cloud's channel record carries no
+   * resolution at all — verified against the live account, where the union of
+   * every key across all 28 channels had nothing about resolution, scan or
+   * favourites. The device has all three at `/guide/channels/{id}`.
+   *
+   * Optional, though the backend always sends all three: it is null where the
+   * device did not answer, and absent in fixtures that are not about channels.
+   */
+  scan?: string | null;
+  interlaced?: boolean;
+  /** Marked as a favourite on the device. Nothing reads it yet. */
+  favourite?: boolean;
 }
 
 export interface GridChannel extends Omit<GuideChannel, 'current_program'> {

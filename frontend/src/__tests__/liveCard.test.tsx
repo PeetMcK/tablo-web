@@ -91,34 +91,111 @@ describe("a Live TV card", () => {
     expect(desc.className).not.toMatch(/leading-relaxed|\bh-8\b/);
   });
 
-  it("keeps the play puck off the channel's own mark", () => {
-    // It sat over the logo, which is the one thing on that half that says
-    // which channel this is. There is 26px of room under the channel number —
-    // the tile column runs 71px inside a 97px box on every card — so the puck
-    // goes there and covers nothing.
+  it("turns the channel's own plate into the play button", () => {
+    // Not a puck laid over the logo and not a badge beside it: the logo
+    // crossfades to a bare triangle inside the same square, so the thing you
+    // already aim at to get this channel is the thing that plays it. A second
+    // rounded shape inside the rounded plate is what the puck was.
     const { container } = render(
       <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
 
     const plate = container.querySelector(".bg-recess-soft")!;
-    const puck = container.querySelector(".accent-gradient")!;
+    const triangle = plate.querySelector('path[d="M7.5 5 17.5 12 7.5 19 Z"]');
 
-    expect(plate.contains(puck)).toBe(false);
-    expect(screen.getByRole("button", { name: /Watch 7\.1 PBS/ }).contains(puck)).toBe(true);
+    expect(triangle).not.toBeNull();
+    expect(plate.querySelector(".accent-gradient")).toBeNull();
   });
 
-  it("draws the play triangle on its own centre", () => {
-    // The old glyph's box ran x 8..19 — centre 13.5 against the viewBox's 12 —
-    // and then carried `translate-x-0.5` on top, so it sat 3.5px right of
-    // centre inside a 48px circle. This one is centred on 12.5: half a unit
-    // right, which is the optical correction a right-pointing triangle wants
-    // and all it wants.
+  it("swaps the logo for the triangle on the tile's own hover, not the card's", () => {
+    // The mark is how you find the channel. Swapping it the moment a cursor
+    // crosses anywhere on the card takes that away while you are still
+    // reading the programme beside it.
     const { container } = render(
       <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
 
-    // Scoped to the puck: the channel logo's own fallback mark is an svg too.
-    const puck = container.querySelector(".accent-gradient")!;
-    expect(puck.querySelector("path")!.getAttribute("d")).toBe("M7.5 5 17.5 12 7.5 19 Z");
-    expect(puck.querySelector("svg")!.getAttribute("class") ?? "")
-      .not.toMatch(/translate-x/);
+    const plate = container.querySelector(".bg-recess-soft")!;
+    const logoWrap = plate.querySelector('[class*="group-hover/tile:opacity-"]')!;
+    const triangle = plate.querySelector('svg[class*="group-hover/tile:opacity-100"]')!;
+
+    expect(container.querySelector(".group\\/tile")).not.toBeNull();
+    // Dimmed, not removed: a station's mark is mostly colour, and that colour
+    // is how the row is scanned, so it stays legible behind the triangle.
+    expect(logoWrap.className).toMatch(/group-hover\/tile:opacity-\[0\.35\]/);
+    expect(triangle.getAttribute("class")).toMatch(/group-hover\/tile:opacity-100/);
+  });
+
+  it("quiets the synopsis rather than blurring it", () => {
+    // A clean mark over live text is two things asking to be read in the same
+    // square inch. The copy drops contrast and keeps its edges — the words are
+    // still words under the mark — and because it fades toward the card's own
+    // ground it goes dark in dark and pale in light with no second colour
+    // chosen for either.
+    render(<ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const body = screen.getByRole("button", { name: /About First Civilizations/ });
+    const copy = body.firstElementChild!;
+
+    expect(copy.className).toMatch(/group-hover:opacity-\[0\.35\]/);
+    expect(body.innerHTML).not.toMatch(/backdrop-blur/);
+    // And the mark itself sits on the half it describes, play glyph nowhere
+    // near it.
+    expect(body.querySelector(".accent-gradient")).not.toBeNull();
+    expect(body.querySelector('.accent-gradient path[d="M7.5 5 17.5 12 7.5 19 Z"]'))
+      .toBeNull();
+  });
+
+  it("holds the mark up while its own sheet is open", () => {
+    // Opening the sheet takes the pointer off the card, so a mark that lived
+    // on hover alone would blink out from under the click that opened it and
+    // leave the card behind the sheet looking untouched.
+    const { container, rerender } = render(
+      <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const resting = container.querySelector(".accent-gradient")!.parentElement!;
+    expect(resting.className).toMatch(/opacity-0/);
+
+    rerender(<ChannelCard channel={channel()} now={NOW} infoOpen
+                          onPlay={() => {}} onInfo={() => {}} />);
+
+    const open = container.querySelector(".accent-gradient")!.parentElement!;
+    expect(open.className).toMatch(/opacity-100/);
+    expect(open.className).not.toMatch(/opacity-0/);
+  });
+
+  it("presses its mark when anywhere in the half is pressed", () => {
+    // The mark answers to its own hover, but the press belongs to the whole
+    // target: clicking the words and clicking the mark are the same act, so
+    // they look the same. Named groups, so neither half answers for the other.
+    const { container } = render(
+      <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const tile = screen.getByRole("button", { name: /Watch 7\.1 PBS/ });
+    const body = screen.getByRole("button", { name: /About First Civilizations/ });
+
+    expect(tile.className).toMatch(/group\/tile/);
+    expect(body.className).toMatch(/group\/body/);
+    expect(container.querySelector(".bg-recess-soft")!.className)
+      .toMatch(/group-active\/tile:scale-95/);
+    expect(container.querySelector(".accent-gradient")!.parentElement!.className)
+      .toMatch(/group-active\/body:scale-95/);
+  });
+
+  it("shows the resolution the device reports", () => {
+    // The cloud's channel record has no resolution in it at all; this comes
+    // from the device, per channel, and is the only place it is visible.
+    render(<ChannelCard channel={channel({ scan: "1080i" })} now={NOW}
+                        onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(screen.getByText("1080i")).toBeInTheDocument();
+  });
+
+  it("says nothing where the device reported none", () => {
+    // The five OTT channels on a real account are not in the device lineup, so
+    // an empty pill would be a permanent blank badge on every one of them.
+    render(<ChannelCard channel={channel({ scan: null })} now={NOW}
+                        onPlay={() => {}} onInfo={() => {}} />);
+
+    const tile = screen.getByRole("button", { name: /Watch 7\.1 PBS/ });
+    expect(tile.querySelector(".rounded-full")).toBeNull();
   });
 });
