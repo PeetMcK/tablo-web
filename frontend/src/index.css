@@ -388,6 +388,77 @@
     border: 1px solid var(--glass-border);
   }
 
+  /* The player's volume slider.
+
+     A native range input rather than the hand-built affair the scrubber is:
+     that one needs hover previews, cache bands and a two-tone handle over
+     video we do not control, and this one needs a line and a dot. Native also
+     arrives with dragging, the arrow keys and a screen-reader contract already
+     written.
+
+     Which is the whole reason for the CSS. A range input cannot be styled
+     through classes — the track and thumb are pseudo-elements, and each engine
+     names its own — so the appearance is reset and drawn here once.
+
+     The filled portion comes from `--fill`, set inline from the value, because
+     the track is a single box with no second element to colour. Deliberately
+     `player-fg` and not the accent: the accent is the scrubber's, and two
+     accent bars in one row would read as two progress indicators. */
+  .player-volume {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    height: 1rem;
+    cursor: pointer;
+  }
+
+  .player-volume::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(var(--c-player-fg)) 0 var(--fill, 100%),
+      rgb(var(--c-player-track) / var(--c-player-track-a)) var(--fill, 100%) 100%
+    );
+  }
+
+  .player-volume::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 11px;
+    height: 11px;
+    border-radius: 9999px;
+    background: rgb(var(--c-player-fg));
+    /* Centres the dot on a 3px track: half the dot, less half the track. */
+    margin-top: -4px;
+  }
+
+  .player-volume::-moz-range-track {
+    height: 3px;
+    border-radius: 9999px;
+    background: rgb(var(--c-player-track) / var(--c-player-track-a));
+  }
+
+  /* Firefox fills the track for us, so no gradient is needed there. */
+  .player-volume::-moz-range-progress {
+    height: 3px;
+    border-radius: 9999px;
+    background: rgb(var(--c-player-fg));
+  }
+
+  .player-volume::-moz-range-thumb {
+    width: 11px;
+    height: 11px;
+    border: 0;
+    border-radius: 9999px;
+    background: rgb(var(--c-player-fg));
+  }
+
+  .player-volume:focus-visible::-webkit-slider-thumb,
+  .player-volume:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 2px rgb(var(--c-player-scrim)), 0 0 0 4px rgb(var(--c-accent));
+  }
+
   /* The brand gradient, in one place: the brand swatch (as the highlight)
      running into its deeper companion. Filled surfaces that used to be a flat
      bg-accent take one of these instead - the 135deg version for anything

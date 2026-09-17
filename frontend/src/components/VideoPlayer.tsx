@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useQuery } from "@tanstack/react-query";
 import {
-  X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
+  X, Play, Pause, RotateCcw, RotateCw, Volume1, Volume2, VolumeX, Maximize,
   PictureInPicture2,
 } from "lucide-react";
 import { PictureInPictureExit } from "./icons";
@@ -16,6 +16,7 @@ import {
   airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
   programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
+import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -110,6 +111,14 @@ const PIP_BAR_REACH = 96;
  * boundary without the bar strobing.
  */
 const PIP_BAR_LINGER = 750;
+
+/**
+ * One rung of the volume, on the arrow keys and on the slider.
+ *
+ * A twentieth: twenty presses from silence to full, which is the step every
+ * other player uses and fine enough that no single press is a jolt.
+ */
+const VOLUME_STEP = 0.05;
 
 /**
  * Legibility halo for chrome that sits bare on the gradient scrim.
@@ -251,6 +260,10 @@ interface PlayerView {
   skip: (delta: number) => void;
   muted: boolean;
   toggleMute: () => void;
+  volume: number;
+  changeVolume: (level: number) => void;
+  /** False where the platform owns the level and ignores ours — see below. */
+  volumeSettable: boolean;
   isLive: boolean;
   atLiveEdge: boolean;
   goLive: () => void;
@@ -313,11 +326,48 @@ function createStageVideo(): HTMLVideoElement {
   return video;
 }
 
+/**
+ * Puts the remembered level on a fresh element, and says whether it took.
+ *
+ * iOS hands volume to the hardware and treats the property as read-only: the
+ * write is accepted silently and the value stays at 1. So the level is probed
+ * with something that cannot be mistaken for that — a slider which does
+ * nothing is worse than no slider — and the answer decides whether one is
+ * offered at all. Mute is unaffected; that one the platform honours.
+ *
+ * Done at creation rather than in an effect so the first audio a viewer hears
+ * is already at the level they left, with no moment at full blast.
+ */
+function applyStoredVolume(video: HTMLVideoElement): boolean {
+  try {
+    video.volume = 0.5;
+    if (video.volume !== 0.5) return false;
+  } catch {
+    return false;
+  }
+  video.volume = loadVolume();
+  return true;
+}
+
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
   /** The stage's video element, built once on the first render. */
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  if (videoRef.current == null) videoRef.current = createStageVideo();
+  /**
+   * Built once, in a lazy initialiser rather than during the render body.
+   *
+   * The element and its two facts arrive together because the second is
+   * learned by probing the first: whether this platform lets us set a level
+   * can only be answered by trying. A `useState` initialiser is where that
+   * belongs — it runs exactly once and, unlike assigning through refs mid
+   * render, it is a thing React guarantees rather than a thing that happens
+   * to work.
+   */
+  const [stage] = useState(() => {
+    const video = createStageVideo();
+    const volumeSettable = applyStoredVolume(video);
+    return { video, volumeSettable, volume: video.volume };
+  });
+  const videoRef = useRef<HTMLVideoElement | null>(stage.video);
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -344,6 +394,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [apiError, setApiError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [muted, setMuted] = useState(false);
+  // Seeded from the element, which already carries the remembered level.
+  const [volume, setVolume] = useState(stage.volume);
   /** True while the stage is mounted on a picture-in-picture window instead. */
   const [poppedOut, setPoppedOut] = useState(false);
   const [paused, setPaused] = useState(!openPlaying);
@@ -733,7 +785,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         setRangeEnd(video.duration);
       }
     };
-    const onVolume = () => setMuted(video.muted);
+    // One event covers both, and reading the element rather than trusting our
+    // own last write keeps the slider honest about what the platform did with
+    // it — including a browser or a remote changing the level behind our back.
+    const onVolume = () => { setMuted(video.muted); setVolume(video.volume); };
     let stalledAt = 0;
     let grace: ReturnType<typeof setTimeout> | undefined;
     const onWait = () => {
@@ -982,6 +1037,33 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     video.muted = !video.muted;
     setMuted(video.muted);
   }, []);
+
+  /**
+   * Set the level, and take that as wanting to hear something.
+   *
+   * Mute and the level stay separate states — unmuting gives back the level
+   * that was set, which is the whole reason zero on the slider is not the
+   * same thing as muted. But reaching for the slider while muted has only one
+   * meaning, so a level above zero lifts the mute with it. Below zero it does
+   * not: silencing by dragging to the end should not leave the button lit.
+   */
+  const changeVolume = useCallback((next: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const level = clampVolume(next);
+    video.volume = level;
+    if (level > 0 && video.muted) {
+      video.muted = false;
+      setMuted(false);
+    }
+    setVolume(level);
+    saveVolume(level);
+  }, []);
+
+  /** One rung of the arrow keys — a twentieth, as every other player uses. */
+  const nudgeVolume = useCallback((delta: number) => {
+    changeVolume((videoRef.current?.volume ?? 1) + delta);
+  }, [changeVolume]);
 
   /**
    * Fullscreen the player, not the picture inside it.
@@ -1265,6 +1347,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
       if (e.key === "ArrowLeft") skip(-10);
       if (e.key === "ArrowRight") skip(10);
+      // Horizontal is seek, so vertical is the level — which is also where
+      // every other player puts it. `preventDefault` because the page behind
+      // the player would otherwise scroll under it.
+      if (e.key === "ArrowUp") { e.preventDefault(); nudgeVolume(VOLUME_STEP); }
+      if (e.key === "ArrowDown") { e.preventDefault(); nudgeVolume(-VOLUME_STEP); }
       resetHideTimer();
     };
     window.addEventListener("keydown", handler);
@@ -1279,7 +1366,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       if (keyHandler.current === handler) keyHandler.current = null;
     };
   }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer,
-      poppedOut, togglePictureInPicture]);
+      poppedOut, togglePictureInPicture, nudgeVolume]);
 
   const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
@@ -1358,6 +1445,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
+    volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
@@ -1425,6 +1513,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
+    volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
@@ -1988,16 +2077,59 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                 </button>
               )}
 
-              <button
-                onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
-                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
-                title={muted ? "Unmute (M)" : "Mute (M)"}
-              >
-                {muted
-                  ? <VolumeX className="w-4 h-4" aria-hidden />
-                  : <Volume2 className="w-4 h-4" aria-hidden />}
-              </button>
+              {/* Speaker and level as one control, the level rolling out of
+                  the speaker on approach.
+
+                  Collapsed by default because a bar parked in the row is width
+                  spent on something adjusted rarely, next to a transport that
+                  wants all of it. `group/vol` keeps the roll-out on this pill
+                  alone — the row has other groups — and `focus-within` opens
+                  it for the keyboard too, since a slider that only appears
+                  under a pointer cannot be tabbed to.
+
+                  Not in the pop-out. That window is small, the bar reaches
+                  96px up from the bottom of it, and the speaker is the control
+                  anyone actually wants there. */}
+              <div className={`group/vol flex items-center rounded-lg glass transition-[width] duration-200
+                ${poppedOut ? "h-8" : "h-9"}`}>
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleMute(); }}
+                  className={`rounded-lg text-player-fg flex items-center justify-center hover:bg-fill transition
+                    ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
+                  title={muted ? "Unmute (M)" : "Mute (M)"}
+                >
+                  {/* Three rungs rather than two: the icon carries roughly how
+                      loud, so a level set with the keyboard alone is still
+                      visible with the slider shut. */}
+                  {muted || volume === 0
+                    ? <VolumeX className="w-4 h-4" aria-hidden />
+                    : volume < 0.5
+                      ? <Volume1 className="w-4 h-4" aria-hidden />
+                      : <Volume2 className="w-4 h-4" aria-hidden />}
+                </button>
+                {volumeSettable && !poppedOut && (
+                  <div className="overflow-hidden w-0 group-hover/vol:w-[5.5rem] group-focus-within/vol:w-[5.5rem]
+                                  transition-[width] duration-200 ease-out">
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={VOLUME_STEP}
+                      value={muted ? 0 : volume}
+                      onChange={(e) => changeVolume(Number.parseFloat(e.target.value))}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label="Volume"
+                      aria-valuetext={`${Math.round(volume * 100)}%`}
+                      // The filled part is drawn from the value, because a
+                      // range input's track is one box and cannot be split by
+                      // a class. Read by the track's own pseudo-element, which
+                      // inherits custom properties from the element.
+                      style={{ "--fill": `${(muted ? 0 : volume) * 100}%` } as React.CSSProperties}
+                      className="player-volume w-[4.5rem] mx-2"
+                    />
+                  </div>
+                )}
+              </div>
 
               {/* Only where the API exists. Safari has no Document
                   Picture-in-Picture, so the button would promise nothing
