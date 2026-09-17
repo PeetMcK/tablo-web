@@ -63,9 +63,18 @@ export function playlistWindow(
   pl: MediaPlaylist,
   originMs: number,
 ): { start: number; end: number } {
-  if (!pl.segments.length || pl.programDateTimeMs === null) return { start: 0, end: 0 };
-  const start = (pl.programDateTimeMs - originMs) / 1000;
+  if (!pl.segments.length) return { start: 0, end: 0 };
   const held = pl.segments.reduce((sum, s) => sum + s.duration, 0);
+  // A playlist with no date is a recording: media time is elapsed time from
+  // the start of it, so the window simply begins at zero.
+  //
+  // Returning an empty window instead — which is what this did — makes every
+  // seek look like it is past the end, so `segmentAt` clamps to the last
+  // segment. Measured: resuming a 45 minute recording at 42:58 fed segment
+  // 2680 of 2680, a final 0.2s fragment with too little in it for the demuxer
+  // to name a stream, and the session died with "decode error".
+  if (pl.programDateTimeMs === null) return { start: 0, end: held };
+  const start = (pl.programDateTimeMs - originMs) / 1000;
   return { start, end: start + held };
 }
 

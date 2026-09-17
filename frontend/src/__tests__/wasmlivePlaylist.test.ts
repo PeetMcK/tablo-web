@@ -61,6 +61,39 @@ describe("playlistWindow", () => {
   });
 });
 
+describe("a recording's playlist, which carries no date", () => {
+  const VOD = parseMediaPlaylist(`#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXTINF:2.000,
+00000.ts
+#EXTINF:2.000,
+00001.ts
+#EXTINF:2.000,
+00002.ts
+#EXT-X-ENDLIST
+`);
+
+  it("begins at zero, because media time is elapsed time", () => {
+    // A live ring dates its segments because its window slides out from under
+    // a paused viewer. A recording does not move: position is simply seconds
+    // from the start, which is what the scrubber already shows.
+    expect(playlistWindow(VOD, ORIGIN)).toEqual({ start: 0, end: 6 });
+  });
+
+  it("finds the segment covering a position, so a seek lands where it was aimed", () => {
+    // This returned an empty window for a dateless playlist, so every seek
+    // looked past the end and clamped to the last segment. Measured on a 45
+    // minute recording resumed at 42:58: it fed segment 2680 of 2680, a final
+    // 0.2s fragment with too little in it for the demuxer to name a stream,
+    // and the session died with "decode error".
+    expect(segmentAt(VOD, ORIGIN, 0)?.sequence).toBe(0);
+    expect(segmentAt(VOD, ORIGIN, 3)?.sequence).toBe(1);
+    expect(segmentAt(VOD, ORIGIN, 5.9)?.sequence).toBe(2);
+  });
+});
+
 describe("segmentAt", () => {
   const pl = parseMediaPlaylist(PLAYLIST);
 
