@@ -202,6 +202,88 @@ describe("the player's chrome", () => {
     expect(requestWindow).toHaveBeenCalledWith();
   });
 
+  it("leaves no scrollbar down the side of the pop-out", async () => {
+    // Every stylesheet in the tab is copied into the window, and one of them
+    // makes the root a scroll container on purpose: `html { overflow-y:
+    // scroll }` is what reserves the gutter that stops the tabs jumping 2px
+    // between Live and Guide. Carried over here it reserves a groove beside a
+    // video that never scrolls. `body` was already pinned; the root was not.
+    renderLive();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture"));
+    await waitFor(() =>
+      expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
+
+    expect(pipDoc.documentElement.style.overflow).toBe("hidden");
+  });
+
+  /**
+   * Pops out and hands back the pop-out's own stage, with a measurable frame.
+   *
+   * The bar there is summoned by the pointer's height rather than by entering
+   * a strip, so it needs a rect — and in jsdom every rect is zero, which the
+   * height guard reads as "no frame" and never shows the bar at all.
+   */
+  async function poppedOutStage() {
+    renderLive();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture"));
+    await waitFor(() =>
+      expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
+
+    const stage = pipDoc.body.firstElementChild!.firstElementChild as HTMLElement;
+    stage.getBoundingClientRect = () => ({
+      x: 0, y: 0, width: 640, height: 360, top: 0, left: 0,
+      right: 640, bottom: 360, toJSON: () => {},
+    });
+    return { pipDoc, stage };
+  }
+
+  it("holds the pop-out's bar for a moment after the cursor leaves it", async () => {
+    // Snapping away the instant the pointer clears the bottom strip punishes
+    // a hand on its way to the scrubber, and flickers when it crosses the
+    // boundary at all. Three quarters of a second is long enough to come back
+    // to and short enough not to feel stuck.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { pipDoc, stage } = await poppedOutStage();
+
+      fireEvent.mouseMove(stage, { clientY: 350 });         // into the strip
+      await act(async () => {});
+      expect(chrome(pipDoc.body).className).toContain("opacity-100");
+
+      fireEvent.mouseMove(stage, { clientY: 40 });           // and back out
+      await act(async () => { vi.advanceTimersByTime(700); });
+      expect(chrome(pipDoc.body).className).toContain("opacity-100");
+
+      await act(async () => { vi.advanceTimersByTime(100); });
+      expect(chrome(pipDoc.body).className).toContain("opacity-0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels that wait if the cursor comes back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { pipDoc, stage } = await poppedOutStage();
+
+      fireEvent.mouseMove(stage, { clientY: 350 });
+      fireEvent.mouseMove(stage, { clientY: 40 });
+      await act(async () => { vi.advanceTimersByTime(500); });
+      fireEvent.mouseMove(stage, { clientY: 350 });
+
+      await act(async () => { vi.advanceTimersByTime(2_000); });
+      expect(chrome(pipDoc.body).className).toContain("opacity-100");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fullscreens the player, not the bare video element", async () => {
     // Fullscreening the <video> hands the browser's own controls to the
     // viewer and leaves our timeline — cache bands, thumbnail scrubbing,

@@ -103,6 +103,15 @@ const RECORDING_BUFFER_SECONDS = 180;
 const PIP_BAR_REACH = 96;
 
 /**
+ * How long the pop-out's transport stays after the pointer leaves its reach.
+ *
+ * Matched to the chrome's own 300ms fade with room either side: short enough
+ * that a window left alone is a picture again, long enough to cross the
+ * boundary without the bar strobing.
+ */
+const PIP_BAR_LINGER = 750;
+
+/**
  * Legibility halo for chrome that sits bare on the gradient scrim.
  *
  * The scrim only reaches full strength at the very edge of the frame: at the
@@ -1111,6 +1120,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       }
       w.document.title = title;
       w.document.body.style.cssText = "margin:0;overflow:hidden";
+      // The root too, and for a reason the copied sheets create: one of them
+      // makes `html` a scroll container deliberately — `overflow-y: scroll`
+      // is what reserves the gutter that stops the tabs shifting 2px between
+      // Live and Guide. Here it reserves a groove down the side of a video
+      // that never scrolls. Inline, so it beats the sheet without the sheet
+      // needing to know this window exists.
+      w.document.documentElement.style.cssText = "overflow:hidden";
 
       // A React root of the window's own. This is the whole point: React
       // delegates events to the root container, so a stage merely moved into
@@ -1439,6 +1455,30 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
   const chromeUp = poppedOut ? barHover : showControls;
 
   /**
+   * Coming up is instant; going away waits.
+   *
+   * The bar answers the pointer's height, so it drops the moment the cursor
+   * clears the strip — which punishes a hand on its way to the scrubber and
+   * flickers outright when the pointer tracks along the boundary. A held
+   * moment covers both: long enough to come back to, short enough that a
+   * window left alone is a picture again almost at once.
+   */
+  const barLeaveTimer = useRef<ReturnType<typeof setTimeout>>(null);
+
+  const showBar = useCallback((next: boolean) => {
+    if (barLeaveTimer.current) {
+      clearTimeout(barLeaveTimer.current);
+      barLeaveTimer.current = null;
+    }
+    if (next) { setBarHover(true); return; }
+    barLeaveTimer.current = setTimeout(() => setBarHover(false), PIP_BAR_LINGER);
+  }, []);
+
+  useEffect(() => () => {
+    if (barLeaveTimer.current) clearTimeout(barLeaveTimer.current);
+  }, []);
+
+  /**
    * Read from the pointer's height, not from entering and leaving a strip.
    *
    * A strip would sit under the transport it summons, so the controls
@@ -1447,8 +1487,8 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
    */
   const trackBottomHover = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    setBarHover(rect.height > 0 && rect.bottom - e.clientY <= PIP_BAR_REACH);
-  }, []);
+    showBar(rect.height > 0 && rect.bottom - e.clientY <= PIP_BAR_REACH);
+  }, [showBar]);
 
   /**
    * Lights the button that a click on the picture would press.
@@ -1474,9 +1514,12 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
   }, [poppedOut, trackBottomHover, resetHideTimer, trackZone]);
 
   const onStageLeave = useCallback(() => {
-    setBarHover(false);
+    // Through the same wait: leaving the window entirely is the case the
+    // linger is most obviously for, and a pointer that has left has not
+    // necessarily finished.
+    showBar(false);
     setHoverZone(null);
-  }, []);
+  }, [showBar]);
 
   /** Crossing onto the controls surrenders the borrowed highlight. */
   const holdAndRelease = useCallback((held: boolean) => {
