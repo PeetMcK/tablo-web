@@ -119,6 +119,17 @@ export interface PlaybackSurface {
    * document is. Only the painted surface has a loop to redirect.
    */
   setFrameSource?(next: FrameSource): void;
+  /**
+   * Draw the picture that is already there, again.
+   *
+   * Optional, and absent on the element-backed surface, which keeps its
+   * current frame on its own. A canvas does not: the context is created
+   * without a preserved drawing buffer, so the picture lasts until it is
+   * composited, and `captureStream` produces a frame only when something
+   * draws. A window showing the canvas without scheduling frames of its own,
+   * and a mirror opened while playback is paused, both need this.
+   */
+  repaint?(): void;
   destroy(): void;
 }
 

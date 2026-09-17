@@ -20,7 +20,10 @@ type SetFrameSourceMock = ReturnType<typeof vi.fn<(next: FrameSource) => void>>;
 const wasm = vi.hoisted(() => ({
   /** Off by default, so the transcode-path tests here are untouched. */
   eligible: false,
-  surface: null as (PlaybackSurface & { setFrameSource: SetFrameSourceMock }) | null,
+  surface: null as (PlaybackSurface & {
+    setFrameSource: SetFrameSourceMock;
+    repaint: ReturnType<typeof vi.fn<() => void>>;
+  }) | null,
   open: vi.fn(),
 }));
 
@@ -210,8 +213,12 @@ describe("popping out the picture the WASM path is drawing", () => {
       diagnostics: () => ({ kind: "wasm" }),
       on: () => () => {},
       destroy: vi.fn(),
+      repaint: vi.fn(),
       setFrameSource: vi.fn<(next: FrameSource) => void>(),
-    } satisfies PlaybackSurface & { setFrameSource: SetFrameSourceMock };
+    } satisfies PlaybackSurface & {
+      setFrameSource: SetFrameSourceMock;
+      repaint: ReturnType<typeof vi.fn<() => void>>;
+    };
   }
 
   beforeEach(() => {
@@ -326,6 +333,28 @@ describe("popping out the picture the WASM path is drawing", () => {
 
     expect(canvas.ownerDocument).toBe(document);
     expect(pipDoc.body.querySelector("canvas")).toBeNull();
+  });
+
+  it("draws a frame for the mirror, which a paused canvas would never send", async () => {
+    // `captureStream` on a canvas emits frames only when something draws, so
+    // popping out while paused gave the mirror a track that was live, the
+    // right size, and stuck at readyState 0 until playback resumed. Measured
+    // in Chrome on 2026-09-17; `requestFrame()` does not help, because an
+    // automatic-mode track ignores it.
+    //
+    // Animation frames are stopped dead here on purpose. The tab runs a
+    // repaint loop of its own while popped out, which would satisfy any
+    // assertion about repainting and prove nothing — and a hidden tab runs no
+    // frames, which is exactly the case that needs the one-shot to exist.
+    vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    await renderWasmLivePlayer();
+    const { pipDoc } = fakePipWindow();
+    wasm.surface!.repaint.mockClear();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
+
+    expect(wasm.surface!.repaint).toHaveBeenCalled();
   });
 
   it("drives the presentation loop from the window that is on screen", async () => {

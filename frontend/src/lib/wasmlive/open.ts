@@ -8,7 +8,7 @@
 
 import { createAudioSink } from "./audioSink";
 import { createRenderer } from "./deinterlace";
-import { createPresenter } from "./presenter";
+import { createPresenter, type FieldPresentation } from "./presenter";
 import { createSession } from "./session";
 import { createWasmSurface } from "./wasmSurface";
 import {
@@ -111,10 +111,24 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     throw e;
   }
 
+  // The last field drawn, kept so it can be drawn again.
+  //
+  // Two things need that. The context is created with
+  // `preserveDrawingBuffer: false`, so the picture exists only until it is
+  // composited — a window that shows this canvas and schedules no frames of
+  // its own ends up black. And `captureStream` emits a frame only when the
+  // canvas is drawn to, so a paused session hands the pop-out's mirror a
+  // track that is live, correctly sized, and has never produced a frame.
+  // Redrawing costs one draw call against textures that are already resident.
+  let lastField: FieldPresentation | null = null;
+
   const presenter = createPresenter({
     now: () => audio.clockSeconds ?? 0,
     upload: (frame) => renderer.upload(frame),
-    draw: (field) => renderer.drawField(field.parity, field.interlaced),
+    draw: (field) => {
+      lastField = field;
+      renderer.drawField(field.parity, field.interlaced);
+    },
   });
 
   const session = createSession({
@@ -180,6 +194,9 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     diagnostics: () => surface.diagnostics(),
     on: (event, handler) => surface.on(event, handler),
     setFrameSource: (next: FrameSource) => loop.setFrameSource(next),
+    repaint() {
+      if (lastField) renderer.drawField(lastField.parity, lastField.interlaced);
+    },
     destroy() {
       loop.stop();
       releaseUnlock();

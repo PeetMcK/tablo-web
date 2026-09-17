@@ -1469,6 +1469,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     mirror.muted = true;
     mirror.autoplay = true;
     mirror.srcObject = source.captureStream();
+    // A canvas capture emits a frame only when something draws, so popping out
+    // while paused hands the mirror a track that is live and correctly sized
+    // and will never produce a picture — it stays at readyState 0 until
+    // playback resumes. Drawing the frame that is already there gives it one.
+    surfaceRef.current?.repaint?.();
     mirrorRef.current = mirror;
     return true;
   }, [usingWasm]);
@@ -1594,6 +1599,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   // A player torn down while popped out would leave the window orphaned,
   // holding a video element that no longer belongs to anything.
   useEffect(() => () => pipWindow.current?.close(), []);
+
+  /**
+   * Keep the tab's own copy of the picture alive while it is popped out.
+   *
+   * Presentation runs on the pop-out's clock while a pop-out is open, so this
+   * document schedules no frames — and the WebGL context keeps no drawing
+   * buffer between composites, so the canvas still sitting in the tab goes
+   * black. Redrawing the same field here costs one draw call and no decoding,
+   * and the loop is this document's own: when the tab is hidden, which is
+   * exactly when nobody is looking at it, the browser stops running it.
+   */
+  useEffect(() => {
+    if (!poppedOut || !usingWasm) return;
+    let handle = requestAnimationFrame(function paint() {
+      surfaceRef.current?.repaint?.();
+      handle = requestAnimationFrame(paint);
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [poppedOut, usingWasm]);
 
   /**
    * Click zones across the video surface: left two fifths rewind, middle fifth
