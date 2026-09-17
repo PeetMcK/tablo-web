@@ -1,6 +1,7 @@
 import { useMemo } from "react";
-import type { GuideChannel } from "../api/tablo";
+import type { GuideChannel, InProgressRecording } from "../api/tablo";
 import { ChannelLogo } from "./ChannelLogo";
+import { recordedSpan } from "../lib/recording";
 
 interface Props {
   channel: GuideChannel;
@@ -18,6 +19,12 @@ interface Props {
    * card holds the same state the hover gave it.
    */
   infoOpen?: boolean;
+  /**
+   * The recording capturing this programme right now, if any.
+   *
+   * Absent is the ordinary case and leaves the card exactly as it was.
+   */
+  recording?: InProgressRecording | null;
 }
 
 /** `7.1 PBS`, or the call sign alone where the device gave no number. */
@@ -35,8 +42,16 @@ function label(ch: GuideChannel): string {
  * nowhere else. A card is a channel and a programme sitting together; they are
  * two different things to want.
  */
-export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false }: Props) {
+export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
+                              recording = null }: Props) {
   const program = channel.current_program;
+
+  // What has actually been captured, when something is recording this. The
+  // ordinary bar below says how far through the programme the clock is, which
+  // is a different question and the less useful one once a recording exists:
+  // a tuner that joined late will never catch the opening, and only this says
+  // so. Identical geometry to the Library card, from the same function.
+  const captured = recording ? recordedSpan(recording) : null;
 
   // Calculate progress
   const progress = useMemo(() => {
@@ -160,14 +175,36 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false }: 
         {/* Progress bar */}
         {program && (
           <div className="mt-3">
-            <div className="h-1 w-full bg-fill-soft rounded-full overflow-hidden">
-              <div
-                className="accent-gradient-x h-full transition-all duration-1000"
-                style={{ width: `${progress}%` }}
-              />
+            <div className="h-1 w-full bg-fill-soft rounded-full overflow-hidden relative">
+              {captured ? (
+                <div
+                  className="bg-danger h-full absolute inset-y-0 transition-all duration-1000"
+                  style={{ left: `${captured.left}%`, width: `${captured.width}%` }}
+                />
+              ) : (
+                <div
+                  className="accent-gradient-x h-full transition-all duration-1000"
+                  style={{ width: `${progress}%` }}
+                />
+              )}
             </div>
-            <div className="flex justify-between mt-1 text-[10px] font-medium text-fg-muted uppercase tracking-widest">
+            <div className="flex justify-between items-center mt-1 text-[10px] font-medium text-fg-muted uppercase tracking-widest">
               <span>{new Date(program.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+              {/* Said here rather than over the artwork: this row already
+                  describes the programme's timing, which is exactly what a
+                  recording in flight changes the meaning of. */}
+              {recording && (
+                <span
+                  className="flex items-center gap-1 text-danger"
+                  aria-label={`Recording now: ${recording.title ?? "this programme"}`}
+                >
+                  <span className="relative flex w-1.5 h-1.5" aria-hidden>
+                    <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger opacity-60" />
+                    <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-danger" />
+                  </span>
+                  Recording
+                </span>
+              )}
               <span>{Math.round(program.duration / 60)}m</span>
             </div>
           </div>

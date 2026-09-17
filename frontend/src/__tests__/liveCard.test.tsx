@@ -199,3 +199,63 @@ describe("a Live TV card", () => {
     expect(tile.querySelector(".rounded-full")).toBeNull();
   });
 });
+
+describe("a live card whose programme is being recorded", () => {
+  const channelWith = (program: { start: string; duration: number }) =>
+    channel({ current_program: { ...channel().current_program!, ...program } });
+
+  const RECORDING_NOW = {
+    object_id: 86141, channel_identifier: "ch1",
+    start: "2026-09-17T17:30:00Z", duration: 1800,
+    recording_started: "2026-09-17T17:29:45Z",
+    recorded_seconds: 600, expected_seconds: 1815,
+    title: "Scrambled Up",
+  };
+
+  it("says so, so you are not left wondering whether to record it again", () => {
+    render(
+      <ChannelCard
+        channel={channelWith({ start: "2026-09-17T17:30:00Z", duration: 1800 })}
+        now={Date.parse("2026-09-17T17:39:45Z")}
+        recording={RECORDING_NOW}
+        onPlay={() => {}}
+        onInfo={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText(/recording now/i)).toBeInTheDocument();
+  });
+
+  it("draws what was captured, not how far through the clock is", () => {
+    // The ordinary bar says where the programme has got to. Once recording,
+    // the useful question is how much of it exists - and the tuner here began
+    // fifteen seconds early, so coverage starts left of the programme's start.
+    const { container } = render(
+      <ChannelCard
+        channel={channelWith({ start: "2026-09-17T17:30:00Z", duration: 1800 })}
+        now={Date.parse("2026-09-17T17:39:45Z")}
+        recording={RECORDING_NOW}
+        onPlay={() => {}}
+        onInfo={() => {}}
+      />,
+    );
+
+    const fill = container.querySelector<HTMLElement>(".bg-danger");
+    expect(fill).not.toBeNull();
+    expect(parseFloat(fill!.style.left)).toBe(0);
+  });
+
+  it("is left exactly as it was when nothing is recording it", () => {
+    const { container } = render(
+      <ChannelCard
+        channel={channelWith({ start: "2026-09-17T17:30:00Z", duration: 1800 })}
+        now={Date.parse("2026-09-17T17:39:45Z")}
+        onPlay={() => {}}
+        onInfo={() => {}}
+      />,
+    );
+
+    expect(screen.queryByLabelText(/recording now/i)).toBeNull();
+    expect(container.querySelector(".bg-danger")).toBeNull();
+  });
+});

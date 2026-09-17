@@ -266,6 +266,21 @@ export interface Recording {
   interlaced: boolean;
 }
 
+/** A recording in flight, as Live and Guide need it to mark their rows. */
+export interface InProgressRecording {
+  object_id: number;
+  /** The guide's key for the airing, with `start`. */
+  channel_identifier: string | null;
+  /** Scheduled start — not when the tuner actually began. */
+  start: string;
+  /** The scheduled slot, in seconds. */
+  duration: number;
+  recording_started: string | null;
+  recorded_seconds: number | null;
+  expected_seconds: number | null;
+  title: string | null;
+}
+
 export interface RecordingChannel {
   /**
    * The key the guide and the info sheet are addressed by.
@@ -559,6 +574,17 @@ export const api = {
       growing: boolean;
       mode: string;
     }>(`/recordings/${objectId}/watch-vod`, { method: "POST" }),
+
+  /**
+   * What is being recorded right now, for the views that are not the Library.
+   *
+   * Its own endpoint rather than fields on the guide: the guide is large,
+   * synced and cached hard, while this changes every few seconds and is almost
+   * always empty. Keyed by `(channel_identifier, start)`, which is how the
+   * guide addresses the very same airings.
+   */
+  inProgressRecordings: () =>
+    req<{ recordings: InProgressRecording[] }>("/recordings/in-progress"),
 
   /** Doubles as the "still watching" heartbeat that bounds server-side prefetch. */
   recordingStatus: (objectId: number, position?: number) =>
