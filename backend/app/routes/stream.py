@@ -59,6 +59,14 @@ RING_PRIME_TIMEOUT_SECONDS = float(os.environ.get("RING_PRIME_TIMEOUT_SECONDS", 
 # How long any single device request may take before it is abandoned.
 DEVICE_TIMEOUT_SECONDS = float(os.environ.get("DEVICE_TIMEOUT_SECONDS", "10"))
 
+# How often the follower asks the device for new segments.
+#
+# Faster than the device's own segment cadence on purpose. The ring is what the
+# browser's runway is measured against, and a follower that checks every two
+# seconds hands that runway out in lumps of that size - which is what a player
+# starting a few seconds behind the live edge then runs out of.
+RING_POLL_INTERVAL_SECONDS = float(os.environ.get("RING_POLL_INTERVAL_SECONDS", "1"))
+
 # A session id is hex, and a raw segment is the five-digit name the ring gave
 # it. Both are matched rather than sanitised: anything else is not ours.
 _SESSION_RE = re.compile(r"^[0-9a-f]{8,64}$")
@@ -273,7 +281,7 @@ async def _start_ring_session(
         fetch=fetch or _fetch_bytes,
         max_seconds=float(LIVE_DVR_SECONDS),
         verbose=True,
-        **({"interval": interval} if interval is not None else {}),
+        interval=RING_POLL_INTERVAL_SECONDS if interval is None else interval,
     )
     # Registered before the wait, not after: a player closed mid-open calls
     # DELETE, and there has to be something there for it to remove.

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { admit, selectFrame, MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
+import { LOOKAHEAD_SECONDS } from "../lib/wasmlive/session";
 import {
   audioClockSeconds, starvationSeconds, MAX_INTERPOLATION_SECONDS,
 } from "../lib/wasmlive/audioClock";
@@ -72,9 +73,10 @@ describe("admit", () => {
 
   it("holds more than the transport will feed ahead", () => {
     // The cap has to exceed the lookahead or it is not a backstop, it is the
-    // policy: 1.25s of 59.94 field presentations is ~75, and a queue smaller
-    // than that evicts continuously in normal running.
-    expect(MAX_QUEUED_FRAMES).toBeGreaterThan(1.25 * 59.94);
+    // policy: the session's two second lookahead is ~120 field presentations
+    // at 59.94, and a queue smaller than that evicts continuously in normal
+    // running.
+    expect(MAX_QUEUED_FRAMES).toBeGreaterThan(LOOKAHEAD_SECONDS * 59.94);
   });
 });
 

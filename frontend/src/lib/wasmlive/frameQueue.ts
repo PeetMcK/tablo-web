@@ -40,7 +40,7 @@ export interface Selection<T> {
  * we do not reach. That is the going rate for buffering decoded 1080p, and it
  * is why the transport paces at all rather than letting the decoder run at 8x.
  */
-export const MAX_QUEUED_FRAMES = 120;
+export const MAX_QUEUED_FRAMES = 150;
 
 /**
  * How far behind the clock may fall before entries are skipped rather than shown.

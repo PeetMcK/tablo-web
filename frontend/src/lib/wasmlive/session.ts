@@ -31,11 +31,15 @@ const STARVED_SECONDS = 1;
  *
  * This must stay comfortably under what the field queue holds, or the queue is
  * permanently full and evicting in normal running. At 59.94 fields a second,
- * 1.25s is about 75 of the 120 it can keep. Two seconds was ~120 against a cap
- * of 96, which is how the last live run drew three fields a second. The ring
- * is on the same host, so a second of lead is ample to ride out a fetch.
+ * two seconds is about 120 of the 150 it can keep.
+ *
+ * It also has to cover the lag between handing bytes over and getting decoded
+ * audio back, because that lag comes out of the buffer. At 1.25s the measured
+ * buffer oscillated between 0.54s and 0.97s - repeatedly grazing the 0.5s
+ * starvation floor, with the field queue swinging from 33 to 59 and no margin
+ * anywhere.
  */
-export const LOOKAHEAD_SECONDS = 1.25;
+export const LOOKAHEAD_SECONDS = 2;
 
 /**
  * Below this much buffered audio, fetch past the ordinary lookahead.
@@ -59,19 +63,29 @@ const MIN_BUFFER_SECONDS = 0.5;
  * queued in the worklet, and video fields a second behind the clock.
  *
  * Enough audio to restart a frozen clock is a second or two, not a window.
- * This must also stay under what the field queue holds, or the same starvation
- * happens on every underrun rather than only at startup.
+ * It is bounded at both ends: above the ordinary lookahead, or the escape does
+ * nothing at all, and no higher than the field queue can hold, or relieving
+ * starvation causes it somewhere else.
  */
-const STARVED_LOOKAHEAD_SECONDS = 2;
+export const STARVED_LOOKAHEAD_SECONDS = 2.5;
 
 /**
  * How much of the window to start behind the live edge.
  *
  * Live means live: starting at the oldest segment the ring still holds would
- * put the viewer a minute behind before they had seen a frame. One segment of
- * lead-in is enough to have something decoded when playback begins.
+ * put the viewer a minute behind before they had seen a frame. But three
+ * seconds was riding the edge of the data. The ring gains segments in lumps -
+ * the follower polls the device on its own schedule and each segment fetch off
+ * this device takes the better part of a second - so three seconds of runway
+ * is spent by one slow poll, and playback then waits on the device rather than
+ * on anything we control. Repeated often enough, that is what the fallback's
+ * starvation rule is for, and it duly fired.
+ *
+ * Ten seconds is still ahead of where viewers sit today: the transcode path
+ * carries about twelve seconds of encoder lead, which is what this design set
+ * out to claw back.
  */
-const START_BEHIND_EDGE_SECONDS = 3;
+const START_BEHIND_EDGE_SECONDS = 10;
 
 /**
  * How often to ask the ring what it has gained.

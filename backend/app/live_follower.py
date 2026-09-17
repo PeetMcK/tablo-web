@@ -106,6 +106,7 @@ class RingFollower:
         now: Clock = _utcnow,
         interval: float = 2.0,
         verbose: bool = False,
+        initial_backlog: float = 12.0,
     ) -> None:
         self.ring = ring
         self.directory = Path(directory)
@@ -115,6 +116,8 @@ class RingFollower:
         self.now = now
         self.interval = interval
         self.verbose = verbose
+        #: How much of the device's history to take on the first poll.
+        self.initial_backlog = initial_backlog
         self.directory.mkdir(parents=True, exist_ok=True)
         # The device's own sequence number of the newest segment taken. Kept
         # rather than a set of names because the device's window slides: a
@@ -138,10 +141,38 @@ class RingFollower:
                 self._media_url = url
         return text, url
 
+    def _start_at_live_edge(self, device_sequence: int, segments: list[DeviceSegment]) -> None:
+        """Skip the device's history, keeping only the newest few seconds.
+
+        This device is a DVR and its playlist offers minutes of recording, not
+        a live window. Taking all of it means the ring ingests history as fast
+        as it can be fetched - measured at 3.5x realtime, with the ring's live
+        edge running away from the viewer at two and a half seconds per second
+        and playback nearly five minutes behind the broadcast while appearing,
+        from inside, to be following live.
+
+        Enough of the tail to start decoding immediately, and no more.
+        """
+        kept = 0.0
+        index = len(segments)
+        while index > 0 and kept + segments[index - 1].duration <= self.initial_backlog:
+            index -= 1
+            kept += segments[index].duration
+        self._taken_through = device_sequence + index - 1
+        if self.verbose:
+            print(
+                f"[ring]   joining at the live edge: skipped {index} of"
+                f" {len(segments)} segments, kept {kept:.1f}s",
+                flush=True,
+            )
+
     async def poll_once(self) -> int:
         """Fetch what is new since the last poll. Returns how many arrived."""
         text, media_url = await self._media_playlist()
         device_sequence, segments = parse_device_playlist(text)
+
+        if self._taken_through is None and segments:
+            self._start_at_live_edge(device_sequence, segments)
 
         written = 0
         for offset, segment in enumerate(segments):

@@ -429,3 +429,66 @@ def test_prime_gives_up_on_a_device_that_accepts_and_then_says_nothing(tmp_path)
     held, elapsed = asyncio.run(drive())
     assert held == 0.0
     assert elapsed < 2.0
+
+
+# ---------------------------------------------------------------------------
+# Joining at the live edge rather than at the start of the device's history
+# ---------------------------------------------------------------------------
+
+def _history(count: int, duration: float = 1.5) -> str:
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
+    for i in range(count):
+        lines += [f"#EXTINF:{duration},", f"seg{i}.ts"]
+    return "\n".join(lines) + "\n"
+
+
+class HistoryDevice:
+    """A DVR offering minutes of recording, which is what this device does."""
+
+    def __init__(self, count: int):
+        self.text = _history(count)
+
+    async def fetch(self, url: str, byte_range=None) -> bytes:
+        if url.endswith(".m3u8"):
+            return self.text.encode()
+        return b"TS" + url.encode()
+
+
+def test_joins_at_the_live_edge_rather_than_taking_the_whole_history(tmp_path):
+    """The device is a DVR: its playlist is history, not a live window.
+
+    Taking all of it means the ring ingests the past as fast as it can be
+    fetched. Measured against the real device at 3.5x realtime - the ring's
+    live edge running away at two and a half seconds per second, and playback
+    nearly five minutes behind the broadcast while appearing, from inside, to
+    be following live.
+    """
+    device = HistoryDevice(200)          # five minutes of recording
+    follower = _follower(tmp_path, device)
+    follower.initial_backlog = 12.0
+
+    written = asyncio.run(follower.poll_once())
+
+    # Twelve seconds of 1.5s segments, and none of the history before them.
+    assert written == 8
+    assert follower.ring.held_seconds == 12.0
+
+
+def test_takes_everything_when_the_device_offers_less_than_the_backlog(tmp_path):
+    device = HistoryDevice(3)
+    follower = _follower(tmp_path, device)
+    follower.initial_backlog = 12.0
+
+    assert asyncio.run(follower.poll_once()) == 3
+
+
+def test_after_joining_it_follows_rather_than_rewinding(tmp_path):
+    """The second poll takes what is new, not the history deliberately skipped."""
+    device = HistoryDevice(200)
+    follower = _follower(tmp_path, device)
+    follower.initial_backlog = 12.0
+
+    asyncio.run(follower.poll_once())
+    device.text = _history(202)
+
+    assert asyncio.run(follower.poll_once()) == 2

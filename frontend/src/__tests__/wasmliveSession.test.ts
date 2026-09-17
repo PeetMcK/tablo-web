@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 
 import {
-  createSession, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS,
+  createSession, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
 } from "../lib/wasmlive/session";
+import { MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
 import type { SessionDeps } from "../lib/wasmlive/session";
 
@@ -107,8 +108,11 @@ describe("pacing", () => {
 
     const fetched = h.fetched.filter((u) => u.endsWith(".ts"));
     expect(fetched.length).toBeGreaterThan(0);
-    // The last segments in the window, not the first.
-    expect(fetched.some((u) => u.includes("00039.ts") || u.includes("00038.ts"))).toBe(true);
+    // Forty segments of 1.5s is a minute of window. Ten seconds back from its
+    // end lands on the sixth from last - nine seconds of runway, since a
+    // seventh would overshoot. Not the front of the window, and not so close
+    // to the end that one slow device poll leaves nothing to play.
+    expect(fetched[0]).toContain("00034.ts");
     expect(fetched.some((u) => u.includes("00000.ts"))).toBe(false);
   });
 
@@ -146,7 +150,7 @@ describe("pacing", () => {
     expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBe(firstBatch);
   });
 
-  it("fetches more as the buffer drains", async () => {
+  it("fetches more as playback consumes what it has", async () => {
     // Rewound into the middle of the window, where there is a minute of
     // material ahead: what is taken has to follow playback rather than
     // arriving all at once.
@@ -158,7 +162,9 @@ describe("pacing", () => {
     await h.session.poll();
     const before = h.fetched.filter((u) => u.endsWith(".ts")).length;
 
-    h.setBuffered(0);
+    // Five seconds play out, so the lookahead is no longer satisfied.
+    h.setClock(15);
+    h.setBuffered(0.2);
     await h.session.poll();
 
     expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(before);
@@ -176,6 +182,14 @@ describe("pacing", () => {
     // More than the ordinary lookahead of 1.25s, which at 1.5s a segment is
     // one; enough audio to get the clock moving again.
     expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(1);
+  });
+
+  it("widens the lookahead when starving rather than matching it", async () => {
+    // Both ends matter. Equal to the ordinary lookahead the escape does
+    // nothing at all; above what the field queue holds, relieving starvation
+    // just causes it somewhere else.
+    expect(STARVED_LOOKAHEAD_SECONDS).toBeGreaterThan(LOOKAHEAD_SECONDS);
+    expect(STARVED_LOOKAHEAD_SECONDS).toBeLessThanOrEqual(MAX_QUEUED_FRAMES / 59.94);
   });
 
   it("asks for more media more often than playback consumes it", async () => {
