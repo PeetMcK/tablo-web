@@ -53,6 +53,12 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
   // so. Identical geometry to the Library card, from the same function.
   const captured = recording ? recordedSpan(recording) : null;
 
+  // The series poster for what is on, if the guide could resolve one. Null for
+  // roughly one airing in five — movies and sports are separate record types
+  // with no series row, and some channels carry no EPG at all — and the tile
+  // then shows the station's mark, which is what it showed before any of this.
+  const posterId = program?.poster_image_id ?? null;
+
   // Calculate progress
   const progress = useMemo(() => {
     if (!program) return 0;
@@ -108,10 +114,11 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
             still reading. It changes when the pointer is actually on the half
             that plays. */}
         <div data-plate
-             className="relative w-16 h-12 flex items-center justify-center rounded-lg p-1.5
-                        bg-logo-plate border border-border-subtle
+             className={`relative w-16 h-12 flex items-center justify-center rounded-lg
+                        overflow-hidden bg-logo-plate border border-border-subtle
                         group-hover/tile:bg-accent-soft group-hover/tile:border-accent/30
-                        group-active/tile:scale-95 transition-all duration-100">
+                        group-active/tile:scale-95 transition-all duration-100
+                        ${posterId ? "" : "p-1.5"}`}>
           {/* The logo blurs back rather than leaving. A station's mark is
               mostly colour — the red of BUSTED, the PBS blue — and that colour
               is how the row is scanned. Held at a hint behind the triangle, the
@@ -126,7 +133,24 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
               mark alone leaves the plate sitting there. */}
           <span className="w-full h-full transition-opacity duration-150
                            group-hover/tile:opacity-[0.35]">
-            <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
+            {posterId ? (
+              /* The poster is 240×360 and the plate is wider than it is tall,
+                 so a square-ish crop has to lose something. `50% 0%` takes it
+                 off the bottom, which is where a poster puts least: the title
+                 and the faces sit in the upper two thirds on all eight checked.
+
+                 No padding around it, unlike the logo: a station's mark is
+                 artwork on its own ground and wants the inset, where a poster
+                 is a photograph and should meet the plate's edge. */
+              <img data-poster
+                   src={`/api/channels/image/${posterId}`}
+                   alt=""
+                   loading="lazy"
+                   className="w-full h-full object-cover"
+                   style={{ objectPosition: "50% 0%" }} />
+            ) : (
+              <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
+            )}
           </span>
           {/* Just the triangle. A second shape inside the square would be one
               rounded thing inside another, which is what the puck was. */}

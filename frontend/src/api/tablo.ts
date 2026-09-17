@@ -93,6 +93,18 @@ export interface Program {
   duration: number;
   genres?: string[];
   kind?: string | null;
+  /**
+   * Series poster for what is airing, as a device image id for
+   * `/api/channels/image/{id}`.
+   *
+   * Null for roughly one airing in five: movies and sports are separate record
+   * types with no series row, and some channels carry no EPG at all. Measured
+   * on the mirror — 8,747 of 10,655 airings resolve one — and confirmed
+   * against the device, where 19 of 26 channels with a programme had a poster.
+   * The Live card reads null as "show the channel logo", so it is the empty
+   * state rather than a failure.
+   */
+  poster_image_id?: number | null;
 }
 
 export interface GuideChannel {

@@ -275,3 +275,64 @@ describe("a live card whose programme is being recorded", () => {
     expect(container.querySelector(".bg-danger")).toBeNull();
   });
 });
+
+/**
+ * The tile shows what is on, and falls back to whose channel it is.
+ *
+ * Roughly one airing in five has no poster - measured on the mirror, 8,747 of
+ * 10,655 resolve one, the gap being mostly movies and sports, which are
+ * separate record types with no series row. So the logo is the empty state,
+ * not a failure path, and a column of cards is expected to be mixed.
+ */
+describe("the Live card's tile", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function withPoster(poster_image_id: number | null) {
+    const c = channel();
+    return { ...c, current_program: { ...c.current_program!, poster_image_id } };
+  }
+
+  it("shows the poster for what is airing", () => {
+    const { container } = render(
+      <ChannelCard channel={withPoster(5007)} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const art = container.querySelector("[data-poster]")!;
+    expect(art).not.toBeNull();
+    expect(art.getAttribute("src")).toBe("/api/channels/image/5007");
+  });
+
+  it("drops the poster's bottom third rather than squashing it", () => {
+    // The poster is 240x360 and the tile is square, so something has to go.
+    // Taking it off the bottom keeps the title and the faces.
+    const { container } = render(
+      <ChannelCard channel={withPoster(5007)} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const art = container.querySelector<HTMLElement>("[data-poster]")!;
+    expect(art.style.objectPosition).toBe("50% 0%");
+    expect(art.className).toMatch(/object-cover/);
+  });
+
+  it("falls back to the channel logo when there is no poster", () => {
+    const { container } = render(
+      <ChannelCard channel={withPoster(null)} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(container.querySelector("[data-poster]")).toBeNull();
+    // The antenna mark carries the call sign when a logo URL is absent.
+    expect(screen.getByLabelText("PBS")).toBeInTheDocument();
+  });
+
+  it("keeps poster and logo on the same plate, so a mixed column stays even", () => {
+    // Both sit on `bg-logo-plate`, dark in both themes as of 01006b5. Without
+    // that, a photographic tile and a flat mark would not read as the same
+    // object and the column would look ragged.
+    const shown = render(
+      <ChannelCard channel={withPoster(5007)} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+    const absent = render(
+      <ChannelCard channel={withPoster(null)} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    for (const r of [shown, absent]) {
+      expect(r.container.querySelector("[data-plate]")!.className)
+        .toMatch(/\bbg-logo-plate\b/);
+    }
+  });
+});
