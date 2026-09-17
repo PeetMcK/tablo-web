@@ -22,6 +22,26 @@ Fetch = Callable[..., Awaitable[bytes]]
 Clock = Callable[[], datetime]
 
 
+#: Consecutive missing segments that mean the stream is gone rather than one
+#: segment being lost. Three is comfortably more than the one or two a window
+#: boundary produces, and far below the fourteen-and-counting a dead watch
+#: session produced while the player sat on an empty playlist.
+GONE_LIMIT = 3
+
+
+def _is_gone(exc: Exception) -> bool:
+    """Whether the device has said this segment does not exist.
+
+    A 4xx is the device's considered answer rather than a hiccup, so the only
+    thing retrying buys is another one. Read off the response rather than by
+    exception type, so this does not depend on which HTTP client is in use -
+    the tests supply their own ``fetch``.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500
+
+
 class DeviceSegment(NamedTuple):
     uri: str
     duration: float
@@ -123,6 +143,9 @@ class RingFollower:
         # rather than a set of names because the device's window slides: a
         # sequence number is the only stable identity across polls.
         self._taken_through: int | None = None
+        #: Segments the device has answered 404 for, back to back. Reset by any
+        #: segment that arrives, so this only counts an unbroken run.
+        self._consecutive_gone = 0
         # Resolved once from the master playlist, then polled directly.
         self._media_url: str | None = None
 
@@ -189,17 +212,52 @@ class RingFollower:
                     urljoin(media_url, segment.uri), segment.byte_range,
                 )
             except Exception as exc:
-                # Leave _taken_through where it is so the next poll retries this
-                # segment. Skipping past it would leave a hole in the ring that
-                # nothing ever fills.
                 if self.verbose:
                     print(f"[ring]   segment {sequence} failed: {exc}", flush=True)
+                if _is_gone(exc):
+                    self._consecutive_gone += 1
+                    if self._consecutive_gone >= GONE_LIMIT:
+                        # Not one lost segment - the stream itself. This device
+                        # packs live as a single file addressed by byte range,
+                        # so every segment in the window shares one uri: when
+                        # that 404s, the device's watch session is dead and no
+                        # amount of skipping forward finds media again.
+                        # Measured: fourteen consecutive 404s on the same token
+                        # while the player polled an empty playlist twice a
+                        # second and showed nothing, for ever.
+                        #
+                        # Giving up is what lets the client fall back to the
+                        # transcode, which opens its own watch session.
+                        raise RuntimeError(
+                            f"device lost the stream: {GONE_LIMIT} consecutive"
+                            f" segments missing (last: {exc})"
+                        ) from exc
+                    # The device says this segment does not exist, and that is
+                    # not a verdict it revises: the stream has rolled past it,
+                    # or it was advertised before it was written. Retrying it
+                    # is retrying it for ever - and because the loop stops at
+                    # the first failure, one dead segment at the head of the
+                    # window stops the ring dead. Measured on a freshly started
+                    # channel: two polls, the same 404 both times, primed
+                    # 0.0s of 8.0s wanted in 0 segments, timed out at 15s, and
+                    # the viewer got neither the WASM path nor the transcode.
+                    #
+                    # A one-segment hole in the ring is the cheaper failure by
+                    # a wide margin, and the decoder resynchronises on the next
+                    # sequence header.
+                    self._taken_through = sequence
+                    continue
+                # Anything else - a timeout, a 5xx, a dropped connection - may
+                # well succeed next time. Leave _taken_through where it is so
+                # the next poll picks this segment up again rather than leaving
+                # a hole nothing fills.
                 break
 
             name = self.ring.next_name()
             (self.directory / name).write_bytes(payload)
             self.ring.append(segment.duration, self.now())
             self._taken_through = sequence
+            self._consecutive_gone = 0
             written += 1
 
         for evicted in self.ring.trim(self.max_seconds):

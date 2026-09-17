@@ -5,6 +5,8 @@ does, rather than pulling in an async plugin convention this suite does not use.
 """
 
 import asyncio
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from app.live_follower import (
@@ -492,3 +494,127 @@ def test_after_joining_it_follows_rather_than_rewinding(tmp_path):
     device.text = _history(202)
 
     assert asyncio.run(follower.poll_once()) == 2
+
+
+class _Response:
+    """Just enough of an HTTP response for the follower to read a status off."""
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+
+class _HttpError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__(f"Client error '{status_code}' for url")
+        self.response = _Response(status_code)
+
+
+class MissingSegmentDevice(FakeDevice):
+    """A device that has rolled past one segment and says so, for ever."""
+
+    def __init__(self, playlists, gone: str, status: int = 404):
+        super().__init__(playlists)
+        self.gone = gone
+        self.status = status
+
+    async def fetch(self, url: str, byte_range=None) -> bytes:
+        if url.endswith(self.gone):
+            self.requested.append(url)
+            raise _HttpError(self.status)
+        return await super().fetch(url, byte_range)
+
+
+def test_a_segment_the_device_has_lost_does_not_stop_the_ring(tmp_path):
+    """A 404 is permanent, and retrying it stops the ring dead.
+
+    The loop breaks at the first failure and leaves ``_taken_through`` where it
+    was, so a dead segment at the head of the window is re-requested on every
+    poll and nothing after it is ever fetched. Measured on a freshly started
+    channel: the same 404 twice, primed 0.0s of 8.0s wanted in 0 segments,
+    timed out at 15s — and the viewer got neither the WASM path nor the
+    transcode, because the fallback had nothing to fall back to.
+    """
+    device = MissingSegmentDevice([PLAYLIST_A], gone="seg100.ts")
+    follower = _follower(tmp_path, device)
+
+    assert asyncio.run(follower.poll_once()) == 1
+    assert [s.name for s in follower.ring.segments] == ["00000.ts"]
+
+    # And the next poll moves on rather than asking for the dead one again.
+    asyncio.run(follower.poll_once())
+    assert sum(1 for u in device.requested if u.endswith("seg100.ts")) == 1
+
+
+def test_a_transient_failure_is_retried_rather_than_skipped(tmp_path):
+    """The opposite case, and why the 404 check has to be narrow.
+
+    A timeout or a 5xx may well succeed next time, and skipping past it would
+    leave a hole in the ring that nothing ever fills.
+    """
+    class FlakyDevice(FakeDevice):
+        def __init__(self, playlists):
+            super().__init__(playlists)
+            self.failures = 1
+
+        async def fetch(self, url: str, byte_range=None) -> bytes:
+            if url.endswith("seg100.ts") and self.failures:
+                self.failures -= 1
+                self.requested.append(url)
+                raise TimeoutError("device did not answer")
+            return await super().fetch(url, byte_range)
+
+    device = FlakyDevice([PLAYLIST_A])
+    follower = _follower(tmp_path, device)
+
+    assert asyncio.run(follower.poll_once()) == 0
+    assert asyncio.run(follower.poll_once()) == 2
+    assert [s.name for s in follower.ring.segments] == ["00000.ts", "00001.ts"]
+
+
+def test_a_5xx_is_not_treated_as_gone(tmp_path):
+    device = MissingSegmentDevice([PLAYLIST_A], gone="seg100.ts", status=503)
+    follower = _follower(tmp_path, device)
+
+    assert asyncio.run(follower.poll_once()) == 0
+    assert follower.ring.segments == []
+
+
+def test_a_stream_the_device_has_lost_entirely_gives_up(tmp_path):
+    """One missing segment is a hole; every segment missing is a dead stream.
+
+    This device packs live as a single file addressed by byte range, so every
+    segment in the window shares one uri. When that 404s the device's watch
+    session is gone, and skipping forward just marches through sequence numbers
+    for ever. Measured: fourteen consecutive 404s on the same token while the
+    player polled an empty playlist twice a second and showed nothing.
+
+    Giving up is what lets the client fall back to the transcode, which opens a
+    watch session of its own.
+    """
+    class DeadStreamDevice(FakeDevice):
+        async def fetch(self, url: str, byte_range=None) -> bytes:
+            if url.endswith(".m3u8"):
+                return await super().fetch(url, byte_range)
+            self.requested.append(url)
+            raise _HttpError(404)
+
+    # A window longer than the give-up threshold, so the run can reach it.
+    playlist = (
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n"
+        "#EXT-X-MEDIA-SEQUENCE:100\n"
+        # Short segments, so the live-edge backlog keeps the whole window and
+        # the run of failures can actually reach the threshold.
+        + "".join(f"#EXTINF:1.000,\nseg{100 + i}.ts\n" for i in range(10))
+    )
+    device = DeadStreamDevice([playlist])
+    follower = _follower(tmp_path, device)
+
+    with pytest.raises(RuntimeError, match="device lost the stream"):
+        asyncio.run(follower.poll_once())
+
+
+def test_one_lost_segment_does_not_trip_the_give_up_rule(tmp_path):
+    device = MissingSegmentDevice([PLAYLIST_A], gone="seg100.ts")
+    follower = _follower(tmp_path, device)
+
+    assert asyncio.run(follower.poll_once()) == 1

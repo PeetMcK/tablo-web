@@ -95,6 +95,24 @@ LIVE_MODES = ("transcode", "raw", "ring")
 # session_id -> (ring, follower, polling task)
 ring_sessions: dict[str, tuple[SegmentRing, RingFollower | None, asyncio.Task | None]] = {}
 
+# One ring per channel, however many windows are watching it.
+#
+# A tuner is the scarce thing here - this device has four - and nothing about
+# the ring needs one per viewer: the follower already fetches each segment from
+# the device exactly once and every viewer reads the same files off disk. But
+# `start_stream` opened a fresh device watch and minted a new session id on
+# every request, so five windows on one channel took five tuners to fetch
+# identical bytes, and the fifth got a 503.
+#
+# Sharing needs two things the per-session case did not: a way to find the ring
+# for a channel, and a count of who is watching it, so that one window closing
+# does not stop the stream for the other four. The heartbeat needs neither -
+# every viewer polls the same playlist, so the existing idle reaper already
+# sees the session as busy while anyone is watching.
+ring_for_channel: dict[str, str] = {}
+ring_channel_of: dict[str, str] = {}
+ring_viewers: dict[str, int] = {}
+
 # What identifies one of our FFmpeg processes from the outside, once the dict
 # that held it is gone. It has to appear in the command line for `pgrep -f` to
 # find it - see the absolute playlist path in `live_ffmpeg_cmd`.
@@ -194,6 +212,12 @@ def _kill(session_id: str) -> None:
 
 def _stop_ring(session_id: str) -> None:
     """Cancel a ring session's follower and drop what it was holding."""
+    ring_viewers.pop(session_id, None)
+    channel = ring_channel_of.pop(session_id, None)
+    # Only if it still points at us: a channel reopened after this session was
+    # reaped already points at its successor.
+    if channel is not None and ring_for_channel.get(channel) == session_id:
+        del ring_for_channel[channel]
     entry = ring_sessions.pop(session_id, None)
     if entry is None:
         return
@@ -206,6 +230,17 @@ def _stop_ring(session_id: str) -> None:
     if task is not None:
         task.cancel()
     shutil.rmtree(RAW_DIR / session_id, ignore_errors=True)
+
+
+def await_release(session_id: str) -> None:
+    """Release a device session from sync code, without blocking the caller."""
+    try:
+        asyncio.get_running_loop().create_task(
+            state.release_stream_session(session_id)
+        )
+    except RuntimeError:
+        # No loop (a test, or shutdown): drop our own record at least.
+        state.stop_session(session_id)
 
 
 def reap_idle_sessions() -> list[str]:
@@ -238,12 +273,72 @@ def reap_idle_sessions() -> list[str]:
             shutil.rmtree(TRANSCODE_DIR / sid)
         except Exception:
             pass
-        state.stop_session(sid)
+        # Tell the device, or the session it opened is only ever released by
+        # its own expiry - which is how a restart of this backend used to leave
+        # one behind for every stream it held.
+        await_release(sid)
     return stale
 
 
 # The old name, kept because it says what most callers mean.
 reap_idle_transcoders = reap_idle_sessions
+
+
+# How often to refresh the device's watch sessions.
+#
+# The device hands out sessions with `keepalive: 165` - they expire in under
+# three minutes unless refreshed, and nothing here ever refreshed one. That is
+# what killed a live WASM session at about three and a half minutes: the token
+# expired, the device answered 404 for every segment, the ring stopped filling,
+# and the player sat on an empty playlist showing nothing.
+#
+# Comfortably inside the window, because a missed refresh costs the stream.
+KEEPALIVE_INTERVAL = float(os.environ.get("KEEPALIVE_INTERVAL", "60"))
+
+
+async def keepalive_forever():
+    """Refresh the sessions someone is actually watching - and only those.
+
+    Refreshing every session we hold would make the expiry useless as a
+    backstop: an abandoned session would be renewed for ever by the very loop
+    meant to keep live ones alive, and a tuner would be locked out until the
+    process ended. Tying the refresh to the same heartbeat the reaper uses
+    inverts that. Nobody asking means nobody refreshing, and the device's own
+    165-second expiry releases it without us having to be alive to notice -
+    which covers the one case we can never handle ourselves, a crash that takes
+    the token with it.
+
+    So a session survives exactly as long as someone is watching it:
+
+    * viewer connected -> playlist polled -> touched -> refreshed here
+    * viewer gone      -> not touched     -> not refreshed -> expires (165s),
+      and the reaper ends our side of it at LIVE_IDLE_SECONDS (120s) first
+    """
+    while True:
+        await asyncio.sleep(KEEPALIVE_INTERVAL)
+        now = time.monotonic()
+        for session_id in list(transcode_procs) + list(ring_sessions):
+            touched = session_touched.get(session_id)
+            if touched is None or now - touched > LIVE_IDLE_SECONDS:
+                continue                      # nobody is watching; let it lapse
+            token = state.session_token(session_id)
+            if token:
+                await state.keepalive_stream_session(token)
+
+
+async def release_all_sessions() -> None:
+    """Hand every device session back before this process goes.
+
+    Otherwise a restart leaks one per live stream: the token lives only in this
+    process, so once it is gone nothing can ever delete that session and the
+    device holds it until expiry. Nine restarts in one evening is how this was
+    found.
+    """
+    for session_id in list(transcode_procs) + list(ring_sessions):
+        try:
+            await state.release_stream_session(session_id)
+        except Exception:
+            pass
 
 
 async def reap_forever():
@@ -360,14 +455,47 @@ async def start_stream(
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    resolved_mode = mode or ("transcode" if transcode else "raw")
+
+    # Already watching this channel? Join that ring rather than taking another
+    # tuner for the same bytes. Checked before the device is touched at all,
+    # because touching it is precisely what costs the tuner.
+    if resolved_mode == "ring":
+        shared = ring_for_channel.get(identifier)
+        if shared and shared in ring_sessions:
+            ring_viewers[shared] = ring_viewers.get(shared, 1) + 1
+            touch_session(shared)
+            print(
+                f"[ring] {shared} joined for {identifier}"
+                f" ({ring_viewers[shared]} viewers, no extra tuner)",
+                flush=True,
+            )
+            return {
+                "session_id": shared,
+                "stream_url": f"/api/raw/{shared}/playlist.m3u8",
+                "mode": "ring",
+                "transcode": False,
+                "shared": True,
+            }
+
     try:
         session_id, sess = await state.start_stream(identifier)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        # A 503 from the device means one thing: it has no tuner to give. The
+        # device allocates them itself - `POST /guide/channels/{id}/watch` takes
+        # no tuner argument and there is no way to ask which are free - so the
+        # only thing the caller can do about it is stop watching something
+        # else, and they can only do that if told. Relayed bare, it read
+        # "Stream error: 503 Server Error: Service Unavailable for url ..."
+        # while the real cause was four live sessions on a four-tuner box.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status == 503:
+            raise HTTPException(status_code=503, detail=await _refusal_detail(identifier))
         raise HTTPException(status_code=502, detail=f"Stream error: {e}")
 
-    resolved = mode or ("transcode" if transcode else "raw")
+    resolved = resolved_mode
     started_at = datetime.now(timezone.utc)
 
     # NOTE: We use root-relative paths for the frontend so it works through the proxy
@@ -376,6 +504,12 @@ async def start_stream(
         stream_url = f"/api/transcoded/{session_id}/playlist.m3u8"
     elif resolved == "ring":
         await _start_ring_session(session_id, sess.stream.playlist_url, started_at)
+        # Registered only once the ring exists, so a failed open cannot leave a
+        # channel pointing at a session that never started.
+        if session_id in ring_sessions:
+            ring_for_channel[identifier] = session_id
+            ring_channel_of[session_id] = identifier
+            ring_viewers[session_id] = 1
         stream_url = f"/api/raw/{session_id}/playlist.m3u8"
     else:
         stream_url = f"/api/hls/{session_id}/playlist.m3u8"
@@ -503,16 +637,147 @@ async def stop_stream(session_id: str):
     # not optional housekeeping - a leaked follower keeps fetching for ever.
     # The same teardown the idle reaper uses, so there is one way for a ring
     # session to end rather than two that can drift apart.
+    #
+    # But a shared ring outlives any one viewer: five windows on one channel
+    # hold one tuner between them, and the first window to close must not take
+    # the picture away from the other four.
+    remaining = ring_viewers.get(session_id)
+    if remaining is not None and remaining > 1:
+        ring_viewers[session_id] = remaining - 1
+        print(
+            f"[ring] {session_id} released by one viewer,"
+            f" {remaining - 1} still watching",
+            flush=True,
+        )
+        # A viewer left, not the session: the device's session stays open for
+        # the others, so nothing is released here.
+        return {"ok": True, "shared": True}
+
     _stop_ring(session_id)
     session_touched.pop(session_id, None)
+    # And the directory regardless of whether the session was still registered.
+    # An id whose session has already gone - reaped, or stopped twice - can
+    # still have gigabytes on disk behind it, and `_stop_ring` returns early in
+    # exactly that case. Measured: a DELETE answering 200 while leaving the
+    # segments where they were.
+    shutil.rmtree(RAW_DIR / session_id, ignore_errors=True)
 
-    state.stop_session(session_id)
+    # And tell the device. Without this the watch session it opened is released
+    # only by its own expiry, which is how every stream this backend ever held
+    # - and every restart of it - left one behind.
+    await state.release_stream_session(session_id)
     return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
 # Raw ring: the DVR window for the WASM live path
 # ---------------------------------------------------------------------------
+
+async def device_tuners() -> list[dict]:
+    """What the device says about its own tuners, right now.
+
+    `/server/tuners` is not in the published type set but this device answers
+    it, and it is the only realtime view of what is holding what: each entry
+    carries `in_use`, and where the device knows it, the `channel_identifier`
+    using it.
+    """
+    result = await state.request_device("GET", "/server/tuners")
+    return result if isinstance(result, list) else []
+
+
+async def _refusal_detail(identifier: str) -> str:
+    """Explain a 503 from the device using the device's own tuner list.
+
+    A previous version of this asserted "no free tuner" for every 503 and
+    counted the sessions *this backend* was holding. Both were wrong. A
+    streaming channel is delivered over the internet and needs no tuner at all,
+    so telling someone to close other players when a FAST channel is simply
+    down sends them to fix the wrong thing - and this backend's own count says
+    nothing about what else on the network is using the device.
+    """
+    # Streaming channels are the device's cloud FAST feeds. The identifiers the
+    # cloud issues are distinctive, and the channel list knows the rest.
+    streaming = identifier.startswith("S999")
+    try:
+        tuners = await device_tuners()
+        used = [t for t in tuners if t.get("in_use")]
+        named = [t.get("channel_identifier") for t in used if t.get("channel_identifier")]
+        held = (
+            f" The device reports {len(used)} of {len(tuners)} slots in use"
+            + (f" ({', '.join(named)})." if named else ".")
+        )
+    except Exception:
+        held = ""
+
+    if streaming:
+        return (
+            "The device refused this streaming channel (503). Streaming channels"
+            " come from Tablo's cloud rather than an aerial, so this usually"
+            " means the channel itself is unavailable rather than anything"
+            " local." + held
+        )
+    return (
+        "The device refused this channel (503), which usually means it has no"
+        " tuner free." + held
+    )
+
+
+@router.get("/device/tuners")
+async def get_device_tuners():
+    """The device's tuner state, for diagnosing "why will nothing play"."""
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        tuners = await device_tuners()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+    used = [t for t in tuners if t.get("in_use")]
+    return {
+        "slots": len(tuners),
+        "in_use": len(used),
+        "free": len(tuners) - len(used),
+        "tuners": tuners,
+        # What this backend believes it is responsible for, so the two can be
+        # compared: anything in_use on the device with no session here is held
+        # by something else, or left over.
+        "ours": {
+            "ring": sorted(ring_sessions),
+            "transcode": sorted(transcode_procs),
+            "ring_channels": dict(ring_for_channel),
+        },
+    }
+
+
+@router.post("/debug/wasm-fallback")
+async def report_wasm_fallback(request: Request):
+    """Record why the WASM live path gave up, in the server's log.
+
+    The reason exists only in the browser, and the person who needs it is
+    usually not sitting at that browser - watching from another room, or from
+    another machine entirely. Every diagnosis of this path so far has meant
+    asking them to read a console back, which is slow and loses the detail that
+    matters. One line here puts it beside the ring's own log, where the rest of
+    the story already is.
+
+    Deliberately unauthenticated and best-effort: it is a log line, the caller
+    is our own page, and anything that makes reporting a failure able to fail
+    is worse than useless.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    reason = str(body.get("reason", "unknown"))[:200]
+    detail = str(body.get("detail", ""))[:500]
+    diagnostics = body.get("diagnostics")
+    print(
+        f"[wasm] client gave up: {reason}"
+        + (f" - {detail}" if detail else "")
+        + (f"\n[wasm]   {diagnostics}" if diagnostics else ""),
+        flush=True,
+    )
+    return {"ok": True}
+
 
 @router.get("/raw/{session_id}/playlist.m3u8")
 async def raw_playlist(session_id: str):

@@ -663,7 +663,24 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
      * decoders would be worse than either. The viewer sees a rebuffer.
      */
     const fallBack = async (channel: Channel, reason: string, staleSession?: string) => {
-      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`, { staleSession });
+      const diagnostics = surfaceRef.current?.diagnostics?.();
+      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`, {
+        staleSession, diagnostics,
+      });
+      // And to the server's log, where the ring's own account of the same
+      // moment already is. The reason exists only in the browser, and whoever
+      // needs it is usually not at that browser — which has meant reading
+      // consoles back a line at a time for every diagnosis of this path.
+      // Fire and forget: a failure to report a failure must not become one.
+      void fetch("/api/debug/wasm-fallback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reason,
+          detail: diagnostics?.failureDetail ?? null,
+          diagnostics,
+        }),
+      }).catch(() => {});
       setUsingWasm(false);
       // The ring session is finished with, and nothing else knows its id. Left
       // open it holds a tuner and keeps copying segments to disk for the life
