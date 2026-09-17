@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from functools import partial
 from types import SimpleNamespace
+from urllib.parse import urljoin
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 from .. import store
 from ..state import _run_sync, state
 from . import stream as stream_routes
+from ..vod_index import NotFinished, parse_vod_playlist
 from ..transcode_cache import (
     CacheFull,
     CacheState,
@@ -107,6 +109,83 @@ async def list_recordings():
         "total": state.recordings_total + len(orphans),
         "offline_only": len(orphans),
     }
+
+
+@router.post("/{object_id}/watch-vod")
+async def watch_recording_vod(object_id: int):
+    """Serve a finished recording as MPEG-2, straight from the device.
+
+    A recording is MPEG-2 video with AC-3 audio - the same thing the live path
+    decodes - so playing it needs no transcode at all. What makes a *finished*
+    one different from one still being written is that the device publishes it
+    as a complete VOD playlist: every segment addressable, a real duration, and
+    EXT-X-ENDLIST. Measured on a 3.5 hour recording, 8542 segments across 29
+    byte-ranged files.
+
+    The index is held; the media is not. Downloading it would be ~25GB for one
+    viewing of something the device already has, so segments are fetched on
+    demand - which is the whole difference between this and the ring.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        sess = await state.start_recording_session(path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    master = sess.get("playlist_url")
+    if not master:
+        raise HTTPException(status_code=502, detail="Device gave no playlist")
+
+    try:
+        index = await _fetch_vod_index(master)
+    except NotFinished:
+        # Still being written: no ENDLIST, only a rolling window, and it cannot
+        # be seeked by us or by the device's own app. `watch-raw` covers it.
+        raise HTTPException(
+            status_code=409,
+            detail="Recording is still being written; use watch-raw",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    session_id = uuid.uuid4().hex
+    state.streams[session_id] = SimpleNamespace(
+        stream=SimpleNamespace(token=sess.get("token")),
+    )
+    stream_routes.vod_sessions[session_id] = index
+    stream_routes.touch_session(session_id)
+
+    return {
+        "object_id": object_id,
+        "session_id": session_id,
+        "stream_url": f"/api/vod/{session_id}/playlist.m3u8",
+        "duration": index.duration,
+        "segments": len(index.segments),
+        "mode": "vod",
+    }
+
+
+async def _fetch_vod_index(master_url: str):
+    """Follow the master to its variant and parse that into an index."""
+    resp = await state.http.get(master_url, timeout=30)
+    resp.raise_for_status()
+    variant = next(
+        (line.strip() for line in resp.text.splitlines()
+         if line.strip() and not line.startswith("#")),
+        None,
+    )
+    url = urljoin(master_url, variant) if variant else master_url
+    playlist = await state.http.get(url, timeout=60)
+    playlist.raise_for_status()
+    return parse_vod_playlist(playlist.text, url)
 
 
 @router.post("/{object_id}/watch-raw")

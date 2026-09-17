@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 
 from ..live_follower import RingFollower
 from ..live_ring import SegmentRing
+from ..vod_index import VodIndex
 from ..state import state
 
 router = APIRouter(tags=["stream"])
@@ -113,6 +114,14 @@ ring_for_channel: dict[str, str] = {}
 ring_channel_of: dict[str, str] = {}
 ring_viewers: dict[str, int] = {}
 
+# Finished recordings, served straight from the device by byte range.
+#
+# Nothing here is copied to disk: a 3.5 hour recording is ~25GB, and the device
+# already has it. What we hold is the index - every segment's uri, byte range
+# and duration - which is a few hundred KB and is what makes seeking anywhere
+# in a three-hour recording one fetch away.
+vod_sessions: dict[str, "VodIndex"] = {}
+
 # What identifies one of our FFmpeg processes from the outside, once the dict
 # that held it is gone. It has to appear in the command line for `pgrep -f` to
 # find it - see the absolute playlist path in `live_ffmpeg_cmd`.
@@ -195,7 +204,8 @@ def touch_session(session_id: str) -> None:
     meant nothing ever reaped it, and a closed laptop held both for the life of
     the backend.
     """
-    if session_id in transcode_procs or session_id in ring_sessions:
+    if (session_id in transcode_procs or session_id in ring_sessions
+            or session_id in vod_sessions):
         session_touched[session_id] = time.monotonic()
 
 
@@ -261,7 +271,7 @@ def reap_idle_sessions() -> list[str]:
     """
     now = time.monotonic()
     stale = [
-        sid for sid in list(transcode_procs) + list(ring_sessions)
+        sid for sid in list(transcode_procs) + list(ring_sessions) + list(vod_sessions)
         # A session that has never been touched is one started moments ago,
         # before its player asked for anything. Give it the same grace.
         if now - session_touched.setdefault(sid, now) > LIVE_IDLE_SECONDS
@@ -269,6 +279,7 @@ def reap_idle_sessions() -> list[str]:
     for sid in stale:
         _kill(sid)
         _stop_ring(sid)
+        vod_sessions.pop(sid, None)
         try:
             shutil.rmtree(TRANSCODE_DIR / sid)
         except Exception:
@@ -317,7 +328,8 @@ async def keepalive_forever():
     while True:
         await asyncio.sleep(KEEPALIVE_INTERVAL)
         now = time.monotonic()
-        for session_id in list(transcode_procs) + list(ring_sessions):
+        live = list(transcode_procs) + list(ring_sessions) + list(vod_sessions)
+        for session_id in live:
             touched = session_touched.get(session_id)
             if touched is None or now - touched > LIVE_IDLE_SECONDS:
                 continue                      # nobody is watching; let it lapse
@@ -334,7 +346,7 @@ async def release_all_sessions() -> None:
     device holds it until expiry. Nine restarts in one evening is how this was
     found.
     """
-    for session_id in list(transcode_procs) + list(ring_sessions):
+    for session_id in list(transcode_procs) + list(ring_sessions) + list(vod_sessions):
         try:
             await state.release_stream_session(session_id)
         except Exception:
@@ -654,6 +666,7 @@ async def stop_stream(session_id: str):
         return {"ok": True, "shared": True}
 
     _stop_ring(session_id)
+    vod_sessions.pop(session_id, None)
     session_touched.pop(session_id, None)
     # And the directory regardless of whether the session was still registered.
     # An id whose session has already gone - reaped, or stopped twice - can
@@ -742,6 +755,7 @@ async def get_device_tuners():
         # by something else, or left over.
         "ours": {
             "ring": sorted(ring_sessions),
+            "vod": sorted(vod_sessions),
             "transcode": sorted(transcode_procs),
             "ring_channels": dict(ring_for_channel),
         },
@@ -777,6 +791,57 @@ async def report_wasm_fallback(request: Request):
         flush=True,
     )
     return {"ok": True}
+
+
+@router.get("/vod/{session_id}/playlist.m3u8")
+async def vod_playlist(session_id: str):
+    """Our playlist over the device's own media.
+
+    Fixed, complete, and ending in EXT-X-ENDLIST - so the player fetches it
+    once and can seek anywhere in it, which is the whole point of the VOD path.
+    """
+    index = _vod_session(session_id)
+    # The same heartbeat the ring uses. A paused viewer stops asking for
+    # segments but the session must not be reaped out from under them.
+    touch_session(session_id)
+    return Response(
+        content=index.playlist(),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+@router.get("/vod/{session_id}/{name}")
+async def vod_segment(session_id: str, name: str):
+    """One segment, fetched from the device on demand and never stored."""
+    index = _vod_session(session_id)
+    if not _SEGMENT_RE.match(name):
+        raise HTTPException(status_code=400, detail="Bad segment name")
+    number = int(name[:5])
+    if number < 0 or number >= len(index.segments):
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    touch_session(session_id)
+    segment = index.segments[number]
+    try:
+        payload = await _fetch_bytes(segment.url, segment.byte_range)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    return Response(
+        content=payload,
+        media_type="video/mp2t",
+        headers={"Cache-Control": "max-age=30", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+def _vod_session(session_id: str) -> VodIndex:
+    if not _SESSION_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Bad session id")
+    index = vod_sessions.get(session_id)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Stream session not found")
+    return index
 
 
 @router.get("/raw/{session_id}/playlist.m3u8")

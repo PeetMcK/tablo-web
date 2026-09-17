@@ -761,19 +761,30 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           const eligibility = wasmLiveEligible(window, localStorage, "ota");
           if (eligibility.eligible) {
             try {
-              const raw = await api.watchRecordingRaw(current.recording.object_id);
+              // A finished recording is a complete index - the device
+              // publishes it with EXT-X-ENDLIST - so the whole runtime is
+              // seekable. One still being written is a rolling window with no
+              // beginning to seek to, which is a different path and the only
+              // one it can have.
+              const inProgress = current.recording.state === "recording";
+              const raw = inProgress
+                ? await api.watchRecordingRaw(current.recording.object_id)
+                : await api.watchRecordingVod(current.recording.object_id);
               if (cancelled) {
                 api.stopStream(raw.session_id).catch(() => {});
                 return;
               }
               log.player(`open recording ${current.recording.object_id} as mpeg-2`, {
                 session: raw.session_id, url: raw.stream_url,
+                mode: inProgress ? "ring" : "vod",
+                duration: "duration" in raw ? fmt(raw.duration) : "live window",
               });
               setSessionId(raw.session_id);
               setUsingWasm(true);
               const surface = await openWasmSurface({
                 playlistUrl: raw.stream_url,
-                originMs: raw.origin_ms,
+                originMs: "origin_ms" in raw ? raw.origin_ms : Date.now(),
+                vod: "duration" in raw ? { durationSeconds: raw.duration } : undefined,
                 canvas: canvasRef.current,
                 onFailure: (reason) => {
                   log.warn(`recording wasm gave up (${reason}) — using the transcode`);

@@ -808,6 +808,68 @@ describe("createSession", () => {
   });
 });
 
+describe("a finished recording", () => {
+  it("reads the index once, because it will never change", async () => {
+    // The live path re-reads every poll because its window slides. A recording
+    // carries EXT-X-ENDLIST: re-fetching 1.2MB of playlist twice a second buys
+    // nothing at all.
+    let playlistFetches = 0;
+    const h = harness({
+      vod: { durationSeconds: 600 },
+      fetchText: async () => { playlistFetches += 1; return DEEP_PLAYLIST; },
+    });
+    h.setClock(null);
+    await h.session.start();
+    await h.session.poll();
+    await h.session.poll();
+
+    expect(playlistFetches).toBe(1);
+  });
+
+  it("starts at the beginning, not near the live edge", async () => {
+    // Joining near the edge exists so a live viewer is not a minute behind the
+    // broadcast. For something already recorded it just skips the first hour.
+    const h = harness({
+      vod: { durationSeconds: 600 },
+      fetchText: async () => DEEP_PLAYLIST,
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    const taken = h.fetched.filter((u) => u.endsWith(".ts"));
+    expect(taken.length).toBeGreaterThan(0);
+    expect(taken[0]).toContain("00000.ts");
+  });
+
+  it("reports the whole runtime as seekable, not what it has fetched", async () => {
+    // What lets the scrubber show 215 minutes and a seek land anywhere in them.
+    const h = harness({
+      vod: { durationSeconds: 12913 },
+      fetchText: async () => DEEP_PLAYLIST,
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    expect(h.session.seekable).toEqual([0, 12913]);
+  });
+
+  it("still paces its feeding like the live path", async () => {
+    // The whole point of the VOD mode being three small differences: a fixed
+    // index must not become a licence to swallow three hours of media.
+    const h = harness({
+      vod: { durationSeconds: 600 },
+      fetchText: async () => DEEP_PLAYLIST,
+    });
+    h.setClock(null);
+    h.setBuffered(0);
+    await h.session.start();
+
+    const taken = h.fetched.filter((u) => u.endsWith(".ts")).length;
+    expect(taken).toBeLessThanOrEqual(3);
+    expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(taken);
+  });
+});
+
 describe("createWasmSurface", () => {
   it("presents the session through the PlaybackSurface contract", async () => {
     const { session } = harness();

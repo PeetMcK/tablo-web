@@ -179,6 +179,19 @@ export interface SessionDeps {
   nowMs(): number;
   /** Starts a repeating callback; returns a function that stops it. */
   schedule(callback: () => void, intervalMs: number): () => void;
+  /**
+   * Set for a finished recording, which is a fixed index rather than a window.
+   *
+   * Three things differ and nothing else does: the playlist is fetched once
+   * because it carries EXT-X-ENDLIST and will never change, playback starts at
+   * the beginning rather than near the live edge, and the seekable range is the
+   * recording's real duration rather than what has been fetched so far.
+   *
+   * Feeding, pacing, the epoch, the field queue and the fallback are the live
+   * path's, untouched — a seek already tears the decoder down and rebuilds it
+   * at a new epoch, which is exactly what seeking in a recording needs.
+   */
+  vod?: { durationSeconds: number };
 }
 
 export type SessionEvent = "ready" | "timeupdate" | "waiting" | "playing" | "error";
@@ -360,9 +373,17 @@ export function createSession(deps: SessionDeps): LiveSession {
     // was. Checking after each one is the page-side half of the seek race —
     // the worker-side half is the epoch stamped on what comes back.
     const mine = epoch;
-    const text = await deps.fetchText(deps.playlistUrl);
-    if (mine !== epoch) return;
-    playlist = parseMediaPlaylist(text);
+
+    // A recording's index is complete and fixed — it carries EXT-X-ENDLIST —
+    // so it is read once and never again. The timer still runs, because it is
+    // what drives feeding as the clock advances; it is only the fetch that is
+    // pointless. The live path re-reads every time because its window slides.
+    if (!deps.vod || playlist === null) {
+      const text = await deps.fetchText(deps.playlistUrl);
+      if (mine !== epoch) return;
+      playlist = parseMediaPlaylist(text);
+    }
+    if (playlist === null) return;
     const { start: windowStart } = playlistWindow(playlist, deps.originMs);
 
     // After a seek, start again from the segment covering the target.
@@ -375,6 +396,12 @@ export function createSession(deps: SessionDeps): LiveSession {
         ?? startNearEdge(playlist, START_BEHIND_EDGE_SECONDS);
       takenThrough = at ? at.sequence - 1 : -1;
       seekTarget = null;
+    } else if (takenThrough < 0 && deps.vod) {
+      // A recording has a beginning, and that is where it starts. Joining near
+      // the edge is a live behaviour: it exists so a viewer is not a minute
+      // behind the broadcast, which means nothing for something already
+      // recorded.
+      takenThrough = playlist.mediaSequence - 1;
     } else if (takenThrough < 0) {
       // Opening: begin near the live edge, counted back from the newest
       // segment rather than looked up by media time. A primed ring fetches the
@@ -663,6 +690,10 @@ export function createSession(deps: SessionDeps): LiveSession {
     },
 
     get seekable() {
+      // A recording's range is its whole runtime, known up front from the
+      // index — not the part that happens to have been fetched. That is what
+      // lets the scrubber show 215 minutes and a seek land anywhere in them.
+      if (deps.vod) return [0, deps.vod.durationSeconds] as const;
       if (!playlist) return null;
       const { start, end } = playlistWindow(playlist, deps.originMs);
       return end > start ? ([start, end] as const) : null;

@@ -499,6 +499,23 @@ export const api = {
       mode: string;
     }>(`/recordings/${objectId}/watch-raw`, { method: "POST" }),
 
+  /**
+   * Serve a finished recording as MPEG-2, straight from the device.
+   *
+   * Unlike `watchRecordingRaw` this is a complete index rather than a rolling
+   * window, so the whole runtime is seekable. 409 means the recording is still
+   * being written and the raw path should be used instead.
+   */
+  watchRecordingVod: (objectId: number) =>
+    req<{
+      object_id: number;
+      session_id: string;
+      stream_url: string;
+      duration: number;
+      segments: number;
+      mode: string;
+    }>(`/recordings/${objectId}/watch-vod`, { method: "POST" }),
+
   /** Doubles as the "still watching" heartbeat that bounds server-side prefetch. */
   recordingStatus: (objectId: number, position?: number) =>
     req<RecordingStatus>(

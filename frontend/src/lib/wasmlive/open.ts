@@ -69,6 +69,13 @@ export interface OpenOptions {
   canvas: HTMLCanvasElement | null;
   /** Called when the session gives up, with the reason. */
   onFailure: (reason: string) => void;
+  /**
+   * Set for a finished recording: a fixed index rather than a sliding window.
+   *
+   * Read the session's own `vod` for what this changes — it is three things,
+   * and the decode path is not one of them.
+   */
+  vod?: { durationSeconds: number };
 }
 
 export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSurface> {
@@ -127,6 +134,7 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
       if (!resp.ok) throw new Error(`segment ${resp.status}`);
       return resp.arrayBuffer();
     },
+    vod: options.vod,
     nowMs: () => performance.now(),
     schedule: (callback, intervalMs) => {
       const id = setInterval(callback, intervalMs);
