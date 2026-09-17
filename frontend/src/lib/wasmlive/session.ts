@@ -158,6 +158,15 @@ const START_BEHIND_EDGE_SECONDS = 10;
  */
 export const POLL_INTERVAL_MS = 500;
 
+/**
+ * How long the worker gets to free its decoder before it is terminated anyway.
+ *
+ * Generous enough for a `close` that has to drain a read in flight, short
+ * enough that a worker wedged inside libav — the failure that started all of
+ * this — cannot keep its thread alive after the session is gone.
+ */
+export const CLOSE_GRACE_MS = 2000;
+
 export interface SessionDeps {
   playlistUrl: string;
   /** When the backend opened this session, which media time is measured from. */
@@ -352,7 +361,12 @@ export function createSession(deps: SessionDeps): LiveSession {
 
     // After a seek, start again from the segment covering the target.
     if (seekTarget !== null) {
-      const at = segmentAt(playlist, deps.originMs, seekTarget);
+      // A target the window cannot place falls back to the live edge, never to
+      // the front of the window. `takenThrough = -1` used to mean the latter,
+      // and it also skipped the `else if` below — so a seek past the end fed
+      // from `mediaSequence` and took the viewer up to an hour backwards.
+      const at = segmentAt(playlist, deps.originMs, seekTarget)
+        ?? startNearEdge(playlist, START_BEHIND_EDGE_SECONDS);
       takenThrough = at ? at.sequence - 1 : -1;
       seekTarget = null;
     } else if (takenThrough < 0) {
@@ -658,8 +672,29 @@ export function createSession(deps: SessionDeps): LiveSession {
       stopPolling?.();
       stopPolling = null;
       deps.presenter.destroy();
+
+      // Let the worker free its decoder before the thread goes.
+      //
+      // This posted `close` and called `terminate()` on the next line, which
+      // kills the thread before it dequeues the message — so `close` never ran
+      // and everything inside it was dead code that had never once executed in
+      // production. Terminating does reclaim the thread's memory either way,
+      // which is why nothing was visibly wrong; it is also why this is cheap
+      // to do properly.
+      let terminated = false;
+      const finish = () => {
+        if (terminated) return;
+        terminated = true;
+        deps.worker.terminate();
+      };
+      deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
+        if (event.data?.type === "closed") finish();
+      };
       post({ type: "close" });
-      deps.worker.terminate();
+      // And a deadline, because a worker wedged inside libav would otherwise
+      // never be terminated at all.
+      setTimeout(finish, CLOSE_GRACE_MS);
+
       void deps.audio.destroy();
       handlers.clear();
     },

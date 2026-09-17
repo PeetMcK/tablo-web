@@ -59,11 +59,31 @@ export type FromWorker =
   | { type: "video"; frames: DecodedVideoFrame[]; epoch: number }
   | { type: "audio"; chunks: DecodedAudioChunk[]; epoch: number }
   | { type: "stats"; stats: DecoderStats }
+  /**
+   * The decoder has been freed and the worker may be terminated.
+   *
+   * The page used to post `close` and call `terminate()` in the same breath,
+   * which kills the thread before it dequeues the message - so `close` never
+   * ran, and the frees inside it were dead code that had never executed in
+   * production.
+   */
+  | { type: "closed" }
   | { type: "error"; message: string };
 
 export function createWorkerHandler(
-  /** Makes a decoder that emits through the callback it is given. */
-  make: (onOutput: (out: DecodeOutput) => void) => Promise<LibavDecoder>,
+  /**
+   * Makes a decoder that emits through the callbacks it is given.
+   *
+   * `onError` matters as much as `onOutput`: the read pump can die at a moment
+   * when no `push` is pending - pacing holds segments back whenever the field
+   * queue is full or the viewer has paused - and a failure reported only on
+   * the next push surfaced six seconds later as the frozen-picture watchdog,
+   * naming the wrong cause.
+   */
+  make: (
+    onOutput: (out: DecodeOutput) => void,
+    onError: (error: Error) => void,
+  ) => Promise<LibavDecoder>,
   post: (message: FromWorker, transfer: Transferable[]) => void,
 ): (message: ToWorker) => Promise<void> {
   let decoder: LibavDecoder | null = null;
@@ -98,7 +118,7 @@ export function createWorkerHandler(
       switch (message.type) {
         case "open":
           if (opening) return;  // a second open is a no-op, not a second decoder
-          opening = make(emit);
+          opening = make(emit, (error) => post({ type: "error", message: error.message }, []));
           decoder = await opening;
           post({ type: "opened" }, []);
           return;
@@ -132,9 +152,15 @@ export function createWorkerHandler(
           return;
 
         case "close":
-          await decoder?.close();
-          decoder = null;
-          opening = null;
+          try {
+            await decoder?.close();
+          } finally {
+            decoder = null;
+            opening = null;
+            // In a `finally`: a close that throws must still release the page,
+            // or it waits out the grace period for nothing.
+            post({ type: "closed" }, []);
+          }
           return;
       }
     } catch (e) {

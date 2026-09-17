@@ -98,6 +98,27 @@ describe("createWorkerHandler", () => {
     expect(decoder.close).toHaveBeenCalledOnce();
   });
 
+  it("reports a decoder failure when it happens, not on the next segment", async () => {
+    // The read pump can die at a moment when no push is pending: pacing holds
+    // segments back whenever the field queue is full or the viewer has paused.
+    // Reported only on the next push, the failure surfaced six seconds later
+    // as the frozen-picture watchdog's "nothing drawn for 6s" - the right
+    // session ended, under the wrong stated cause, with the real error still
+    // sitting in a variable.
+    const posted: FromWorker[] = [];
+    let fail!: (error: Error) => void;
+    const handle = createWorkerHandler(
+      async (onOutput, onError) => { fail = onError; return fakeDecoder(onOutput); },
+      (m) => posted.push(m),
+    );
+    await handle({ type: "open" });
+    posted.length = 0;
+
+    fail(new Error("libav read failed: -22"));
+
+    expect(posted).toEqual([{ type: "error", message: "libav read failed: -22" }]);
+  });
+
   it("stamps decoded media with the epoch it belongs to", async () => {
     const posted: FromWorker[] = [];
     const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
 import {
-  createSession, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
+  createSession, CLOSE_GRACE_MS, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS,
+  STARVED_LOOKAHEAD_SECONDS,
 } from "../lib/wasmlive/session";
 import { MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
@@ -489,6 +490,26 @@ describe("createSession", () => {
     expect(fetched).toContain("/api/raw/abc/00005.ts");
   });
 
+  it("seeks to the live edge, not the front of the window, when asked past the end", async () => {
+    // Dragging the scrubber to the right-hand end. The target lands at or past
+    // the window end about half the time — the range end the player clamps to
+    // is up to half a second stale and the ring grows every second — and the
+    // session used to answer that by feeding from `mediaSequence`, up to an
+    // hour behind where the viewer was pointing.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    await h.session.start();
+    h.fetched.length = 0;
+
+    h.session.seek(1000);              // well past a 60s window
+    await h.session.poll();
+
+    const taken = h.fetched.filter((u) => u.endsWith(".ts"));
+    expect(taken.length).toBeGreaterThan(0);
+    expect(taken.some((u) => u.includes("00000.ts"))).toBe(false);
+    expect(taken[0]).toContain("00039.ts");
+  });
+
   it("fails when the worker reports an error", async () => {
     const { session, worker } = harness();
     await session.start();
@@ -653,13 +674,55 @@ describe("createSession", () => {
     expect(events).toEqual([]);
   });
 
-  it("terminates the worker and tears down audio on destroy", async () => {
-    const { session, worker, audio, presenter } = harness();
+  it("lets the worker free its decoder before terminating it", async () => {
+    // This used to post `close` and call `terminate()` on the next line, which
+    // kills the thread before it dequeues the message — so the decoder's own
+    // teardown never ran, and everything in it was dead code that had never
+    // executed in production.
+    const { session, worker, posted, audio, presenter } = harness();
     await session.start();
+    posted.length = 0;
+
     session.destroy();
+
+    expect(posted.map((m) => m.type)).toContain("close");
+    expect(worker.terminate).not.toHaveBeenCalled();
+
+    worker.onmessage?.({ data: { type: "closed" } } as MessageEvent);
+
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(audio.destroy).toHaveBeenCalledOnce();
     expect(presenter.destroy).toHaveBeenCalled();
+  });
+
+  it("terminates a worker that never answers, rather than leaving the thread", async () => {
+    vi.useFakeTimers();
+    try {
+      const { session, worker } = harness();
+      await session.start();
+      session.destroy();
+
+      vi.advanceTimersByTime(CLOSE_GRACE_MS + 1);
+
+      expect(worker.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminates once, however the close resolves", async () => {
+    vi.useFakeTimers();
+    try {
+      const { session, worker } = harness();
+      await session.start();
+      session.destroy();
+      worker.onmessage?.({ data: { type: "closed" } } as MessageEvent);
+      vi.advanceTimersByTime(CLOSE_GRACE_MS + 1);
+
+      expect(worker.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("survives a failed poll rather than ending the session", async () => {
