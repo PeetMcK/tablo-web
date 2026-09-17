@@ -58,11 +58,24 @@ export interface Channel {
   display_name: string;
 }
 
+/**
+ * How a live stream reaches the browser.
+ *
+ * `transcode` runs FFmpeg as it always has. `raw` proxies the device's own
+ * HLS untouched, which plays for OTT and is unrenderable for MPEG-2. `ring`
+ * copies the device's segments into a DVR window of our own, for the WASM
+ * decoder to read.
+ */
+export type LiveMode = "transcode" | "raw" | "ring";
+
 export interface StreamStart {
   session_id: string;
   proxy_url: string;
   stream_url: string;
   transcoded?: boolean;
+  mode?: LiveMode;
+  /** When the backend opened the session; media time is measured from here. */
+  started_at?: string;
 }
 
 export interface TranscodeStatus {
@@ -143,6 +156,27 @@ export interface AiringDetail {
   image_url: string | null;
   /** Computed server-side — the browser's clock may differ from the guide's. */
   airing_now: boolean;
+  /**
+   * The device can record this.
+   *
+   * False for OTT/FAST airings: they exist only in the cloud, which carries no
+   * device path, no schedule block and no series — see docs/tablo-api.md.
+   */
+  schedulable: boolean;
+  /** Derived server-side: any schedule state but "none", "skipped" or null. */
+  scheduled: boolean;
+  /**
+   * Already finished, so recording it is no longer possible.
+   *
+   * Not the inverse of `airing_now`, which is also false for everything
+   * upcoming — which is the main thing anyone records.
+   */
+  past: boolean;
+  /** The device's own state string, passed through. */
+  schedule_state: string | null;
+  skip_reason: string | null;
+  /** Null for a one-off, a movie, or an airing whose series is unknown. */
+  series: { path: string; schedule_rule: string | null } | null;
   channel: {
     identifier: string;
     call_sign: string | null;
@@ -153,6 +187,9 @@ export interface AiringDetail {
     kind: string | null;
   };
 }
+
+/** What a series records: every episode, only new ones, or nothing. */
+export type SeriesRule = "all" | "new" | "none";
 
 export type CacheState = "absent" | "partial" | "complete" | "failed";
 
@@ -165,8 +202,40 @@ export interface Recording {
   subtitle: string | null;
   description: string | null;
   start: string;
-  /** Seconds actually recorded, including padding — not the scheduled slot. */
+  /** Seconds actually recorded, including padding — not the scheduled slot.
+   *  While `state` is "recording" the device has not settled this yet and it
+   *  reads as the scheduled slot; `recorded_seconds` is what exists so far. */
   duration: number;
+  /**
+   * Seconds recorded so far, or null once finished — when `duration` is it.
+   *
+   * Counted from when the tuner actually started, which the device reports; the
+   * only assumption left is that recording has run continuously since.
+   */
+  recorded_seconds: number | null;
+  /**
+   * How long this recording will be when it finishes, or null once it has.
+   *
+   * Not the scheduled slot: a show whose tuner started 63 minutes late will be
+   * an hour shorter than booked, and a progress bar drawn against the slot
+   * could never fill.
+   */
+  expected_seconds: number | null;
+  /**
+   * When the tuner actually began, ISO — for finished recordings too.
+   *
+   * Taken from the device's `recorded_offsets`, which is signed: a recording
+   * that started early reports a time before `start`.
+   */
+  recording_started: string | null;
+  /**
+   * The scheduled slot, in seconds, always.
+   *
+   * `duration` stops meaning this the moment a recording finishes and becomes
+   * what was actually captured, so the coverage bar is drawn against this
+   * instead — a 3h game padded to 3h30 has a 3h slot and a 3h30 duration.
+   */
+  slot_seconds: number;
   thumbnail: string | null;
   width: number | null;
   height: number | null;
@@ -197,7 +266,29 @@ export interface Recording {
   interlaced: boolean;
 }
 
+/** A recording in flight, as Live and Guide need it to mark their rows. */
+export interface InProgressRecording {
+  object_id: number;
+  /** The guide's key for the airing, with `start`. */
+  channel_identifier: string | null;
+  /** Scheduled start — not when the tuner actually began. */
+  start: string;
+  /** The scheduled slot, in seconds. */
+  duration: number;
+  recording_started: string | null;
+  recorded_seconds: number | null;
+  expected_seconds: number | null;
+  title: string | null;
+}
+
 export interface RecordingChannel {
+  /**
+   * The key the guide and the info sheet are addressed by.
+   *
+   * Null for an offline copy of something the device has since deleted: the
+   * airing that described it is gone too, so there is nothing to look up.
+   */
+  identifier: string | null;
   call_sign: string;
   network: string | null;
   /** Virtual channel, e.g. "8.1". */
@@ -390,6 +481,26 @@ export const api = {
       `&start=${encodeURIComponent(start)}`,
     ),
 
+  /**
+   * Record, or stop recording, one episode.
+   *
+   * Keyed the same way `airingDetail` is, and answers with the same shape: the
+   * device replies to a write with the full updated record, so there is
+   * nothing to re-fetch afterwards.
+   */
+  scheduleAiring: (channel: string, start: string, scheduled: boolean) =>
+    req<AiringDetail>("/schedule/airing", {
+      method: "PUT",
+      body: JSON.stringify({ channel, start, scheduled }),
+    }),
+
+  /** Set the series rule. Affects every future episode, not just this one. */
+  scheduleSeries: (channel: string, start: string, rule: SeriesRule) =>
+    req<AiringDetail>("/schedule/series", {
+      method: "PUT",
+      body: JSON.stringify({ channel, start, rule }),
+    }),
+
   guide: () => req<GuideChannel[]>("/channels/guide"),
   guideStream: (signal?: AbortSignal) => guideStream(signal),
   guideGridStream: (signal?: AbortSignal) => guideGridStream(signal),
@@ -426,6 +537,67 @@ export const api = {
   watchRecording: (objectId: number) =>
     req<RecordingWatch>(`/recordings/${objectId}/watch`, { method: "POST" }),
 
+  /**
+   * Follow a recording's own MPEG-2 segments, for the WASM decoder.
+   *
+   * A recording is MPEG-2 video with AC-3 audio - the same thing the live path
+   * decodes - so playing it needs no transcode at all. The transcode is what
+   * caching is for.
+   */
+  watchRecordingRaw: (objectId: number) =>
+    req<{
+      object_id: number;
+      session_id: string;
+      stream_url: string;
+      origin_ms: number;
+      mode: string;
+    }>(`/recordings/${objectId}/watch-raw`, { method: "POST" }),
+
+  /**
+   * Serve a recording as MPEG-2, straight from the device, by byte range.
+   *
+   * Unlike `watchRecordingRaw` this is an index rather than a rolling window,
+   * so playback starts at the first frame and seeks anywhere in what exists.
+   *
+   * A recording still being written comes back with `growing: true` and a
+   * `duration` of what is held so far. It used to be refused with a 409, on the
+   * belief that the device offered no reachable beginning for one; measured
+   * against the device, it publishes from byte 0 and appends.
+   */
+  watchRecordingVod: (objectId: number) =>
+    req<{
+      object_id: number;
+      session_id: string;
+      stream_url: string;
+      duration: number;
+      segments: number;
+      growing: boolean;
+      mode: string;
+    }>(`/recordings/${objectId}/watch-vod`, { method: "POST" }),
+
+  /**
+   * What is being recorded right now, for the views that are not the Library.
+   *
+   * Its own endpoint rather than fields on the guide: the guide is large,
+   * synced and cached hard, while this changes every few seconds and is almost
+   * always empty. Keyed by `(channel_identifier, start)`, which is how the
+   * guide addresses the very same airings.
+   */
+  /**
+   * Tell the device how far into a recording playback has got.
+   *
+   * The device keeps this in `user_info.position` and its own app writes it, so
+   * writing here is what lets a phone and a browser agree about where you were.
+   */
+  setRecordingPosition: (objectId: number, position: number) =>
+    req<{ object_id: number; position: number }>(
+      `/recordings/${objectId}/position`,
+      { method: "POST", body: JSON.stringify({ position: Math.max(0, Math.floor(position)) }) },
+    ),
+
+  inProgressRecordings: () =>
+    req<{ recordings: InProgressRecording[] }>("/recordings/in-progress"),
+
   /** Doubles as the "still watching" heartbeat that bounds server-side prefetch. */
   recordingStatus: (objectId: number, position?: number) =>
     req<RecordingStatus>(
@@ -458,12 +630,14 @@ export const api = {
   evictRecording: (objectId: number) =>
     req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),
 
-  startStream: (identifier: string, transcode?: boolean) => {
-    let url = `/stream/${identifier}`;
-    if (transcode !== undefined) {
-      url += `?transcode=${transcode}`;
-    }
-    return req<StreamStart>(url, { method: "POST" });
+  startStream: (identifier: string, transcode?: boolean, mode?: LiveMode) => {
+    const params = new URLSearchParams();
+    if (transcode !== undefined) params.set("transcode", String(transcode));
+    if (mode !== undefined) params.set("mode", mode);
+    const query = params.toString();
+    return req<StreamStart>(`/stream/${identifier}${query ? `?${query}` : ""}`, {
+      method: "POST",
+    });
   },
 
   stopStream: (sessionId: string) =>

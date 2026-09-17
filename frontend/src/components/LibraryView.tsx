@@ -2,19 +2,146 @@ import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from "rea
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
-import { VideoPlayer } from "./VideoPlayer";
-import { Play, Download, CheckCircle2, CloudOff, FileDown, Loader2, Pause, Trash2 } from "lucide-react";
+import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Info, Loader2, Pause, Radio, Trash2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { ShowInfo } from "./ShowInfo";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
+import { isIncomplete, recordedSpan } from "../lib/recording";
+import type { Coverage } from "../lib/recording";
 
-/** A recording still being written has no complete source to transcode. */
+/**
+ * Whether there is something to play.
+ *
+ * A recording still being written plays fine: the device serves it as HLS from
+ * the first moment, which is how its own app lets you start a show that is
+ * still recording. Verified against a recording in progress - `state:
+ * recording`, `duration: 0` - which still answered `POST .../watch` with a
+ * playlist. This used to refuse them on the assumption that a transcode needs
+ * a complete file, and the result was the one thing the device is best at
+ * being the one thing we could not do.
+ */
 function isPlayable(rec: Recording): boolean {
   // An offline copy plays regardless of what the device reports — it may not
   // be on the device at all any more.
   if (rec.offline_only) return true;
+  return !rec.error;
+}
+
+/**
+ * Whether an offline copy can be made.
+ *
+ * Unlike playback this really does need a finished recording: caching copies
+ * the whole thing, and the whole thing does not exist yet.
+ */
+function isKeepable(rec: Recording): boolean {
+  if (rec.offline_only) return true;
   return rec.state !== "recording" && !rec.error;
+}
+
+/**
+ * A recording as the coverage bar sees it.
+ *
+ * The one subtlety is which number is "captured": while recording the server
+ * derives it, and once finished `duration` *is* it — the device replaces the
+ * slot with the real length at that moment, which is why `slot_seconds` exists
+ * separately.
+ */
+function coverageOf(rec: Recording): Coverage {
+  return {
+    start: rec.start,
+    duration: rec.slot_seconds,
+    recording_started: rec.recording_started,
+    recorded_seconds: isRecording(rec) ? rec.recorded_seconds : rec.duration,
+  };
+}
+
+/**
+ * How far playback must move before the device is told again, in seconds.
+ *
+ * Measured from the device's own app, which writes every ~7.5 seconds of media
+ * progress rather than on a clock: nine consecutive writes each moved the
+ * position 5-9s while the wall gaps between them ran from 11.6s to 16.4s.
+ * Spacing ours by progress rather than by time is what makes a paused player
+ * write nothing at all.
+ */
+const DEVICE_POSITION_STEP = 7;
+
+/** Still being written, and so still growing under anyone watching it. */
+function isRecording(rec: Recording): boolean {
+  return rec.state === "recording";
+}
+
+/**
+ * Which point a card asked the player to open at.
+ *
+ * "resume" is every ordinary case — the saved position, or the start if there
+ * is none. The other two exist only for a recording in progress, where "the
+ * start" and "what is happening now" are genuinely different places and the
+ * card offers both rather than guessing.
+ */
+type StartMode = "resume" | "beginning" | "live";
+
+/**
+ * Why the card can say how far along something still recording is.
+ *
+ * Worth spelling out on hover, because it is the one number here that is not
+ * simply reported: the device gives the start and the expected length, and the
+ * elapsed part assumes recording has run without interruption since.
+ */
+function progressTitle(rec: Recording): string {
+  const began = rec.recording_started
+    ? new Date(rec.recording_started).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : null;
+  const total = rec.expected_seconds || rec.duration;
+  return [
+    rec.duration ? `Bar spans the scheduled ${formatDuration(rec.duration)}.` : null,
+    began ? `Recording began at ${began}.` : null,
+    total ? `Expected to capture ${formatDuration(total)} of it.` : null,
+    "Elapsed time is derived from that start, not measured from the file.",
+  ].filter(Boolean).join(" ");
+}
+
+/**
+ * The saved position for a recording, or 0.
+ *
+ * Read at render because the in-progress card labels its own button with it —
+ * "Resume 12:20" rather than "From start" — and that label has to be right
+ * before anything is playing. The player's own resume point is still read once
+ * per recording, where feeding it back on every tick used to reload the stream.
+ */
+function resumeFor(rec: Recording): number {
+  const ours = loadResume(resumeKey("recording", rec.object_id));
+  // The device's own position, which its app writes and ours now does too.
+  // Whichever is further in wins, and only here — once playing, our writes go
+  // to the device unconditionally, so a deliberate rewind sticks rather than
+  // being compared away.
+  //
+  // Neither side carries a timestamp: `user_info` is exactly
+  // {position, watched, protected}, so there is no honest last-writer-wins to
+  // implement. Taking the greater is right in the cases that happen — watched
+  // on the phone then opened here, or the reverse — and taking the device
+  // wholesale would have rewound eleven recordings, Saturday Night Live from
+  // 21:36 back to 33 seconds.
+  //
+  // Clamped to what exists: a position captured while the programme was still
+  // recording can outrun the media once it finishes and is cut short, and
+  // "greater wins" would otherwise enshrine it.
+  const theirs = rec.position ?? 0;
+  const furthest = Math.max(ours, theirs);
+  const limit = isRecording(rec) ? (rec.recorded_seconds ?? 0) : rec.duration;
+  return limit > 0 ? Math.min(furthest, limit) : furthest;
+}
+
+/** A position as `12:20`, or `1:02:20` past the hour. */
+function formatClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 }
 
 function formatBytes(n: number): string {
@@ -58,9 +185,15 @@ function dayTint(iso: string, alpha?: number): string {
 
 export function LibraryView() {
   const [playing, setPlaying] = useState<Recording | null>(null);
+  /** Which entry point the card asked for; only in-progress recordings ask. */
+  const [startMode, setStartMode] = useState<StartMode>("resume");
+  /** The recording whose information sheet is open, if any. */
+  const [infoFor, setInfoFor] = useState<Recording | null>(null);
   const [initialRoute] = useState(parseRoute);
   const [restoreDone, setRestoreDone] = useState(false);
   const positionRef = useRef(0);
+  /** Position last written to the device, so writes are spaced by progress. */
+  const devicePositionRef = useRef(0);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const playingRef = useRef<Recording | null>(null);
 
@@ -101,10 +234,17 @@ export function LibraryView() {
     refetchOnWindowFocus: false,
     // Poll quickly while a copy is being made so progress actually moves;
     // back off once nothing is in flight.
+    //
+    // Something still recording is the other reason to keep looking: its
+    // progress comes from the server, so the card is only ever as current as
+    // the last poll. Fifteen seconds rather than four - a bar creeping across
+    // an hour does not need the cadence a download does, and this is the whole
+    // recordings list.
     refetchInterval: (q) => {
       const rows = q.state.data?.recordings ?? [];
-      const busy = rows.some(r => r.pinned && !r.paused && r.cache_state !== "complete");
-      return busy ? 4_000 : 30_000;
+      const copying = rows.some(r => r.pinned && !r.paused && r.cache_state !== "complete");
+      if (copying) return 4_000;
+      return rows.some(isRecording) ? 15_000 : 30_000;
     },
   });
 
@@ -154,6 +294,18 @@ export function LibraryView() {
     [nowPlaying?.object_id],
   );
 
+  /**
+   * Where to open, once the card has been asked.
+   *
+   * Only a recording in progress has a choice to make, and only then does the
+   * card ask: everything else resumes where it was left, which is what the
+   * saved position is for. `LIVE_EDGE` defers the decision to the player, which
+   * is the only thing that knows how much exists by the time the stream opens.
+   */
+  const openAt = startMode === "live" ? LIVE_EDGE
+    : startMode === "beginning" ? 0
+    : resumeAt;
+
   useEffect(() => {
     playingRef.current = nowPlaying;
     if (!nowPlaying) positionRef.current = 0;
@@ -163,10 +315,48 @@ export function LibraryView() {
     });
   }, [nowPlaying]);
 
+  /**
+   * Push the playhead to the device, spaced by how far playback has moved.
+   *
+   * Measured from the device's own app: it writes every ~7.5 seconds of *media*
+   * progress, not on a wall clock — nine consecutive writes moved the position
+   * 5-9s each while the wall gaps between them varied from 11.6s to 16.4s.
+   *
+   * Matching the unit is what makes this self-throttling: a paused player makes
+   * no progress and so writes nothing, and buffering or slow playback space the
+   * writes out for free. No timer to tune, and no thundering herd to jitter
+   * against, because the spacing is the viewer's own progress.
+   */
+  const writeDevicePosition = useCallback((rec: Recording, seconds: number) => {
+    if (Math.abs(seconds - devicePositionRef.current) < DEVICE_POSITION_STEP) return;
+    devicePositionRef.current = seconds;
+    api.setRecordingPosition(rec.object_id, seconds).catch(() => {
+      // A lost position is a small annoyance; the next write carries it.
+    });
+  }, []);
+
+  /**
+   * Write the playhead now, whatever the spacing rule says.
+   *
+   * Almost every session ends deliberately — closing, pausing, seeking — so
+   * these carry the common case exactly and the progress rule only has to cover
+   * the browser being killed. A seek especially: waiting for seven more seconds
+   * of progress after a discontinuity would leave the device holding a position
+   * that is wrong rather than merely stale.
+   */
+  const flushDevicePosition = useCallback(() => {
+    const rec = playingRef.current;
+    const at = Math.floor(positionRef.current);
+    if (!rec || at <= 0 || at === devicePositionRef.current) return;
+    devicePositionRef.current = at;
+    api.setRecordingPosition(rec.object_id, at).catch(() => {});
+  }, []);
+
   const closePlayer = useCallback(() => {
+    flushDevicePosition();
     setPlaying(null);
     setRestoreDone(true);
-  }, []);
+  }, [flushDevicePosition]);
 
   // Back out of a player means Escape, the same as it does on the guide side.
   useEffect(() => onRoutePop((route) => {
@@ -180,7 +370,9 @@ export function LibraryView() {
     if (whole === Math.floor(positionRef.current)) return;
     positionRef.current = whole;
     const rec = playingRef.current;
-    if (rec) saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
+    if (!rec) return;
+    saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
+    writeDevicePosition(rec, whole);
   }, []);
 
   /**
@@ -227,6 +419,20 @@ export function LibraryView() {
     <>
       <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} />
 
+      {infoFor?.channel?.identifier && (
+        <ShowInfo
+          channel={infoFor.channel.identifier}
+          start={infoFor.start}
+          channelLabel={infoFor.channel.call_sign ?? undefined}
+          onClose={() => setInfoFor(null)}
+          // "Watch Live" only renders while the airing is actually on, which
+          // for the Library means a recording still being written. Its live
+          // edge is the same pictures, and we already hold them — so this
+          // plays the recording there rather than tuning a second stream.
+          onTune={() => { setStartMode("live"); setPlaying(infoFor); setInfoFor(null); }}
+        />
+      )}
+
       {nowPlaying && (
         <VideoPlayer
           key={nowPlaying.object_id}
@@ -236,7 +442,7 @@ export function LibraryView() {
           // Resume where this recording was left, whether opened fresh or
           // restored by a refresh. Only a refresh starts paused — a reload
           // carries no user activation, so autoplay would be forced to mute.
-          startAt={resumeAt}
+          startAt={openAt}
           autoPlay={Boolean(playing)}
           onPosition={handlePosition}
           onClose={closePlayer}
@@ -295,17 +501,23 @@ export function LibraryView() {
 
               {items.map((rec) => {
             const playable = isPlayable(rec);
+            const keepable = isKeepable(rec);
+            // Coverage is worth drawing whether or not it is still recording:
+            // three recordings on one device captured seconds of an hour, and
+            // the device called none of them an error.
+            const span = recordedSpan(coverageOf(rec));
+            const broken = !isRecording(rec) && isIncomplete(coverageOf(rec));
             return (
               <div
                 key={rec.object_id}
                 className="group flex flex-col bg-surface-raised border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition shadow-lg"
               >
-                <button
-                  onClick={() => playable && setPlaying(rec)}
-                  disabled={!playable}
-                  className="group/art aspect-video bg-surface-sunken relative block w-full disabled:cursor-not-allowed"
-                  aria-label={`Play ${rec.title ?? "recording"}`}
-                >
+                {/* A div, not a button: a recording in progress puts two
+                    buttons inside this, and a button inside a button is
+                    invalid and unreachable by keyboard. The ordinary case
+                    keeps its full-bleed button below, so nothing changes for
+                    it — the whole picture is still the target. */}
+                <div className="group/art aspect-video bg-surface-sunken relative block w-full">
                   {rec.thumbnail ? (
                     <img src={rec.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
                   ) : (
@@ -313,20 +525,107 @@ export function LibraryView() {
                       Tablo
                     </div>
                   )}
-                  <div className="absolute inset-0 flex items-center justify-center bg-scrim-soft opacity-0 group-hover:opacity-100 transition">
-                    {/* The mark answers its own hover — it grows, lifts and
-                        brightens — while the press belongs to the whole
-                        artwork: clicking the picture and clicking the puck
-                        are the same act, so they look the same. Same split as
-                        the Live TV card's info mark, and `group/art` so the
-                        card's own group still owns the reveal. */}
-                    <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
-                                    shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
-                                    group-active/art:scale-95 transition-all duration-150">
-                      <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
+                  {(() => {
+                    // Resuming, starting over and jumping to the frontier are
+                    // three different intentions. Which exist depends on the
+                    // recording: only one still being written has a frontier,
+                    // and only one already watched has somewhere to resume to.
+                    // `loadResume` already ignores the first thirty seconds and
+                    // the last minute, so an offer to resume always means one.
+                    const at = resumeFor(rec);
+                    const live = isRecording(rec);
+
+                    // Nothing to choose between: the whole picture is the
+                    // button, as it has always been.
+                    if (!at && !live) {
+                      return (
+                        <button
+                          onClick={() => { setStartMode("resume"); setPlaying(rec); }}
+                          disabled={!playable}
+                          className="absolute inset-0 flex items-center justify-center bg-scrim-soft
+                                     opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition
+                                     disabled:cursor-not-allowed w-full"
+                          aria-label={`Play ${rec.title ?? "recording"}`}
+                        >
+                          {/* The mark answers its own hover — it grows, lifts
+                              and brightens — while the press belongs to the
+                              whole artwork: clicking the picture and clicking
+                              the puck are the same act, so they look the same. */}
+                          <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
+                                          shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
+                                          group-active/art:scale-95 transition-all duration-150">
+                            <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
+                          </div>
+                        </button>
+                      );
+                    }
+
+                    const chip = "flex items-center gap-2 pl-3 pr-4 h-10 rounded-full text-xs font-bold"
+                      + " shadow-lg hover:scale-105 active:scale-95 transition-all duration-150";
+                    return (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2
+                                      bg-scrim-soft opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+                        {/* Where you left off leads: it is the likeliest thing
+                            wanted, and the only one that needs no thought. */}
+                        {at > 0 && (
+                          <button
+                            onClick={() => { setStartMode("resume"); setPlaying(rec); }}
+                            className={`${chip} accent-gradient text-brand-fg hover:shadow-2xl hover:brightness-110`}
+                          >
+                            <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                            Resume {formatClock(at)}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { setStartMode("beginning"); setPlaying(rec); }}
+                          className={at > 0
+                            ? `${chip} glass text-media-fg hover:bg-fill`
+                            : `${chip} accent-gradient text-brand-fg hover:shadow-2xl hover:brightness-110`}
+                        >
+                          <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                          From start
+                        </button>
+                        {live && (
+                          <button
+                            onClick={() => { setStartMode("live"); setPlaying(rec); }}
+                            className={`${chip} glass text-media-fg hover:bg-fill`}
+                            title="Jump to what is being recorded right now"
+                          >
+                            <Radio className="w-4 h-4" aria-hidden />
+                            Live
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Recording wins the corner outright. Nothing else a card can
+                      say about itself matters as much as the fact that it is
+                      still growing — and the cache badges cannot apply anyway,
+                      since keeping a copy needs a finished recording. */}
+                  {isRecording(rec) ? (
+                    <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded bg-danger-solid text-[10px] font-bold text-danger-fg uppercase tracking-wider">
+                      <span className="relative flex w-2 h-2" aria-hidden>
+                        {/* The pulse is the only motion on the card, and it
+                            stops for reduced motion — where the dot alone
+                            still reads as recording. */}
+                        <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger-fg opacity-60" />
+                        <span className="relative inline-flex w-2 h-2 rounded-full bg-danger-fg" />
+                      </span>
+                      Recording
                     </div>
-                  </div>
-                  {rec.pinned ? (
+                  ) : broken ? (
+                    // Four seconds of an hour is not a short recording, it is a
+                    // broken one. The device does not agree - `error` is null
+                    // and `warnings` empty on all three measured failures - so
+                    // this is inferred from how little of the slot exists, and
+                    // said out loud rather than left to a sliver on the strip.
+                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-warning-solid text-[10px] font-bold text-warning-fg uppercase tracking-wider"
+                         title="Only a fraction of the scheduled programme was captured.">
+                      <AlertTriangle className="w-3 h-3" aria-hidden />
+                      Incomplete
+                    </div>
+                  ) : rec.pinned ? (
                     <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-success-solid text-[10px] font-bold text-success-fg uppercase tracking-wider">
                       <CheckCircle2 className="w-3 h-3" aria-hidden />
                       {rec.cache_state === "complete" ? "Cached" : `${Math.round(rec.cache_progress * 100)}%`}
@@ -354,28 +653,82 @@ export function LibraryView() {
                       Only here
                     </div>
                   )}
-                  <div className="absolute bottom-3 right-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg tabular-nums">
-                    {formatDuration(rec.duration)}
+                  {/* While recording, the slot is not what exists — it is what
+                      is promised. Showing `1h 0m` on something eight minutes old
+                      invited exactly the wrong expectation of the scrubber. */}
+                  <div
+                    className="absolute bottom-3 right-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg tabular-nums"
+                    title={isRecording(rec) ? progressTitle(rec) : undefined}
+                  >
+                    {isRecording(rec) && rec.recorded_seconds !== null
+                      ? `${formatDuration(rec.recorded_seconds)} of `
+                        + `${formatDuration(rec.expected_seconds || rec.duration)}`
+                      : formatDuration(rec.duration)}
                   </div>
 
                   {/* Fill progress along the bottom edge — the corner badge
                       alone was too easy to miss. Shown for anything part-cached,
                       not only for kept copies, so the bar and the badge above
                       never disagree about whether there is work on disk. */}
-                  {rec.cache_state !== "complete" && rec.cache_progress > 0 && (
-                    <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60">
+                  {/* The strip is the scheduled slot, widened to hold anything
+                      captured outside it, and the filled part is what actually
+                      exists — positioned where it falls, not flush left. A
+                      recording that started twenty minutes late reads as twenty
+                      minutes late at a glance; drawn from the left edge it was
+                      indistinguishable from one that caught the whole show.
+
+                      Coverage owns this strip outright, recording or finished.
+                      It used to show cache progress, which still has the corner
+                      badge, the percentage row and the live transfer rate — and
+                      which mattered more when a transcode was the only way to
+                      watch a recording at all. Measured on one device, three
+                      recordings had captured four seconds, eight seconds and
+                      3.7 minutes of an hour, and the device reported no error
+                      for any of them: this bar is the only thing that says so. */}
+                  {span && (
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60" title={progressTitle(rec)}>
                       <div
-                        className={`h-full transition-[width] duration-1000 ease-linear
-                                    ${!rec.pinned ? "bg-media-fg/30"
-                                      : rec.paused ? "bg-media-fg/40" : "bg-success"}`}
-                        style={{ width: `${Math.max(1, rec.cache_progress * 100)}%` }}
+                        className={`h-full absolute inset-y-0 transition-[width,left] duration-1000 ease-linear
+                                    ${isRecording(rec) ? "bg-danger" : broken ? "bg-warning" : "bg-media-fg/40"}`}
+                        style={{ left: `${span.left}%`, width: `${span.width}%` }}
                       />
+                      {/* Where the booked slot ended, when something ran past
+                          it. Sports pad by half an hour on purpose, and without
+                          the mark the bar just looks full. */}
+                      {span.slotEnd !== null && (
+                        <div
+                          className="absolute inset-y-0 w-px bg-media-fg/70"
+                          style={{ left: `${span.slotEnd}%` }}
+                          aria-hidden
+                        />
+                      )}
                     </div>
                   )}
-                </button>
+                </div>
 
                 <div className="p-5 flex flex-col gap-1">
-                  <h3 className="font-bold text-fg truncate leading-tight">{rec.title || "Untitled Recording"}</h3>
+                  <div className="flex items-start gap-2">
+                    <h3 className="font-bold text-fg truncate leading-tight flex-1">
+                      {rec.title || "Untitled Recording"}
+                    </h3>
+                    {/* The way into everything the card has no room for —
+                        artwork, synopsis, rating, and the record controls. The
+                        sheet is keyed by the airing, so a recording with no
+                        channel identifier has nothing to open: that is an
+                        offline copy of something the device has since deleted,
+                        and its airing is gone with it. */}
+                    {rec.channel?.identifier && (
+                      <button
+                        onClick={() => setInfoFor(rec)}
+                        className="shrink-0 -mt-0.5 p-1 rounded-lg text-fg-muted
+                                   hover:text-fg hover:bg-fill transition"
+                        title="Show information"
+                        aria-label={`Information about ${rec.title ?? "this recording"}`}
+                      >
+                        <Info className="w-4 h-4" aria-hidden />
+                      </button>
+                    )}
+                  </div>
                   {rec.subtitle && (
                     <p className="text-xs font-medium text-accent truncate">{rec.subtitle}</p>
                   )}
@@ -525,7 +878,7 @@ export function LibraryView() {
                             onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
                           });
                         }}
-                        disabled={!playable || keep.isPending}
+                        disabled={!keepable || keep.isPending}
                         title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
                         aria-label={rec.pinned ? `Stop keeping ${rec.title ?? "recording"}` : `Keep ${rec.title ?? "recording"} offline`}
                         className={`w-8 h-8 rounded-full flex items-center justify-center transition disabled:opacity-30

@@ -2,13 +2,20 @@
 
 import asyncio
 import re
+import uuid
+from datetime import datetime, timezone
 from functools import partial
+from types import SimpleNamespace
+from urllib.parse import urljoin
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, Response
 
 from .. import store
 from ..state import _run_sync, state
+from . import stream as stream_routes
+from ..vod_index import parse_vod_playlist
 from ..transcode_cache import (
     CacheFull,
     CacheState,
@@ -102,6 +109,247 @@ async def list_recordings():
         # fetched, rather than silently truncating.
         "total": state.recordings_total + len(orphans),
         "offline_only": len(orphans),
+    }
+
+
+@router.get("/in-progress")
+async def recordings_in_progress():
+    """What is being recorded right now, for the views that are not the Library.
+
+    Live and Guide need to mark a programme that is recording and draw how much
+    of it has been captured. Both key on `(channel_identifier, start)`, which is
+    what a recording carries and what the guide is addressed by.
+
+    Deliberately its own endpoint rather than fields on the guide. The guide is
+    a large payload synced into SQLite and cached hard, while this changes every
+    few seconds; threading one into the other would mean invalidating a synced
+    guide on a timer. This list is almost always empty and never longer than the
+    tuner count.
+
+    Every field here is already computed for the full listing - this is a
+    projection of it, not a second source of truth.
+    """
+    _require_auth()
+    try:
+        items = await state.get_recordings()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Library error: {e}")
+
+    return {
+        "recordings": [
+            {
+                "object_id": item["object_id"],
+                "channel_identifier": (item.get("channel") or {}).get("identifier"),
+                # The scheduled start, which is the guide's key - not when the
+                # tuner actually began, which `recording_started` carries.
+                "start": item.get("start"),
+                "duration": item.get("duration"),
+                "recording_started": item.get("recording_started"),
+                "recorded_seconds": item.get("recorded_seconds"),
+                "expected_seconds": item.get("expected_seconds"),
+                "title": item.get("title"),
+            }
+            for item in items
+            if item.get("state") == "recording"
+        ],
+    }
+
+
+class PositionIn(BaseModel):
+    """Where playback has got to, in seconds from the recording's first frame."""
+
+    position: int = Field(ge=0)
+
+
+@router.post("/{object_id}/position")
+async def set_position(object_id: int, body: PositionIn):
+    """Record how far into a recording playback has got, on the device.
+
+    The device keeps this in `user_info.position` and its own app writes it, so
+    writing there rather than only to our own store is what lets a phone and a
+    browser agree about where you were.
+
+    **The write shape is not the read shape.** `{"position": N}` flat is what
+    takes; `{"user_info": {"position": N}}` - exactly what the GET hands back -
+    answers 200 and changes nothing. Verified against the device by writing 618,
+    reading it back, and restoring zero. The nested form is how this ships
+    broken without anyone noticing.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        status, _data = await state.patch_device(path, {"position": body.position})
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    if status != 200:
+        raise HTTPException(status_code=502, detail="The Tablo refused the position")
+
+    return {"object_id": object_id, "position": body.position}
+
+
+@router.post("/{object_id}/watch-vod")
+async def watch_recording_vod(object_id: int):
+    """Serve a recording as MPEG-2, straight from the device.
+
+    A recording is MPEG-2 video with AC-3 audio - the same thing the live path
+    decodes - so playing it needs no transcode at all. The device publishes it
+    as a playlist where every segment is addressable by byte range. Measured on
+    a 3.5 hour recording, 8542 segments across 29 byte-ranged files.
+
+    The index is held; the media is not. Downloading it would be ~25GB for one
+    viewing of something the device already has, so segments are fetched on
+    demand - which is the whole difference between this and the ring.
+
+    A recording still being written comes here too, and this was the surprise:
+    the device publishes it from byte 0 and simply appends. It was routed to the
+    ring instead, which joins at the live edge and so began forty minutes into
+    the show. Measured 2026-09-17 - at 29:56 elapsed the head was still
+    `BYTERANGE:218644@0`, MEDIA-SEQUENCE still 1, and 75 seconds apart the head
+    was unchanged while the tail grew by 70 segments. No ENDLIST is the only
+    difference, and `stream._refresh_if_growing` re-reads it as it grows.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        sess = await state.start_recording_session(path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    master = sess.get("playlist_url")
+    if not master:
+        raise HTTPException(status_code=502, detail="Device gave no playlist")
+
+    try:
+        index, variant_url = await _fetch_vod_index(master)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    session_id = uuid.uuid4().hex
+    state.streams[session_id] = SimpleNamespace(
+        stream=SimpleNamespace(token=sess.get("token")),
+    )
+    # The variant url is kept because a growing index is re-read from it.
+    stream_routes.vod_sessions[session_id] = stream_routes.VodSession(
+        index=index, device_url=variant_url,
+    )
+    stream_routes.touch_session(session_id)
+
+    # Scrub-preview thumbnails, which this path would otherwise never get.
+    #
+    # The pack is normally pulled by `register()`, on the transcode path - and
+    # this returns long before that, exactly as the pinned-offline path above
+    # did until it was fixed. Measured: of eleven recordings, the only four with
+    # thumbnails were the four that had been transcoded.
+    #
+    # Only once finished. Watched across a two-hour recording on 2026-09-17, the
+    # device offered no pack at all while `state` was `recording` - the session
+    # carries `bif_url_hd`/`bif_url_sd` as null - and published a complete one
+    # within five minutes of the recording ending, covering its whole runtime.
+    # So there is nothing to ask for until then, and a session open across the
+    # end simply gets them the next time it is opened.
+    #
+    # Backgrounded, and it fails harmlessly: nothing is written unless a valid
+    # BIF comes back, so a fetch that is merely too early is retried on the next
+    # open rather than caching an empty pack for ever.
+    if index.finished and not cache.preview_available(object_id):
+        asyncio.create_task(cache.fetch_bif(object_id, path))
+
+    return {
+        "object_id": object_id,
+        "session_id": session_id,
+        "stream_url": f"/api/vod/{session_id}/playlist.m3u8",
+        "duration": index.duration,
+        "segments": len(index.segments),
+        # What is held so far, not what the recording will be. The player polls
+        # for the rest, and must not pin its scrubber to this.
+        "growing": not index.finished,
+        "mode": "vod",
+    }
+
+
+async def _fetch_vod_index(master_url: str):
+    """Follow the master to its variant and parse that into an index.
+
+    Returns the variant url alongside, because a recording still being written
+    is re-read from it for as long as the session lasts.
+    """
+    resp = await state.http.get(master_url, timeout=30)
+    resp.raise_for_status()
+    variant = next(
+        (line.strip() for line in resp.text.splitlines()
+         if line.strip() and not line.startswith("#")),
+        None,
+    )
+    url = urljoin(master_url, variant) if variant else master_url
+    playlist = await state.http.get(url, timeout=60)
+    playlist.raise_for_status()
+    return parse_vod_playlist(playlist.text, url), url
+
+
+@router.post("/{object_id}/watch-raw")
+async def watch_recording_raw(object_id: int):
+    """Follow a recording's own MPEG-2 segments, for the WASM decoder.
+
+    The ordinary `/watch` hands the recording to FFmpeg and serves H.264. This
+    serves what the device already has: the recording is MPEG-2 video with AC-3
+    audio - `video_details.container_format` says so - which is exactly what the
+    browser-side decoder eats. No transcode, no tuner beyond the one the device
+    is already using, and the picture keeps its own sample aspect rather than
+    depending on an encoder to carry it.
+
+    A recording still being written is the natural case: the device publishes it
+    as a live-shaped playlist with no ENDLIST, which is the shape `RingFollower`
+    was built for.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        sess = await state.start_recording_session(path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    playlist_url = sess.get("playlist_url")
+    if not playlist_url:
+        raise HTTPException(status_code=502, detail="Device gave no playlist")
+
+    session_id = uuid.uuid4().hex
+    started_at = datetime.now(timezone.utc)
+    # Registered so the keepalive and the idle reaper cover it exactly as they
+    # cover a live ring: the device expires a session in 165 seconds otherwise.
+    state.streams[session_id] = SimpleNamespace(
+        stream=SimpleNamespace(token=sess.get("token")),
+    )
+    await stream_routes._start_ring_session(session_id, playlist_url, started_at)
+    stream_routes.touch_session(session_id)
+
+    return {
+        "object_id": object_id,
+        "session_id": session_id,
+        "stream_url": f"/api/raw/{session_id}/playlist.m3u8",
+        "origin_ms": int(started_at.timestamp() * 1000),
+        "mode": "ring",
     }
 
 

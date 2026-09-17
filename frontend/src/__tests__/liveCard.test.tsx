@@ -91,6 +91,22 @@ describe("a Live TV card", () => {
     expect(desc.className).not.toMatch(/leading-relaxed|\bh-8\b/);
   });
 
+  it("keeps the plate dark in both themes", () => {
+    // `ChannelLogo` draws its own dark plate, because station marks are
+    // overwhelmingly white-on-transparent and vanish on a light surface. The
+    // tile behind it followed the theme, so light mode put that dark plate
+    // inside a near-white one and the two read as a black box floating in a
+    // pale box - the nested rounded shape this card's design spent its effort
+    // removing. One colour for both, and the pair merges into one square.
+    const { container } = render(
+      <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
+
+    const plate = container.querySelector("[data-plate]")!;
+
+    expect(plate.className).toMatch(/\bbg-logo-plate\b/);
+    expect(plate.className).not.toMatch(/bg-recess-soft|bg-surface-sunken/);
+  });
+
   it("turns the channel's own plate into the play button", () => {
     // Not a puck laid over the logo and not a badge beside it: the logo
     // crossfades to a bare triangle inside the same square, so the thing you
@@ -99,7 +115,7 @@ describe("a Live TV card", () => {
     const { container } = render(
       <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
 
-    const plate = container.querySelector(".bg-recess-soft")!;
+    const plate = container.querySelector("[data-plate]")!;
     const triangle = plate.querySelector('path[d="M7.5 5 17.5 12 7.5 19 Z"]');
 
     expect(triangle).not.toBeNull();
@@ -113,7 +129,7 @@ describe("a Live TV card", () => {
     const { container } = render(
       <ChannelCard channel={channel()} now={NOW} onPlay={() => {}} onInfo={() => {}} />);
 
-    const plate = container.querySelector(".bg-recess-soft")!;
+    const plate = container.querySelector("[data-plate]")!;
     const logoWrap = plate.querySelector('[class*="group-hover/tile:opacity-"]')!;
     const triangle = plate.querySelector('svg[class*="group-hover/tile:opacity-100"]')!;
 
@@ -174,7 +190,7 @@ describe("a Live TV card", () => {
 
     expect(tile.className).toMatch(/group\/tile/);
     expect(body.className).toMatch(/group\/body/);
-    expect(container.querySelector(".bg-recess-soft")!.className)
+    expect(container.querySelector("[data-plate]")!.className)
       .toMatch(/group-active\/tile:scale-95/);
     expect(container.querySelector(".accent-gradient")!.parentElement!.className)
       .toMatch(/group-active\/body:scale-95/);
@@ -197,5 +213,65 @@ describe("a Live TV card", () => {
 
     const tile = screen.getByRole("button", { name: /Watch 7\.1 PBS/ });
     expect(tile.querySelector(".rounded-full")).toBeNull();
+  });
+});
+
+describe("a live card whose programme is being recorded", () => {
+  const channelWith = (program: { start: string; duration: number }) =>
+    channel({ current_program: { ...channel().current_program!, ...program } });
+
+  const RECORDING_NOW = {
+    object_id: 86141, channel_identifier: "ch1",
+    start: "2026-09-17T17:30:00Z", duration: 1800,
+    recording_started: "2026-09-17T17:29:45Z",
+    recorded_seconds: 600, expected_seconds: 1815,
+    title: "Scrambled Up",
+  };
+
+  it("says so, so you are not left wondering whether to record it again", () => {
+    render(
+      <ChannelCard
+        channel={channelWith({ start: "2026-09-17T17:30:00Z", duration: 1800 })}
+        now={Date.parse("2026-09-17T17:39:45Z")}
+        recording={RECORDING_NOW}
+        onPlay={() => {}}
+        onInfo={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText(/recording now/i)).toBeInTheDocument();
+  });
+
+  it("draws what was captured, not how far through the clock is", () => {
+    // The ordinary bar says where the programme has got to. Once recording,
+    // the useful question is how much of it exists - and the tuner here began
+    // fifteen seconds early, so coverage starts left of the programme's start.
+    const { container } = render(
+      <ChannelCard
+        channel={channelWith({ start: "2026-09-17T17:30:00Z", duration: 1800 })}
+        now={Date.parse("2026-09-17T17:39:45Z")}
+        recording={RECORDING_NOW}
+        onPlay={() => {}}
+        onInfo={() => {}}
+      />,
+    );
+
+    const fill = container.querySelector<HTMLElement>(".bg-danger");
+    expect(fill).not.toBeNull();
+    expect(parseFloat(fill!.style.left)).toBe(0);
+  });
+
+  it("is left exactly as it was when nothing is recording it", () => {
+    const { container } = render(
+      <ChannelCard
+        channel={channelWith({ start: "2026-09-17T17:30:00Z", duration: 1800 })}
+        now={Date.parse("2026-09-17T17:39:45Z")}
+        onPlay={() => {}}
+        onInfo={() => {}}
+      />,
+    );
+
+    expect(screen.queryByLabelText(/recording now/i)).toBeNull();
+    expect(container.querySelector(".bg-danger")).toBeNull();
   });
 });

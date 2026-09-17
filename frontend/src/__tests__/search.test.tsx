@@ -376,7 +376,10 @@ describe("ChannelGrid search wiring", () => {
 const LIBRARY_RECORDING: Recording = {
   object_id: 80888, identifier: 80888, path: "/recordings/sports/events/80888",
   title: "NFL Football", subtitle: null, description: null,
-  start: "2026-09-15T00:15:00Z", duration: 12615, thumbnail: null,
+  start: "2026-09-15T00:15:00Z", duration: 12615, recorded_seconds: null,
+  expected_seconds: null,
+  recording_started: null,
+  slot_seconds: 10800, thumbnail: null,
   width: null, height: null, state: "finished", error: null,
   watched: false, position: 0, cache_state: "absent", cache_progress: 0,
   pinned: false, offline_only: false, paused: false, cached_seconds: 0,
@@ -571,7 +574,8 @@ describe("ChannelGrid guide search handoff", () => {
       title: "NFL Football", episode_title: null, season_number: null,
       episode_number: null, description: "Week 4.", start: "2026-09-27T17:00:00Z",
       duration: 12300, orig_air_date: null, genres: ["Sports"], rating: null,
-      image_url: null, airing_now: false,
+      image_url: null, airing_now: false, schedulable: false, scheduled: false,
+      past: true, schedule_state: null, skip_reason: null, series: null,
       channel: { identifier: "chA", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });

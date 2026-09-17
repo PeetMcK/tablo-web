@@ -11,6 +11,7 @@ const STYLES: Record<string, string> = {
   cache: "color:#2ea043;font-weight:bold",
   hls: "color:#5b8af5;font-weight:bold",
   net: "color:#d29922;font-weight:bold",
+  wasm: "color:#1f9ed1;font-weight:bold",
   warn: "color:#f85149;font-weight:bold",
 };
 
@@ -35,6 +36,8 @@ export const log = {
   cache: (msg: string, data?: unknown) => emit("cache", msg, data),
   hls: (msg: string, data?: unknown) => emit("hls", msg, data),
   net: (msg: string, data?: unknown) => emit("net", msg, data),
+  /** The WASM live path: worker, decoder, clock, fallback. */
+  wasm: (msg: string, data?: unknown) => emit("wasm", msg, data),
   warn: (msg: string, data?: unknown) => emit("warn", msg, data),
 };
 

@@ -33,6 +33,27 @@ describe("readyRange", () => {
     expect(readyRange(1000, { ranges: cached, start: 0, end: 3600, whole: false }))
       .toEqual([1000, 1000]);
   });
+
+  it("collapses to a point when nothing reports anything, pinning every skip", () => {
+    // What the MPEG-2 path looked like from in here: no encoder report, because
+    // nothing is transcoding, and no buffer, because the <video> element whose
+    // buffer this reads is hidden while a canvas does the drawing. The run
+    // collapses, the jump clamps to where it started, and the button is dead
+    // while the picture plays on perfectly.
+    //
+    // The fix is at the call site - such a source passes `whole` - so this pins
+    // why, not a behaviour change here.
+    const pinned = readyRange(300, { ranges: [], buffered: [], start: 0, end: 2700, whole: false });
+
+    expect(pinned).toEqual([300, 300]);
+    expect(clampSkip(300, 30, pinned)).toBe(300);
+    expect(clampSkip(300, -10, pinned)).toBe(300);
+
+    // Told the truth about itself, the same playhead moves.
+    const whole = readyRange(300, { ranges: [], buffered: [], start: 0, end: 2700, whole: true });
+    expect(clampSkip(300, 30, whole)).toBe(330);
+    expect(clampSkip(300, -10, whole)).toBe(290);
+  });
 });
 
 describe("clampSkip", () => {

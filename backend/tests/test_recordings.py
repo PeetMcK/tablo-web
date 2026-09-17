@@ -3,6 +3,7 @@
 import asyncio
 import signal
 import time
+from datetime import datetime, timedelta, timezone
 from collections import deque
 
 import pytest
@@ -36,6 +37,20 @@ DEVICE_RECORDING = {
         "datetime": "2026-09-15T00:15Z",
         "duration": 10800,
         "show_title": "NFL Football",
+        # Nesting taken from a real record: the outer wrapper carries only
+        # `channel`, `object_id` and `path`, and the identifier sits on the
+        # inner channel beside the call sign. Getting this wrong is not
+        # theoretical - the first version read it off the wrapper, passed, and
+        # returned null against the device.
+        "channel": {
+            "object_id": 8101,
+            "path": "/guide/channels/8101",
+            "channel": {
+                "call_sign": "KTMFABC", "network": "ABC",
+                "major": 23, "minor": 1,
+                "channel_identifier": "S34654_008_01",
+            },
+        },
     },
     "video_details": {
         "state": "finished",
@@ -60,9 +75,140 @@ GAME = 12615
 # Projection
 # ---------------------------------------------------------------------------
 
+def test_a_recording_carries_the_identifier_the_guide_is_keyed_by():
+    """Without it a recording cannot be matched to its own airing.
+
+    Live and Guide key on `(channel_identifier, start)`, and the info sheet is
+    addressed the same way - so a recording with no identifier cannot be joined
+    to the row describing it, or looked up at all.
+    """
+    out = AppState._recording_fields(DEVICE_RECORDING)
+    assert out["channel"]["identifier"] == "S34654_008_01"
+
+
 def test_duration_prefers_recorded_over_scheduled():
     """airing_details.duration is the scheduled slot and understates the file."""
     assert AppState._recording_fields(DEVICE_RECORDING)["duration"] == 12615
+
+
+def _in_progress(minutes_ago: float, scheduled: int = 3600) -> dict:
+    began = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    return {
+        **DEVICE_RECORDING,
+        "airing_details": {
+            **DEVICE_RECORDING["airing_details"],
+            "datetime": began.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration": scheduled,
+            "show_title": "Today 3rd Hour",
+        },
+        # What the device really reports mid-recording: the slot, not the file.
+        "video_details": {**DEVICE_RECORDING["video_details"],
+                          "state": "recording", "duration": 0},
+    }
+
+
+def test_a_finished_recording_reports_no_progress():
+    """Its `duration` already is what was recorded; a second number would only
+    be another thing to keep in step."""
+    assert AppState._recording_fields(DEVICE_RECORDING)["recorded_seconds"] is None
+
+
+def test_a_recording_in_progress_reports_how_much_exists():
+    out = AppState._recording_fields(_in_progress(32))
+
+    # Wall clock, to the nearest few seconds. The device publishes no such
+    # figure while recording - `duration` stays the scheduled slot until it
+    # finishes - and the exact one costs a device session to read.
+    assert out["recorded_seconds"] == pytest.approx(32 * 60, abs=5)
+    assert out["duration"] == 3600, "the slot is still what the card counts against"
+
+
+def test_progress_never_exceeds_the_slot():
+    """A tuner that started late or dropped out must not read as overrunning.
+
+    Measured: one two-hour slot yielded 57.9 minutes of video. Wall clock alone
+    would have claimed the full two hours right up to the end.
+    """
+    assert AppState._recording_fields(_in_progress(200, scheduled=3600))["recorded_seconds"] == 3600
+
+
+def test_progress_is_absent_when_the_start_is_unknown():
+    data = _in_progress(10)
+    data["airing_details"] = {**data["airing_details"], "datetime": None}
+    assert AppState._recording_fields(data)["recorded_seconds"] is None
+
+
+def _with_offsets(minutes_ago: float, start: int, end: int = 0, scheduled: int = 7200) -> dict:
+    data = _in_progress(minutes_ago, scheduled=scheduled)
+    data["video_details"] = {**data["video_details"],
+                             "recorded_offsets": {"start": start, "end": end}}
+    return data
+
+
+def test_a_late_start_is_taken_from_the_device_not_the_schedule():
+    """The real numbers from a recording that began 63 minutes into its slot.
+
+    Booked 13:00Z for two hours, `recorded_offsets: {start: 3786}`, really began
+    14:03:06Z - three seconds from what its own playlist said. Counting from the
+    scheduled start would have claimed two hours of video where 57.9 minutes
+    existed, and claimed it for the whole final hour.
+    """
+    # 93 minutes into the slot, less the 3786s late start, is 1794s of video —
+    # not the 5580s that counting from the schedule would have claimed.
+    out = AppState._recording_fields(_with_offsets(93, start=3786))
+
+    assert out["recorded_seconds"] == pytest.approx(93 * 60 - 3786, abs=5)
+    assert out["recorded_seconds"] < 93 * 60
+    assert out["recording_started"] is not None
+
+
+def test_an_early_start_reads_as_more_recorded_not_less():
+    """`start` is signed: -15 is a tuner that began fifteen seconds early."""
+    out = AppState._recording_fields(_with_offsets(10, start=-15, scheduled=3600))
+    assert out["recorded_seconds"] == pytest.approx(10 * 60 + 15, abs=5)
+
+
+def test_the_bar_counts_against_what_the_recording_will_be():
+    """Not the slot.
+
+    A show that starts 63 minutes into a two-hour slot will be 57 minutes long,
+    and a bar drawn against two hours could never fill. Verified against the
+    finished recording: 7200 - 3786 + 59 = 3473, and its `duration` was 3473.
+    """
+    assert AppState._recording_fields(_with_offsets(93, start=3786, end=59))[
+        "expected_seconds"] == 3473
+
+
+def test_end_padding_is_absent_until_it_finishes():
+    """`end` reads 0 mid-recording, so this runs slightly short until the end."""
+    assert AppState._recording_fields(_with_offsets(93, start=3786))[
+        "expected_seconds"] == 7200 - 3786
+
+
+def test_progress_cannot_exceed_what_the_recording_will_be():
+    """A tuner that stopped early must not read as growing for ever."""
+    out = AppState._recording_fields(_with_offsets(500, start=3786, end=59))
+    assert out["recorded_seconds"] == out["expected_seconds"] == 3473
+
+
+def test_a_finished_recording_needs_no_expected_length():
+    """Its `duration` already is what was captured."""
+    assert AppState._recording_fields(DEVICE_RECORDING)["expected_seconds"] is None
+
+
+def test_every_recording_says_when_it_really_began():
+    """Finished ones too, because they get the same coverage bar.
+
+    A recording that started fifteen minutes into its slot is missing fifteen
+    minutes whether or not it is still going, and that is worth seeing most
+    after the fact - when it is too late to do anything but know.
+    """
+    out = AppState._recording_fields(DEVICE_RECORDING)
+
+    # -15s: the tuner began just before the slot, as it routinely does.
+    assert out["recording_started"] == "2026-09-15T00:15:00Z"
+    assert out["slot_seconds"] == 10800, "the slot, not the 12615s captured"
+    assert out["duration"] == 12615
 
 
 def test_sports_description_comes_from_event():
@@ -1025,3 +1171,94 @@ async def test_a_heartbeat_does_not_revive_a_paused_offline_copy(tmp_path):
 
     c.ensure_prefetch(66220)
     assert 66220 not in c._prefetch
+
+
+# ---------------------------------------------------------------------------
+# What is recording right now
+# ---------------------------------------------------------------------------
+
+def _serving_recordings(monkeypatch, rows):
+    """Stand in for the device listing, without touching it."""
+    from app.routes import recordings as rec
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(r) for r in rows]
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+
+
+def test_in_progress_lists_only_what_is_recording(monkeypatch):
+    """Live and Guide ask this once and key it by (channel, start).
+
+    Everything it carries is already computed for the full listing, so this is
+    a projection rather than new arithmetic - and small enough to poll beside a
+    guide that must not itself carry volatile recording state.
+    """
+    live = _with_offsets(30, start=1259, scheduled=3600)
+    live["object_id"] = 86113
+    _serving_recordings(monkeypatch, [DEVICE_RECORDING, live])
+
+    body = client.get("/api/recordings/in-progress").json()
+
+    assert [r["object_id"] for r in body["recordings"]] == [86113]
+    row = body["recordings"][0]
+    assert row["channel_identifier"] == "S34654_008_01"
+    assert row["duration"] == 3600, "the scheduled slot the bar is drawn against"
+    assert row["expected_seconds"] == 3600 - 1259
+    assert row["recording_started"] is not None
+    assert row["recorded_seconds"] == pytest.approx(30 * 60 - 1259, abs=5)
+
+
+def test_in_progress_is_empty_rather_than_absent(monkeypatch):
+    """Nothing recording is the ordinary case, and not an error."""
+    _serving_recordings(monkeypatch, [DEVICE_RECORDING])
+
+    r = client.get("/api/recordings/in-progress")
+
+    assert r.status_code == 200
+    assert r.json() == {"recordings": []}
+
+
+# ---------------------------------------------------------------------------
+# Playback position, written back to the device
+# ---------------------------------------------------------------------------
+
+def _device_accepting_patch(monkeypatch):
+    """Capture what gets PATCHed, without a device."""
+    from app.routes import recordings as rec
+    sent: list[tuple[str, dict]] = []
+
+    async def patch_device(path, payload):
+        sent.append((path, payload))
+        return 200, {"user_info": {"position": payload.get("position", 0)}}
+
+    async def resolve(_oid):
+        return "/recordings/series/episodes/86113", 3600
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "patch_device", patch_device)
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    return sent
+
+
+def test_position_is_written_to_the_device_in_the_flat_shape(monkeypatch):
+    """The shape is not the one the GET returns, and the wrong one is silent.
+
+    Verified against the device: {"position": 618} takes, while
+    {"user_info": {"position": 618}} - exactly what the read hands back -
+    answers 200 and changes nothing. That is how this ships broken unnoticed.
+    """
+    sent = _device_accepting_patch(monkeypatch)
+
+    r = client.post("/api/recordings/86113/position", json={"position": 618})
+
+    assert r.status_code == 200
+    assert sent == [("/recordings/series/episodes/86113", {"position": 618})]
+
+
+def test_a_negative_position_is_refused(monkeypatch):
+    sent = _device_accepting_patch(monkeypatch)
+    assert client.post("/api/recordings/86113/position",
+                       json={"position": -5}).status_code == 422
+    assert sent == []

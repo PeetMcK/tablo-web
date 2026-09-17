@@ -230,6 +230,20 @@ only the nested `schedule.rule` form is accepted.
 `end` without `source` fails with `Missing value for 'source' string
 parameter`, even when both values are valid.
 
+**`schedule.rule` accepts `"all"`, `"new"` and `"none"`** — all three
+confirmed, each written and then read back with a fresh GET, and the original
+restored afterwards (`backend/tools/probe_schedule_rules.py`). An unknown value
+is refused with:
+
+```json
+{"error": {"code": "invalid_patch_document",
+           "details": {"rule": "ZZZ"},
+           "description": "Invalid value for 'rule' parameter"}}
+```
+
+Measured on `/guide/series/5954` of a 727-series device, chosen because it had
+`keep: {rule: "none"}` and so nothing to lose.
+
 ### Error contract
 
 ```json
@@ -413,11 +427,12 @@ advertises these; none of the obvious paths resolve:
 **Write enumerations.** The validator rejects bad values but does not list good
 ones, so these need a deliberate write to confirm:
 
-- `schedule.rule` beyond `"new"` — presumably `"none"` and `"all"`
 - `keep.rule` beyond `"none"`
 - `offsets.source` beyond `"none"`
 
 Low risk to discover in place: a wrong value is refused cleanly.
+
+`schedule.rule` is no longer among them — see below.
 
 **Cloud `schedule/`, `shows/`, `search/`, `live/`, `genres/`** return data but
 their parameters and full record shapes are unmapped.

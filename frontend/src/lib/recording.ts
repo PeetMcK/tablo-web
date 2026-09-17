@@ -1,0 +1,102 @@
+/**
+ * How much of a programme a recording actually captured.
+ *
+ * One definition, drawn identically by the Library card, the info sheet, the
+ * live card and the guide row. Three views inventing the same arithmetic is the
+ * bug this file exists to prevent.
+ */
+
+/** Everything the geometry needs, from a recording or from a guide airing. */
+export interface Coverage {
+  /** Scheduled start of the airing, ISO. The slot's left edge. */
+  start: string;
+  /** The scheduled slot, in seconds. */
+  duration: number;
+  /** When the tuner actually began, ISO, or null to assume it was punctual. */
+  recording_started: string | null;
+  /** Seconds captured so far, or in total for something finished. */
+  recorded_seconds: number | null;
+}
+
+/**
+ * Where the captured part sits within the strip, as percentages.
+ *
+ * The strip is the scheduled slot, widened to include anything captured outside
+ * it. `slotEnd` marks where the booked slot finished when a recording overran
+ * it by enough to be worth seeing, and is null otherwise.
+ */
+export interface Span {
+  left: number;
+  width: number;
+  slotEnd: number | null;
+}
+
+/**
+ * An overrun smaller than this much of the strip gets no tick.
+ *
+ * Padding of thirty minutes on a three-hour game is the point of the mark;
+ * fifty-nine seconds past a two-hour slot would put it on the last pixel, where
+ * it reads as a rendering fault rather than information.
+ */
+const TICK_THRESHOLD = 0.02;
+
+/**
+ * The stretch of the slot that exists, positioned where it falls.
+ *
+ * Not flush left, deliberately. A recording that started twenty minutes late
+ * drawn from the left edge is indistinguishable from one that caught the whole
+ * show, and which of those you have is the thing most worth knowing before
+ * pressing play. Measured on one device: of fourteen recordings, three had
+ * captured four seconds, eight seconds and 3.7 minutes of an hour — and the
+ * device reported no error for any of them.
+ *
+ * Null when the slot or the start is unknown, which leaves an empty strip.
+ * Nothing honest can be drawn without both, and a full bar would be a lie.
+ */
+export function recordedSpan(rec: Coverage): Span | null {
+  const slot = rec.duration;
+  if (!slot || !rec.start) return null;
+
+  const scheduled = new Date(rec.start).getTime();
+  if (Number.isNaN(scheduled)) return null;
+
+  const began = rec.recording_started ? new Date(rec.recording_started).getTime() : scheduled;
+  if (Number.isNaN(began)) return null;
+
+  // Seconds from the slot's start. Negative when the tuner began early, which
+  // it routinely does by a few seconds.
+  const from = (began - scheduled) / 1000;
+  const to = from + (rec.recorded_seconds ?? 0);
+
+  // The strip is the slot, widened to hold anything captured outside it —
+  // sports pad by half an hour on purpose, and clamping would hide it.
+  const lo = Math.min(0, from);
+  const hi = Math.max(slot, to);
+  const width = hi - lo;
+  if (width <= 0) return null;
+
+  const pct = (seconds: number) => ((seconds - lo) / width) * 100;
+  const overran = (hi - slot) / width > TICK_THRESHOLD;
+
+  return {
+    left: pct(from),
+    // A four-second recording is a sliver, not nothing: it has to be visible
+    // to say what it is.
+    width: Math.max(0.5, pct(to) - pct(from)),
+    slotEnd: overran ? pct(slot) : null,
+  };
+}
+
+/**
+ * Captured so little of its slot that the recording is broken, not short.
+ *
+ * The device is no help here — `error` is null and `warnings` empty even on a
+ * four-second capture — so it is inferred. A tenth of the slot separates the
+ * three genuinely broken recordings measured on one device (0.1%, 0.2%, 6.2%)
+ * from a deliberately stopped one (58.5%) and one that merely started late
+ * (74.6%).
+ */
+export function isIncomplete(rec: Coverage): boolean {
+  if (!rec.duration || !rec.recorded_seconds) return false;
+  return rec.recorded_seconds / rec.duration < 0.1;
+}

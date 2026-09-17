@@ -11,12 +11,17 @@ import { api, previewUrl } from "../api/tablo";
 import type {
   Channel, Program, Recording, CacheState, EncodingProgress,
 } from "../api/tablo";
-import { log, fmt, isCached, rangesLabel, timeRangesToArray, installSnapshot } from "../lib/debug";
+import {
+  log, fmt, isCached, rangesLabel, installSnapshot, timeRangesToArray,
+} from "../lib/debug";
 import {
   airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
   programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
+import { createHlsSurface, type PlaybackSurface } from "../lib/playbackSurface";
+import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
+import { openWasmSurface } from "../lib/wasmlive/open";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -26,10 +31,20 @@ export type PlaybackSource =
   | { kind: "live"; channel: Channel; program?: Program | null }
   | { kind: "recording"; recording: Recording };
 
+/**
+ * Ask to open at the newest thing that exists, rather than at a known second.
+ *
+ * For a recording still being written, "now" is not a number the caller has:
+ * how much exists is only known once the stream is open, and it has moved on
+ * by then anyway. Negative so it can never collide with a real position, and
+ * the same convention hls.js already uses for `startPosition`.
+ */
+export const LIVE_EDGE = -1;
+
 interface Props {
   source: PlaybackSource;
   onClose: () => void;
-  /** Resume point, in seconds. Used when restoring after a refresh. */
+  /** Resume point in seconds, or `LIVE_EDGE` for the newest thing recorded. */
   startAt?: number;
   /** False when restoring: start paused so audio is not blocked. */
   autoPlay?: boolean;
@@ -349,6 +364,20 @@ function applyStoredVolume(video: HTMLVideoElement): boolean {
   return true;
 }
 
+/**
+ * The stage's canvas, where MPEG-2 decoded in WASM is drawn.
+ *
+ * Built once and moved between hosts for the same reason the video is: two
+ * React roots render this stage, and a JSX canvas would give each of them one
+ * of its own while the decoder holds a WebGL context on exactly one.
+ */
+function createStageCanvas(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.className = "w-full h-full object-contain";
+  canvas.hidden = true;
+  return canvas;
+}
+
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
   /** The stage's video element, built once on the first render. */
@@ -370,6 +399,24 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const videoRef = useRef<HTMLVideoElement | null>(stage.video);
   /** The whole player. What goes fullscreen, so the chrome goes with it. */
   const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * What playback is actually happening on.
+   *
+   * Everything below reads the clock and the seekable range through this
+   * rather than from the element, so a second implementation — MPEG-2 decoded
+   * in WASM onto a canvas — can stand in the same place without the bar, the
+   * scrubber or the anchor knowing about it.
+   *
+   * A ref, not state: the controls read it synchronously from click handlers,
+   * and a state update lands a render later than the surface exists.
+   */
+  const surfaceRef = useRef<PlaybackSurface | null>(null);
+  /** Detaches the transport from the surface currently held. */
+  const detachRef = useRef<(() => void) | null>(null);
+  /** Where the WASM path draws. Shown instead of the element while it plays. */
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  if (canvasRef.current == null) canvasRef.current = createStageCanvas();
+  const [usingWasm, setUsingWasm] = useState(false);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -575,32 +622,302 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     setAnchor(null);
   }
 
+  // ------------------------------------------------------------ transport
+  //
+  // Wired when a surface is created rather than from an effect watching state:
+  // an effect attaches a render late, which loses the surface's first events —
+  // including the seekable range the whole bar is scaled by. Returns its own
+  // unsubscribe, so a surface swap (a WASM session giving up mid-playback and
+  // handing the channel back to the transcode) is a detach and a re-attach.
+  const attachTransport = useCallback((surface: PlaybackSurface) => {
+    const sync = (initial = false) => {
+      setPosition(surface.currentTime);
+      // Arrived (or the player moved on its own) — stop overriding the bar.
+      setPendingSeek((want) =>
+        want !== null && Math.abs(surface.currentTime - want) < 1.5 ? null : want,
+      );
+      onPositionRef.current?.(surface.currentTime);
+      // Not on the first pass. Attaching happens before playback has actually
+      // begun, so the surface still reports itself paused; taking that reading
+      // puts a Play button under a frame that is about to start, until the
+      // first event corrects it. What the eager pass is for is the seekable
+      // range, which the bar is scaled by and which arrives before any event.
+      if (!initial) setPaused(surface.paused);
+      const sk = surface.seekable;
+      if (sk) {
+        setRangeStart(sk[0]);
+        setRangeEnd(sk[1]);
+        // The one reading that ties this session's media clock to the wall
+        // clock. Taken when a playlist first exists and never again — the live
+        // edge is now, so the two can be converted from here on. Keeping the
+        // first reading rather than the latest is what holds the bar still;
+        // re-anchoring would slide the programme under the playhead.
+        setAnchor((held) => held ?? { wallMs: Date.now(), media: sk[1] });
+      } else if (surface.duration !== null) {
+        setRangeStart(0);
+        setRangeEnd(surface.duration);
+      }
+    };
+    // One event covers both, and reading the surface rather than trusting our
+    // own last write keeps the slider honest about what actually happened to
+    // the level — a platform that refuses it, or something changing it behind
+    // our back.
+    const onVolume = () => { setMuted(surface.muted); setVolume(surface.volume); };
+    let stalledAt = 0;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const onWait = () => {
+      // Already counting: a seek fires `seeking` and `waiting` back to back,
+      // and re-arming on the second would push the overlay a grace further out
+      // every time the player twitched.
+      if (grace !== undefined) return;
+      stalledAt = performance.now();
+      const t = surface.currentTime;
+      log.warn(`stalled at ${fmt(t)}`, {
+        cachedHere: isCached(t, cachedRangesRef.current),
+        ...surface.diagnostics(),
+      });
+      // A stall earns the overlay rather than being given it: most are shorter
+      // than the time it takes to read one.
+      grace = setTimeout(() => setWaiting(true), STALL_GRACE_MS);
+    };
+    const onPlaying = () => {
+      clearTimeout(grace);
+      grace = undefined;
+      if (stalledAt) {
+        log.player(`resumed after ${Math.round(performance.now() - stalledAt)}ms at ${fmt(surface.currentTime)}`);
+        stalledAt = 0;
+      }
+      setWaiting(false);
+    };
+
+    const offs = [
+      surface.on("timeupdate", sync),
+      surface.on("ready", sync),
+      surface.on("paused", sync),
+      surface.on("volumechange", onVolume),
+      surface.on("waiting", onWait),
+      surface.on("playing", onPlaying),
+    ];
+    sync(true);
+    return () => offs.forEach((off) => off());
+  }, []);
+
   // ---------------------------------------------------------------- start
   useEffect(() => {
     let cancelled = false;
     const current = sourceRef.current;
+
+    /** Install a surface, replacing whatever was playing. */
+    const hold = (next: PlaybackSurface) => {
+      detachRef.current?.();
+      surfaceRef.current?.destroy();
+      surfaceRef.current = next;
+      // Every surface starts loud: the element carries the remembered level
+      // only because it was set on the element itself, and a gain node opens
+      // at unity knowing nothing. Applied here, where every path installs its
+      // surface, rather than at each of the three that build one — including
+      // the hand-back to FFmpeg partway through a session, which would
+      // otherwise jump back to full volume mid-programme.
+      next.setVolume(loadVolume());
+      detachRef.current = attachTransport(next);
+    };
+
+    /** Put a stream on the `<video>` element and wire the transport to it. */
+    const openSurface = (url: string) => {
+      const video = videoRef.current;
+      if (!video) return;
+      hold(createHlsSurface(video, load, url));
+    };
+
+    /**
+     * Hand the channel back to FFmpeg.
+     *
+     * One way, for the life of the session: a path that flapped between
+     * decoders would be worse than either. The viewer sees a rebuffer.
+     */
+    const fallBack = async (channel: Channel, reason: string, staleSession?: string) => {
+      const diagnostics = surfaceRef.current?.diagnostics?.();
+      log.warn(`wasm live gave up (${reason}) — falling back to the transcode`, {
+        staleSession, diagnostics,
+      });
+      // And to the server's log, where the ring's own account of the same
+      // moment already is. The reason exists only in the browser, and whoever
+      // needs it is usually not at that browser — which has meant reading
+      // consoles back a line at a time for every diagnosis of this path.
+      // Fire and forget: a failure to report a failure must not become one.
+      void fetch("/api/debug/wasm-fallback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reason,
+          detail: diagnostics?.failureDetail ?? null,
+          diagnostics,
+        }),
+      }).catch(() => {});
+      setUsingWasm(false);
+      // The ring session is finished with, and nothing else knows its id. Left
+      // open it holds a tuner and keeps copying segments to disk for the life
+      // of the process — an hour of 1080i per abandoned channel.
+      if (staleSession) {
+        api.stopStream(staleSession).catch((e) => {
+          log.warn(`could not release the ring session ${staleSession}`, String(e));
+        });
+      }
+      try {
+        const r = await api.startStream(channel.identifier, true, "transcode");
+        if (cancelled) return;
+        setSessionId(r.session_id);
+        setLiveTranscoded(true);
+        openSurface(r.stream_url);
+      } catch (e) {
+        if (!cancelled) setApiError(e instanceof Error ? e.message : String(e));
+      }
+    };
+
     const start = async () => {
       try {
         if (current.kind === "live") {
-          // OTA broadcasts are MPEG-2. No browser's MSE implementation decodes
-          // MPEG-2 video — hls.js demuxes the container but the video track is
-          // unrenderable, leaving audio only. Always transcode OTA to H.264.
+          // OTA broadcasts are MPEG-2, which no browser's media stack decodes.
+          // Either this browser can decode it in WASM onto a canvas, or the
+          // backend transcodes it to H.264 the way it always has.
           //
           // Anything not known to be OTT counts as a broadcast: a guide row
           // that arrives without a kind used to fall through to the raw stream,
-          // which parses no fragment and buffers forever. Transcoding an OTT
-          // channel needlessly only costs CPU.
-          const transcode = current.channel.kind === "ott" ? undefined : true;
-          const r = await api.startStream(current.channel.identifier, transcode);
-          if (cancelled) return;
+          // which parses no fragment and buffers forever.
+          const eligibility = wasmLiveEligible(window, localStorage, current.channel.kind);
+          const { mode, wasm } = chooseLivePath(eligibility, current.channel.kind);
+          const r = await api.startStream(
+            current.channel.identifier, mode === "transcode", mode,
+          );
+          // Closed, or reopened, while the request was in flight. The session
+          // exists on the server and holds a tuner, and nothing else will ever
+          // learn its id — so it has to be released here.
+          if (cancelled) {
+            api.stopStream(r.session_id).catch(() => {});
+            return;
+          }
           log.player(`open live ${current.channel.display_name}`, {
-            kind: current.channel.kind, transcode: !!transcode,
+            kind: current.channel.kind, mode, wasm,
+            why: eligibility.reason || "eligible",
             session: r.session_id, url: r.stream_url,
           });
           setSessionId(r.session_id);
-          setLiveTranscoded(!!r.transcoded);
-          load(r.stream_url);
+          setLiveTranscoded(mode === "transcode");
+
+          if (wasm) {
+            setUsingWasm(true);
+            try {
+              const surface = await openWasmSurface({
+                playlistUrl: r.stream_url,
+                originMs: Date.parse(r.started_at ?? new Date().toISOString()),
+                canvas: canvasRef.current,
+                onFailure: (reason) => void fallBack(current.channel, reason, r.session_id),
+              });
+              if (cancelled) { surface.destroy(); return; }
+              hold(surface);
+            } catch (e) {
+              if (cancelled) return;
+              await fallBack(
+                current.channel, e instanceof Error ? e.message : String(e), r.session_id,
+              );
+            }
+          } else {
+            setUsingWasm(false);
+            openSurface(r.stream_url);
+          }
         } else {
+          // A recording is the same MPEG-2 and AC-3 the live path decodes, so
+          // when this browser can decode it there is no reason to transcode:
+          // it plays from what the device already has, costs no encoder, and
+          // keeps its own sample aspect rather than relying on one to carry it.
+          // The transcode is what *caching* is for.
+          // A copy kept offline wins over everything: it is complete, it is
+          // local, and it plays when the device is off or no longer has the
+          // recording — which is the entire reason for keeping one. An
+          // incidental partial cache is not that, and must not pre-empt
+          // MPEG-2: it is only there because something fell back to the
+          // transcode once.
+          const keptOffline = current.recording.offline_only
+            || (current.recording.pinned && current.recording.cache_state === "complete");
+
+          const eligibility = wasmLiveEligible(window, localStorage, "ota");
+          if (eligibility.eligible && !keptOffline) {
+            try {
+              // Every recording is an index, finished or not: the device
+              // publishes both from their first segment, and a finished one
+              // differs only by carrying EXT-X-ENDLIST. So both start at the
+              // first frame and seek across whatever exists.
+              //
+              // One still being written used to go to the ring instead, which
+              // joins at the live edge on purpose - opening a show forty
+              // minutes in began forty minutes in, with no way back. That was
+              // on the belief that the device published no reachable beginning
+              // for it. Measured 2026-09-17: it does, and it simply appends.
+              const raw = await api.watchRecordingVod(current.recording.object_id);
+              if (cancelled) {
+                api.stopStream(raw.session_id).catch(() => {});
+                return;
+              }
+              log.player(`open recording ${current.recording.object_id} as mpeg-2`, {
+                session: raw.session_id, url: raw.stream_url,
+                mode: raw.growing ? "vod (still recording)" : "vod",
+                duration: fmt(raw.duration),
+                segments: raw.segments,
+              });
+              setSessionId(raw.session_id);
+              setUsingWasm(true);
+              const surface = await openWasmSurface({
+                playlistUrl: raw.stream_url,
+                originMs: Date.now(),
+                vod: { durationSeconds: raw.duration, growing: raw.growing },
+                canvas: canvasRef.current,
+                onFailure: (reason) => {
+                  log.warn(`recording wasm gave up (${reason}) — using the transcode`);
+                  api.stopStream(raw.session_id).catch(() => {});
+                  setUsingWasm(false);
+                  void api.watchRecording(current.recording.object_id)
+                    .then((t) => { if (!cancelled) openSurface(t.stream_url); })
+                    .catch(() => {});
+                },
+              });
+              if (cancelled) { surface.destroy(); return; }
+              hold(surface);
+
+              // Open somewhere other than the first frame.
+              //
+              // The MPEG-2 path ignored `openAt` entirely, so a recording
+              // resumed from a saved position or a reopened URL started over
+              // from the beginning — `startPosition` below reaches only the
+              // transcode. A seek costs one wasted segment fetch, since the
+              // session has already begun feeding from zero, which is cheap
+              // against silently discarding where the viewer was.
+              //
+              // LIVE_EDGE means the newest thing recorded, which is only known
+              // now: `raw.duration` is what existed when the session opened.
+              // Landing a margin short of it, for the same reason Go Live does
+              // — the frontier is still being written and seeking onto it waits.
+              const target = openAt === LIVE_EDGE
+                ? Math.max(0, raw.duration - LIVE_EDGE_MARGIN)
+                : openAt;
+              if (target > 0) {
+                log.player(`opening at ${fmt(target)}`, {
+                  reason: openAt === LIVE_EDGE ? "live edge" : "resume",
+                  recorded: fmt(raw.duration),
+                });
+                surface.seek(target);
+              }
+              setLoading(false);
+              return;
+            } catch (e) {
+              // Anything at all here means the transcode below runs instead.
+              log.warn(
+                `recording mpeg-2 unavailable (${e instanceof Error ? e.message : String(e)})`
+                + " — using the transcode",
+              );
+            }
+          }
+          setUsingWasm(false);
+
           const t0 = performance.now();
           const r = await api.watchRecording(current.recording.object_id);
           if (cancelled) return;
@@ -616,7 +933,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           });
           setCacheState(r.state);
           setCachedRanges(r.cached_ranges ?? []);
-          load(r.stream_url);
+          openSurface(r.stream_url);
         }
         if (!cancelled) setLoading(false);
       } catch (e) {
@@ -630,6 +947,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     start();
     return () => {
       cancelled = true;
+      detachRef.current?.();
+      detachRef.current = null;
+      surfaceRef.current?.destroy();
+      surfaceRef.current = null;
       destroy();
     };
     // startAt/autoPlay are read once when the stream opens; changing them
@@ -692,18 +1013,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         if (cur.kind !== "recording") return;
         // Position is the heartbeat: it tells the server someone is still here
         // and where to keep the lookahead.
-        const s = await api.recordingStatus(
-          cur.recording.object_id,
-          videoRef.current?.currentTime ?? 0,
-        );
+        const at = surfaceRef.current?.currentTime ?? 0;
+        const s = await api.recordingStatus(cur.recording.object_id, at);
         setCacheState(s.state);
         const secs = s.cached_seconds ?? 0;
         log.cache(`${s.state} — ${fmt(secs)} of ${fmt(s.duration)} (${Math.round(s.progress * 100)}%)`, {
-          playhead: fmt(videoRef.current?.currentTime ?? 0),
+          playhead: fmt(at),
           ahead: fmt(Math.max(0, (s.cached_ranges ?? []).reduce(
-            (m, [a, b]) => ((videoRef.current?.currentTime ?? 0) >= a &&
-                            (videoRef.current?.currentTime ?? 0) < b ? b : m), 0)
-            - (videoRef.current?.currentTime ?? 0))),
+            (m, [a, b]) => (at >= a && at < b ? b : m), 0) - at)),
           ranges: rangesLabel(s.cached_ranges ?? []),
           error: s.error,
         });
@@ -757,97 +1074,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     return () => clearInterval(id);
   }, [isLive]);
 
-  // ------------------------------------------------------------ transport
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const sync = () => {
-      setPosition(video.currentTime);
-      // Arrived (or the player moved on its own) — stop overriding the bar.
-      setPendingSeek((want) =>
-        want !== null && Math.abs(video.currentTime - want) < 1.5 ? null : want,
-      );
-      onPositionRef.current?.(video.currentTime);
-      setPaused(video.paused);
-      const sk = video.seekable;
-      if (sk.length > 0) {
-        setRangeStart(sk.start(0));
-        setRangeEnd(sk.end(sk.length - 1));
-        // The one reading that ties this session's media clock to the wall
-        // clock. Taken when a playlist first exists and never again — the live
-        // edge is now, so the two can be converted from here on. Keeping the
-        // first reading rather than the latest is what holds the bar still;
-        // re-anchoring would slide the programme under the playhead.
-        setAnchor((held) => held ?? { wallMs: Date.now(), media: sk.end(sk.length - 1) });
-      } else if (Number.isFinite(video.duration)) {
-        setRangeStart(0);
-        setRangeEnd(video.duration);
-      }
-    };
-    // One event covers both, and reading the element rather than trusting our
-    // own last write keeps the slider honest about what the platform did with
-    // it — including a browser or a remote changing the level behind our back.
-    const onVolume = () => { setMuted(video.muted); setVolume(video.volume); };
-    let stalledAt = 0;
-    let grace: ReturnType<typeof setTimeout> | undefined;
-    const onWait = () => {
-      // Already counting: a seek fires `seeking` and `waiting` back to back,
-      // and re-arming on the second would push the overlay a grace further out
-      // every time the element twitched.
-      if (grace !== undefined) return;
-      stalledAt = performance.now();
-      const t = video.currentTime;
-      log.warn(`stalled at ${fmt(t)}`, {
-        cachedHere: isCached(t, cachedRangesRef.current),
-        buffered: timeRangesToArray(video.buffered).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", ") || "none",
-        readyState: video.readyState,
-      });
-      grace = setTimeout(() => setWaiting(true), STALL_GRACE_MS);
-    };
-    const onPlaying = () => {
-      clearTimeout(grace);
-      grace = undefined;
-      if (stalledAt) {
-        log.player(`resumed after ${Math.round(performance.now() - stalledAt)}ms at ${fmt(video.currentTime)}`);
-        stalledAt = 0;
-      }
-      setWaiting(false);
-    };
-    const onSeeked = () => {
-      const t = video.currentTime;
-      log.player(`seeked → ${fmt(t)}`, {
-        cached: isCached(t, cachedRangesRef.current) ? "warm" : "COLD — will transcode",
-      });
-    };
-
-    const events: [string, EventListener][] = [
-      ["timeupdate", sync], ["progress", sync], ["play", sync], ["pause", sync],
-      ["durationchange", sync], ["seeked", sync], ["seeked", onSeeked],
-      ["volumechange", onVolume],
-      ["waiting", onWait], ["seeking", onWait],
-      ["playing", onPlaying], ["canplay", onPlaying],
-    ];
-    events.forEach(([e, h]) => video.addEventListener(e, h));
-    return () => {
-      clearTimeout(grace);
-      events.forEach(([e, h]) => video.removeEventListener(e, h));
-    };
-  }, []);
-
   const togglePlay = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) video.play().catch(() => {});
-    else video.pause();
+    const s = surfaceRef.current;
+    if (!s) return;
+    if (s.paused) s.play().catch(() => {});
+    else s.pause();
   }, []);
 
   const seekTo = useCallback((t: number) => {
-    const video = videoRef.current;
-    if (!video) return;
+    const s = surfaceRef.current;
+    if (!s) return;
     const target = Math.max(rangeStart, Math.min(t, rangeEnd));
     setPendingSeek(target);
-    video.currentTime = target;
+    s.seek(target);
+    log.player(`seek → ${fmt(target)}`, {
+      cached: isCached(target, cachedRangesRef.current) ? "warm" : "COLD — will transcode",
+    });
   }, [rangeStart, rangeEnd]);
 
   /**
@@ -861,15 +1103,23 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * scrubber is still free to go anywhere and wait.
    */
   const skip = useCallback((delta: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    const from = video.currentTime;
+    const s = surfaceRef.current;
+    if (!s) return;
+    const from = s.currentTime;
     const range = readyRange(from, {
       ranges: cachedRangesRef.current,
-      buffered: timeRangesToArray(video.buffered),
+      buffered: timeRangesToArray(videoRef.current?.buffered),
       start: rangeStart,
       end: rangeEnd,
-      whole: isLive || cacheState === "complete",
+      // MPEG-2 has no cache to gate on: the device serves any byte range of the
+      // recording on demand, which is why seeking in it is instant. Without
+      // this, skip was silently dead on that path - `cacheState` is null and
+      // `cachedRanges` empty, because the wasm branch returns before either is
+      // set, and `buffered` belongs to the hidden <video> a canvas does not
+      // use. `readyRange` then found no run containing the playhead, returned
+      // [t, t], and the guard below saw a jump of zero and returned. Live wasm
+      // escaped only because `isLive` short-circuits it.
+      whole: isLive || usingWasm || cacheState === "complete",
     });
     // A live edge is a frontier the encoder is still extending, so a skip has
     // to stop well short of it. Anywhere else `hi` is a settled end.
@@ -879,7 +1129,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // itself as a stall — thirteen in a row, in the log that found this.
     if (Math.abs(target - from) < 0.25) return;
     seekTo(target);
-  }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
+  }, [seekTo, isLive, usingWasm, cacheState, rangeStart, rangeEnd]);
 
   /**
    * Back to the live edge — stopping the same distance short of it as a skip.
@@ -937,16 +1187,16 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * could reach until release.
    */
   const previewSeek = useCallback((t: number) => {
-    const video = videoRef.current;
-    if (!video) return;
+    const s = surfaceRef.current;
+    if (!s) return;
     const cached = isLive || cachedRanges.some(([a, b]) => t >= a && t <= b);
     if (!cached) return;
     // A seek per pointer event would queue faster than they can complete.
     const now = performance.now();
     if (now - lastPreviewRef.current < 120) return;
-    if (Math.abs(video.currentTime - t) < 0.5) return;
+    if (Math.abs(s.currentTime - t) < 0.5) return;
     lastPreviewRef.current = now;
-    video.currentTime = t;
+    s.seek(t);
   }, [cachedRanges, isLive]);
 
   const onBarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -1028,14 +1278,14 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     e.preventDefault();
     e.stopPropagation();
     const mag = Math.abs(dir) === 60 ? 60 : (e.shiftKey ? 30 : 5);
-    seekTo((videoRef.current?.currentTime ?? 0) + Math.sign(dir) * mag);
+    seekTo((surfaceRef.current?.currentTime ?? 0) + Math.sign(dir) * mag);
   }, [seekTo]);
 
   const toggleMute = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = !video.muted;
-    setMuted(video.muted);
+    const s = surfaceRef.current;
+    if (!s) return;
+    s.setMuted(!s.muted);
+    setMuted(s.muted);
   }, []);
 
   /**
@@ -1048,13 +1298,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * not: silencing by dragging to the end should not leave the button lit.
    */
   const changeVolume = useCallback((next: number) => {
-    const video = videoRef.current;
-    if (!video) return;
     const level = clampVolume(next);
-    video.volume = level;
-    if (level > 0 && video.muted) {
-      video.muted = false;
-      setMuted(false);
+    // Through the surface, so a level set here reaches whichever pipeline is
+    // playing: the element on the HLS path, a gain node on the WASM one. The
+    // element is the fallback rather than the target, for the window before a
+    // surface exists — it already carries the remembered level, and writing
+    // to it there keeps the slider from being dead on a player still opening.
+    const s = surfaceRef.current;
+    if (s) {
+      s.setVolume(level);
+      if (level > 0 && s.muted) {
+        s.setMuted(false);
+        setMuted(false);
+      }
+    } else if (videoRef.current) {
+      videoRef.current.volume = level;
+      if (level > 0 && videoRef.current.muted) {
+        videoRef.current.muted = false;
+        setMuted(false);
+      }
     }
     setVolume(level);
     saveVolume(level);
@@ -1062,7 +1324,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   /** One rung of the arrow keys — a twentieth, as every other player uses. */
   const nudgeVolume = useCallback((delta: number) => {
-    changeVolume((videoRef.current?.volume ?? 1) + delta);
+    const held = surfaceRef.current?.volume ?? videoRef.current?.volume ?? 1;
+    changeVolume(held + delta);
   }, [changeVolume]);
 
   /**
@@ -1164,7 +1427,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const placeVideo = useCallback((host: HTMLDivElement, forPip: boolean) => {
     const el = forPip ? mirrorRef.current : videoRef.current;
     if (el && el.parentElement !== host) host.append(el);
+    // The canvas travels with it, and only into the tab's own stage: the
+    // pop-out is fed by a mirror of the video element's stream, which a canvas
+    // has no part in. Picture-in-picture on the WASM path is a known gap.
+    const canvas = canvasRef.current;
+    if (!forPip && canvas && canvas.parentElement !== host) host.append(canvas);
   }, []);
+
+  // Which of the two is on screen. Set on the elements rather than through
+  // React, because React does not own them - it owns the host they sit in.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.hidden = usingWasm;
+    if (canvasRef.current) canvasRef.current.hidden = !usingWasm;
+  }, [usingWasm]);
 
   const pipWindow = useRef<Window | null>(null);
   /** The live shortcut handler, so a new pop-out can be given it too. */
@@ -1292,19 +1567,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
   // `tabloDebug()` in the console dumps everything at once, mid-problem.
   useEffect(() => installSnapshot(() => {
-    const v = videoRef.current;
+    const s = surfaceRef.current;
+    const seekable = s?.seekable;
     return {
       source: isLive ? "live" : `recording ${('recording' in source) ? source.recording.object_id : ""}`,
       title,
-      position: fmt(v?.currentTime ?? 0),
-      duration: fmt(v?.duration ?? 0),
-      paused: v?.paused, readyState: v?.readyState, muted: v?.muted,
-      seekable: timeRangesToArray(v?.seekable).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", "),
-      buffered: timeRangesToArray(v?.buffered).map(([a, b]) => `${fmt(a)}-${fmt(b)}`).join(", "),
+      position: fmt(s?.currentTime ?? 0),
+      duration: fmt(s?.duration ?? 0),
+      paused: s?.paused, muted: s?.muted,
+      seekable: seekable ? `${fmt(seekable[0])}-${fmt(seekable[1])}` : "none",
       cacheState,
       cachedRanges: rangesLabel(cachedRangesRef.current),
-      atCachedPoint: isCached(v?.currentTime ?? 0, cachedRangesRef.current),
-      mediaError: v?.error?.message ?? null,
+      atCachedPoint: isCached(s?.currentTime ?? 0, cachedRangesRef.current),
+      mediaError: s?.error ?? null,
+      // Whatever the implementation in use can say about itself: readyState
+      // and buffered ranges for hls, decode and present counts for wasm.
+      ...(s?.diagnostics() ?? {}),
     };
   }), [isLive, source, title, cacheState]);
 
@@ -1683,6 +1961,8 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           root an element of its own. The stream is attached to one element
           through a MediaSource; a second would start from nothing. */}
       <div ref={videoHostRef} className="w-full h-full" />
+
+
 
       {/* A blocking sheet, not a see-through veil: it carries text and a button,
           so it uses the player's own panel rather than a scrim. In light that is

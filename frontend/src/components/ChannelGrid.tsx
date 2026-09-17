@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { api, type GuideChannel, type GridChannel, type SearchItem } from "../api/tablo";
+import { recordingFor, useRecordingsInProgress } from "../lib/useRecordingsInProgress";
 import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
 import { Inbox, Search, X } from "lucide-react";
@@ -68,6 +69,7 @@ function useGuideStream(enabled: boolean) {
 
   return { channels, loading };
 }
+
 
 interface Props {
   onLogout: () => void;
@@ -194,6 +196,7 @@ export function ChannelGrid({ onLogout }: Props) {
   }, []);
 
   const { channels, loading: isLoading } = useGuideStream(activeTab === "live");
+  const inProgress = useRecordingsInProgress(activeTab === "live");
 
 
   // A channel named in the URL reopens as soon as the guide contains it.
@@ -678,6 +681,8 @@ export function ChannelGrid({ onLogout }: Props) {
                       key={ch.identifier}
                       channel={ch}
                       now={now}
+                      recording={recordingFor(inProgress, ch.identifier,
+                                              ch.current_program?.start)}
                       infoOpen={cardInfo?.channel === ch.identifier}
                       onPlay={() => setPlaying(ch)}
                       onInfo={() => setCardInfo({

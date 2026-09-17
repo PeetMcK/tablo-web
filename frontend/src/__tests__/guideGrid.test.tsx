@@ -417,7 +417,8 @@ describe("revealing an airing the search found", () => {
       title, episode_title: null, season_number: null, episode_number: null,
       description: "filler", start: "2026-09-16T08:00Z", duration: 3600,
       orig_air_date: null, genres: [], rating: null, image_url: null,
-      airing_now: false,
+      airing_now: false, schedulable: false, scheduled: false, past: true,
+      schedule_state: null, skip_reason: null, series: null,
       channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });
@@ -645,7 +646,8 @@ describe("dragging the guide", () => {
       title: "Hour 3", episode_title: null, season_number: null,
       episode_number: null, description: "filler", start: "2026-09-16T08:00Z",
       duration: 3600, orig_air_date: null, genres: [], rating: null,
-      image_url: null, airing_now: false,
+      image_url: null, airing_now: false, schedulable: false, scheduled: false,
+      past: true, schedule_state: null, skip_reason: null, series: null,
       channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });
@@ -1218,5 +1220,70 @@ describe("the guide's channel tile says it plays", () => {
     const p = await plate();
     expect(p.className).toMatch(/group-active\/tile:scale-95/);
     expect(p.className).toMatch(/group-hover\/tile:bg-accent-soft/);
+  });
+
+  it("keeps the plate dark in both themes", async () => {
+    // The same fix the Live card needs, for the same reason: `ChannelLogo`
+    // carries its own dark plate, so a tile that followed the theme wrapped it
+    // in a pale one and light mode showed a black box inside a white box.
+    const p = await plate();
+    expect(p.className).toMatch(/\bbg-logo-plate\b/);
+    expect(p.className).not.toMatch(/bg-surface-sunken/);
+  });
+});
+
+describe("the guide marks what is being recorded", () => {
+  const topOfHour = () => {
+    const t = new Date();
+    t.setMinutes(0, 0, 0);
+    return t;
+  };
+
+  beforeEach(() => {
+    mockStream(grid());
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({
+      recordings: [{
+        object_id: 86113,
+        channel_identifier: "ch1",
+        start: topOfHour().toISOString(),
+        duration: 3600,
+        // Twelve minutes late, so the cell shows a gap at its left edge that
+        // the ordinary progress bar could never express.
+        recording_started: new Date(topOfHour().getTime() + 720_000).toISOString(),
+        recorded_seconds: 600,
+        expected_seconds: 2880,
+        title: "Survivor",
+      }],
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says which programme is recording", async () => {
+    render(<GuideGridView onPlay={() => {}} />);
+
+    expect(await screen.findByLabelText(/recording now: survivor/i)).toBeInTheDocument();
+  });
+
+  it("draws coverage on that cell, not clock progress", async () => {
+    // The ordinary bar starts flush left because the clock started at the top
+    // of the hour. Coverage starts where the tuner did — twelve minutes in.
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByLabelText(/recording now: survivor/i);
+
+    // `.inset-y-0` picks the bar rather than the pulsing dot, which shares the
+    // colour class.
+    const fill = container.querySelector<HTMLElement>(".bg-danger.inset-y-0");
+    expect(fill).not.toBeNull();
+    expect(parseFloat(fill!.style.left)).toBeCloseTo(20, 0);
+  });
+
+  it("leaves every other cell exactly as it was", async () => {
+    const { container } = render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByLabelText(/recording now: survivor/i);
+
+    // One marked cell, and the rest keep the accent progress bar.
+    expect(container.querySelectorAll(".bg-danger.inset-y-0")).toHaveLength(1);
+    expect(container.querySelectorAll(".accent-gradient-x").length).toBeGreaterThan(0);
   });
 });

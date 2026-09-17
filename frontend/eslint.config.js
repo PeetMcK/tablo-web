@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // The libav.js build and its upstream typings are vendored verbatim so the
+  // exact artifact that was measured is the one that ships. Linting someone
+  // else's generated code says nothing about this codebase.
+  globalIgnores(['dist', 'src/lib/wasmlive/vendor']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

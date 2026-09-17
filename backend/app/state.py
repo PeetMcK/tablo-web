@@ -101,6 +101,18 @@ def _unescape(text: str | None) -> str | None:
 _lock = Lock()
 
 
+class GuideFetchIncomplete(RuntimeError):
+    """A guide build lost too much of the device's data to be worth keeping.
+
+    Raised rather than returning the thin result, because downstream the two are
+    indistinguishable: a build in which nine device calls in ten failed has the
+    same shape as a line-up that genuinely has little on it. The sparse version
+    used to be cached in memory, written to the database, and served as the
+    schedule for an hour - a blank grid that no amount of reloading would fix.
+    Raising keeps a failed build out of both caches.
+    """
+
+
 class StreamSession:
     """Tracks a live HLS stream for one viewer."""
 
@@ -136,6 +148,17 @@ class AppState:
     # The client keeps its own copy for instant display; this only governs how
     # often the device is re-consulted.
     _GRID_CACHE_TTL = int(os.environ.get("GUIDE_CACHE_TTL", "3600"))
+
+    # Above this share of failed device calls, a build is treated as failed
+    # rather than merely thin. Some loss is normal - the device drops the odd
+    # request when transcodes are competing for it - but a guide missing a fifth
+    # of itself is not one to keep for an hour.
+    _MAX_FETCH_FAILURE_RATIO = float(os.environ.get("GUIDE_MAX_FETCH_FAILURES", "0.2"))
+
+    # How far a stored guide must still reach before it is worth serving. Below
+    # this the grid has almost nothing left to draw, so paying for a rebuild
+    # beats rendering rows that look broken.
+    _MIN_FORWARD_COVERAGE = int(os.environ.get("GUIDE_MIN_FORWARD", "3600"))
 
     # ------------------------------------------------------------------
     # Persistence
@@ -371,6 +394,44 @@ class AppState:
         )
         resp.raise_for_status()
         return resp
+
+    async def patch_device(self, path: str, payload: dict) -> tuple[int, dict]:
+        """PATCH the device, returning (status, body) rather than raising.
+
+        `_request_device_raw` calls `raise_for_status()`, which throws the
+        device's error body away - and that body is the only thing that can say
+        *why* a write was refused. The device answers a bad write with
+        `{"error": {"code", "description", "details"}}`, and `details` echoes
+        the offending field, so a failure can be shown to a person instead of
+        reported as a generic error. See docs/tablo-api.md.
+
+        Writes need no separate auth mechanism: the signature covers the body,
+        which is why the payload is serialised once and both signed and sent.
+        """
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        from tablo_api import TabloAuth
+
+        body = json.dumps(payload, separators=(",", ":"))
+        auth_header, date_header = TabloAuth.make_device_auth("PATCH", path, body)
+        url = self.active_device.local_url.rstrip("/") + path
+        resp = await self._http.request(
+            "PATCH",
+            url,
+            content=body.encode(),
+            headers={
+                "Authorization": auth_header,
+                "Date": date_header,
+                "Content-Type": "application/json",
+                "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
+            },
+        )
+        try:
+            return resp.status_code, resp.json()
+        except ValueError:
+            # A proxy error page, or an empty body. The status is still the answer.
+            return resp.status_code, {}
 
     async def fetch_device_image(self, image_id: int) -> tuple[bytes, str]:
         """Fetch an image from the device. Returns (bytes, content_type).
@@ -929,6 +990,12 @@ class AppState:
         # known without probing the stream. Verified against ffmpeg's idet on
         # all six recordings: the flag and the detection agreed every time.
         interlaced = "interlaced" in (vd.get("flags") or [])
+        # Only a recording in progress has these: everything else is described
+        # by `duration`, which by then is what was actually recorded.
+        in_progress = vd.get("state") == "recording"
+        # Known whatever the state: a finished recording's coverage bar needs
+        # the same origin an in-progress one does.
+        began = AppState._began_recording(ad, vd)
         height = vd.get("height")
         scan = f"{height}{'i' if interlaced else 'p'}" if height else None
         return {
@@ -945,6 +1012,19 @@ class AppState:
             ),
             "start": ad.get("datetime"),
             "duration": vd.get("duration") or ad.get("duration") or 0,
+            "recorded_seconds": AppState._recorded_so_far(ad, vd),
+            # The scheduled slot, always - which `duration` stops being the
+            # moment a recording finishes and becomes what was captured. The
+            # coverage bar is drawn against this, so it cannot be inferred from
+            # `duration` on a finished recording.
+            "slot_seconds": ad.get("duration") or 0,
+            # What the progress bar counts against: the length this recording
+            # will actually be, which is not the scheduled slot when the tuner
+            # started late. None once finished, when `duration` is the answer.
+            "expected_seconds": AppState._expected_length(ad, vd) if in_progress else None,
+            # When recording really began, so the UI can say where its figure
+            # comes from rather than presenting elapsed time as measured.
+            "recording_started": began.isoformat().replace("+00:00", "Z") if began else None,
             "thumbnail": f"/api/recordings/{object_id}/thumbnail" if image_id else None,
             "width": vd.get("width"),
             "height": vd.get("height"),
@@ -962,6 +1042,90 @@ class AppState:
         }
 
     @staticmethod
+    def _began_recording(ad: dict, vd: dict) -> "datetime | None":
+        """When recording actually started, not when it was scheduled to.
+
+        `video_details.recorded_offsets.start` is the device's own offset, in
+        seconds, from the scheduled start to the moment the tuner began - signed,
+        so a recording that started early is negative.
+
+        This is not a detail. Measured 2026-09-17: a two-hour slot booked for
+        13:00Z reported `recorded_offsets: {start: 3786}` and really began at
+        14:03:06Z, 63 minutes late, yielding 57.9 minutes of video. Anything
+        counting from the scheduled start would have called it a full two hours
+        for its entire final hour. A second recording the same day reported
+        `start: -15` and began 15 seconds early - so the schedule is usually
+        near-exact and occasionally wildly wrong, which is the combination that
+        makes guessing worst.
+
+        Checked against the only independent source, the first
+        PROGRAM-DATE-TIME in each recording's own playlist: 14:03:06Z against
+        14:03:09Z, and 14:59:45Z against 14:59:48Z. Three seconds out on both,
+        and unlike the playlist this needs no device session, so every card is
+        right on first paint rather than after someone plays it.
+        """
+        scheduled = AppState._parse_stamp(ad.get("datetime"))
+        if scheduled is None:
+            return None
+        offsets = vd.get("recorded_offsets") or {}
+        return scheduled + timedelta(seconds=offsets.get("start") or 0)
+
+    @staticmethod
+    def _expected_length(ad: dict, vd: dict) -> int | None:
+        """How long a recording in progress will be when it finishes.
+
+        The slot, less the late start, plus whatever padding runs past the end.
+        Verified exactly on a finished recording: 7200 - 3786 + 59 = 3473, and
+        `video_details.duration` came out at 3473.
+
+        It is what the progress bar counts against, rather than the scheduled
+        slot: a show that starts fifteen minutes into its hour will be
+        forty-five minutes long, and a bar drawn against the hour could never
+        fill. `end` reads 0 until the recording completes, so this runs slightly
+        short mid-recording and lands exactly right at the end.
+        """
+        scheduled = ad.get("duration") or 0
+        if not scheduled:
+            return None
+        offsets = vd.get("recorded_offsets") or {}
+        total = scheduled - (offsets.get("start") or 0) + (offsets.get("end") or 0)
+        return max(0, int(total))
+
+    @staticmethod
+    def _recorded_so_far(ad: dict, vd: dict) -> int | None:
+        """How much of a recording in progress exists, in seconds.
+
+        None unless it is actually recording: a finished recording's `duration`
+        already is what was recorded, and a second figure would only be another
+        thing to keep in step.
+
+        The origin is the device's own measurement, so the only estimate left is
+        that recording has run continuously since it began - which is why the UI
+        still says the figure is derived rather than reported.
+        """
+        if vd.get("state") != "recording":
+            return None
+
+        began = AppState._began_recording(ad, vd)
+        if began is None:
+            return None
+
+        elapsed = (datetime.now(timezone.utc) - began).total_seconds()
+        expected = AppState._expected_length(ad, vd)
+        # Cannot exceed what the recording will be: a tuner that stopped early
+        # would otherwise read as still growing, for ever.
+        if expected:
+            elapsed = min(elapsed, expected)
+        return max(0, int(elapsed))
+
+    @staticmethod
+    def _parse_stamp(value) -> "datetime | None":
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return None
+
+    @staticmethod
     def _channel_fields(ad: dict) -> dict | None:
         """Station identity, flattened out of the nested airing record."""
         wrapper = ad.get("channel") or {}
@@ -970,6 +1134,11 @@ class AppState:
             return None
         major, minor = ch.get("major"), ch.get("minor")
         return {
+            # The key the guide and the info sheet are addressed by, so a
+            # recording can be joined to the airing that describes it. It sits
+            # on the inner channel object, beside the logos and the tms ids -
+            # the outer wrapper carries only `channel`, `object_id` and `path`.
+            "identifier": ch.get("channel_identifier"),
             "call_sign": ch.get("call_sign"),
             "network": ch.get("network"),
             "number": f"{major}.{minor}" if major is not None else None,
@@ -1155,7 +1324,9 @@ class AppState:
             "skip_reason": sched.get("skip_reason"),
         }
 
-    async def _build_grid_enrichment(self, max_airings: int = 1000, concurrency: int = 30) -> tuple[dict, dict, dict, dict]:
+    async def _build_grid_enrichment(
+        self, max_airings: int = 1000, concurrency: int = 30, strict: bool = True
+    ) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
         Returns (logo_map, path_to_ident, channel_to_airings, cloud_schedule).
@@ -1183,34 +1354,53 @@ class AppState:
             self._fetch_cloud_data(),
             return_exceptions=True,
         )
-        local_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
-        airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
+        # A failed listing used to degrade to an empty list, which is the
+        # cheapest way to build a guide with nothing in it: no channel paths
+        # means no join key, so every row falls through to its current
+        # programme. One dropped request could do it, and said nothing.
+        listing_errors = [
+            f"{path}: {type(r).__name__}: {r}"
+            for path, r in (("/guide/channels", path_results[0]), ("/guide/airings", path_results[1]))
+            if isinstance(r, Exception)
+        ]
+        if listing_errors:
+            raise GuideFetchIncomplete("guide listing failed - " + "; ".join(listing_errors))
+        local_paths = path_results[0]
+        airing_paths = path_results[1]
+
+        # The cloud half only decorates OTT rows, so losing it is survivable.
         cloud_logos: dict
         cloud_schedule: dict
         if isinstance(path_results[2], Exception):
+            print(f"[guide-grid] cloud data unavailable: {type(path_results[2]).__name__}", flush=True)
             cloud_logos, cloud_schedule = {}, {}
         else:
             cloud_logos, cloud_schedule = path_results[2]
 
         sem = asyncio.Semaphore(concurrency)
+        failures: dict[str, int] = {"channel": 0, "airing": 0}
+        first_error: dict[str, str] = {}
 
-        async def fetch_detail(path):
+        async def fetch(kind: str, path: str):
+            """One device call, counting what it costs when it fails.
+
+            Swallowing the exception is deliberate - one missing airing should
+            not lose the other nine hundred - but swallowing it silently is what
+            let a mostly-failed build pass for a thin schedule.
+            """
             async with sem:
                 try:
                     return await self.request_device("GET", path)
-                except Exception:
+                except Exception as e:  # counted, and judged below
+                    failures[kind] += 1
+                    first_error.setdefault(kind, f"{type(e).__name__}: {e}")
                     return None
 
-        async def fetch_airing(path):
-            async with sem:
-                try:
-                    return await self.request_device("GET", path)
-                except Exception:
-                    return None
-
+        channel_paths = local_paths[:300]
+        wanted_airings = airing_paths[:max_airings]
         details, airing_details = await asyncio.gather(
-            asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]]),
-            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:max_airings]]),
+            asyncio.gather(*[fetch("channel", p) for p in channel_paths]),
+            asyncio.gather(*[fetch("airing", p) for p in wanted_airings]),
         )
 
         path_to_ident: dict = {}
@@ -1241,12 +1431,69 @@ class AppState:
                 continue
             channel_to_airings.setdefault(c_path, []).append(AppState._airing_row(a))
 
+        self._assert_fetch_complete(
+            channel_paths, wanted_airings, failures, first_error, path_to_ident, strict=strict
+        )
+
         result = logo_map, path_to_ident, channel_to_airings, cloud_schedule_local
         if use_cache:
             async with self._grid_cache_lock:
                 self._grid_cache = result
                 self._grid_cache_time = _time.monotonic()
         return result
+
+    def _assert_fetch_complete(
+        self,
+        channel_paths: list,
+        airing_paths: list,
+        failures: dict[str, int],
+        first_error: dict[str, str],
+        path_to_ident: dict,
+        strict: bool = True,
+    ) -> None:
+        """Refuse a build that lost too much of the device's guide.
+
+        The grid joins airings to channels through `path_to_ident`, so losing
+        the channel details costs every airing on every row at once. What that
+        looks like from the outside is a full list of channels with nothing on
+        any of them - indistinguishable from an empty schedule, and previously
+        kept for an hour as if it were one.
+
+        `strict=False` counts and reports the loss without discarding the work,
+        which is what the background history sync needs. Its whole premise is
+        that the device's guide is forward-looking and a gap is permanent, so
+        three quarters of a sync is worth keeping where none of it is not -
+        and `save_guide` only ever appends, so a partial run cannot cost
+        anything already stored. The interactive grid takes the opposite view:
+        what it builds gets cached and served as the schedule, and a broken
+        schedule is worse than paying for another fetch.
+        """
+        print(
+            f"[guide-grid] channels {len(channel_paths) - failures['channel']}/{len(channel_paths)}, "
+            f"airings {len(airing_paths) - failures['airing']}/{len(airing_paths)}",
+            flush=True,
+        )
+        for kind, paths in (("channel", channel_paths), ("airing", airing_paths)):
+            if not paths:
+                continue
+            ratio = failures[kind] / len(paths)
+            if ratio > self._MAX_FETCH_FAILURE_RATIO:
+                if not strict:
+                    print(
+                        f"[guide-grid] degraded: {failures[kind]}/{len(paths)} {kind} fetches "
+                        f"failed ({ratio:.0%}) - keeping what arrived",
+                        flush=True,
+                    )
+                    continue
+                raise GuideFetchIncomplete(
+                    f"{failures[kind]}/{len(paths)} {kind} fetches failed ({ratio:.0%}) - "
+                    f"first was {first_error.get(kind, 'unknown')}"
+                )
+        if strict and channel_paths and not path_to_ident:
+            raise GuideFetchIncomplete(
+                f"no channel details resolved from {len(channel_paths)} paths - "
+                "every row would fall back to its current programme"
+            )
 
     def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
@@ -1275,7 +1522,9 @@ class AppState:
             "airings": airings,
         }
 
-    async def get_grid_guide(self, max_airings: int = 1000, concurrency: int = 30) -> list[dict]:
+    async def get_grid_guide(
+        self, max_airings: int = 1000, concurrency: int = 30, strict: bool = True
+    ) -> list[dict]:
         """The grid guide: channels plus their upcoming airings.
 
         Served from the database when it is fresh enough. Previously the only
@@ -1305,7 +1554,7 @@ class AppState:
         # no extra device traffic at rest.
         channels = await self.channels(refresh=True)
         logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(
-            max_airings=max_airings, concurrency=concurrency
+            max_airings=max_airings, concurrency=concurrency, strict=strict
         )
         rows = [
             self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
@@ -1362,7 +1611,7 @@ class AppState:
         }
 
     async def _stored_guide(self) -> list[dict] | None:
-        """The stored guide, if it is fresh and still has something to show.
+        """The stored guide, if it is fresh and still reaches far enough ahead.
 
         A guide whose airings have all ended is treated as absent: rendering
         empty rows looks like a broken guide rather than a stale one.
@@ -1375,7 +1624,21 @@ class AppState:
         except Exception as e:
             print(f"[db] could not read guide: {e}", flush=True)
             return None
-        if not rows or not any(r.get("airings") for r in rows):
+        if not rows:
+            return None
+        # Age on its own is the wrong question. The guide that made this check
+        # necessary was twelve minutes old and held a single airing per channel,
+        # every one of them ending within the hour: fresh by any clock, and
+        # blank by the time it was drawn. Ask instead how far it still reaches -
+        # which also means an exhausted guide refreshes when it runs out rather
+        # than when its hour happens to be up.
+        forward = store.guide_forward_seconds(rows)
+        if forward < self._MIN_FORWARD_COVERAGE:
+            print(
+                f"[guide-grid] stored guide reaches only {forward / 60:.0f} min ahead "
+                f"({sum(len(r.get('airings') or []) for r in rows)} airings); rebuilding",
+                flush=True,
+            )
             return None
         return rows
 
@@ -1448,6 +1711,51 @@ class AppState:
     def stop_session(self, session_id: str) -> None:
         with _lock:
             self.streams.pop(session_id, None)
+
+    def session_token(self, session_id: str) -> str | None:
+        """The device-side player token for one of our sessions, if any."""
+        sess = self.streams.get(session_id)
+        return getattr(getattr(sess, "stream", None), "token", None)
+
+    async def keepalive_stream_session(self, token: str) -> bool:
+        """Push a watch session's expiry out.
+
+        A session the device hands us expires in ``keepalive`` seconds -
+        measured at **165** on this device - and nothing here ever refreshed
+        one. So a live session died under us just under three minutes in, and
+        the symptom was the device answering 404 for every segment: the ring
+        stopped filling, the player polled an empty playlist twice a second and
+        showed nothing, and the WASM path was blamed for it.
+
+        `POST /player/sessions/{token}/keepalive`, which is what the published
+        client calls and what this device answers.
+        """
+        try:
+            await self._request_device_raw("POST", f"/player/sessions/{token}/keepalive")
+            return True
+        except Exception as e:
+            print(f"[session] keepalive failed for {token[:8]}: {e}", flush=True)
+            return False
+
+    async def release_stream_session(self, session_id: str) -> bool:
+        """Tell the device we have finished with a session, then forget it.
+
+        Without this a session is only ever released by the device's own
+        expiry, so every stream this backend opened - and every restart of it -
+        left one behind. `DELETE /player/sessions/{token}` answers with an
+        empty body, so it goes through the raw request rather than the JSON
+        one.
+        """
+        token = self.session_token(session_id)
+        self.stop_session(session_id)
+        if not token:
+            return False
+        try:
+            await self._request_device_raw("DELETE", f"/player/sessions/{token}")
+            return True
+        except Exception as e:
+            print(f"[session] release failed for {token[:8]}: {e}", flush=True)
+            return False
 
     @property
     def is_authenticated(self) -> bool:

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import guide_sync, store
 from . import log_buffer as _log_buffer
-from .routes import auth, channels, iptv, recordings, resume, search, stream
+from .routes import auth, channels, iptv, recordings, resume, schedule, search, stream
 from .state import CONFIG_PATH, _run_sync, state
 
 _log_buffer.install()
@@ -52,7 +52,13 @@ async def lifespan(app: FastAPI):
     # Guide history can only be captured going forward, so this starts at boot
     # rather than waiting for the first interval.
     async def _fetch_guide():
-        return await state.get_grid_guide(max_airings=15000, concurrency=guide_sync.SYNC_CONCURRENCY)
+        # strict=False: a sync that lost some of its fetches is still worth
+        # storing. History is only capturable as it happens, `save_guide` only
+        # appends, and guide_sync records the loss either way - so discarding a
+        # partial run would trade a recoverable gap for a permanent one.
+        return await state.get_grid_guide(
+            max_airings=15000, concurrency=guide_sync.SYNC_CONCURRENCY, strict=False
+        )
 
     guide_task = asyncio.create_task(
         guide_sync.run_forever(_fetch_guide, state.sync_series, state.prefetch_artwork)
@@ -62,10 +68,20 @@ async def lifespan(app: FastAPI):
     # for is the one where no request is ever coming again to notice them.
     reap_task = asyncio.create_task(stream.reap_forever())
 
+    # The device expires a watch session in 165 seconds unless it is refreshed,
+    # and nothing here ever refreshed one - which is what killed a live session
+    # at about three and a half minutes with a flood of 404s.
+    keepalive_task = asyncio.create_task(stream.keepalive_forever())
+
     yield
 
+    keepalive_task.cancel()
     reap_task.cancel()
     guide_task.cancel()
+    # Before the HTTP client closes: each live stream holds a session on the
+    # device whose token exists only in this process, so one not handed back
+    # here is one nothing can ever release.
+    await stream.release_all_sessions()
     # Before anything that can block: a live transcode holds a tuner on the
     # device, and one left running after this process goes keeps holding it.
     stream.shutdown_transcoders()
@@ -87,6 +103,7 @@ app.include_router(channels.router)
 app.include_router(iptv.router)
 app.include_router(recordings.router)
 app.include_router(resume.router)
+app.include_router(schedule.router)
 app.include_router(search.router)
 app.include_router(stream.router, prefix="/api")
 

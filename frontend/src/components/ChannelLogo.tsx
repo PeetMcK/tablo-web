@@ -14,10 +14,16 @@ interface Props {
 // looks identical whichever theme is on; the antenna fallback keeps the same
 // dark-backed context.
 //
-// `logo-plate` rather than `media`: `media` is pure black, which would be a
-// visible change against the #0f0f18 / #09090f the two callers put behind a
-// logo today. `logo-plate` is #0c0c14 in dark — within 5/255 of both — and the
-// ink colour in light, which is quieter on a warm page than a black slab.
+// `logo-plate` rather than `media`: `media` is pure black, where `logo-plate`
+// is #0c0c14 in dark and the ink colour in light, which is quieter on a warm
+// page than a black slab.
+//
+// Both callers — the Live card's tile and the guide's — now paint their own
+// plate with this same token rather than a surface colour that follows the
+// theme, so the two rectangles are identical by construction and read as one
+// square. They used to differ (#0f0f18 and #09090f, with this value chosen to
+// sit within 5/255 of both), which was invisible in dark mode and became a
+// black box inside a white box in light.
 //
 // `w-full h-full` fills the caller's padded box exactly, so the image's
 // `max-w-full max-h-full object-contain` resolves against the same rectangle it

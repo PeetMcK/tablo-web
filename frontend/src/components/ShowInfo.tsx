@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, X } from "lucide-react";
+import { AlertTriangle, Circle, CircleSlash, Play, SlidersHorizontal, Square, X } from "lucide-react";
+import { recordedSpan } from "../lib/recording";
+import { recordingFor, useRecordingsInProgress } from "../lib/useRecordingsInProgress";
 import { api } from "../api/tablo";
-import type { AiringDetail } from "../api/tablo";
+import type { AiringDetail, SeriesRule } from "../api/tablo";
 
 interface Props {
   /** Channel identifier, as the grid holds it. */
@@ -51,6 +53,25 @@ function formatRating(raw: string): string {
   return r.toUpperCase();
 }
 
+const RULES: { value: SeriesRule; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "new", label: "New" },
+  { value: "none", label: "None" },
+];
+
+/**
+ * What a scheduled recording is owed to — the series rule, or this episode.
+ *
+ * The device does not say which, so it is inferred: a series set to record
+ * anything is what put a scheduled episode there.
+ */
+function recordScope(d: AiringDetail): string {
+  const rule = d.series?.schedule_rule;
+  return rule === "all" || rule === "new"
+    ? "Record: All Episodes"
+    : "Record: This Episode Only";
+}
+
 /** `8.1`, or just the network when the device gave no channel number. */
 function channelNumber(ch: AiringDetail["channel"]): string | null {
   return ch.major ? `${ch.major}.${ch.minor ?? 0}` : null;
@@ -81,8 +102,25 @@ function whenLine(start: string, duration: number): string | null {
  * title and a channel still looks deliberate instead of broken.
  */
 export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Props) {
+  // Polled while the sheet is open, so what it says about a recording moves
+  // rather than freezing at whatever it was when opened.
+  const inProgress = useRecordingsInProgress(true);
   const [detail, setDetail] = useState<AiringDetail | null>(null);
   const [failed, setFailed] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
+  /**
+   * A write that starts or stops a recording, held until it is confirmed.
+   *
+   * Both directions deserve the pause. Stopping keeps what was captured but
+   * does not resume. Starting, on something already airing, begins at once and
+   * captures only what is left — which is how three stub recordings of four and
+   * eight seconds ended up in the library, from someone cycling the series
+   * buttons to decide on a rule.
+   */
+  const [confirming, setConfirming] = useState<
+    { label: string; detail: string; action: string; run: () => void } | null
+  >(null);
   // Whatever had focus when the sheet opened, so closing can hand it back.
   const opener = useRef<Element | null>(null);
 
@@ -115,8 +153,50 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  /**
+   * Apply a write optimistically, and put the old state back if it fails.
+   *
+   * Optimistic because the common failure is the network rather than a
+   * refusal, and because the response carries the truth either way — every one
+   * of these endpoints answers with the full updated detail.
+   */
+  async function write(
+    optimistic: Partial<AiringDetail>,
+    work: () => Promise<AiringDetail>,
+  ) {
+    if (!detail) return;
+    const before = detail;
+    setDetail({ ...detail, ...optimistic });
+    setPending(true);
+    setWriteError(null);
+    try {
+      setDetail(await work());
+    } catch (e) {
+      setDetail(before);
+      setWriteError(e instanceof Error ? e.message : "The change did not stick.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   /** A channel the guide has no listing for, rather than one still loading. */
   const noListing = start === null;
+
+  /**
+   * Ask before a write that starts or stops a recording.
+   *
+   * Only when something is actually at stake: an airing that has not begun
+   * captures nothing part-way, so scheduling it is reversible and silent.
+   */
+  function guard(need: boolean, label: string, why: string, action: string,
+                 run: () => void) {
+    if (!need) { run(); return; }
+    setConfirming({ label, detail: why, action, run });
+  }
+
+  /** The recording capturing this airing right now, if one is. */
+  const recording = start ? recordingFor(inProgress, channel, start) : null;
+  const captured = recording ? recordedSpan(recording) : null;
 
   const number = detail ? channelNumber(detail.channel) : null;
   // Network and channel number are deliberately absent: the eyebrow above the
@@ -147,8 +227,48 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
                    bg-surface-overlay border border-border shadow-2xl shadow-shade"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Anything that starts or stops a recording asks first, in place
+            rather than in a second dialog over this one: the sheet is already
+            a modal, and stacking two reads as a mistake.
+
+            It sits at the top because it is the only thing that matters while
+            it is up, and because the controls that raised it are far enough
+            down a scrolled sheet to be off-screen. */}
+        {confirming && (
+          <div className="p-4 border-b border-border bg-warning-soft">
+            <p className="flex items-center gap-2 text-sm font-semibold text-fg">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-warning" aria-hidden />
+              {confirming.label}
+            </p>
+            <p className="mt-1 text-xs text-fg-muted">{confirming.detail}</p>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => { const { run } = confirming; setConfirming(null); run(); }}
+                className="px-4 py-2 rounded-lg text-sm font-semibold
+                           bg-accent text-accent-fg hover:opacity-90 transition
+                           focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                {confirming.action}
+              </button>
+              <button
+                onClick={() => setConfirming(null)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold
+                           bg-fill text-fg-secondary hover:text-fg transition
+                           focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Rendered only when there is art. A placeholder box at hero size
-            reads as a failed image rather than as an absent one. */}
+            reads as a failed image rather than as an absent one.
+
+            16:9 is right, and measured rather than assumed: the device's
+            `cover_image` and `background_image` are both 1920x1080. Only
+            `thumbnail_image` is a portrait 240x360 poster, and nothing here
+            asks for that one. */}
         {detail?.image_url && (
           <img
             src={detail.image_url}
@@ -233,6 +353,160 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
               <Play className="w-4 h-4" aria-hidden />
               Watch Live
             </button>
+          )}
+
+          {/* Omitted rather than disabled: a dead button with no explanation
+              reads as broken, and the reason is worth a line. */}
+          {detail && !detail.schedulable && (
+            <p className="mt-6 text-xs text-fg-muted">
+              Recording isn't available on this channel.
+            </p>
+          )}
+
+          {/* What is happening right now, above what could be made to happen.
+              The bar is the scheduled slot with the captured part placed where
+              it falls — identical geometry to the Library card, the Live card
+              and the guide cell, from the same function. */}
+          {recording && captured && (
+            <div className="mt-6 rounded-xl bg-fill-soft p-3">
+              <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-danger">
+                <span className="relative flex w-2 h-2" aria-hidden>
+                  <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger opacity-60" />
+                  <span className="relative inline-flex w-2 h-2 rounded-full bg-danger" />
+                </span>
+                Recording now
+              </p>
+
+              <div className="mt-2 h-1 w-full rounded-full bg-ink/40 relative overflow-hidden">
+                <div
+                  className="bg-danger h-full absolute inset-y-0"
+                  style={{ left: `${captured.left}%`, width: `${captured.width}%` }}
+                />
+              </div>
+
+              <p className="mt-2 text-xs text-fg-muted tabular-nums">
+                {formatDuration(recording.recorded_seconds ?? 0)} of{" "}
+                {formatDuration(recording.expected_seconds || recording.duration)} captured
+                {recording.recording_started && (
+                  <> · since {new Date(recording.recording_started)
+                    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</>
+                )}
+              </p>
+
+              <button
+                disabled={pending}
+                onClick={() => guard(
+                  true,
+                  "Stop recording?",
+                  `What has been recorded of "${detail?.title ?? "this programme"}" is kept, `
+                    + "but recording will not resume.",
+                  "Stop",
+                  () => write({ scheduled: false },
+                              () => api.scheduleAiring(channel, start!, false)),
+                )}
+                className="mt-3 w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                           text-sm font-semibold bg-danger-solid text-danger-fg
+                           hover:opacity-90 transition disabled:opacity-60
+                           focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                <Square className="w-4 h-4 shrink-0" fill="currentColor" aria-hidden />
+                Stop Recording
+              </button>
+            </div>
+          )}
+
+          {detail?.schedulable && (
+            <div className="mt-6 space-y-2">
+              {/* A past airing reports what happened. `scheduled` stays true
+                  after an airing has recorded, so describing its scope in the
+                  future tense left a programme that finished hours ago labelled
+                  with an intent - and, with the series rule at None,
+                  contradicting the control directly beneath it. */}
+              {detail.scheduled && detail.past && (
+                <p className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+                  Recorded
+                </p>
+              )}
+              {detail.scheduled && !detail.past && !recording && (
+                <p className="text-xs font-semibold uppercase tracking-wide text-warning">
+                  REC · {recordScope(detail)}
+                </p>
+              )}
+
+              {/* Gated on `past`, never on `airing_now`: that is false for
+                  everything upcoming, which is most of what anyone records. */}
+              {!detail.past && (
+                <button
+                  disabled={pending}
+                  onClick={() => guard(
+                    !detail.scheduled && detail.airing_now,
+                    "Record this episode?",
+                    "It is already airing, so recording starts now and captures "
+                      + "only what is left of it.",
+                    "Record",
+                    () => write(
+                      { scheduled: !detail.scheduled },
+                      () => api.scheduleAiring(channel, start!, !detail.scheduled),
+                    ),
+                  )}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                             text-sm font-semibold bg-fill-soft text-fg
+                             hover:bg-fill transition disabled:opacity-60
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  {detail.scheduled
+                    ? <CircleSlash className="w-4 h-4 shrink-0" aria-hidden />
+                    : <Circle className="w-4 h-4 shrink-0" aria-hidden />}
+                  {detail.scheduled ? "Don't Record Episode" : "Record Episode"}
+                </button>
+              )}
+
+              {/* Kept on a past airing: a rule is about every episode still to
+                  come, not about the one being looked at. */}
+              {detail.series && (
+                <div className="rounded-xl bg-fill-soft p-3">
+                  <p className="flex items-center gap-3 text-sm font-semibold text-fg">
+                    <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
+                    Edit Series Recording
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    {RULES.map(({ value, label }) => {
+                      const on = detail.series?.schedule_rule === value;
+                      return (
+                        <button
+                          key={value}
+                          aria-pressed={on}
+                          disabled={pending}
+                          onClick={() => guard(
+                            value !== "none" && detail.airing_now && !detail.scheduled,
+                            "Record this series?",
+                            "This episode is already airing, and setting a rule "
+                              + "starts recording it now - capturing only what is "
+                              + "left of it.",
+                            "Set rule",
+                            () => write(
+                              { series: { ...detail.series!, schedule_rule: value } },
+                              () => api.scheduleSeries(channel, start!, value),
+                            ),
+                          )}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
+                                      transition disabled:opacity-60
+                                      focus:outline-none focus:ring-2 focus:ring-accent ${
+                            on ? "bg-accent text-accent-fg"
+                               : "bg-fill text-fg-secondary hover:text-fg"}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {writeError && (
+                <p role="alert" className="text-xs text-danger">{writeError}</p>
+              )}
+            </div>
           )}
         </div>
       </div>
