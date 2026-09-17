@@ -758,33 +758,45 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           // it plays from what the device already has, costs no encoder, and
           // keeps its own sample aspect rather than relying on one to carry it.
           // The transcode is what *caching* is for.
+          // A copy kept offline wins over everything: it is complete, it is
+          // local, and it plays when the device is off or no longer has the
+          // recording — which is the entire reason for keeping one. An
+          // incidental partial cache is not that, and must not pre-empt
+          // MPEG-2: it is only there because something fell back to the
+          // transcode once.
+          const keptOffline = current.recording.offline_only
+            || (current.recording.pinned && current.recording.cache_state === "complete");
+
           const eligibility = wasmLiveEligible(window, localStorage, "ota");
-          if (eligibility.eligible) {
+          if (eligibility.eligible && !keptOffline) {
             try {
-              // A finished recording is a complete index - the device
-              // publishes it with EXT-X-ENDLIST - so the whole runtime is
-              // seekable. One still being written is a rolling window with no
-              // beginning to seek to, which is a different path and the only
-              // one it can have.
-              const inProgress = current.recording.state === "recording";
-              const raw = inProgress
-                ? await api.watchRecordingRaw(current.recording.object_id)
-                : await api.watchRecordingVod(current.recording.object_id);
+              // Every recording is an index, finished or not: the device
+              // publishes both from their first segment, and a finished one
+              // differs only by carrying EXT-X-ENDLIST. So both start at the
+              // first frame and seek across whatever exists.
+              //
+              // One still being written used to go to the ring instead, which
+              // joins at the live edge on purpose - opening a show forty
+              // minutes in began forty minutes in, with no way back. That was
+              // on the belief that the device published no reachable beginning
+              // for it. Measured 2026-09-17: it does, and it simply appends.
+              const raw = await api.watchRecordingVod(current.recording.object_id);
               if (cancelled) {
                 api.stopStream(raw.session_id).catch(() => {});
                 return;
               }
               log.player(`open recording ${current.recording.object_id} as mpeg-2`, {
                 session: raw.session_id, url: raw.stream_url,
-                mode: inProgress ? "ring" : "vod",
-                duration: "duration" in raw ? fmt(raw.duration) : "live window",
+                mode: raw.growing ? "vod (still recording)" : "vod",
+                duration: fmt(raw.duration),
+                segments: raw.segments,
               });
               setSessionId(raw.session_id);
               setUsingWasm(true);
               const surface = await openWasmSurface({
                 playlistUrl: raw.stream_url,
-                originMs: "origin_ms" in raw ? raw.origin_ms : Date.now(),
-                vod: "duration" in raw ? { durationSeconds: raw.duration } : undefined,
+                originMs: Date.now(),
+                vod: { durationSeconds: raw.duration, growing: raw.growing },
                 canvas: canvasRef.current,
                 onFailure: (reason) => {
                   log.warn(`recording wasm gave up (${reason}) — using the transcode`);
@@ -1002,7 +1014,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       buffered: timeRangesToArray(videoRef.current?.buffered),
       start: rangeStart,
       end: rangeEnd,
-      whole: isLive || cacheState === "complete",
+      // MPEG-2 has no cache to gate on: the device serves any byte range of the
+      // recording on demand, which is why seeking in it is instant. Without
+      // this, skip was silently dead on that path - `cacheState` is null and
+      // `cachedRanges` empty, because the wasm branch returns before either is
+      // set, and `buffered` belongs to the hidden <video> a canvas does not
+      // use. `readyRange` then found no run containing the playhead, returned
+      // [t, t], and the guard below saw a jump of zero and returned. Live wasm
+      // escaped only because `isLive` short-circuits it.
+      whole: isLive || usingWasm || cacheState === "complete",
     });
     // A live edge is a frontier the encoder is still extending, so a skip has
     // to stop well short of it. Anywhere else `hi` is a settled end.
@@ -1012,7 +1032,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // itself as a stall — thirteen in a row, in the log that found this.
     if (Math.abs(target - from) < 0.25) return;
     seekTo(target);
-  }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
+  }, [seekTo, isLive, usingWasm, cacheState, rangeStart, rangeEnd]);
 
   /**
    * Back to the live edge — stopping the same distance short of it as a skip.

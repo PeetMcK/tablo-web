@@ -159,6 +159,18 @@ const START_BEHIND_EDGE_SECONDS = 10;
 export const POLL_INTERVAL_MS = 500;
 
 /**
+ * How stale a growing recording's index may be before a poll re-reads it.
+ *
+ * Only the *end* of a recording moves, and only forwards, so the cost of being
+ * a few seconds behind it is a scrubber that lags the frontier by a few
+ * seconds. The cost of being current is a 70KB fetch and parse in the path that
+ * feeds the decoder — which is what starved it. Well above the 500ms poll, and
+ * above the backend's own 3s refresh floor, so a read that does happen is
+ * usually answered from what the backend already holds.
+ */
+export const GROWING_MAX_AGE_MS = 8000;
+
+/**
  * How long the worker gets to free its decoder before it is terminated anyway.
  *
  * Generous enough for a `close` that has to drain a read in flight, short
@@ -191,7 +203,18 @@ export interface SessionDeps {
    * path's, untouched — a seek already tears the decoder down and rebuilds it
    * at a new epoch, which is exactly what seeking in a recording needs.
    */
-  vod?: { durationSeconds: number };
+  vod?: {
+    durationSeconds: number;
+    /**
+     * The recording is still being written, so the index grows behind it.
+     *
+     * Only two things change: the playlist is re-read on every poll, and the
+     * seekable end comes from that playlist rather than from the length at
+     * open. Where it *starts* is the same either way — at the beginning, which
+     * is the point of the whole path.
+     */
+    growing?: boolean;
+  };
 }
 
 export type SessionEvent = "ready" | "timeupdate" | "waiting" | "playing" | "error";
@@ -223,6 +246,8 @@ export function createSession(deps: SessionDeps): LiveSession {
     deps.worker.postMessage(message, transfer);
 
   let playlist: MediaPlaylist | null = null;
+  /** When `playlist` was last read, for the growing case's staleness check. */
+  let playlistReadAtMs = 0;
   /** Absolute media sequence of the newest segment sent to the worker. */
   let takenThrough = -1;
   /**
@@ -374,14 +399,34 @@ export function createSession(deps: SessionDeps): LiveSession {
     // the worker-side half is the epoch stamped on what comes back.
     const mine = epoch;
 
-    // A recording's index is complete and fixed — it carries EXT-X-ENDLIST —
-    // so it is read once and never again. The timer still runs, because it is
-    // what drives feeding as the clock advances; it is only the fetch that is
-    // pointless. The live path re-reads every time because its window slides.
-    if (!deps.vod || playlist === null) {
+    // A finished recording's index is complete and fixed — it carries
+    // EXT-X-ENDLIST — so it is read once and never again. The timer still runs,
+    // because it is what drives feeding as the clock advances; it is only the
+    // fetch that is pointless. The live path re-reads every time because its
+    // window slides.
+    //
+    // A recording still being written has to be re-read, because the device
+    // keeps appending — but on its own clock, never on this one. Re-reading it
+    // every poll is what killed it: measured, the backend's refresh of the
+    // device's playlist takes ~330ms and the body is 70KB, so one poll in six
+    // stalled a third of a second and parsed 70KB before it could feed. Feeding
+    // never got ahead of playback — 11.5s of media in 10s of wall clock — the
+    // picture froze, and the frozen-picture watchdog called it a decode error
+    // and fell the session back to the transcode about fifteen seconds in.
+    //
+    // A seek never waits on it at all. The seek target is inside what is
+    // already held, because `seekable` is derived from it, so nothing about a
+    // fresh read can change where the seek lands — it would only add latency to
+    // the one operation that must feel instant.
+    const growingIsStale = deps.vod?.growing === true
+      && seekTarget === null
+      && deps.nowMs() - playlistReadAtMs >= GROWING_MAX_AGE_MS;
+
+    if (!deps.vod || playlist === null || growingIsStale) {
       const text = await deps.fetchText(deps.playlistUrl);
       if (mine !== epoch) return;
       playlist = parseMediaPlaylist(text);
+      playlistReadAtMs = deps.nowMs();
     }
     if (playlist === null) return;
     const { start: windowStart } = playlistWindow(playlist, deps.originMs);
@@ -693,6 +738,17 @@ export function createSession(deps: SessionDeps): LiveSession {
       // A recording's range is its whole runtime, known up front from the
       // index — not the part that happens to have been fetched. That is what
       // lets the scrubber show 215 minutes and a seek land anywhere in them.
+      //
+      // One still being written has no whole runtime yet: its end is wherever
+      // the device has got to, which the playlist reports and which grows under
+      // a viewer who is watching from the start. Pinning it to the length at
+      // open would fence off everything recorded since. `durationSeconds` still
+      // covers the moment before the first playlist arrives.
+      if (deps.vod?.growing) {
+        if (!playlist) return [0, deps.vod.durationSeconds] as const;
+        const { end } = playlistWindow(playlist, deps.originMs);
+        return [0, Math.max(end, deps.vod.durationSeconds)] as const;
+      }
       if (deps.vod) return [0, deps.vod.durationSeconds] as const;
       if (!playlist) return null;
       const { start, end } = playlistWindow(playlist, deps.originMs);

@@ -75,7 +75,7 @@ export interface OpenOptions {
    * Read the session's own `vod` for what this changes — it is three things,
    * and the decode path is not one of them.
    */
-  vod?: { durationSeconds: number };
+  vod?: { durationSeconds: number; growing?: boolean };
 }
 
 export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSurface> {

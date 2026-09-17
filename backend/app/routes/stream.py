@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -17,7 +18,7 @@ from starlette.background import BackgroundTask
 
 from ..live_follower import RingFollower
 from ..live_ring import SegmentRing
-from ..vod_index import VodIndex
+from ..vod_index import VodIndex, parse_vod_playlist
 from ..state import state
 
 router = APIRouter(tags=["stream"])
@@ -114,13 +115,35 @@ ring_for_channel: dict[str, str] = {}
 ring_channel_of: dict[str, str] = {}
 ring_viewers: dict[str, int] = {}
 
-# Finished recordings, served straight from the device by byte range.
+# Recordings, served straight from the device by byte range.
 #
 # Nothing here is copied to disk: a 3.5 hour recording is ~25GB, and the device
 # already has it. What we hold is the index - every segment's uri, byte range
 # and duration - which is a few hundred KB and is what makes seeking anywhere
 # in a three-hour recording one fetch away.
-vod_sessions: dict[str, "VodIndex"] = {}
+#
+# A recording still being written is the same thing, still growing, so the
+# device's playlist is re-read as it goes. That is why `device_url` is kept.
+vod_sessions: dict[str, "VodSession"] = {}
+
+
+@dataclass
+class VodSession:
+    """An index over a recording, and where to re-read it if it is growing."""
+
+    index: VodIndex
+    #: The device's *variant* playlist, already resolved from its master.
+    device_url: str
+    refreshed_at: float = field(default_factory=time.monotonic)
+
+
+# How stale a growing index may be before the next ask re-reads the device.
+#
+# The device appends about a segment a second; the player polls this about twice
+# a second. Re-reading on every ask would multiply a poll into two device
+# requests for content that has not changed, and on a long recording each of
+# those is a playlist of thousands of lines.
+VOD_REFRESH_SECONDS = 3.0
 
 # What identifies one of our FFmpeg processes from the outside, once the dict
 # that held it is gone. It has to appear in the command line for `pgrep -f` to
@@ -797,32 +820,101 @@ async def report_wasm_fallback(request: Request):
 async def vod_playlist(session_id: str):
     """Our playlist over the device's own media.
 
-    Fixed, complete, and ending in EXT-X-ENDLIST - so the player fetches it
-    once and can seek anywhere in it, which is the whole point of the VOD path.
+    A finished recording's is fixed, complete, and ends in EXT-X-ENDLIST, so the
+    player reads it once and can seek anywhere in it. One still being written
+    has no ENDLIST and grows here instead: this is where it is re-read.
     """
-    index = _vod_session(session_id)
+    session = _vod_session(session_id)
+    _refresh_if_growing(session_id, session)
     # The same heartbeat the ring uses. A paused viewer stops asking for
     # segments but the session must not be reaped out from under them.
     touch_session(session_id)
     return Response(
-        content=index.playlist(),
+        content=session.index.playlist(),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
     )
 
 
+def _refresh_if_growing(session_id: str, session: VodSession) -> None:
+    """Start re-reading a still-being-written recording, if it is time to.
+
+    Never for a finished one: it cannot change, and the 3.5 hour recording's
+    playlist is 1.2MB.
+
+    **Started, not awaited.** This request answers from the index already held.
+    Awaiting it put a measured ~330ms device round-trip inside one playlist poll
+    in six, and the browser feeds its decoder from that same poll - so feeding
+    stalled, never got ahead of playback, and the frozen-picture watchdog fell
+    the session back to the transcode about fifteen seconds in. The freshness
+    this buys is worth nothing to a viewer forty minutes behind the frontier;
+    the latency cost it charged was the whole feature.
+    """
+    if session.index.finished:
+        return
+    if time.monotonic() - session.refreshed_at < VOD_REFRESH_SECONDS:
+        return
+
+    # Stamped before the fetch, not after: several polls can arrive while one
+    # read is in flight, and stamping afterwards would let each of them start
+    # its own.
+    session.refreshed_at = time.monotonic()
+    task = asyncio.create_task(_refresh_now(session_id, session))
+    # Held so the loop cannot garbage-collect it mid-flight, and dropped on the
+    # way out rather than accumulating one entry per refresh for the session.
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
+
+
+#: In-flight refreshes, held only to keep them from being collected.
+_refresh_tasks: set[asyncio.Task] = set()
+
+
+async def _refresh_now(session_id: str, session: VodSession) -> None:
+    """Re-read the device's playlist and fold what it added into the index.
+
+    A failed read is not fatal - the index already held is perfectly playable,
+    and dropping a session because the device blinked would end playback that is
+    working.
+    """
+    try:
+        text = await _fetch_text(session.device_url)
+        fresh = parse_vod_playlist(text, session.device_url)
+    except Exception as e:
+        print(f"[vod] {session_id[:8]} refresh failed, serving what we hold: {e}",
+              flush=True)
+        return
+
+    before = len(session.index.segments)
+    session.index = session.index.extended_with(fresh)
+    if session.index.finished:
+        print(f"[vod] {session_id[:8]} recording finished: "
+              f"{len(session.index.segments)} segments", flush=True)
+    elif len(session.index.segments) != before:
+        print(f"[vod] {session_id[:8]} grew {before} -> "
+              f"{len(session.index.segments)} segments", flush=True)
+
+
+async def _fetch_text(url: str) -> str:
+    resp = await state.http.get(
+        url, follow_redirects=True, timeout=DEVICE_TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
 @router.get("/vod/{session_id}/{name}")
 async def vod_segment(session_id: str, name: str):
     """One segment, fetched from the device on demand and never stored."""
-    index = _vod_session(session_id)
+    session = _vod_session(session_id)
     if not _SEGMENT_RE.match(name):
         raise HTTPException(status_code=400, detail="Bad segment name")
     number = int(name[:5])
-    if number < 0 or number >= len(index.segments):
+    if number < 0 or number >= len(session.index.segments):
         raise HTTPException(status_code=404, detail="Segment not found")
 
     touch_session(session_id)
-    segment = index.segments[number]
+    segment = session.index.segments[number]
     try:
         payload = await _fetch_bytes(segment.url, segment.byte_range)
     except Exception as e:
@@ -835,13 +927,13 @@ async def vod_segment(session_id: str, name: str):
     )
 
 
-def _vod_session(session_id: str) -> VodIndex:
+def _vod_session(session_id: str) -> VodSession:
     if not _SESSION_RE.match(session_id):
         raise HTTPException(status_code=400, detail="Bad session id")
-    index = vod_sessions.get(session_id)
-    if index is None:
+    session = vod_sessions.get(session_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="Stream session not found")
-    return index
+    return session
 
 
 @router.get("/raw/{session_id}/playlist.m3u8")

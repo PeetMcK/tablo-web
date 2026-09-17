@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, Response
 from .. import store
 from ..state import _run_sync, state
 from . import stream as stream_routes
-from ..vod_index import NotFinished, parse_vod_playlist
+from ..vod_index import parse_vod_playlist
 from ..transcode_cache import (
     CacheFull,
     CacheState,
@@ -113,18 +113,24 @@ async def list_recordings():
 
 @router.post("/{object_id}/watch-vod")
 async def watch_recording_vod(object_id: int):
-    """Serve a finished recording as MPEG-2, straight from the device.
+    """Serve a recording as MPEG-2, straight from the device.
 
     A recording is MPEG-2 video with AC-3 audio - the same thing the live path
-    decodes - so playing it needs no transcode at all. What makes a *finished*
-    one different from one still being written is that the device publishes it
-    as a complete VOD playlist: every segment addressable, a real duration, and
-    EXT-X-ENDLIST. Measured on a 3.5 hour recording, 8542 segments across 29
-    byte-ranged files.
+    decodes - so playing it needs no transcode at all. The device publishes it
+    as a playlist where every segment is addressable by byte range. Measured on
+    a 3.5 hour recording, 8542 segments across 29 byte-ranged files.
 
     The index is held; the media is not. Downloading it would be ~25GB for one
     viewing of something the device already has, so segments are fetched on
     demand - which is the whole difference between this and the ring.
+
+    A recording still being written comes here too, and this was the surprise:
+    the device publishes it from byte 0 and simply appends. It was routed to the
+    ring instead, which joins at the live edge and so began forty minutes into
+    the show. Measured 2026-09-17 - at 29:56 elapsed the head was still
+    `BYTERANGE:218644@0`, MEDIA-SEQUENCE still 1, and 75 seconds apart the head
+    was unchanged while the tail grew by 70 segments. No ENDLIST is the only
+    difference, and `stream._refresh_if_growing` re-reads it as it grows.
     """
     _require_auth()
 
@@ -145,14 +151,7 @@ async def watch_recording_vod(object_id: int):
         raise HTTPException(status_code=502, detail="Device gave no playlist")
 
     try:
-        index = await _fetch_vod_index(master)
-    except NotFinished:
-        # Still being written: no ENDLIST, only a rolling window, and it cannot
-        # be seeked by us or by the device's own app. `watch-raw` covers it.
-        raise HTTPException(
-            status_code=409,
-            detail="Recording is still being written; use watch-raw",
-        )
+        index, variant_url = await _fetch_vod_index(master)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Device error: {e}")
 
@@ -160,7 +159,10 @@ async def watch_recording_vod(object_id: int):
     state.streams[session_id] = SimpleNamespace(
         stream=SimpleNamespace(token=sess.get("token")),
     )
-    stream_routes.vod_sessions[session_id] = index
+    # The variant url is kept because a growing index is re-read from it.
+    stream_routes.vod_sessions[session_id] = stream_routes.VodSession(
+        index=index, device_url=variant_url,
+    )
     stream_routes.touch_session(session_id)
 
     return {
@@ -169,12 +171,19 @@ async def watch_recording_vod(object_id: int):
         "stream_url": f"/api/vod/{session_id}/playlist.m3u8",
         "duration": index.duration,
         "segments": len(index.segments),
+        # What is held so far, not what the recording will be. The player polls
+        # for the rest, and must not pin its scrubber to this.
+        "growing": not index.finished,
         "mode": "vod",
     }
 
 
 async def _fetch_vod_index(master_url: str):
-    """Follow the master to its variant and parse that into an index."""
+    """Follow the master to its variant and parse that into an index.
+
+    Returns the variant url alongside, because a recording still being written
+    is re-read from it for as long as the session lasts.
+    """
     resp = await state.http.get(master_url, timeout=30)
     resp.raise_for_status()
     variant = next(
@@ -185,7 +194,7 @@ async def _fetch_vod_index(master_url: str):
     url = urljoin(master_url, variant) if variant else master_url
     playlist = await state.http.get(url, timeout=60)
     playlist.raise_for_status()
-    return parse_vod_playlist(playlist.text, url)
+    return parse_vod_playlist(playlist.text, url), url
 
 
 @router.post("/{object_id}/watch-raw")

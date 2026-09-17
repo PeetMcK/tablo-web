@@ -500,11 +500,15 @@ export const api = {
     }>(`/recordings/${objectId}/watch-raw`, { method: "POST" }),
 
   /**
-   * Serve a finished recording as MPEG-2, straight from the device.
+   * Serve a recording as MPEG-2, straight from the device, by byte range.
    *
-   * Unlike `watchRecordingRaw` this is a complete index rather than a rolling
-   * window, so the whole runtime is seekable. 409 means the recording is still
-   * being written and the raw path should be used instead.
+   * Unlike `watchRecordingRaw` this is an index rather than a rolling window,
+   * so playback starts at the first frame and seeks anywhere in what exists.
+   *
+   * A recording still being written comes back with `growing: true` and a
+   * `duration` of what is held so far. It used to be refused with a 409, on the
+   * belief that the device offered no reachable beginning for one; measured
+   * against the device, it publishes from byte 0 and appends.
    */
   watchRecordingVod: (objectId: number) =>
     req<{
@@ -513,6 +517,7 @@ export const api = {
       stream_url: string;
       duration: number;
       segments: number;
+      growing: boolean;
       mode: string;
     }>(`/recordings/${objectId}/watch-vod`, { method: "POST" }),
 

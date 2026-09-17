@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
 import {
-  createSession, CLOSE_GRACE_MS, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS,
-  STARVED_LOOKAHEAD_SECONDS,
+  createSession, CLOSE_GRACE_MS, GROWING_MAX_AGE_MS, LOOKAHEAD_SECONDS,
+  POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
 } from "../lib/wasmlive/session";
 import { MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
@@ -867,6 +867,129 @@ describe("a finished recording", () => {
     const taken = h.fetched.filter((u) => u.endsWith(".ts")).length;
     expect(taken).toBeLessThanOrEqual(3);
     expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(taken);
+  });
+});
+
+// What the backend serves for a recording: no dates, because media time is
+// elapsed time from zero, and no ENDLIST while it is still being written.
+const vodPlaylist = (segments: number) => `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:0
+${Array.from({ length: segments }, (_, i) =>
+  `#EXTINF:1.500,\n${String(i).padStart(5, "0")}.ts`).join("\n")}
+`;
+
+describe("a recording that is still being written", () => {
+  it("re-reads its index, because the device is still appending to it", async () => {
+    // The opposite of the finished case above, for the opposite reason: the
+    // start never moves, but the end is a frontier the viewer is behind.
+    let playlistFetches = 0;
+    let clockMs = 0;
+    const h = harness({
+      vod: { durationSeconds: 60, growing: true },
+      nowMs: () => clockMs,
+      fetchText: async () => { playlistFetches += 1; return vodPlaylist(40); },
+    });
+    h.setClock(null);
+    await h.session.start();
+    clockMs = GROWING_MAX_AGE_MS + 1;
+    await h.session.poll();
+
+    expect(playlistFetches).toBe(2);
+  });
+
+  it("does not re-read it on every poll, because feeding waits on that read", async () => {
+    // Measured: the backend's refresh of the device playlist takes ~330ms and
+    // the body is 70KB, so re-reading every 500ms poll stalled one poll in six
+    // inside the path that feeds the decoder. Feeding never got ahead of
+    // playback, the picture froze, and the watchdog fell the whole session back
+    // to the transcode about fifteen seconds in.
+    let playlistFetches = 0;
+    const h = harness({
+      vod: { durationSeconds: 60, growing: true },
+      nowMs: () => 0,
+      fetchText: async () => { playlistFetches += 1; return vodPlaylist(40); },
+    });
+    h.setClock(null);
+    await h.session.start();
+    for (let i = 0; i < 6; i++) await h.session.poll();
+
+    expect(playlistFetches).toBe(1);
+  });
+
+  it("never makes a seek wait on a read", async () => {
+    // A seek target is inside what is already held — `seekable` is derived from
+    // it — so a fresh read cannot change where the seek lands. It would only
+    // add latency to the one operation that has to feel instant.
+    let clockMs = 0;
+    let playlistFetches = 0;
+    const h = harness({
+      vod: { durationSeconds: 60, growing: true },
+      nowMs: () => clockMs,
+      fetchText: async () => { playlistFetches += 1; return vodPlaylist(40); },
+    });
+    h.setClock(null);
+    await h.session.start();
+    expect(playlistFetches).toBe(1);
+
+    // Long past stale, so an unguarded seek would certainly re-read.
+    clockMs = GROWING_MAX_AGE_MS * 10;
+    h.session.seek(12);
+    // `seek` kicks off its own poll; let it run. A later poll re-reading is
+    // fine and expected — what must not happen is the seek waiting on one.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playlistFetches).toBe(1);
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
+  });
+
+  it("starts at its first frame, which is the whole point", async () => {
+    // It was routed to the ring before this, and the ring joins at the live
+    // edge — so opening a show forty minutes in began forty minutes in.
+    const h = harness({
+      vod: { durationSeconds: 60, growing: true },
+      fetchText: async () => vodPlaylist(40),
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    const taken = h.fetched.filter((u) => u.endsWith(".ts"));
+    expect(taken.length).toBeGreaterThan(0);
+    expect(taken[0]).toContain("00000.ts");
+  });
+
+  it("grows what can be seeked over as the recording grows", async () => {
+    // Pinning the scrubber to the length at open would fence off everything
+    // recorded since — on an hour-long show, most of it.
+    let segments = 20;
+    let clockMs = 0;
+    const h = harness({
+      vod: { durationSeconds: 30, growing: true },
+      nowMs: () => clockMs,
+      fetchText: async () => vodPlaylist(segments),
+    });
+    h.setClock(null);
+    await h.session.start();
+    expect(h.session.seekable).toEqual([0, 30]);
+
+    segments = 60;
+    clockMs = GROWING_MAX_AGE_MS + 1;
+    await h.session.poll();
+
+    expect(h.session.seekable).toEqual([0, 90]);
+  });
+
+  it("never reports a range shorter than the length it opened with", async () => {
+    // A refresh that arrives empty or fails must not shrink the scrubber under
+    // a viewer who is already past where it would shrink to.
+    const h = harness({
+      vod: { durationSeconds: 600, growing: true },
+      fetchText: async () => vodPlaylist(4),
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    expect(h.session.seekable).toEqual([0, 600]);
   });
 });
 
