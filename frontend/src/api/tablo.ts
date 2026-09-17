@@ -156,6 +156,27 @@ export interface AiringDetail {
   image_url: string | null;
   /** Computed server-side — the browser's clock may differ from the guide's. */
   airing_now: boolean;
+  /**
+   * The device can record this.
+   *
+   * False for OTT/FAST airings: they exist only in the cloud, which carries no
+   * device path, no schedule block and no series — see docs/tablo-api.md.
+   */
+  schedulable: boolean;
+  /** Derived server-side: any schedule state but "none", "skipped" or null. */
+  scheduled: boolean;
+  /**
+   * Already finished, so recording it is no longer possible.
+   *
+   * Not the inverse of `airing_now`, which is also false for everything
+   * upcoming — which is the main thing anyone records.
+   */
+  past: boolean;
+  /** The device's own state string, passed through. */
+  schedule_state: string | null;
+  skip_reason: string | null;
+  /** Null for a one-off, a movie, or an airing whose series is unknown. */
+  series: { path: string; schedule_rule: string | null } | null;
   channel: {
     identifier: string;
     call_sign: string | null;
@@ -166,6 +187,9 @@ export interface AiringDetail {
     kind: string | null;
   };
 }
+
+/** What a series records: every episode, only new ones, or nothing. */
+export type SeriesRule = "all" | "new" | "none";
 
 export type CacheState = "absent" | "partial" | "complete" | "failed";
 
@@ -402,6 +426,26 @@ export const api = {
       `/channels/airing-detail?channel=${encodeURIComponent(channel)}` +
       `&start=${encodeURIComponent(start)}`,
     ),
+
+  /**
+   * Record, or stop recording, one episode.
+   *
+   * Keyed the same way `airingDetail` is, and answers with the same shape: the
+   * device replies to a write with the full updated record, so there is
+   * nothing to re-fetch afterwards.
+   */
+  scheduleAiring: (channel: string, start: string, scheduled: boolean) =>
+    req<AiringDetail>("/schedule/airing", {
+      method: "PUT",
+      body: JSON.stringify({ channel, start, scheduled }),
+    }),
+
+  /** Set the series rule. Affects every future episode, not just this one. */
+  scheduleSeries: (channel: string, start: string, rule: SeriesRule) =>
+    req<AiringDetail>("/schedule/series", {
+      method: "PUT",
+      body: JSON.stringify({ channel, start, rule }),
+    }),
 
   guide: () => req<GuideChannel[]>("/channels/guide"),
   guideStream: (signal?: AbortSignal) => guideStream(signal),

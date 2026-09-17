@@ -571,7 +571,8 @@ describe("ChannelGrid guide search handoff", () => {
       title: "NFL Football", episode_title: null, season_number: null,
       episode_number: null, description: "Week 4.", start: "2026-09-27T17:00:00Z",
       duration: 12300, orig_air_date: null, genres: ["Sports"], rating: null,
-      image_url: null, airing_now: false,
+      image_url: null, airing_now: false, schedulable: false, scheduled: false,
+      past: true, schedule_state: null, skip_reason: null, series: null,
       channel: { identifier: "chA", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });

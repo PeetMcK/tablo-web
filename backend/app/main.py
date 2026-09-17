@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import guide_sync, store
 from . import log_buffer as _log_buffer
-from .routes import auth, channels, iptv, recordings, resume, search, stream
+from .routes import auth, channels, iptv, recordings, resume, schedule, search, stream
 from .state import CONFIG_PATH, _run_sync, state
 
 _log_buffer.install()
@@ -103,6 +103,7 @@ app.include_router(channels.router)
 app.include_router(iptv.router)
 app.include_router(recordings.router)
 app.include_router(resume.router)
+app.include_router(schedule.router)
 app.include_router(search.router)
 app.include_router(stream.router, prefix="/api")
 

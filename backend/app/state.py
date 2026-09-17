@@ -395,6 +395,44 @@ class AppState:
         resp.raise_for_status()
         return resp
 
+    async def patch_device(self, path: str, payload: dict) -> tuple[int, dict]:
+        """PATCH the device, returning (status, body) rather than raising.
+
+        `_request_device_raw` calls `raise_for_status()`, which throws the
+        device's error body away - and that body is the only thing that can say
+        *why* a write was refused. The device answers a bad write with
+        `{"error": {"code", "description", "details"}}`, and `details` echoes
+        the offending field, so a failure can be shown to a person instead of
+        reported as a generic error. See docs/tablo-api.md.
+
+        Writes need no separate auth mechanism: the signature covers the body,
+        which is why the payload is serialised once and both signed and sent.
+        """
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        from tablo_api import TabloAuth
+
+        body = json.dumps(payload, separators=(",", ":"))
+        auth_header, date_header = TabloAuth.make_device_auth("PATCH", path, body)
+        url = self.active_device.local_url.rstrip("/") + path
+        resp = await self._http.request(
+            "PATCH",
+            url,
+            content=body.encode(),
+            headers={
+                "Authorization": auth_header,
+                "Date": date_header,
+                "Content-Type": "application/json",
+                "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
+            },
+        )
+        try:
+            return resp.status_code, resp.json()
+        except ValueError:
+            # A proxy error page, or an empty body. The status is still the answer.
+            return resp.status_code, {}
+
     async def fetch_device_image(self, image_id: int) -> tuple[bytes, str]:
         """Fetch an image from the device. Returns (bytes, content_type).
 

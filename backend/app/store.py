@@ -766,6 +766,18 @@ def imminent_cover_ids(hours: int = 12, now: float | None = None) -> list[int]:
     return [r["id"] for r in rows]
 
 
+# The device's `schedule.state` is an open enumeration - `/server/capabilities`
+# advertises features whose states we have never seen. Naming the values that
+# mean "not recording" and treating everything else as recording fails safe: an
+# unseen state shows a REC badge that can be turned off, rather than hiding a
+# recording that is actually scheduled.
+_NOT_RECORDING = {None, "none", "skipped"}
+
+
+def _is_scheduled(state: str | None) -> bool:
+    return state not in _NOT_RECORDING
+
+
 def airing_detail(channel: str, start: str, now: float | None = None) -> dict | None:
     """Everything the show sheet renders, from the mirror alone.
 
@@ -808,6 +820,21 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
         "rating": (series or {}).get("rating"),
         "image_url": image_url,
         "airing_now": start_epoch <= at < end_epoch,
+        # Recording state. `schedulable` is decided here rather than left to the
+        # client to infer from a path, because the path never leaves the backend
+        # - see routes/schedule.py.
+        "schedulable": air["airing_path"] is not None,
+        "scheduled": _is_scheduled(air["schedule_state"]),
+        # Not the inverse of `airing_now`: that is also false for everything
+        # upcoming, which is the main thing anyone records.
+        "past": end_epoch <= at,
+        "schedule_state": air["schedule_state"],
+        "skip_reason": air["skip_reason"],
+        "series": (
+            {"path": air["series_path"],
+             "schedule_rule": (series or {}).get("schedule_rule")}
+            if air["series_path"] else None
+        ),
         "channel": {
             "identifier": channel,
             "call_sign": ch["call_sign"] if ch else None,
@@ -818,6 +845,70 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
             "kind": ch["kind"] if ch else None,
         },
     }
+
+
+def airing_handles(channel: str, start: str) -> dict | None:
+    """The device paths for one airing, or None if the mirror has no such row.
+
+    These stay server-side. The browser addresses an airing by (channel, start)
+    - `guide_airing`'s primary key, which the sheet already holds - and the
+    PATCH target is looked up here.
+    """
+    row = db.query_one(
+        "SELECT airing_path, series_path FROM guide_airing "
+        "WHERE channel_id = ? AND start = ?",
+        (str(channel), start),
+    )
+    if row is None:
+        return None
+    return {"airing_path": row["airing_path"], "series_path": row["series_path"]}
+
+
+def update_airing_schedule(channel: str, start: str, air: dict) -> None:
+    """Write one airing's schedule fields back from a device response.
+
+    A targeted UPDATE rather than the `save_guide` upsert: the response being
+    written through is a single airing record, and the row also holds guide
+    text and artwork that a whole-row replace would blank.
+
+    The two paths are COALESCEd because a caller may pass only schedule fields,
+    and losing `airing_path` would make the row unschedulable from then on.
+    """
+    db.execute(
+        "UPDATE guide_airing SET "
+        "  schedule_state = ?, schedule_qualifier = ?, skip_reason = ?, "
+        "  airing_path = COALESCE(?, airing_path), "
+        "  series_path = COALESCE(?, series_path) "
+        "WHERE channel_id = ? AND start = ?",
+        (
+            air.get("schedule_state"), air.get("schedule_qualifier"),
+            air.get("skip_reason"), air.get("airing_path"),
+            air.get("series_path"), str(channel), start,
+        ),
+    )
+
+
+def series_future_airings(
+    series_path: str, now: float | None = None, limit: int = 200
+) -> list[dict]:
+    """Airings of this series still to come, as (channel, start, airing_path).
+
+    What a series-rule write has to re-read: one rule change flips
+    `schedule.state` on every future episode, and the background sync is hours
+    away. Past airings are excluded - their state can no longer change - and so
+    are rows with no `airing_path`, which the device has nothing to say about.
+    """
+    cutoff = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    return [
+        {"channel": r["channel_id"], "start": r["start"],
+         "airing_path": r["airing_path"]}
+        for r in db.query(
+            "SELECT channel_id, start, airing_path FROM guide_airing "
+            "WHERE series_path = ? AND airing_path IS NOT NULL AND end_epoch >= ? "
+            "ORDER BY start LIMIT ?",
+            (series_path, cutoff, limit),
+        )
+    ]
 
 
 def guide_age_seconds(now: datetime | None = None) -> float | None:
