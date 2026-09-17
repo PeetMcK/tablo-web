@@ -315,8 +315,9 @@ describe("queuing a flurry of skips", () => {
     let t: number | null = null;
     for (let i = 0; i < 60; i++) t = planSkip(t, 0, 30, vod, RECORDING_EDGE_MARGIN);
     expect(t).toBe(1283 - RECORDING_EDGE_MARGIN);
-    // Comfortably inside the last segment's predecessors, not on the final
-    // fraction of a second.
-    expect(1283 - t!).toBeGreaterThan(2);
+    // Off the final fraction of a second, which is what fed the decoder
+    // nothing. Deliberately close to the end: the margin is tuned by eye
+    // against how "the end" should feel, not by segment arithmetic.
+    expect(1283 - t!).toBeGreaterThan(1);
   });
 });

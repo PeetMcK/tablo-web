@@ -97,18 +97,21 @@ export const LIVE_EDGE_MARGIN = 10;
 /**
  * How far short of a recording's end a skip stops.
  *
- * Not cosmetic, and not the same question as the live margin. A seek on the
- * MPEG-2 path rebuilds the decoder, and a rebuilt decoder needs real media to
- * produce its first field. Landing on the last fraction of a second gives it
- * none: measured on a 21:23 recording whose final segment begins at 1282.98,
- * a skip clamped to within half a second fed exactly that segment, drew
- * nothing, and after six seconds the watchdog called it a decode error and
- * handed the whole session to the transcode.
+ * Not the same question as the live margin. A seek on the MPEG-2 path rebuilds
+ * the decoder, and a rebuilt decoder needs real media to produce its first
+ * field. Landing on the last fraction of a second gives it none: measured on a
+ * 21:23 recording whose final segment begins at 1282.98, a skip clamped to
+ * within half a second fed exactly that segment, drew nothing, and six seconds
+ * later the watchdog called it a decode error.
  *
- * Segments run about two seconds, so this is two or three of them - enough to
- * decode from, and close enough to the end to read as "the end".
+ * Set by eye against the thing itself. Five seconds was tried first and read
+ * as stopping short of the end; this is close enough to feel like the end
+ * while still leaving the decoder something. It is under one segment, so the
+ * decode failure above is not fully ruled out - what makes that survivable is
+ * that the transcode fallback now resumes where the wasm session was rather
+ * than at the first frame.
  */
-export const RECORDING_EDGE_MARGIN = 5;
+export const RECORDING_EDGE_MARGIN = 1.5;
 
 /**
  * Within this many seconds of the frontier counts as "at the live edge".
