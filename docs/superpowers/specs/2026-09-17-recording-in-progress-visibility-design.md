@@ -148,19 +148,48 @@ One guard still needed: a position captured while recording can be *larger* than
 the finished media, and "greater wins" would enshrine it. Once a recording is
 finished, clamp any position to its `duration` and discard anything past it.
 
-**Write pace: every 30 seconds of continuous playback, and immediately on pause,
-on seek, and on leaving.** A small box also serving video gains nothing from
-finer granularity — 30s is ~120 writes an hour against 720 at the five-second
-cadence we use for our own server — and losing at most half a minute sits inside
-the 30-second floor `loadResume` already applies. The event writes carry the
-common case: almost every session ends deliberately, so the timer only covers
-the browser being killed. Seeks write at once because a seek is a discontinuity,
-where a throttled write would leave the device wrong rather than merely stale,
-and nothing is written at all while the position is unchanged.
+**Write pace: a 7 second timer, skipped when the position has not moved, plus
+an immediate write on pause, on seek and on leaving.**
 
-This matches what the phone appears to do: an early write a few seconds after
-opening, then a value that sat still at 521 for 84 seconds once playback
-stopped — write-on-stop plus a timer, not a heartbeat.
+Measured against the phone app rather than guessed. Sampling one recording every
+1.5 seconds while it played caught nine consecutive writes:
+
+```
+17:55:49   564 -> 573   +9s    gap 13.7s
+17:56:04   573 -> 583  +10s    gap 14.9s
+17:56:21   583 -> 594  +11s    gap 16.4s
+17:56:35   594 -> 602   +8s    gap 14.8s
+17:56:49   602 -> 609   +7s    gap 13.2s
+17:57:02   609 -> 618   +9s    gap 13.1s
+17:57:15   618 -> 626   +8s    gap 13.3s
+17:57:27   626 -> 633   +7s    gap 11.6s
+17:57:40   633 -> 641   +8s    gap 13.6s
+```
+
+Evenly spaced, so a timer rather than events. The second column is the telling
+one: position advanced 7-11s per write while ~13.8s of wall clock passed —
+playback was running at about 0.69x realtime — so the app is almost certainly on
+a **10 second timer in media time**, stretched to ~14s of wall clock by the same
+factor. An earlier draft of this document proposed 30 seconds, which is three
+times slower than the device's own client.
+
+No jitter. It earns its keep when many clients synchronise into a thundering
+herd; the realistic worst case here is two or three tabs and a phone, and three
+requests seven seconds apart are nothing to a box already streaming us MPEG-2.
+It is complexity bought against a problem we do not have, and a one-line
+addition if we ever see contention.
+
+The two rules that matter more than the interval: **skip when the position has
+not moved**, or pausing for twenty minutes is 170 pointless writes; and **write
+on the events**, because almost every session ends deliberately, so pause, seek
+and leaving carry the common case exactly and the timer only covers the browser
+being killed. A seek writes at once in particular — a throttled write after a
+discontinuity leaves the device wrong rather than merely stale.
+
+Two earlier observations fit: a position held at 521 for 84 seconds once
+playback stopped, so the timer does not keep running on a stopped player; and
+two recordings both landing on `position: 6` shortly after being opened, which
+is the first tick of that timer.
 
 The write works, and its shape is not the read's:
 
