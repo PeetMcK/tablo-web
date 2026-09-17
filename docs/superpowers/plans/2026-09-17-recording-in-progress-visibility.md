@@ -366,3 +366,62 @@ it("leaves a card alone when nothing is recording it", async () => {
 - [ ] Its bar and figure move while it sits open.
 - [ ] Stop Recording behaves as Task 5 established.
 - [ ] Nothing recording: Live and Guide look exactly as they do today.
+
+
+---
+
+### Task 9: The skip buttons need debouncing
+
+**Files:**
+- Modify: `frontend/src/components/VideoPlayer.tsx`
+- Test: `frontend/src/__tests__/playerChrome.test.tsx`
+
+**The problem.** Every tap of Back 10 / Forward 30 calls `seek`, and on the
+MPEG-2 path a seek is not cheap: it bumps the epoch, posts a `reset`, tears the
+decoder down and rebuilds it, flushes the audio queue and destroys the
+presenter's fields. Four quick taps to skip two minutes is four full rebuilds
+where one would do, and the picture goes black between each.
+
+There is evidence this already bites: a long live session logged **21 decoder
+rebuilds**, recorded in the handoff as an open question and never explained.
+Repeated skipping is the obvious candidate.
+
+- [ ] **Step 1: Write the failing test**
+
+```tsx
+it("turns a flurry of taps into one seek", async () => {
+  // Four taps of Forward 30 is one jump of two minutes, not four rebuilds.
+  for (let i = 0; i < 4; i++) fireEvent.click(forward);
+  await advance(DEBOUNCE_MS + 50);
+  expect(seek).toHaveBeenCalledTimes(1);
+  expect(seek).toHaveBeenCalledWith(start + 120);
+});
+
+it("shows where it is going before it gets there", async () => {
+  // Accumulating silently would read as the button being broken.
+  for (let i = 0; i < 3; i++) fireEvent.click(forward);
+  expect(screen.getByText(/\+1:30/)).toBeInTheDocument();
+});
+```
+
+- [ ] **Step 2: Run them, watch them fail**
+
+- [ ] **Step 3: Accumulate, then seek once.** Hold a pending delta, add each
+  tap to it, and issue a single seek once taps stop for ~400ms. The scrubber and
+  the timecode follow the pending target immediately, so the control stays
+  responsive while the decoder is left alone.
+
+- [ ] **Step 4: Do not rebuild when the target is already decoded.** A back-10
+  usually lands inside what the presenter still holds and what the audio sink
+  has buffered; the ring and the VOD index both still hold the segments. Skipping
+  the teardown in that case is the difference between an instant jump and a
+  rebuild. `readyRange` already knows what is decoded — this is about acting on
+  it rather than only clamping to it.
+
+- [ ] **Step 5: Confirm the counts.** `tabloDebug()` reports decoder rebuilds;
+  four taps must show one.
+
+- [ ] **Step 6: Run the suite. Commit**
+
+**Open:** the buttons are Back **10** and Forward **30** today, not 20/30.
+Whether back should become 20 is a separate decision from the debounce.
