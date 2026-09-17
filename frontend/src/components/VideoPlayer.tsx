@@ -1663,8 +1663,14 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
       // picture is the one piece of interface that never faded, and on a
       // fullscreen frame it is the only thing on screen that is not the
       // programme. Any movement brings both back.
+      //
+      // Not in the pop-out. There the picture is one small window among
+      // others and the pointer is usually on its way somewhere else, so
+      // taking it away leaves someone hunting for it over the video. The
+      // tab's idle timer goes on running while the window is out, so this is
+      // a refusal rather than something that simply never happens.
       className={`dark fixed inset-0 z-50 bg-media flex items-center justify-center
-        ${showControls ? "" : "cursor-none"}`}
+        ${!pip && !showControls ? "cursor-none" : ""}`}
       onMouseMove={onStageMove}
       onMouseLeave={onStageLeave}
       onClick={handleSurfaceClick}

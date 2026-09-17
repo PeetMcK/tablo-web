@@ -289,6 +289,24 @@ describe("the player's chrome", () => {
     }
   });
 
+  it("leaves the cursor alone in the pop-out", async () => {
+    // Hiding the pointer belongs to a fullscreen frame, where it is the only
+    // thing on screen that is not the programme. A pop-out is a small window
+    // among others: the pointer there is on its way somewhere, and taking it
+    // away leaves someone hunting for it. The tab's idle timer keeps running
+    // while the window is out, so this has to be refused explicitly rather
+    // than simply not happening.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { stage } = await poppedOutStage();
+
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+      expect(stage.className).not.toContain("cursor-none");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels that wait if the cursor comes back", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
