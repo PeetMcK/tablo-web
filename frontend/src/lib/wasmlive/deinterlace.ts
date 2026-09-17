@@ -161,23 +161,41 @@ export function createRenderer(canvas: OffscreenCanvas | HTMLCanvasElement): Ren
 
   let width = 0;
   let height = 0;
+  let sampleAspect = 1;
 
   /** Rows come packed to the byte, not to GL's default 4-byte alignment. */
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
-  const resize = (w: number, h: number) => {
+  /**
+   * Size the canvas to the picture's *display* shape, not its coded one.
+   *
+   * The backing store's dimensions are what `object-fit` reasons about, so a
+   * 720x480 canvas is laid out as 1.5 however the pixels were meant to be
+   * shaped. Broadcast SD is anamorphic - 13.4 arrives 720x480 with 32:27
+   * pixels, a 16:9 picture in a 1.5 frame - and drawn that way it is 16% too
+   * narrow, with everything in it tall and thin. Measured against the same
+   * broadcast on an iPhone, which gets it right.
+   *
+   * Only the output width changes. The textures are still uploaded at the
+   * coded size and `height` still counts coded rows, because that is what the
+   * deinterlace samples against; the GPU scales horizontally as it draws.
+   */
+  const resize = (w: number, h: number, sar: number) => {
     width = w;
     height = h;
-    canvas.width = w;
+    sampleAspect = sar;
+    const displayWidth = Math.max(1, Math.round(w * sar));
+    canvas.width = displayWidth;
     canvas.height = h;
-    gl.viewport(0, 0, w, h);
+    gl.viewport(0, 0, displayWidth, h);
     gl.uniform1f(heightUniform, h);
   };
 
   return {
     upload(frame: DecodedVideoFrame) {
-      if (frame.width !== width || frame.height !== height) {
-        resize(frame.width, frame.height);
+      const sar = frame.sampleAspectRatio || 1;
+      if (frame.width !== width || frame.height !== height || sar !== sampleAspect) {
+        resize(frame.width, frame.height, sar);
       }
 
       const lumaSize = frame.width * frame.height;

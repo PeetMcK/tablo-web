@@ -6,7 +6,7 @@ import type { LibavDecoder } from "../lib/wasmlive/libavClient";
 
 const frame = {
   data: new Uint8Array(6), width: 2, height: 2,
-  ptsSeconds: 1, durationSeconds: 0.03337, interlaced: true, topFieldFirst: true,
+  ptsSeconds: 1, durationSeconds: 0.03337, interlaced: true, topFieldFirst: true, sampleAspectRatio: 1,
 };
 const chunk = { samples: new Float32Array(4), sampleRate: 48000, ptsSeconds: 1 };
 

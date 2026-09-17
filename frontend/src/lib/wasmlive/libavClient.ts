@@ -183,6 +183,25 @@ function sampleFramesOf(frame: LibavFrame): number {
   return data.length / Math.max(1, channels);
 }
 
+/**
+ * The frame's pixel shape as a single ratio, or 1 when it does not say.
+ *
+ * MPEG-2 carries a sample aspect that is frequently not square. This device's
+ * SD subchannels arrive 720x480 with 32:27 pixels - a 16:9 picture in a frame
+ * whose coded shape is 1.5 - so a renderer that assumes square pixels draws it
+ * 16% too narrow. Measured against the same broadcast on an iPhone, which gets
+ * it right.
+ */
+function sampleAspectOf(frame: LibavFrame): number {
+  const num = frame.sample_aspect_ratio_num ?? frame.sample_aspect_ratio?.[0];
+  const den = frame.sample_aspect_ratio_den ?? frame.sample_aspect_ratio?.[1];
+  if (typeof num !== "number" || typeof den !== "number" || num <= 0 || den <= 0) {
+    return 1;
+  }
+  return num / den;
+}
+
+
 function ptsSeconds(frame: LibavFrame): number {
   const base = frame.time_base_num / frame.time_base_den;
   const raw = (frame.ptshi ?? 0) * 4294967296 + (frame.pts ?? 0);
@@ -426,6 +445,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       durationSeconds: measured > 0 && measured < 1 ? measured : frameDuration,
       interlaced: Boolean(frame.flags & AV_FRAME_FLAG_INTERLACED),
       topFieldFirst: Boolean(frame.flags & AV_FRAME_FLAG_TOP_FIELD_FIRST),
+      sampleAspectRatio: sampleAspectOf(frame),
     };
   };
 

@@ -59,6 +59,11 @@ describe("libavClient", () => {
     const first = video[0];
     expect(first.width).toBe(1920);
     expect(first.height).toBe(1080);
+    // Square pixels for HD. The field exists for the SD subchannels, which are
+    // anamorphic - 720x480 with 32:27 pixels is a 16:9 picture in a 1.5 frame,
+    // and drawn as if square it is 16% too narrow with everything tall and
+    // thin. Measured against the same broadcast on an iPhone, which is right.
+    expect(first.sampleAspectRatio).toBeCloseTo(1, 3);
     // Packed I420: a full luma plane plus two quarter-size chroma planes.
     expect(first.data.length).toBe((1920 * 1080 * 3) / 2);
 

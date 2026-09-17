@@ -10,6 +10,7 @@ function decoded(ptsSeconds: number, overrides: Partial<DecodedVideoFrame> = {})
   return {
     data: new Uint8Array(6), width: 2, height: 2,
     ptsSeconds, durationSeconds: FRAME, interlaced: true, topFieldFirst: true,
+    sampleAspectRatio: 1,
     ...overrides,
   };
 }
