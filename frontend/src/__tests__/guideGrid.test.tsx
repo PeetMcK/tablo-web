@@ -1171,3 +1171,52 @@ describe("the guide at phone width", () => {
     expect(card.className).toMatch(/\bsm:border\b/);
   });
 });
+
+describe("the guide's channel tile says it plays", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * The same language the Live TV card settled on: the plate is the play
+   * button. Its logo drops to a hint and stays sharp, a bare accent triangle
+   * comes up in its place, and the whole plate presses in on click.
+   *
+   * jsdom renders no CSS, so this is a class contract — the behaviour itself
+   * is measured in Chrome. Worth holding anyway: these are the exact variants
+   * that make the two surfaces behave alike, and a rename or a copy that
+   * drops one of them is silent otherwise.
+   */
+  async function plate(): Promise<HTMLElement> {
+    mockStream(grid());
+    render(<GuideGridView onPlay={() => {}} />);
+    const tile = await screen.findByRole("button", { name: /Watch KPAX 8\.1/ });
+    expect(tile.className).toMatch(/group\/tile/);
+    return tile.querySelector<HTMLElement>("[data-plate]")!;
+  }
+
+  it("dims the logo rather than moving it", async () => {
+    const p = await plate();
+    const wrapper = p.querySelector('[class*="group-hover/tile:opacity-"]');
+
+    expect(wrapper).not.toBeNull();
+    expect(wrapper!.className).toMatch(/group-hover\/tile:opacity-\[0\.35\]/);
+    // Sharp, not smeared: blur turns a 28px mark into a grey wash.
+    expect(p.innerHTML).not.toMatch(/blur/);
+  });
+
+  it("brings a bare triangle up in its place", async () => {
+    const p = await plate();
+    const glyph = p.querySelector('path[d="M7.5 5 17.5 12 7.5 19 Z"]');
+
+    expect(glyph).not.toBeNull();
+    const svg = glyph!.closest("svg")!;
+    expect(svg.getAttribute("class")).toMatch(/\bopacity-0\b/);
+    expect(svg.getAttribute("class")).toMatch(/group-hover\/tile:opacity-100/);
+    expect(svg.getAttribute("class")).toMatch(/text-accent/);
+  });
+
+  it("presses the plate when anywhere on the tile is pressed", async () => {
+    const p = await plate();
+    expect(p.className).toMatch(/group-active\/tile:scale-95/);
+    expect(p.className).toMatch(/group-hover\/tile:bg-accent-soft/);
+  });
+});

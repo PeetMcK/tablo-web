@@ -924,12 +924,47 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
             <button
               onClick={() => onPlay(ch)}
               aria-label={`Watch ${channelLabel(ch)}`}
-              className="w-20 shrink-0 p-2 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1
+              className="group/tile w-20 shrink-0 p-2 border-r border-b border-border-subtle flex flex-col items-center justify-center gap-1
                          bg-surface-sunken hover:bg-surface-raised transition-colors sticky left-0 z-20
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
             >
-              <div className="w-12 h-9 flex items-center justify-center bg-surface-sunken rounded border border-border-subtle p-1">
-                <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
+              {/* The plate is the play button, the same way it is on the Live
+                  TV card: the logo drops to a hint and a bare triangle comes
+                  up in its place, so the thing you already aim at when you
+                  want this channel is the thing that plays it. Nothing moves
+                  and nothing is covered.
+
+                  `group/tile` rather than a bare group because the row and
+                  the blank-listing cell both carry groups of their own; the
+                  plate must answer to the tile it lives in and nothing else. */}
+              <div data-plate
+                   className="relative w-12 h-9 flex items-center justify-center rounded p-1
+                              bg-surface-sunken border border-border-subtle
+                              group-hover/tile:bg-accent-soft group-hover/tile:border-accent/30
+                              group-active/tile:scale-95 transition-all duration-100">
+                {/* Dimmed, not blurred. A station's mark is mostly colour and
+                    that colour is how the column is scanned; held at a hint
+                    behind the triangle the channel is still identifiable.
+                    Blur smears 28px into a grey wash.
+
+                    On a wrapper rather than through `ChannelLogo`, which puts
+                    a caller's class on the mark inside its own opaque plate —
+                    fading the mark alone leaves the plate sitting there. */}
+                <span className="w-full h-full flex items-center justify-center
+                                 transition-opacity duration-150
+                                 group-hover/tile:opacity-[0.35]">
+                  <ChannelLogo src={ch.logo_url} callSign={ch.call_sign} className="w-7 h-7" />
+                </span>
+                {/* Just the triangle. A second rounded shape inside the
+                    rounded plate is the puck this replaced. Centred on its own
+                    box: 7.5..17.5 puts the middle at 12.5, half a unit right
+                    of the viewBox's 12, which is the optical correction a
+                    right-pointing triangle wants. */}
+                <svg className="absolute w-5 h-5 text-accent opacity-0 transition-opacity duration-150
+                                group-hover/tile:opacity-100"
+                     fill="currentColor" viewBox="0 0 24 24" aria-hidden>
+                  <path d="M7.5 5 17.5 12 7.5 19 Z" />
+                </svg>
               </div>
               <span className="text-[11px] font-bold text-fg-muted tabular-nums">
                 {ch.major > 0 ? `${ch.major}.${ch.minor}` : "FAST"}

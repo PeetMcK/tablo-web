@@ -318,3 +318,77 @@ describe("LibraryView", () => {
     expect(await screen.findByText(/No Recordings Found/i)).toBeInTheDocument();
   });
 });
+
+describe("the library's controls answer the pointer", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * The same two-part answer the Live TV card settled on: a control grows and
+   * lifts under the pointer, and presses in when it is clicked. Here every
+   * control is its own mark, so both belong to the button itself — except the
+   * play puck on the artwork, which is a mark inside a much larger target and
+   * takes the press from that whole target.
+   *
+   * jsdom renders no CSS, so this is a class contract. It holds the variants
+   * that make the three surfaces behave alike; dropping one is silent
+   * otherwise.
+   */
+  async function controls() {
+    vi.spyOn(api, "recordings").mockResolvedValue(
+      list({ recordings: [{ ...REC, cache_state: "complete", cache_progress: 1 }] }));
+    const view = renderLibrary();
+    await screen.findByText("NFL Football");
+    return view;
+  }
+
+  it("grows each round control under the pointer and presses it on click", async () => {
+    await controls();
+
+    // The artwork carries the same label as the round play control, so the
+    // last match is the one in the button row.
+    for (const name of [/^Play NFL Football$/, /^Keep NFL Football offline$/,
+                        /^Delete cached video of NFL Football$/]) {
+      const button = screen.getAllByRole("button", { name }).at(-1)!;
+      expect(button.className).toMatch(/enabled:hover:scale-110/);
+      expect(button.className).toMatch(/enabled:active:scale-95/);
+    }
+    // The MP4 save is a plain link — the browser owns the download — so it
+    // cannot be disabled and answers unconditionally.
+    const save = screen.getByRole("link", { name: /^Save NFL Football as an MP4 file$/ });
+    expect(save.className).toMatch(/hover:scale-110/);
+    expect(save.className).toMatch(/active:scale-95/);
+  });
+
+  it("does not move a control it has disabled", async () => {
+    // A disabled button still matches `:hover` in CSS, so an unguarded
+    // `hover:scale-110` makes a control that does nothing grow as if it would.
+    vi.spyOn(api, "recordings").mockResolvedValue(
+      list({ recordings: [{ ...REC, state: "recording" }] }));
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    const play = screen.getAllByRole("button", { name: /^Play NFL Football$/ }).at(-1)!;
+    expect(play).toBeDisabled();
+    expect(play.className).not.toMatch(/(?<!enabled:)hover:scale-110/);
+  });
+
+  it("presses the artwork's play puck from anywhere on the artwork", async () => {
+    const { container } = await controls();
+
+    const art = screen.getAllByRole("button", { name: /^Play NFL Football$/ })[0];
+    expect(art.className).toMatch(/group\/art/);
+
+    const puck = container.querySelector<HTMLElement>(".accent-gradient")!;
+    expect(puck.className).toMatch(/group-active\/art:scale-95/);
+    // And it answers its own hover, the way the card's info mark does.
+    expect(puck.className).toMatch(/hover:scale-110/);
+    expect(puck.className).toMatch(/hover:brightness-110/);
+  });
+});

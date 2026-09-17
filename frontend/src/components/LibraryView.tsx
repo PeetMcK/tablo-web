@@ -303,7 +303,7 @@ export function LibraryView() {
                 <button
                   onClick={() => playable && setPlaying(rec)}
                   disabled={!playable}
-                  className="aspect-video bg-surface-sunken relative block w-full disabled:cursor-not-allowed"
+                  className="group/art aspect-video bg-surface-sunken relative block w-full disabled:cursor-not-allowed"
                   aria-label={`Play ${rec.title ?? "recording"}`}
                 >
                   {rec.thumbnail ? (
@@ -314,7 +314,15 @@ export function LibraryView() {
                     </div>
                   )}
                   <div className="absolute inset-0 flex items-center justify-center bg-scrim-soft opacity-0 group-hover:opacity-100 transition">
-                    <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center">
+                    {/* The mark answers its own hover — it grows, lifts and
+                        brightens — while the press belongs to the whole
+                        artwork: clicking the picture and clicking the puck
+                        are the same act, so they look the same. Same split as
+                        the Live TV card's info mark, and `group/art` so the
+                        card's own group still owns the reveal. */}
+                    <div className="accent-gradient w-14 h-14 rounded-full flex items-center justify-center
+                                    shadow-lg hover:scale-110 hover:shadow-2xl hover:brightness-110
+                                    group-active/art:scale-95 transition-all duration-150">
                       <Play className="w-6 h-6 text-brand-fg ml-0.5" fill="currentColor" aria-hidden />
                     </div>
                   </div>
@@ -456,7 +464,8 @@ export function LibraryView() {
                             ? `Resume download of ${rec.title ?? "recording"}`
                             : `Pause download of ${rec.title ?? "recording"}`}
                           className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
-                                     text-fg-subtle hover:bg-fill hover:text-fg transition disabled:opacity-30"
+                                     text-fg-subtle hover:bg-fill hover:text-fg transition disabled:opacity-30
+                                     enabled:hover:scale-110 enabled:active:scale-95"
                         >
                           {rec.paused
                             ? <Download className="w-4 h-4" aria-hidden />
@@ -473,7 +482,8 @@ export function LibraryView() {
                           title="Save as a single MP4 file"
                           aria-label={`Save ${rec.title ?? "recording"} as an MP4 file`}
                           className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
-                                     text-fg-subtle hover:bg-fill hover:text-fg transition"
+                                     text-fg-subtle hover:bg-fill hover:text-fg transition
+                                     hover:scale-110 active:scale-95"
                         >
                           <FileDown className="w-4 h-4" aria-hidden />
                         </a>
@@ -493,7 +503,8 @@ export function LibraryView() {
                           title="Delete cached video"
                           aria-label={`Delete cached video of ${rec.title ?? "recording"}`}
                           className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
-                                     text-fg-faint hover:bg-danger-soft hover:text-danger transition disabled:opacity-30"
+                                     text-fg-faint hover:bg-danger-soft hover:text-danger transition disabled:opacity-30
+                                     enabled:hover:scale-110 enabled:active:scale-95"
                         >
                           <Trash2 className="w-4 h-4" aria-hidden />
                         </button>
@@ -518,6 +529,7 @@ export function LibraryView() {
                         title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
                         aria-label={rec.pinned ? `Stop keeping ${rec.title ?? "recording"}` : `Keep ${rec.title ?? "recording"} offline`}
                         className={`w-8 h-8 rounded-full flex items-center justify-center transition disabled:opacity-30
+                          enabled:hover:scale-110 enabled:active:scale-95
                           ${rec.pinned
                             ? "bg-success-soft text-success hover:bg-success-soft-strong"
                             : "bg-fill-soft text-fg-faint hover:bg-fill hover:text-fg-secondary"}`}
@@ -531,7 +543,8 @@ export function LibraryView() {
                       <button
                         onClick={() => playable && setPlaying(rec)}
                         disabled={!playable}
-                        className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center hover:bg-accent hover:text-accent-fg transition text-fg-faint disabled:opacity-30 disabled:hover:bg-fill-soft"
+                        className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center hover:bg-accent hover:text-accent-fg transition text-fg-faint disabled:opacity-30 disabled:hover:bg-fill-soft
+                                   enabled:hover:scale-110 enabled:active:scale-95"
                         aria-label={`Play ${rec.title ?? "recording"}`}
                       >
                         <Play className="w-4 h-4" fill="currentColor" aria-hidden />
