@@ -148,8 +148,8 @@ One guard still needed: a position captured while recording can be *larger* than
 the finished media, and "greater wins" would enshrine it. Once a recording is
 finished, clamp any position to its `duration` and discard anything past it.
 
-**Write pace: a 7 second timer, skipped when the position has not moved, plus
-an immediate write on pause, on seek and on leaving.**
+**Write pace: whenever the position has advanced 7 seconds, plus an immediate
+write on pause, on seek and on leaving.** Media progress, not a wall clock.
 
 Measured against the phone app rather than guessed. Sampling one recording every
 1.5 seconds while it played caught nine consecutive writes:
@@ -166,25 +166,37 @@ Measured against the phone app rather than guessed. Sampling one recording every
 17:57:40   633 -> 641   +8s    gap 13.6s
 ```
 
-Evenly spaced, so a timer rather than events. The second column is the telling
-one: position advanced 7-11s per write while ~13.8s of wall clock passed —
-playback was running at about 0.69x realtime — so the app is almost certainly on
-a **10 second timer in media time**, stretched to ~14s of wall clock by the same
-factor. An earlier draft of this document proposed 30 seconds, which is three
-times slower than the device's own client.
+A longer run at 5 second sampling settled what the unit is. The wall gaps
+alternate 10s and 16s — the sampler aliasing a true interval near 13s — but the
+**position deltas hold steady at +5 to +9, mean ~7.5s, whichever wall gap they
+land in**:
 
-No jitter. It earns its keep when many clients synchronise into a thundering
-herd; the realistic worst case here is two or three tabs and a phone, and three
-requests seven seconds apart are nothing to a box already streaming us MPEG-2.
-It is complexity bought against a problem we do not have, and a one-line
-addition if we ever see contention.
+```
+gap 10s -> +8s    gap 16s -> +7s    gap 10s -> +9s
+gap 16s -> +8s    gap 16s -> +7s    gap 10s -> +8s
+gap 16s -> +7s    gap 10s -> +8s    gap 16s -> +5s
+```
 
-The two rules that matter more than the interval: **skip when the position has
-not moved**, or pausing for twenty minutes is 170 pointless writes; and **write
-on the events**, because almost every session ends deliberately, so pause, seek
-and leaving carry the common case exactly and the timer only covers the browser
-being killed. A seek writes at once in particular — a throttled write after a
-discontinuity leaves the device wrong rather than merely stale.
+So the app is not on a wall-clock timer. It writes **every ~7.5 seconds of media
+progress**, which also explains the apparent 0.55-0.69x playback rate measured
+earlier: playback was not slow, the writes were pinned to media time while the
+measurement was in wall time.
+
+Matching the unit collapses two rules into one. **Write when the position has
+advanced 7 seconds** subsumes "skip when unchanged", because a paused player
+advances nothing and so writes nothing, and it self-throttles through buffering
+and slow playback for free. No timer to tune, and the jitter question does not
+arise: writes are spaced by the viewer's own progress rather than by a clock
+several clients could synchronise on.
+
+An earlier draft proposed a 30 second wall-clock timer, which was both the wrong
+unit and four times slower than the device's own client.
+
+The events still matter: **pause, seek and leaving write at once**, because
+almost every session ends deliberately, so those carry the common case exactly
+and the 7 second rule only has to cover the browser being killed. A seek in
+particular, where waiting for 7 seconds of progress after a discontinuity would
+leave the device wrong rather than merely stale.
 
 Two earlier observations fit: a position held at 521 for 84 seconds once
 playback stopped, so the timer does not keep running on a stopped player; and
