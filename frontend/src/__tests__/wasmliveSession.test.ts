@@ -31,13 +31,14 @@ const PLAYLIST_NEXT = `#EXTM3U
 `;
 
 function harness(overrides: Partial<SessionDeps> = {}) {
-  const posted: { type: string }[] = [];
+  const posted: { type: string; bytes?: ArrayBuffer; epoch?: number }[] = [];
   const fetched: string[] = [];
   let clockSeconds: number | null = 36;
   let bufferedSeconds = 0;
+  let contextState: AudioContextState = "running";
 
   const worker = {
-    postMessage: (m: { type: string }) => posted.push(m),
+    postMessage: (m: { type: string; bytes?: ArrayBuffer; epoch?: number }) => posted.push(m),
     terminate: vi.fn(),
     onmessage: null as ((e: MessageEvent) => void) | null,
     onerror: null as ((e: Event) => void) | null,
@@ -48,6 +49,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     push: vi.fn(),
     get clockSeconds() { return clockSeconds; },
     get bufferedSeconds() { return bufferedSeconds; },
+    get contextState() { return contextState; },
     starvedBy: vi.fn(() => 0),
     setMuted: vi.fn(),
     muted: false,
@@ -87,6 +89,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     slide: () => { playlist = PLAYLIST_NEXT; },
     setClock: (t: number | null) => { clockSeconds = t; },
     setBuffered: (s: number) => { bufferedSeconds = s; },
+    setContextState: (s: AudioContextState) => { contextState = s; },
   };
 }
 
@@ -403,8 +406,7 @@ describe("createSession", () => {
     await polling;
 
     const segments = h.posted.filter((m) => m.type === "segment");
-    expect(segments.some((m) => (m as { bytes: ArrayBuffer }).bytes.byteLength === 99))
-      .toBe(false);
+    expect(segments.some((m) => m.bytes?.byteLength === 99)).toBe(false);
   });
 
   it("leaves no window open between two seeks in quick succession", async () => {
@@ -549,6 +551,42 @@ describe("createSession", () => {
 
     expect(session.failure).toBe("decode error");
     expect(String(session.diagnostics().failureDetail)).toMatch(/nothing drawn/);
+  });
+
+  it("does not give up while the audio context is suspended", async () => {
+    // A context created without user activation behind it starts suspended: a
+    // deep link, a background tab, a first visit under Chrome's autoplay
+    // policy. Suspended, the worklet renders nothing, the clock never
+    // advances, no field is ever due and nothing is presented — which is
+    // indistinguishable from a broken decoder, and used to be failed as one
+    // after eight seconds, before the viewer could click anything.
+    let nowMs = 0;
+    const h = harness({ nowMs: () => nowMs });
+    h.setContextState("suspended");
+    await h.session.start();
+
+    nowMs = 60000;
+    h.session.tick();
+
+    expect(h.session.failure).toBeNull();
+  });
+
+  it("does not count the wait against the session once the context starts", async () => {
+    // Held, not skipped. Leaving the marks where they were means the first
+    // tick after the viewer presses play looks back over the whole wait and
+    // calls it a stall.
+    let nowMs = 0;
+    const h = harness({ nowMs: () => nowMs });
+    h.setContextState("suspended");
+    await h.session.start();
+
+    nowMs = 60000;
+    h.session.tick();
+    h.setContextState("running");
+    h.presenter.presentedCount = 1;
+    h.session.tick();
+
+    expect(h.session.failure).toBeNull();
   });
 
   it("does not end the session because the queue ran dry", async () => {

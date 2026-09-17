@@ -472,6 +472,25 @@ export function createSession(deps: SessionDeps): LiveSession {
       fallback = reduceFallback(fallback, { kind: "first-frame", atMs: nowMs });
     }
 
+    // Neither timer may run while the audio context is not rendering.
+    //
+    // A suspended context renders no samples, so the clock never advances, so
+    // no field is ever due and nothing is ever presented — which is exactly
+    // what a broken decoder looks like from here. The session duly failed with
+    // "no first frame" after eight seconds, before the viewer had a chance to
+    // click. The context starts suspended whenever there is no user activation
+    // behind it: a deep link, a tab opened in the background, or a first visit
+    // under Chrome's autoplay policy.
+    //
+    // Held rather than skipped, for the same reason as the pause below: the
+    // first tick after the context starts must not look back over the whole
+    // wait and call it a stall.
+    if (deps.audio.contextState !== "running") {
+      fallback = { ...fallback, startedAtMs: nowMs };
+      lastProgressAtMs = nowMs;
+      return;
+    }
+
     // The deadline measures the decoder, not the device. A freshly opened ring
     // is empty for the first few seconds — the same wait the transcode path
     // budgets twelve seconds for — so the clock only starts once there is
