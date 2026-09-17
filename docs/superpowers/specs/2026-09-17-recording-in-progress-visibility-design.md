@@ -169,29 +169,39 @@ only way to know is the coverage arithmetic.
    **negative** when a recording is cut short, which also confirms the
    expected-length arithmetic on an early stop: 3600 − 1259 − 235 = 2106,
    exactly the reported duration. Stop Recording is real and ships.
-2. **What a series rule does to the episode already airing — open, and to be
-   settled before Task 6 ships its controls.**
+2. **Setting a series rule starts recording the episode already airing,
+   immediately — and nothing warns you.**
 
-   Observed: setting a series to record *All* does not start recording the
-   episode on air right now, and does not offer to. Two endpoints exist and
-   they are separate — `PUT /schedule/series` sets the rule, `PUT
-   /schedule/airing` schedules one episode — so the device is behaving
-   consistently; the question is whether that is what a person means.
+   Corrected: an earlier draft of this document said a rule did *not* touch the
+   current episode. It does, at once, with no confirmation.
 
-   The case for the current behaviour: a rule is about the future, and
-   silently starting a recording of a show already half-finished produces a
-   partial recording nobody asked for — precisely the thing the coverage bar
-   now exists to make visible.
+   The consequence is already in the library, and it is what the three
+   "broken" recordings above actually are:
 
-   The case against: someone pressing *Record All* while watching the show
-   almost certainly wants this one too.
+   ```
+   86040  slot 09-16 22:00Z  began 22:56:41  ended 22:56:49    8s  ep=Cities
+   86043  slot 09-16 22:00Z  began 22:57:02  ended 22:57:06    4s  ep=Cities
+   86045  slot 09-16 22:00Z  began 22:57:09  ended 23:00:51  222s  ep=Cities
+   ```
 
-   Neither is obviously right, so the sheet should probably *ask*, which is
-   also the only option that needs no guess about intent. Wants deciding with
-   real behaviour in front of us: what the device does to an in-flight episode
-   when a rule is set, unset, or changed, and what "stop" means against a rule
-   that will simply re-schedule it. **Grill this once the current work is
-   deployed, then write the answer here.**
+   The same episode, the same slot, three recordings inside 28 seconds —
+   record, stop, record, stop, record, with the last running to the end of the
+   slot. Not a device fault: the footprint of someone cycling through All /
+   New / None to decide on a rule. Each press started a recording; each change
+   of mind stopped it and left a stub. The `Incomplete` badge added today
+   labels the debris, which is useful, but the better fix is not to create it.
+
+   **Requirement: any control that would start a recording of something airing
+   now must confirm first**, naming the programme and how much of it is left.
+   That covers the per-episode Record button and — the case that produced the
+   debris — the series rule buttons, which look like preference toggles and are
+   not. Stopping is already destructive and already confirms.
+
+   Still to settle by grilling the device, before Task 6 ships its controls:
+   what a rule change does to an episode already recording (does moving All →
+   New stop it?), whether stopping an episode under an active rule simply
+   re-schedules it — which would make Stop Recording misleading — and what
+   `skip_reason` says once an episode has been stopped by hand.
 
 3. **A recording with no guide airing.** Something recorded from a channel whose
    EPG has since rolled over has no `(channel, start)` to match, so Live and
