@@ -37,6 +37,20 @@ DEVICE_RECORDING = {
         "datetime": "2026-09-15T00:15Z",
         "duration": 10800,
         "show_title": "NFL Football",
+        # Nesting taken from a real record: the outer wrapper carries only
+        # `channel`, `object_id` and `path`, and the identifier sits on the
+        # inner channel beside the call sign. Getting this wrong is not
+        # theoretical - the first version read it off the wrapper, passed, and
+        # returned null against the device.
+        "channel": {
+            "object_id": 8101,
+            "path": "/guide/channels/8101",
+            "channel": {
+                "call_sign": "KTMFABC", "network": "ABC",
+                "major": 23, "minor": 1,
+                "channel_identifier": "S34654_008_01",
+            },
+        },
     },
     "video_details": {
         "state": "finished",
@@ -61,6 +75,17 @@ GAME = 12615
 # Projection
 # ---------------------------------------------------------------------------
 
+def test_a_recording_carries_the_identifier_the_guide_is_keyed_by():
+    """Without it a recording cannot be matched to its own airing.
+
+    Live and Guide key on `(channel_identifier, start)`, and the info sheet is
+    addressed the same way - so a recording with no identifier cannot be joined
+    to the row describing it, or looked up at all.
+    """
+    out = AppState._recording_fields(DEVICE_RECORDING)
+    assert out["channel"]["identifier"] == "S34654_008_01"
+
+
 def test_duration_prefers_recorded_over_scheduled():
     """airing_details.duration is the scheduled slot and understates the file."""
     assert AppState._recording_fields(DEVICE_RECORDING)["duration"] == 12615
@@ -71,6 +96,7 @@ def _in_progress(minutes_ago: float, scheduled: int = 3600) -> dict:
     return {
         **DEVICE_RECORDING,
         "airing_details": {
+            **DEVICE_RECORDING["airing_details"],
             "datetime": began.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration": scheduled,
             "show_title": "Today 3rd Hour",
@@ -1131,3 +1157,50 @@ async def test_a_heartbeat_does_not_revive_a_paused_offline_copy(tmp_path):
 
     c.ensure_prefetch(66220)
     assert 66220 not in c._prefetch
+
+
+# ---------------------------------------------------------------------------
+# What is recording right now
+# ---------------------------------------------------------------------------
+
+def _serving_recordings(monkeypatch, rows):
+    """Stand in for the device listing, without touching it."""
+    from app.routes import recordings as rec
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(r) for r in rows]
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+
+
+def test_in_progress_lists_only_what_is_recording(monkeypatch):
+    """Live and Guide ask this once and key it by (channel, start).
+
+    Everything it carries is already computed for the full listing, so this is
+    a projection rather than new arithmetic - and small enough to poll beside a
+    guide that must not itself carry volatile recording state.
+    """
+    live = _with_offsets(30, start=1259, scheduled=3600)
+    live["object_id"] = 86113
+    _serving_recordings(monkeypatch, [DEVICE_RECORDING, live])
+
+    body = client.get("/api/recordings/in-progress").json()
+
+    assert [r["object_id"] for r in body["recordings"]] == [86113]
+    row = body["recordings"][0]
+    assert row["channel_identifier"] == "S34654_008_01"
+    assert row["duration"] == 3600, "the scheduled slot the bar is drawn against"
+    assert row["expected_seconds"] == 3600 - 1259
+    assert row["recording_started"] is not None
+    assert row["recorded_seconds"] == pytest.approx(30 * 60 - 1259, abs=5)
+
+
+def test_in_progress_is_empty_rather_than_absent(monkeypatch):
+    """Nothing recording is the ordinary case, and not an error."""
+    _serving_recordings(monkeypatch, [DEVICE_RECORDING])
+
+    r = client.get("/api/recordings/in-progress")
+
+    assert r.status_code == 200
+    assert r.json() == {"recordings": []}

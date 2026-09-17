@@ -1127,6 +1127,11 @@ class AppState:
             return None
         major, minor = ch.get("major"), ch.get("minor")
         return {
+            # The key the guide and the info sheet are addressed by, so a
+            # recording can be joined to the airing that describes it. It sits
+            # on the inner channel object, beside the logos and the tms ids -
+            # the outer wrapper carries only `channel`, `object_id` and `path`.
+            "identifier": ch.get("channel_identifier"),
             "call_sign": ch.get("call_sign"),
             "network": ch.get("network"),
             "number": f"{major}.{minor}" if major is not None else None,

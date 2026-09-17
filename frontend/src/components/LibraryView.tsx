@@ -54,16 +54,36 @@ function isRecording(rec: Recording): boolean {
 type StartMode = "resume" | "beginning" | "live";
 
 /**
- * How far into its slot a recording in progress has got, 0-1.
+ * Which part of the scheduled slot has actually been captured, as percentages.
  *
- * Zero when the server has not estimated it, which reads as an empty bar
- * rather than a full one — the safer way to be wrong about something that has
- * only just started.
+ * The strip is the show's booked hour end to end, and this is the stretch of it
+ * that exists — positioned where it falls rather than flush left. A recording
+ * started twenty minutes late then reads as twenty minutes late at a glance;
+ * drawn from the left edge it was indistinguishable from one that caught the
+ * whole show, which is the thing most worth knowing before pressing play.
+ *
+ * Null when there is nothing to place, which leaves an empty strip — the safer
+ * way to be wrong about something that has only just started.
  */
-function recordedFraction(rec: Recording): number {
-  const total = rec.expected_seconds || rec.duration;
-  if (!rec.recorded_seconds || !total) return 0;
-  return Math.min(1, rec.recorded_seconds / total);
+function recordedSpan(rec: Recording): { left: number; width: number } | null {
+  const slot = rec.duration;
+  if (!slot || !rec.start) return null;
+
+  const scheduled = new Date(rec.start).getTime();
+  if (Number.isNaN(scheduled)) return null;
+
+  const began = rec.recording_started ? new Date(rec.recording_started).getTime() : scheduled;
+  if (Number.isNaN(began)) return null;
+
+  // Where the tuner actually started, as a position in the scheduled hour. A
+  // recording that began early sits at the left edge rather than off it.
+  const from = Math.min(1, Math.max(0, (began - scheduled) / 1000 / slot));
+  // And how far it has got. Taken from the server's own count rather than this
+  // browser's clock: the two agree to a second, and a laptop with a skewed
+  // clock would otherwise draw a bar that disagrees with the label beside it.
+  const to = Math.min(1, from + (rec.recorded_seconds ?? 0) / slot);
+
+  return { left: from * 100, width: Math.max(1, (to - from) * 100) };
 }
 
 /**
@@ -79,8 +99,9 @@ function progressTitle(rec: Recording): string {
     : null;
   const total = rec.expected_seconds || rec.duration;
   return [
-    began ? `Started recording at ${began}.` : null,
-    total ? `Expected to run ${formatDuration(total)}.` : null,
+    rec.duration ? `Bar spans the scheduled ${formatDuration(rec.duration)}.` : null,
+    began ? `Recording began at ${began}.` : null,
+    total ? `Expected to capture ${formatDuration(total)} of it.` : null,
     "Elapsed time is derived from that start, not measured from the file.",
   ].filter(Boolean).join(" ");
 }
@@ -406,6 +427,7 @@ export function LibraryView() {
               {items.map((rec) => {
             const playable = isPlayable(rec);
             const keepable = isKeepable(rec);
+            const span = isRecording(rec) ? recordedSpan(rec) : null;
             return (
               <div
                 key={rec.object_id}
@@ -540,11 +562,19 @@ export function LibraryView() {
                     // How far through its slot, in the same strip the cache bar
                     // uses. They never appear together: a recording in progress
                     // cannot be kept, so there is no copy to report on.
+                    // The strip is the show's scheduled hour, end to end, and
+                    // the filled part is what was actually captured of it —
+                    // positioned where it falls, not flush left. A recording
+                    // that started twenty minutes late reads as twenty minutes
+                    // late at a glance; drawn from the left edge it looked
+                    // identical to one that caught the whole show.
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60" title={progressTitle(rec)}>
-                      <div
-                        className="h-full bg-danger transition-[width] duration-1000 ease-linear"
-                        style={{ width: `${Math.max(1, recordedFraction(rec) * 100)}%` }}
-                      />
+                      {span && (
+                        <div
+                          className="h-full bg-danger transition-[width,left] duration-1000 ease-linear absolute inset-y-0"
+                          style={{ left: `${span.left}%`, width: `${span.width}%` }}
+                        />
+                      )}
                     </div>
                   ) : rec.cache_state !== "complete" && rec.cache_progress > 0 && (
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60">

@@ -111,6 +111,49 @@ async def list_recordings():
     }
 
 
+@router.get("/in-progress")
+async def recordings_in_progress():
+    """What is being recorded right now, for the views that are not the Library.
+
+    Live and Guide need to mark a programme that is recording and draw how much
+    of it has been captured. Both key on `(channel_identifier, start)`, which is
+    what a recording carries and what the guide is addressed by.
+
+    Deliberately its own endpoint rather than fields on the guide. The guide is
+    a large payload synced into SQLite and cached hard, while this changes every
+    few seconds; threading one into the other would mean invalidating a synced
+    guide on a timer. This list is almost always empty and never longer than the
+    tuner count.
+
+    Every field here is already computed for the full listing - this is a
+    projection of it, not a second source of truth.
+    """
+    _require_auth()
+    try:
+        items = await state.get_recordings()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Library error: {e}")
+
+    return {
+        "recordings": [
+            {
+                "object_id": item["object_id"],
+                "channel_identifier": (item.get("channel") or {}).get("identifier"),
+                # The scheduled start, which is the guide's key - not when the
+                # tuner actually began, which `recording_started` carries.
+                "start": item.get("start"),
+                "duration": item.get("duration"),
+                "recording_started": item.get("recording_started"),
+                "recorded_seconds": item.get("recorded_seconds"),
+                "expected_seconds": item.get("expected_seconds"),
+                "title": item.get("title"),
+            }
+            for item in items
+            if item.get("state") == "recording"
+        ],
+    }
+
+
 @router.post("/{object_id}/watch-vod")
 async def watch_recording_vod(object_id: int):
     """Serve a recording as MPEG-2, straight from the device.

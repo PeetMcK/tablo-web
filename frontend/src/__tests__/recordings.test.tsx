@@ -543,7 +543,97 @@ describe("a recording whose tuner started late", () => {
     renderLibrary();
 
     const badge = await screen.findByText("30m of 58m");
-    expect(badge).toHaveAttribute("title", expect.stringMatching(/started recording at/i));
+    expect(badge).toHaveAttribute("title", expect.stringMatching(/recording began at/i));
     expect(badge).toHaveAttribute("title", expect.stringMatching(/derived/i));
+  });
+});
+
+describe("the progress bar on a recording in progress", () => {
+  // Let's Make a Deal, 2026-09-17: booked 16:00Z for an hour, started by hand
+  // at 16:20:59Z, so a third of the show was never captured.
+  const LATE_START: Recording = {
+    ...REC,
+    object_id: 86113,
+    title: "Let's Make a Deal",
+    state: "recording",
+    start: "2026-09-17T16:00:00Z",
+    duration: 3600,
+    recording_started: "2026-09-17T16:20:59Z",
+    recorded_seconds: 1020,          // 17 minutes in
+    expected_seconds: 2341,          // 3600 - 1259
+  };
+
+  const bar = (c: HTMLElement) =>
+    c.querySelector<HTMLElement>(".bg-danger.absolute");
+
+  function renderWith(rec: Recording) {
+    vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [rec], returned: 1, total: 1, offline_only: 0,
+    });
+    return renderLibrary();
+  }
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("starts the fill where recording actually began, not at the left edge", async () => {
+    // 1259s into a 3600s slot is 35% along. Flush left, this card would be
+    // indistinguishable from one that caught the show from the top — which is
+    // the single most useful thing to know before pressing play.
+    const { container } = renderWith(LATE_START);
+    await screen.findByText("Let's Make a Deal");
+
+    const fill = bar(container)!;
+    expect(parseFloat(fill.style.left)).toBeCloseTo(34.97, 1);
+  });
+
+  it("spans only what has been captured so far", async () => {
+    // 1020s of a 3600s slot is 28.3% wide, ending at 63.3%.
+    const { container } = renderWith(LATE_START);
+    await screen.findByText("Let's Make a Deal");
+
+    const fill = bar(container)!;
+    expect(parseFloat(fill.style.width)).toBeCloseTo(28.33, 1);
+  });
+
+  it("sits at the left edge when the tuner started early", async () => {
+    // `recorded_offsets.start` is signed — one recording began 15s early — and
+    // a negative offset must not push the fill off the strip.
+    const { container } = renderWith({
+      ...LATE_START,
+      recording_started: "2026-09-17T15:59:45Z",
+      recorded_seconds: 600,
+    });
+    await screen.findByText("Let's Make a Deal");
+
+    expect(parseFloat(bar(container)!.style.left)).toBe(0);
+  });
+
+  it("never runs past the end of the slot", async () => {
+    // End padding pushes a recording past its booked hour; the strip is the
+    // hour, so the fill stops at it rather than overflowing the card.
+    const { container } = renderWith({ ...LATE_START, recorded_seconds: 9999 });
+    await screen.findByText("Let's Make a Deal");
+
+    const fill = bar(container)!;
+    const end = parseFloat(fill.style.left) + parseFloat(fill.style.width);
+    expect(end).toBeLessThanOrEqual(100.01);
+  });
+
+  it("explains on hover that the strip is the scheduled slot", async () => {
+    const { container } = renderWith(LATE_START);
+    await screen.findByText("Let's Make a Deal");
+
+    const strip = container.querySelector<HTMLElement>(".bg-ink\\/60")!;
+    expect(strip).toHaveAttribute("title", expect.stringMatching(/scheduled 1h 0m/i));
   });
 });
