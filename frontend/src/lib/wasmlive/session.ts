@@ -19,9 +19,6 @@ import type { Presenter } from "./presenter";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 import type { FromWorker, ToWorker } from "./workerProtocol";
 
-/** How far the clock may run past the newest decoded frame before it counts. */
-const STARVED_SECONDS = 1;
-
 /**
  * How long a picture that was playing may stop dead before the channel goes
  * back to the transcode.
@@ -42,7 +39,7 @@ const FROZEN_MS = 6000;
  *
  * This must stay comfortably under what the field queue holds, or the queue is
  * permanently full and evicting in normal running. At 59.94 fields a second,
- * two seconds is about 120 of the 150 it can keep.
+ * two seconds is about 120 of the 200 it can keep.
  *
  * It also has to cover the lag between handing bytes over and getting decoded
  * audio back, because that lag comes out of the buffer. At 1.25s the measured
@@ -68,10 +65,11 @@ const MIN_BUFFER_SECONDS = 0.5;
  * Well clear of `MIN_BUFFER_SECONDS`, and that gap is the point. The queue
  * gate below stops the transport when the presenter already has all the fields
  * it can hold; gating it on merely being above the starvation floor makes the
- * floor a set point, and the floor is what the fallback counts starvation
- * events against. Measured: a soak that held the buffer at exactly 0.5s for
- * eighty-four seconds, drifting from ten seconds behind the live edge to
- * twenty, and then gave up with "repeated starvation".
+ * floor a set point, and a session sitting on its floor has no margin for a
+ * slow device poll. Measured: a soak that held the buffer at exactly 0.5s for
+ * eighty-four seconds while drifting from ten seconds behind the live edge to
+ * twenty, and then gave up. (The rule it gave up under has since been removed
+ * — see `fallback.ts` — but riding the floor is still the wrong place to sit.)
  */
 const COMFORTABLE_BUFFER_SECONDS = 1.5;
 
@@ -234,9 +232,11 @@ export function createSession(deps: SessionDeps): LiveSession {
    * flight *from the page*.
    */
   let epoch = 0;
-  /** For the frozen-picture watchdog, which starvation cannot detect. */
+  /** For the frozen-picture watchdog, which is now the only failure detector. */
   let lastPresentedCount = 0;
   let lastProgressAtMs = 0;
+  /** Whether the presenter currently has nothing to draw. */
+  let wasStalled = false;
   /** The worker's last word on what the decoder is doing. */
   let decoderStats: Record<string, unknown> | null = null;
   /**
@@ -484,22 +484,31 @@ export function createSession(deps: SessionDeps): LiveSession {
 
     fallback = reduceFallback(fallback, { kind: "tick", atMs: nowMs });
 
-    const starvedBy = deps.audio.starvedBy(deps.presenter.newestPts);
-    if (!paused && starvedBy > STARVED_SECONDS) {
-      // Logged per event, not only when the second one gives up. Two of these
-      // inside thirty seconds ends the session, so which two they were is the
-      // whole question, and the failure line alone never said.
-      log.warn(`starved by ${starvedBy.toFixed(2)}s`, {
-        clock: deps.audio.clockSeconds,
-        newestPts: deps.presenter.newestPts,
-        oldestPts: deps.presenter.oldestPts,
-        queued: deps.presenter.queued,
-        buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
-        fedThroughMedia,
-        presented: deps.presenter.presentedCount,
-      });
-      fallback = reduceFallback(fallback, { kind: "starved", atMs: nowMs });
-      emit("waiting");
+    // Whether there is anything left to draw, reported as a state rather than
+    // as an event.
+    //
+    // A rebuffer is not a failure — the old rule ended the session on two
+    // consecutive animation frames — and it is not permanent either. `waiting`
+    // used to be emitted with no matching `playing`, and the stall overlay
+    // clears only on `playing`, so a single spurious event pinned "stalled" on
+    // screen until the session was replaced. A state has both edges by
+    // construction.
+    const stalled = !paused && sawAudio && deps.presenter.queued === 0;
+    if (stalled !== wasStalled) {
+      wasStalled = stalled;
+      if (stalled) {
+        log.warn("waiting for fields", {
+          clock: deps.audio.clockSeconds,
+          // How far the clock has run past the newest field. Useful here, as a
+          // description of a stall that has already been detected some other
+          // way; useless as the detector, which is what it used to be.
+          aheadOfNewest: Number(deps.audio.starvedBy(deps.presenter.newestPts).toFixed(2)),
+          buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
+          fedThroughMedia,
+          presented: deps.presenter.presentedCount,
+        });
+      }
+      emit(stalled ? "waiting" : "playing");
     }
 
     // A stopped clock is the one failure starvation cannot see: it measures how

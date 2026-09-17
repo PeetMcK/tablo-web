@@ -9,17 +9,21 @@ import {
 const f = (ptsSeconds: number) => ({ ptsSeconds });
 
 describe("selectFrame", () => {
-  it("presents the oldest entry that is due, and keeps the rest", () => {
-    // A tick that runs a millisecond long leaves two fields due at once.
-    // Skipping to the newest discards the other, and at 60Hz against fields
-    // every 16.68ms that happens constantly: measured at 47 presentations a
-    // second out of 59.94. Showing the oldest costs a little lateness that the
-    // next tick recovers, and nothing is thrown away.
+  it("presents the newest entry that is due, and discards what it passed", () => {
+    // This used to present the *oldest* due entry unless three had piled up,
+    // to spend a late tick on lateness rather than on a discarded field. The
+    // measurement behind that was real — 47 presentations a second out of the
+    // 59.94 offered — but it was the main thread missing animation frames, and
+    // showing a stale field on the next tick does not recover a missed one.
+    //
+    // ffplay's `video_refresh` drops a frame whenever its successor is also
+    // due, so it never shows one that has been overtaken; jsmpeg shows the
+    // newest outright.
     const queue = [f(1.0), f(1.017), f(1.033), f(1.05)];
     const { present, drop, keep } = selectFrame(queue, 1.034);
-    expect(present).toEqual(f(1.0));
-    expect(drop).toEqual([]);
-    expect(keep).toEqual([f(1.017), f(1.033), f(1.05)]);
+    expect(present).toEqual(f(1.033));
+    expect(drop).toEqual([f(1.0), f(1.017)]);
+    expect(keep).toEqual([f(1.05)]);
   });
 
   it("holds when the whole queue is still in the future", () => {
@@ -27,10 +31,10 @@ describe("selectFrame", () => {
     expect(selectFrame(queue, 1.5)).toEqual({ present: null, drop: [], keep: queue });
   });
 
-  it("skips to the newest once there is a real backlog", () => {
-    // A tab that was hidden comes back with a queue from a second ago. Past
-    // the threshold the viewer needs to see where the programme is now, not a
-    // second of history replayed at high speed.
+  it("goes straight to the present after a backlog", () => {
+    // A tab that was hidden comes back with a queue from a second ago. The
+    // viewer needs to see where the programme is now, not a second of history
+    // replayed at high speed.
     const queue = [f(1.0), f(1.017), f(1.033), f(1.05), f(5.0)];
     const { present, drop, keep } = selectFrame(queue, 5.0);
     expect(present).toEqual(f(5.0));
@@ -38,11 +42,15 @@ describe("selectFrame", () => {
     expect(keep).toEqual([]);
   });
 
-  it("tolerates a tick or two of lateness without discarding anything", () => {
-    // The jitter case, which must not cost a field.
+  it("draws exactly one field per tick while ticks keep up", () => {
+    // The ordinary case, and the one the old rule was trying to protect: at
+    // the field rate nothing is ever passed over, because only one entry is
+    // due at a time.
     const queue = [f(1.0), f(1.017), f(1.033)];
-    for (const clock of [1.0, 1.018, 1.034]) {
-      expect(selectFrame(queue, clock).drop).toEqual([]);
+    for (const [clock, expected] of [[1.0, 1.0], [1.018, 1.017], [1.034, 1.033]]) {
+      const selection = selectFrame(queue, clock);
+      expect(selection.present).toEqual(f(expected));
+      expect(selection.drop).toEqual(queue.filter((e) => e.ptsSeconds < expected));
     }
   });
 

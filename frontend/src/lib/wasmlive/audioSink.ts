@@ -71,7 +71,14 @@ export interface AudioSink {
    * as segments arrive.
    */
   readonly bufferedSeconds: number;
-  /** Seconds the clock is ahead of the newest decoded frame. */
+  /**
+   * Seconds the clock is ahead of the newest decoded frame.
+   *
+   * Diagnostic only. It was the fallback's starvation detector and was no good
+   * at it — the presenter is ticked before this is read, so an empty queue
+   * reports zero — but as a description of a stall found some other way it
+   * still says something useful.
+   */
   starvedBy(newestFramePts: number | null): number;
   /**
    * Whether the context is actually rendering.

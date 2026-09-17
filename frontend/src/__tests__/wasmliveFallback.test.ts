@@ -127,23 +127,21 @@ describe("reduceFallback", () => {
     expect(state.failed).toBeNull();
   });
 
-  it("tolerates one starvation", () => {
+  it("never gives up for running dry, however long it runs", () => {
+    // There was a starvation rule here and it has been removed. It asked how
+    // far the clock had outrun the newest queued field, but the session ticks
+    // the presenter first — which removes every field that is due — so a
+    // decoder that had genuinely fallen behind emptied the queue and read
+    // zero. What it actually detected was a stale field or two arriving after
+    // a seek, and two consecutive animation frames of that ended the session.
+    //
+    // ffplay's AV_NOSYNC_THRESHOLD of ten seconds is where it stops correcting
+    // drift, not where it quits. jsmpeg drops audio to stay live and never
+    // quits either. A rebuffer is not a decoder failure.
     let state = reduceFallback(initialFallbackState(0), { kind: "first-frame", atMs: 500 });
-    state = reduceFallback(state, { kind: "starved", atMs: 4000 });
-    expect(state.failed).toBeNull();
-  });
-
-  it("gives up on a second starvation inside the window", () => {
-    let state = reduceFallback(initialFallbackState(0), { kind: "first-frame", atMs: 500 });
-    state = reduceFallback(state, { kind: "starved", atMs: 4000 });
-    state = reduceFallback(state, { kind: "starved", atMs: 20000 });
-    expect(state.failed).toBe("repeated starvation");
-  });
-
-  it("forgets starvations that have aged out", () => {
-    let state = reduceFallback(initialFallbackState(0), { kind: "first-frame", atMs: 500 });
-    state = reduceFallback(state, { kind: "starved", atMs: 4000 });
-    state = reduceFallback(state, { kind: "starved", atMs: 90000 });
+    for (let at = 1000; at < 600000; at += 16) {
+      state = reduceFallback(state, { kind: "tick", atMs: at });
+    }
     expect(state.failed).toBeNull();
   });
 

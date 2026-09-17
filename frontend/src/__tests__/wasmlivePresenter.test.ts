@@ -74,22 +74,47 @@ describe("createPresenter", () => {
     expect(drawn).toEqual([]);
   });
 
-  it("draws the oldest due field, so a late tick costs nothing", () => {
+  it("draws the newest field whose moment has come", () => {
     // Two frames are four field presentations, and by the clock below the
-    // first two are due. Drawing the newest would discard the one before it —
-    // which at 60Hz against fields every 16.68ms is most of them.
+    // first three are due. The viewer must see where the programme is now.
+    //
+    // This drew the *oldest* due field until three had piled up, on the theory
+    // that a late tick should cost lateness rather than a discarded field. The
+    // measurement behind it was real — 47 presentations a second out of 59.94
+    // — but it was the main thread missing animation frames, and drawing a
+    // stale field on the next tick does not recover a missed one. At any tick
+    // rate below the field rate the picture slid up to 66ms behind the sound
+    // and then snapped back, three times a second.
+    //
+    // ffplay never shows a frame whose successor is already due; jsmpeg shows
+    // the newest.
     const { presenter, drawn, setClock } = harness(0);
     presenter.offer(decoded(1));
     presenter.offer(decoded(1 + FRAME));
     setClock(1 + FRAME);
     presenter.tick();
-    expect(drawn).toHaveLength(1);
-    expect(drawn[0].pts).toBeCloseTo(1, 5);
 
-    // And the next tick takes the next one rather than having lost it.
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0].pts).toBeCloseTo(1 + FRAME, 5);
+
+    // And what it passed is gone rather than waiting to be drawn late.
     presenter.tick();
-    expect(drawn).toHaveLength(2);
-    expect(drawn[1].pts).toBeCloseTo(1 + FRAME / 2, 5);
+    expect(drawn).toHaveLength(1);
+  });
+
+  it("stays on the clock when ticks are slower than fields", () => {
+    // Battery saver, an occluded window, a main thread under load: half the
+    // animation frames arrive. Every one of them must draw the field for
+    // *now*, not the oldest of the ones that piled up since the last.
+    const { presenter, drawn, setClock } = harness(0);
+    for (let i = 0; i < 10; i++) presenter.offer(decoded(1 + i * FRAME));
+
+    for (let tick = 1; tick <= 5; tick++) {
+      const now = 1 + tick * FRAME;      // one tick per frame, two fields due
+      setClock(now);
+      presenter.tick();
+      expect(drawn[drawn.length - 1].pts).toBeCloseTo(now, 5);
+    }
   });
 
   it("uploads a frame's planes once, not once per field", () => {

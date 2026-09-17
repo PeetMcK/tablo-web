@@ -551,6 +551,70 @@ describe("createSession", () => {
     expect(String(session.diagnostics().failureDetail)).toMatch(/nothing drawn/);
   });
 
+  it("does not end the session because the queue ran dry", async () => {
+    // The old starvation rule ended it on two consecutive animation frames —
+    // 33ms of an empty queue. A rebuffer is not a broken decoder, and the
+    // frozen-picture watchdog already covers the failure that is.
+    let nowMs = 0;
+    const { session, worker, presenter } = harness({ nowMs: () => nowMs });
+    await session.start();
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 0,
+        chunks: [{ ptsSeconds: 36, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    // Drawing, then nothing queued for a good while — but still drawing.
+    for (let i = 1; i <= 200; i++) {
+      presenter.presentedCount = i;
+      presenter.queued = 0;
+      nowMs = i * 100;
+      session.tick();
+    }
+
+    expect(session.failure).toBeNull();
+  });
+
+  it("says it is playing again once there is something to draw", async () => {
+    // `waiting` used to be emitted with no matching `playing`, and the stall
+    // overlay clears only on `playing` — so one spurious event left "stalled"
+    // on screen until the session was replaced.
+    const events: string[] = [];
+    const { session, worker, presenter } = harness();
+    await session.start();
+    session.on("waiting", () => events.push("waiting"));
+    session.on("playing", () => events.push("playing"));
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 0,
+        chunks: [{ ptsSeconds: 36, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    presenter.queued = 0;
+    session.tick();
+    session.tick();                    // still empty: one event, not two
+    presenter.queued = 40;
+    session.tick();
+
+    expect(events).toEqual(["waiting", "playing"]);
+  });
+
+  it("does not call an empty queue a stall before any audio has arrived", async () => {
+    // Startup has an empty queue by definition. Calling that a stall would put
+    // the spinner up on every channel change.
+    const events: string[] = [];
+    const { session, presenter } = harness();
+    await session.start();
+    session.on("waiting", () => events.push("waiting"));
+
+    presenter.queued = 0;
+    session.tick();
+
+    expect(events).toEqual([]);
+  });
+
   it("terminates the worker and tears down audio on destroy", async () => {
     const { session, worker, audio, presenter } = harness();
     await session.start();
