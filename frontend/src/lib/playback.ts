@@ -95,6 +95,22 @@ const EDGE_MARGIN = 0.5;
 export const LIVE_EDGE_MARGIN = 10;
 
 /**
+ * How far short of a recording's end a skip stops.
+ *
+ * Not cosmetic, and not the same question as the live margin. A seek on the
+ * MPEG-2 path rebuilds the decoder, and a rebuilt decoder needs real media to
+ * produce its first field. Landing on the last fraction of a second gives it
+ * none: measured on a 21:23 recording whose final segment begins at 1282.98,
+ * a skip clamped to within half a second fed exactly that segment, drew
+ * nothing, and after six seconds the watchdog called it a decode error and
+ * handed the whole session to the transcode.
+ *
+ * Segments run about two seconds, so this is two or three of them - enough to
+ * decode from, and close enough to the end to read as "the end".
+ */
+export const RECORDING_EDGE_MARGIN = 5;
+
+/**
  * Within this many seconds of the frontier counts as "at the live edge".
  *
  * Must stay wider than `LIVE_EDGE_MARGIN`. Go Live and a clamped forward skip

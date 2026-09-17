@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   airingAt, clampSkip, LIVE_EDGE_MARGIN, mediaAt, planSkip, programWindow,
-  readyRange, SEGMENT_SECONDS,
+  readyRange, RECORDING_EDGE_MARGIN, SEGMENT_SECONDS,
 } from "../lib/playback";
 
 describe("readyRange", () => {
@@ -304,12 +304,19 @@ describe("queuing a flurry of skips", () => {
     expect(planSkip(null, 100, 30, LIVE, M)).toBe(130);
   });
 
-  it("holds a settled end exactly, with no live margin", () => {
-    // A finished recording's end is not a frontier, so a skip may land on it.
-    const vod: [number, number] = [0, 600];
+  it("stops far enough short of a recording's end to decode from", () => {
+    // A seek on the MPEG-2 path rebuilds the decoder, and a rebuilt decoder
+    // needs real media to draw its first field. Measured on a 21:23 recording
+    // whose last segment begins at 1282.98: clamping to within half a second
+    // fed that segment alone, drew nothing, and six seconds later the watchdog
+    // called it a decode error and gave the session to the transcode - which
+    // then restarted from the beginning.
+    const vod: [number, number] = [0, 1283];
     let t: number | null = null;
-    for (let i = 0; i < 40; i++) t = planSkip(t, 0, 30, vod);
-    expect(t).toBeGreaterThan(599);
-    expect(t).toBeLessThanOrEqual(600);
+    for (let i = 0; i < 60; i++) t = planSkip(t, 0, 30, vod, RECORDING_EDGE_MARGIN);
+    expect(t).toBe(1283 - RECORDING_EDGE_MARGIN);
+    // Comfortably inside the last segment's predecessors, not on the final
+    // fraction of a second.
+    expect(1283 - t!).toBeGreaterThan(2);
   });
 });

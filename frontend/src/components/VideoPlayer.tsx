@@ -16,7 +16,8 @@ import {
 } from "../lib/debug";
 import {
   airingAt, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
-  planSkip, programWindow, readyRange, SKIP_DEBOUNCE_MS, type LiveAnchor,
+  planSkip, programWindow, readyRange, RECORDING_EDGE_MARGIN, SKIP_DEBOUNCE_MS,
+  type LiveAnchor,
 } from "../lib/playback";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 import {
@@ -879,11 +880,27 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                 vod: { durationSeconds: raw.duration, growing: raw.growing },
                 canvas: canvasRef.current,
                 onFailure: (reason) => {
-                  log.warn(`recording wasm gave up (${reason}) — using the transcode`);
+                  // Where the viewer actually was, read before anything is torn
+                  // down. `openAt` is captured at mount, so handing the
+                  // transcode that would restart a recording from wherever this
+                  // session *opened* - which is zero unless it was resumed, and
+                  // is how a failure twenty-one minutes in came back as the
+                  // first frame. The hand-off is meant to cost a rebuffer, not
+                  // the viewer's place.
+                  const at = surfaceRef.current?.currentTime ?? 0;
+                  log.warn(`recording wasm gave up (${reason}) — using the transcode`, {
+                    resumingAt: fmt(at),
+                  });
                   api.stopStream(raw.session_id).catch(() => {});
                   setUsingWasm(false);
                   void api.watchRecording(current.recording.object_id)
-                    .then((t) => { if (!cancelled) openSurface(t.stream_url); })
+                    .then((t) => {
+                      if (cancelled) return;
+                      openSurface(t.stream_url);
+                      // After the attach: the element has no duration yet, so
+                      // a seek before this is dropped on the floor.
+                      if (at > 0) surfaceRef.current?.seek(at);
+                    })
                     .catch(() => {});
                 },
               });
@@ -1175,7 +1192,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // round starts from where it actually landed.
     const target = planSkip(
       skipTargetRef.current, from, delta, range,
-      isLive ? LIVE_EDGE_MARGIN : undefined,
+      isLive ? LIVE_EDGE_MARGIN : RECORDING_EDGE_MARGIN,
     );
     // Pressed into a clamped edge: nothing to queue and nothing to redraw.
     if (target === skipTargetRef.current) return;
