@@ -70,4 +70,26 @@ describe("starvedBy", () => {
     notePts(state, 10);
     expect(starvedBy(state, null)).toBe(0);
   });
+
+  it("a seek clears the clock, so it anchors again where playback lands", () => {
+    // The clock belongs to where playback was. Left counting from the original
+    // first timestamp while the decoder emits the new position's, a rewind puts
+    // the playhead ten seconds ahead of every frame arriving: `starvedBy`
+    // reports the size of the seek, the starvation rule fires twice, and the
+    // channel goes back to the transcode on the first press of Back 10s.
+    const state = createSinkState(48000);
+    notePts(state, 100);
+    onSamplesPlayed(state, 96000);            // clock = 102
+    expect(sinkClockSeconds(state)).toBeCloseTo(102);
+
+    // What flush does to the accounting.
+    state.firstPtsSeconds = null;
+    state.samplesPlayed = 0;
+    expect(sinkClockSeconds(state)).toBeNull();
+
+    // Rewound ten seconds: the next chunk anchors there, not at 102.
+    notePts(state, 92);
+    expect(sinkClockSeconds(state)).toBeCloseTo(92);
+    expect(starvedBy(state, 92)).toBe(0);
+  });
 });

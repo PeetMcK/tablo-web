@@ -26,6 +26,16 @@ export type FromWorker =
    */
   | { type: "booted" }
   | { type: "opened" }
+  /**
+   * The decoder has been torn down and rebuilt, and everything the page was
+   * sent before this belongs to where playback was.
+   *
+   * Messages are handled in order, so this is a watershed: frames and audio
+   * posted before it came from the old position. Without it the page cannot
+   * tell them apart, and a seek re-anchors its clock on whatever stale audio
+   * happens to land after the flush.
+   */
+  | { type: "reset" }
   | { type: "video"; frames: DecodedVideoFrame[] }
   | { type: "audio"; chunks: DecodedAudioChunk[] }
   | { type: "stats"; stats: DecoderStats }
@@ -85,6 +95,7 @@ export function createWorkerHandler(
 
         case "reset":
           await decoder?.reset();
+          post({ type: "reset" }, []);
           return;
 
         case "close":

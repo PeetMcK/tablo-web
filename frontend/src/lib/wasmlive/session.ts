@@ -224,6 +224,8 @@ export function createSession(deps: SessionDeps): LiveSession {
   let workerBooted = false;
   /** Whether any audio has ever arrived, which separates startup from a stall. */
   let sawAudio = false;
+  /** Set from a seek until the worker confirms the decoder was rebuilt. */
+  let awaitingReset = false;
   /** For the frozen-picture watchdog, which starvation cannot detect. */
   let lastPresentedCount = 0;
   let lastProgressAtMs = 0;
@@ -245,6 +247,17 @@ export function createSession(deps: SessionDeps): LiveSession {
 
   deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const message = event.data;
+    // Everything in flight when a seek was issued belongs to where playback
+    // was. Audio especially: it anchors the clock, so one stale chunk landing
+    // after the flush puts the playhead back at the old position while frames
+    // arrive from the new one. Measured on a press of Back 10s: "starved by
+    // 12.32s" twice in the same millisecond, and the channel handed back to
+    // the transcode before a single new frame was drawn.
+    if (awaitingReset && message.type !== "reset") return;
+    if (message.type === "reset") {
+      awaitingReset = false;
+      return;
+    }
     if (message.type === "video") {
       for (const frame of message.frames as DecodedVideoFrame[]) deps.presenter.offer(frame);
       return;
@@ -441,7 +454,20 @@ export function createSession(deps: SessionDeps): LiveSession {
 
     fallback = reduceFallback(fallback, { kind: "tick", atMs: nowMs });
 
-    if (!paused && deps.audio.starvedBy(deps.presenter.newestPts) > STARVED_SECONDS) {
+    const starvedBy = deps.audio.starvedBy(deps.presenter.newestPts);
+    if (!paused && starvedBy > STARVED_SECONDS) {
+      // Logged per event, not only when the second one gives up. Two of these
+      // inside thirty seconds ends the session, so which two they were is the
+      // whole question, and the failure line alone never said.
+      log.warn(`starved by ${starvedBy.toFixed(2)}s`, {
+        clock: deps.audio.clockSeconds,
+        newestPts: deps.presenter.newestPts,
+        oldestPts: deps.presenter.oldestPts,
+        queued: deps.presenter.queued,
+        buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
+        fedThroughMedia,
+        presented: deps.presenter.presentedCount,
+      });
       fallback = reduceFallback(fallback, { kind: "starved", atMs: nowMs });
       emit("waiting");
     }
@@ -451,7 +477,14 @@ export function createSession(deps: SessionDeps): LiveSession {
     // never outruns anything. A session wedged at buffered zero with a full
     // queue therefore sat there indefinitely, showing a still picture, with
     // nothing to hand the channel back to the transcode.
-    if (!paused && deps.presenter.presentedCount > 0) {
+    if (paused) {
+      // A pause is not a freeze, and the difference is the whole point of the
+      // watchdog. Held rather than merely skipped: leaving the mark where it
+      // was means the first tick after resuming looks back over however long
+      // the viewer sat paused and calls it a stall, which fell the session
+      // back to the transcode on every resume more than six seconds later.
+      lastProgressAtMs = nowMs;
+    } else if (deps.presenter.presentedCount > 0) {
       if (deps.presenter.presentedCount !== lastPresentedCount) {
         lastPresentedCount = deps.presenter.presentedCount;
         lastProgressAtMs = nowMs;
@@ -503,6 +536,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       ptsOffset = null;
       anchorMedia = null;
       fedThroughMedia = null;
+      awaitingReset = true;
       post({ type: "reset" });
       deps.audio.flush();
       deps.presenter.destroy();

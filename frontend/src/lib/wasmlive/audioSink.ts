@@ -115,9 +115,20 @@ export async function createAudioSink(
     },
     get muted() { return muted; },
     flush() {
-      // What was queued belonged to where playback was, not where it is going.
-      framesSent = state.samplesPlayed;
+      // What was queued belonged to where playback was, not where it is going —
+      // and so did the clock. Dropping the audio without clearing the clock
+      // leaves it counting from the original first timestamp while the decoder
+      // emits the new position's, so after a rewind the playhead reads ten
+      // seconds ahead of every frame arriving. Measured: `starvedBy` reporting
+      // the size of the seek, the starvation rule firing twice, and the channel
+      // handed back to the transcode on the first press of Back 10s.
+      //
+      // Cleared, not re-based: the next chunk to arrive anchors it, which is
+      // the same path a fresh session takes.
+      state.firstPtsSeconds = null;
+      state.samplesPlayed = 0;
       state.anchorContextTime = null;
+      framesSent = 0;
       node.port.postMessage(null);
     },
     diagnostics: () => ({

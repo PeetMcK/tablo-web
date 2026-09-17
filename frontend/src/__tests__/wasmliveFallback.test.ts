@@ -32,9 +32,12 @@ describe("wasmLiveEligible", () => {
     });
   });
 
-  it("refuses when the flag is off", () => {
+  it("takes a broadcast when nothing has been said either way", () => {
+    // Ungated on purpose: the way to find out how this breaks under the real
+    // player is to let it take every channel a viewer opens, not only the ones
+    // someone thought to switch it on for.
     expect(wasmLiveEligible(capableWindow(CHROME), flagOff, "ota")).toEqual({
-      eligible: false, reason: "flag off",
+      eligible: true, reason: "",
     });
   });
 
@@ -42,8 +45,11 @@ describe("wasmLiveEligible", () => {
     expect(wasmLiveEligible(capableWindow(CHROME), flagKilled, "ota").eligible).toBe(false);
   });
 
-  it("refuses rather than throwing when site data is blocked", () => {
-    expect(wasmLiveEligible(capableWindow(CHROME), storageThrows, "ota").eligible).toBe(false);
+  it("does not throw when site data is blocked", () => {
+    // Private mode reads as unset, which is now on. What matters is that a
+    // storage exception cannot take the player down with it.
+    expect(() => wasmLiveEligible(capableWindow(CHROME), storageThrows, "ota")).not.toThrow();
+    expect(wasmLiveEligible(capableWindow(CHROME), storageThrows, "ota").eligible).toBe(true);
   });
 
   it("refuses OTT channels, which are already H.264", () => {

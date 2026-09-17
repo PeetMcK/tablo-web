@@ -316,6 +316,9 @@ describe("createSession", () => {
 
     session.seek(31);
     await session.poll();
+    // The worker confirms the decoder was rebuilt. Everything before this
+    // belongs to where playback was.
+    worker.onmessage?.({ data: { type: "reset" } } as MessageEvent);
     worker.onmessage?.({
       data: {
         type: "audio",
@@ -325,6 +328,41 @@ describe("createSession", () => {
     setClock(8500);
 
     expect(session.currentTime).toBe(30);
+  });
+
+  it("ignores what the worker sent before it acknowledged a seek", async () => {
+    // Messages already in flight carry the old position, and audio anchors the
+    // clock — so one stale chunk landing after the flush puts the playhead back
+    // where the viewer just left while frames arrive from where they went.
+    // Measured on a press of Back 10s: "starved by 12.32s" twice in the same
+    // millisecond, and the channel handed back to the transcode before a single
+    // new frame was drawn.
+    const { session, worker, audio, presenter } = harness();
+    await session.start();
+
+    session.seek(31);
+    audio.push.mockClear();
+    presenter.offer.mockClear();
+
+    worker.onmessage?.({
+      data: {
+        type: "audio",
+        chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+    worker.onmessage?.({ data: { type: "video", frames: [{ ptsSeconds: 9000 }] } } as MessageEvent);
+    expect(audio.push).not.toHaveBeenCalled();
+    expect(presenter.offer).not.toHaveBeenCalled();
+
+    // And takes everything after the acknowledgement.
+    worker.onmessage?.({ data: { type: "reset" } } as MessageEvent);
+    worker.onmessage?.({
+      data: {
+        type: "audio",
+        chunks: [{ ptsSeconds: 8500, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+    expect(audio.push).toHaveBeenCalledOnce();
   });
 
   it("fetches segments from the playlist's own directory", async () => {
