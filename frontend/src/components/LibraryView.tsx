@@ -58,6 +58,17 @@ function coverageOf(rec: Recording): Coverage {
   };
 }
 
+/**
+ * How far playback must move before the device is told again, in seconds.
+ *
+ * Measured from the device's own app, which writes every ~7.5 seconds of media
+ * progress rather than on a clock: nine consecutive writes each moved the
+ * position 5-9s while the wall gaps between them ran from 11.6s to 16.4s.
+ * Spacing ours by progress rather than by time is what makes a paused player
+ * write nothing at all.
+ */
+const DEVICE_POSITION_STEP = 7;
+
 /** Still being written, and so still growing under anyone watching it. */
 function isRecording(rec: Recording): boolean {
   return rec.state === "recording";
@@ -102,7 +113,26 @@ function progressTitle(rec: Recording): string {
  * per recording, where feeding it back on every tick used to reload the stream.
  */
 function resumeFor(rec: Recording): number {
-  return loadResume(resumeKey("recording", rec.object_id));
+  const ours = loadResume(resumeKey("recording", rec.object_id));
+  // The device's own position, which its app writes and ours now does too.
+  // Whichever is further in wins, and only here — once playing, our writes go
+  // to the device unconditionally, so a deliberate rewind sticks rather than
+  // being compared away.
+  //
+  // Neither side carries a timestamp: `user_info` is exactly
+  // {position, watched, protected}, so there is no honest last-writer-wins to
+  // implement. Taking the greater is right in the cases that happen — watched
+  // on the phone then opened here, or the reverse — and taking the device
+  // wholesale would have rewound eleven recordings, Saturday Night Live from
+  // 21:36 back to 33 seconds.
+  //
+  // Clamped to what exists: a position captured while the programme was still
+  // recording can outrun the media once it finishes and is cut short, and
+  // "greater wins" would otherwise enshrine it.
+  const theirs = rec.position ?? 0;
+  const furthest = Math.max(ours, theirs);
+  const limit = isRecording(rec) ? (rec.recorded_seconds ?? 0) : rec.duration;
+  return limit > 0 ? Math.min(furthest, limit) : furthest;
 }
 
 /** A position as `12:20`, or `1:02:20` past the hour. */
@@ -162,6 +192,8 @@ export function LibraryView() {
   const [initialRoute] = useState(parseRoute);
   const [restoreDone, setRestoreDone] = useState(false);
   const positionRef = useRef(0);
+  /** Position last written to the device, so writes are spaced by progress. */
+  const devicePositionRef = useRef(0);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const playingRef = useRef<Recording | null>(null);
 
@@ -283,10 +315,48 @@ export function LibraryView() {
     });
   }, [nowPlaying]);
 
+  /**
+   * Push the playhead to the device, spaced by how far playback has moved.
+   *
+   * Measured from the device's own app: it writes every ~7.5 seconds of *media*
+   * progress, not on a wall clock — nine consecutive writes moved the position
+   * 5-9s each while the wall gaps between them varied from 11.6s to 16.4s.
+   *
+   * Matching the unit is what makes this self-throttling: a paused player makes
+   * no progress and so writes nothing, and buffering or slow playback space the
+   * writes out for free. No timer to tune, and no thundering herd to jitter
+   * against, because the spacing is the viewer's own progress.
+   */
+  const writeDevicePosition = useCallback((rec: Recording, seconds: number) => {
+    if (Math.abs(seconds - devicePositionRef.current) < DEVICE_POSITION_STEP) return;
+    devicePositionRef.current = seconds;
+    api.setRecordingPosition(rec.object_id, seconds).catch(() => {
+      // A lost position is a small annoyance; the next write carries it.
+    });
+  }, []);
+
+  /**
+   * Write the playhead now, whatever the spacing rule says.
+   *
+   * Almost every session ends deliberately — closing, pausing, seeking — so
+   * these carry the common case exactly and the progress rule only has to cover
+   * the browser being killed. A seek especially: waiting for seven more seconds
+   * of progress after a discontinuity would leave the device holding a position
+   * that is wrong rather than merely stale.
+   */
+  const flushDevicePosition = useCallback(() => {
+    const rec = playingRef.current;
+    const at = Math.floor(positionRef.current);
+    if (!rec || at <= 0 || at === devicePositionRef.current) return;
+    devicePositionRef.current = at;
+    api.setRecordingPosition(rec.object_id, at).catch(() => {});
+  }, []);
+
   const closePlayer = useCallback(() => {
+    flushDevicePosition();
     setPlaying(null);
     setRestoreDone(true);
-  }, []);
+  }, [flushDevicePosition]);
 
   // Back out of a player means Escape, the same as it does on the guide side.
   useEffect(() => onRoutePop((route) => {
@@ -300,7 +370,9 @@ export function LibraryView() {
     if (whole === Math.floor(positionRef.current)) return;
     positionRef.current = whole;
     const rec = playingRef.current;
-    if (rec) saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
+    if (!rec) return;
+    saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
+    writeDevicePosition(rec, whole);
   }, []);
 
   /**

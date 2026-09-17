@@ -862,3 +862,49 @@ describe("what the artwork offers", () => {
     expect(screen.queryByRole("button", { name: /resume/i })).toBeNull();
   });
 });
+
+describe("where Resume opens", () => {
+  function renderWith(rec: Recording) {
+    vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [rec], returned: 1, total: 1, offline_only: 0,
+    });
+    return renderLibrary();
+  }
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    __resetResumeForTests();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("takes the device's position when the phone got further", async () => {
+    // Watched on the phone, opened here. Neither side carries a timestamp, so
+    // the further of the two is the only honest answer.
+    renderWith({ ...REC, object_id: 91001, state: "finished", position: 1296 });
+
+    expect(await screen.findByRole("button", { name: /resume 21:36/i })).toBeInTheDocument();
+  });
+
+  it("keeps ours when we got further", async () => {
+    saveResume("recording:91002", 2400, 12615);
+    renderWith({ ...REC, object_id: 91002, state: "finished", position: 33 });
+
+    expect(await screen.findByRole("button", { name: /resume 40:00/i })).toBeInTheDocument();
+  });
+
+  it("never resumes past what a finished recording actually holds", async () => {
+    // A position captured while it was still recording can outrun the media
+    // once the recording is cut short, and "greater wins" would enshrine it.
+    renderWith({ ...REC, object_id: 91003, state: "finished",
+                 duration: 600, position: 99999 });
+
+    expect(await screen.findByRole("button", { name: /resume 10:00/i })).toBeInTheDocument();
+  });
+});

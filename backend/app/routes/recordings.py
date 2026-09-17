@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from urllib.parse import urljoin
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, Response
 
 from .. import store
@@ -152,6 +153,46 @@ async def recordings_in_progress():
             if item.get("state") == "recording"
         ],
     }
+
+
+class PositionIn(BaseModel):
+    """Where playback has got to, in seconds from the recording's first frame."""
+
+    position: int = Field(ge=0)
+
+
+@router.post("/{object_id}/position")
+async def set_position(object_id: int, body: PositionIn):
+    """Record how far into a recording playback has got, on the device.
+
+    The device keeps this in `user_info.position` and its own app writes it, so
+    writing there rather than only to our own store is what lets a phone and a
+    browser agree about where you were.
+
+    **The write shape is not the read shape.** `{"position": N}` flat is what
+    takes; `{"user_info": {"position": N}}` - exactly what the GET hands back -
+    answers 200 and changes nothing. Verified against the device by writing 618,
+    reading it back, and restoring zero. The nested form is how this ships
+    broken without anyone noticing.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        status, _data = await state.patch_device(path, {"position": body.position})
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    if status != 200:
+        raise HTTPException(status_code=502, detail="The Tablo refused the position")
+
+    return {"object_id": object_id, "position": body.position}
 
 
 @router.post("/{object_id}/watch-vod")

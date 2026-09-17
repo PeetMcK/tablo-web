@@ -583,6 +583,18 @@ export const api = {
    * always empty. Keyed by `(channel_identifier, start)`, which is how the
    * guide addresses the very same airings.
    */
+  /**
+   * Tell the device how far into a recording playback has got.
+   *
+   * The device keeps this in `user_info.position` and its own app writes it, so
+   * writing here is what lets a phone and a browser agree about where you were.
+   */
+  setRecordingPosition: (objectId: number, position: number) =>
+    req<{ object_id: number; position: number }>(
+      `/recordings/${objectId}/position`,
+      { method: "POST", body: JSON.stringify({ position: Math.max(0, Math.floor(position)) }) },
+    ),
+
   inProgressRecordings: () =>
     req<{ recordings: InProgressRecording[] }>("/recordings/in-progress"),
 

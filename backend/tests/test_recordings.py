@@ -1218,3 +1218,47 @@ def test_in_progress_is_empty_rather_than_absent(monkeypatch):
 
     assert r.status_code == 200
     assert r.json() == {"recordings": []}
+
+
+# ---------------------------------------------------------------------------
+# Playback position, written back to the device
+# ---------------------------------------------------------------------------
+
+def _device_accepting_patch(monkeypatch):
+    """Capture what gets PATCHed, without a device."""
+    from app.routes import recordings as rec
+    sent: list[tuple[str, dict]] = []
+
+    async def patch_device(path, payload):
+        sent.append((path, payload))
+        return 200, {"user_info": {"position": payload.get("position", 0)}}
+
+    async def resolve(_oid):
+        return "/recordings/series/episodes/86113", 3600
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "patch_device", patch_device)
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    return sent
+
+
+def test_position_is_written_to_the_device_in_the_flat_shape(monkeypatch):
+    """The shape is not the one the GET returns, and the wrong one is silent.
+
+    Verified against the device: {"position": 618} takes, while
+    {"user_info": {"position": 618}} - exactly what the read hands back -
+    answers 200 and changes nothing. That is how this ships broken unnoticed.
+    """
+    sent = _device_accepting_patch(monkeypatch)
+
+    r = client.post("/api/recordings/86113/position", json={"position": 618})
+
+    assert r.status_code == 200
+    assert sent == [("/recordings/series/episodes/86113", {"position": 618})]
+
+
+def test_a_negative_position_is_refused(monkeypatch):
+    sent = _device_accepting_patch(monkeypatch)
+    assert client.post("/api/recordings/86113/position",
+                       json={"position": -5}).status_code == 422
+    assert sent == []
