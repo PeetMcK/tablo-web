@@ -13,7 +13,7 @@ import type { DecodedAudioChunk } from "./types";
 export type SinkState = AudioClockState;
 
 export function createSinkState(sampleRate: number): SinkState {
-  return { firstPtsSeconds: null, samplesPlayed: 0, sampleRate };
+  return { firstPtsSeconds: null, samplesPlayed: 0, sampleRate, anchorContextTime: null };
 }
 
 /** The first chunk sets where the clock begins; later ones do not move it. */
@@ -21,8 +21,15 @@ export function notePts(state: SinkState, ptsSeconds: number): void {
   if (state.firstPtsSeconds === null) state.firstPtsSeconds = ptsSeconds;
 }
 
-export function onSamplesPlayed(state: SinkState, framesPlayed: number): void {
+export function onSamplesPlayed(
+  state: SinkState,
+  framesPlayed: number,
+  contextTime?: number,
+): void {
   state.samplesPlayed += framesPlayed;
+  // Re-anchored on every report, so interpolation between them corrects
+  // rather than accumulates.
+  if (contextTime !== undefined) state.anchorContextTime = contextTime;
 }
 
 export const sinkClockSeconds = audioClockSeconds;
@@ -82,7 +89,7 @@ export async function createAudioSink(
 
   node.port.onmessage = (event: MessageEvent<number | { calls: number; queued: number }>) => {
     if (typeof event.data === "number") {
-      onSamplesPlayed(state, event.data);
+      onSamplesPlayed(state, event.data, context.currentTime);
       return;
     }
     heartbeat = event.data;
@@ -99,8 +106,9 @@ export async function createAudioSink(
     get bufferedSeconds() {
       return Math.max(0, (framesSent - state.samplesPlayed) / state.sampleRate);
     },
-    get clockSeconds() { return sinkClockSeconds(state); },
-    starvedBy: (newestFramePts: number | null) => starvedBy(state, newestFramePts),
+    get clockSeconds() { return sinkClockSeconds(state, context.currentTime); },
+    starvedBy: (newestFramePts: number | null) =>
+      starvedBy(state, newestFramePts, context.currentTime),
     setMuted(next: boolean) {
       muted = next;
       gain.gain.value = next ? 0 : 1;
@@ -109,6 +117,7 @@ export async function createAudioSink(
     flush() {
       // What was queued belonged to where playback was, not where it is going.
       framesSent = state.samplesPlayed;
+      state.anchorContextTime = null;
       node.port.postMessage(null);
     },
     diagnostics: () => ({
@@ -122,7 +131,7 @@ export async function createAudioSink(
       bufferedSeconds: Math.round(
         Math.max(0, (framesSent - state.samplesPlayed) / state.sampleRate) * 10,
       ) / 10,
-      clockSeconds: sinkClockSeconds(state),
+      clockSeconds: sinkClockSeconds(state, context.currentTime),
     }),
     resume: () => context.resume(),
     suspend: () => context.suspend(),

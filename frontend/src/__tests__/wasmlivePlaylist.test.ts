@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 
-import { parseMediaPlaylist, playlistWindow, segmentAt } from "../lib/wasmlive/playlist";
+import {
+  parseMediaPlaylist, playlistWindow, segmentAt, startNearEdge,
+} from "../lib/wasmlive/playlist";
 
 // The session began at 20:00:00; the window now starts 30s into it.
 const ORIGIN = Date.parse("2026-09-16T20:00:00Z");
@@ -80,5 +82,44 @@ describe("segmentAt", () => {
 
   it("has nothing when the playlist is empty", () => {
     expect(segmentAt(parseMediaPlaylist("#EXTM3U\n"), ORIGIN, 10)).toBeNull();
+  });
+});
+
+describe("startNearEdge", () => {
+  const playlist = (durations: number[], mediaSequence = 0) => ({
+    targetDuration: 2,
+    mediaSequence,
+    programDateTimeMs: null,
+    segments: durations.map((duration, i) => ({ uri: `${i}.ts`, duration })),
+  });
+
+  it("counts back from the newest segment, not from the window's start", () => {
+    // A primed ring holds the device's whole backlog, fetched in one go, so
+    // its segments all carry nearly the same timestamp and forty seconds of
+    // media look like a moment. Anything derived from those stamps puts the
+    // live edge in the wrong place: measured at a 0:01-1:20 window that began
+    // playback at 0:55, twenty-five seconds late, with every fresh session on
+    // a channel replaying the same content — live TV behaving like a DVR.
+    const at = startNearEdge(playlist(Array(30).fill(1.5)), 3);
+    expect(at).not.toBeNull();
+    expect(at!.index).toBe(28);
+  });
+
+  it("gives an absolute sequence, which survives the window sliding", () => {
+    expect(startNearEdge(playlist(Array(10).fill(1.5), 100), 3)!.sequence).toBe(108);
+  });
+
+  it("never asks for more than the ring holds", () => {
+    const at = startNearEdge(playlist([1.5, 1.5]), 3600);
+    expect(at!.index).toBe(0);
+    expect(at!.sequence).toBe(0);
+  });
+
+  it("takes the only segment there is", () => {
+    expect(startNearEdge(playlist([1.5]), 3)!.index).toBe(0);
+  });
+
+  it("has nothing to offer for an empty playlist", () => {
+    expect(startNearEdge(playlist([]), 3)).toBeNull();
   });
 });

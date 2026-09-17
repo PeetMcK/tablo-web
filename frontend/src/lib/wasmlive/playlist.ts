@@ -93,3 +93,35 @@ export function segmentAt(
   }
   return null;
 }
+
+/**
+ * The first segment to take when starting near the live edge.
+ *
+ * Counted back from the newest segment by duration, deliberately, rather than
+ * looked up by media time. The ring dates its segments when it fetched them,
+ * and a primed session fetches the device's whole backlog in one go — so forty
+ * seconds of media arrive carrying almost the same timestamp, and a media-time
+ * target computed from those stamps lands far behind the live edge. Measured:
+ * a window of 0:01-1:20 starting playback at 0:55, twenty-five seconds late,
+ * and every fresh session on a channel replaying the same content.
+ *
+ * Segment durations are the device's own and need no such interpretation.
+ */
+export function startNearEdge(
+  playlist: MediaPlaylist,
+  behindSeconds: number,
+): SegmentLocation | null {
+  const { segments } = playlist;
+  if (!segments.length) return null;
+
+  let index = segments.length - 1;
+  let behind = segments[index].duration;
+  while (index > 0 && behind + segments[index - 1].duration <= behindSeconds) {
+    index -= 1;
+    behind += segments[index].duration;
+  }
+
+  let startSeconds = 0;
+  for (let i = 0; i < index; i++) startSeconds += segments[i].duration;
+  return { index, startSeconds, sequence: playlist.mediaSequence + index };
+}

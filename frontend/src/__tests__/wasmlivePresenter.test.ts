@@ -74,14 +74,22 @@ describe("createPresenter", () => {
     expect(drawn).toEqual([]);
   });
 
-  it("draws the newest due field, skipping what it passed", () => {
+  it("draws the oldest due field, so a late tick costs nothing", () => {
+    // Two frames are four field presentations, and by the clock below the
+    // first two are due. Drawing the newest would discard the one before it —
+    // which at 60Hz against fields every 16.68ms is most of them.
     const { presenter, drawn, setClock } = harness(0);
     presenter.offer(decoded(1));
     presenter.offer(decoded(1 + FRAME));
     setClock(1 + FRAME);
     presenter.tick();
     expect(drawn).toHaveLength(1);
-    expect(drawn[0].pts).toBeCloseTo(1 + FRAME, 5);
+    expect(drawn[0].pts).toBeCloseTo(1, 5);
+
+    // And the next tick takes the next one rather than having lost it.
+    presenter.tick();
+    expect(drawn).toHaveLength(2);
+    expect(drawn[1].pts).toBeCloseTo(1 + FRAME / 2, 5);
   });
 
   it("uploads a frame's planes once, not once per field", () => {

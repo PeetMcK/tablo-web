@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { createSession } from "../lib/wasmlive/session";
+import {
+  createSession, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS,
+} from "../lib/wasmlive/session";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
 import type { SessionDeps } from "../lib/wasmlive/session";
 
@@ -162,22 +164,45 @@ describe("pacing", () => {
     expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(before);
   });
 
-  it("keeps fetching when the clock has stalled but the buffer is empty", async () => {
-    // The deadlock the live run hit: audio ran dry, so the clock stopped, so
-    // nothing was fetched, so audio never came back. Buffer depth breaks it,
-    // because it falls to zero rather than freezing.
-    let text = DEEP_PLAYLIST;
-    const h = harness({ fetchText: async () => text });
+  it("fetches past the lookahead when the clock has stalled and the buffer is empty", async () => {
+    // The deadlock the first live run hit: audio ran dry, so the clock
+    // stopped, so nothing was fetched, so audio never came back. Buffer depth
+    // breaks it, because it falls to zero rather than freezing.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
     h.setClock(null);
     h.setBuffered(0);
     await h.session.start();
-    const before = h.fetched.filter((u) => u.endsWith(".ts")).length;
 
-    // The ring gains a segment, as it does every second and a half.
-    text = DEEP_PLAYLIST.replace(/\n$/, "\n#EXTINF:1.500,\n00040.ts\n");
-    await h.session.poll();
+    // More than the ordinary lookahead of 1.25s, which at 1.5s a segment is
+    // one; enough audio to get the clock moving again.
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(1);
+  });
 
-    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(before);
+  it("asks for more media more often than playback consumes it", async () => {
+    // These two are a pair, and nothing else makes them one. Polling used to
+    // run at half the playlist's target duration - 1.5s for this device's ring
+    // - against a lookahead of 1.25s, so every cycle fed a quarter of a second
+    // less than playback ate and the queue drained to empty between polls.
+    expect(POLL_INTERVAL_MS / 1000).toBeLessThan(LOOKAHEAD_SECONDS);
+  });
+
+  it("does not swallow the ring while the buffer is empty", async () => {
+    // The starvation escape used to bypass pacing outright rather than widen
+    // it, and at startup the buffer is empty by definition — so the first poll
+    // fed the whole primed window in one pass. The audio sink keeps everything
+    // it is given; the field queue can only hold a couple of seconds and
+    // refused the rest, so video ran dry and never recovered while audio
+    // played on. Measured on the device at 5.7s buffered against a field queue
+    // running a second behind.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(0);
+    await h.session.start();
+
+    const fetched = h.fetched.filter((u) => u.endsWith(".ts")).length;
+    // DEEP_PLAYLIST is far longer than the starved lookahead of 2s allows.
+    expect(fetched).toBeLessThanOrEqual(3);
+    expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(fetched);
   });
 });
 

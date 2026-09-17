@@ -8,9 +8,10 @@
  * nothing else.
  */
 
+import { log } from "../debug";
 import { initialFallbackState, reduceFallback } from "./fallback";
 import type { FallbackState } from "./fallback";
-import { parseMediaPlaylist, playlistWindow, segmentAt } from "./playlist";
+import { parseMediaPlaylist, playlistWindow, segmentAt, startNearEdge } from "./playlist";
 import type { MediaPlaylist } from "./playlist";
 import type { AudioSink } from "./audioSink";
 import type { Presenter } from "./presenter";
@@ -26,13 +27,18 @@ const STARVED_SECONDS = 1;
  * Decode runs at about 8x realtime, so without a limit the session swallows
  * the ring's whole backlog in a few seconds and the presenter's queue fills
  * with fields the clock will not reach for a minute. Everything then evicts
- * before it can be shown. A few seconds is enough to ride out a slow fetch and
- * shallow enough that the queue holds what is about to be drawn.
+ * before it can be shown.
+ *
+ * This must stay comfortably under what the field queue holds, or the queue is
+ * permanently full and evicting in normal running. At 59.94 fields a second,
+ * 1.25s is about 75 of the 120 it can keep. Two seconds was ~120 against a cap
+ * of 96, which is how the last live run drew three fields a second. The ring
+ * is on the same host, so a second of lead is ample to ride out a fetch.
  */
-const LOOKAHEAD_SECONDS = 2;
+export const LOOKAHEAD_SECONDS = 1.25;
 
 /**
- * Below this much buffered audio, fetch regardless of the lookahead.
+ * Below this much buffered audio, fetch past the ordinary lookahead.
  *
  * The escape hatch from the deadlock: the playhead only advances while audio
  * renders, so if the buffer ever empties the clock freezes, the lookahead
@@ -42,6 +48,23 @@ const LOOKAHEAD_SECONDS = 2;
 const MIN_BUFFER_SECONDS = 0.5;
 
 /**
+ * How far ahead it may feed while the buffer is empty.
+ *
+ * Bounded, and that bound is the point. An empty buffer used to bypass pacing
+ * outright, and at startup the buffer is empty by definition — so the first
+ * poll fed the ring's entire primed window in one pass. The audio sink keeps
+ * everything it is given, so the worklet ended up holding six seconds; the
+ * field queue can only hold two and refused the rest, so video ran dry and
+ * never recovered while audio played on. Measured: 5.7s buffered, 181 chunks
+ * queued in the worklet, and video fields a second behind the clock.
+ *
+ * Enough audio to restart a frozen clock is a second or two, not a window.
+ * This must also stay under what the field queue holds, or the same starvation
+ * happens on every underrun rather than only at startup.
+ */
+const STARVED_LOOKAHEAD_SECONDS = 2;
+
+/**
  * How much of the window to start behind the live edge.
  *
  * Live means live: starting at the oldest segment the ring still holds would
@@ -49,6 +72,22 @@ const MIN_BUFFER_SECONDS = 0.5;
  * lead-in is enough to have something decoded when playback begins.
  */
 const START_BEHIND_EDGE_SECONDS = 3;
+
+/**
+ * How often to ask the ring what it has gained.
+ *
+ * Fixed, and deliberately shorter than the lookahead. This used to be half the
+ * playlist's target duration, which for this device's ring is 1.5s — longer
+ * than the 1.25s of media the lookahead permits, so every cycle fed a quarter
+ * of a second less than playback consumed and the queue drained to empty
+ * between polls. Measured: audio pinned at the 0.5s starvation floor, 13
+ * fields queued, and the clock running 4% slow from underruns.
+ *
+ * It is cheap. The ring is served by our own backend over the loopback, and
+ * the device is polled separately by the follower, so this costs nothing that
+ * a slower interval would save.
+ */
+export const POLL_INTERVAL_MS = 500;
 
 export interface SessionDeps {
   playlistUrl: string;
@@ -110,6 +149,8 @@ export function createSession(deps: SessionDeps): LiveSession {
   /** Media time the decoder has been fed up to, which paces fetching. */
   let fedThroughMedia: number | null = null;
   let fallback: FallbackState = initialFallbackState(deps.nowMs());
+  /** Whether the worker's script ran at all, as opposed to the decoder opening. */
+  let workerBooted = false;
   /** The worker's last word on what the decoder is doing. */
   let decoderStats: Record<string, unknown> | null = null;
   /**
@@ -120,6 +161,8 @@ export function createSession(deps: SessionDeps): LiveSession {
    * the message beside it.
    */
   let failureDetail: string | null = null;
+  /** So the per-frame tick reports a failure once rather than sixty times a second. */
+  let failureLogged = false;
   let paused = false;
   let stopPolling: (() => void) | null = null;
   let seekTarget: number | null = null;
@@ -140,11 +183,29 @@ export function createSession(deps: SessionDeps): LiveSession {
       for (const chunk of chunks) deps.audio.push(chunk);
       return;
     }
+    if (message.type === "booted") {
+      workerBooted = true;
+      log.wasm("worker booted");
+      return;
+    }
+    if (message.type === "opened") {
+      log.wasm("decoder opened");
+      return;
+    }
     if (message.type === "stats") {
-      decoderStats = message.stats as unknown as Record<string, unknown>;
+      const stats = message.stats;
+      // Logged on the transitions only. Every segment carries these, and a line
+      // per segment would bury the two moments that matter in a scroll of noise.
+      if (!decoderStats || (decoderStats as { opened?: boolean }).opened !== stats.opened) {
+        log.wasm(`decoder ${stats.opened ? "open" : "not open"}`, stats);
+      } else if (!(decoderStats as { videoFrames?: number }).videoFrames && stats.videoFrames) {
+        log.wasm(`first frames decoded`, stats);
+      }
+      decoderStats = stats as unknown as Record<string, unknown>;
       return;
     }
     if (message.type === "error") {
+      log.warn(`wasm decoder error: ${message.message}`, decoderStats);
       failureDetail = message.message;
       fallback = reduceFallback(fallback, { kind: "decode-error" });
       emit("error");
@@ -157,6 +218,7 @@ export function createSession(deps: SessionDeps): LiveSession {
   // wasm asset 404s lands here and nowhere else.
   deps.worker.onerror = (event: ErrorEvent | Event) => {
     failureDetail = (event as ErrorEvent).message || "worker failed to load";
+    log.warn(`wasm worker error: ${failureDetail}`, { workerBooted });
     fallback = reduceFallback(fallback, { kind: "init-failed" });
     emit("error");
   };
@@ -173,7 +235,7 @@ export function createSession(deps: SessionDeps): LiveSession {
   const poll = async () => {
     const text = await deps.fetchText(deps.playlistUrl);
     playlist = parseMediaPlaylist(text);
-    const { start: windowStart, end: windowEnd } = playlistWindow(playlist, deps.originMs);
+    const { start: windowStart } = playlistWindow(playlist, deps.originMs);
 
     // After a seek, start again from the segment covering the target.
     if (seekTarget !== null) {
@@ -181,10 +243,13 @@ export function createSession(deps: SessionDeps): LiveSession {
       takenThrough = at ? at.sequence - 1 : -1;
       seekTarget = null;
     } else if (takenThrough < 0) {
-      // Opening: begin near the live edge rather than at the oldest thing the
-      // ring still holds.
-      const target = Math.max(windowStart, windowEnd - START_BEHIND_EDGE_SECONDS);
-      const at = segmentAt(playlist, deps.originMs, target);
+      // Opening: begin near the live edge, counted back from the newest
+      // segment rather than looked up by media time. A primed ring fetches the
+      // device's whole backlog at once, so its timestamps compress forty
+      // seconds of media into a moment and a media-time target lands far
+      // behind live - which had every fresh session replaying the same content
+      // twenty-five seconds late.
+      const at = startNearEdge(playlist, START_BEHIND_EDGE_SECONDS);
       if (at) takenThrough = at.sequence - 1;
     }
 
@@ -206,11 +271,30 @@ export function createSession(deps: SessionDeps): LiveSession {
         // is ever fetched again.
         const clock = mediaClock() ?? anchorMedia ?? at;
         const fedAhead = fedThroughMedia === null ? 0 : fedThroughMedia - clock;
+        // Starvation widens the lookahead; it does not remove it.
         const starving = deps.audio.bufferedSeconds < MIN_BUFFER_SECONDS;
-        if (!starving && fedAhead > LOOKAHEAD_SECONDS) break;
+        const limit = starving ? STARVED_LOOKAHEAD_SECONDS : LOOKAHEAD_SECONDS;
+        if (fedAhead > limit) break;
 
         if (anchorMedia === null) anchorMedia = at;
         const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
+        log.wasm(`fed segment ${sequence}`, {
+          bytes: bytes.byteLength,
+          mediaFrom: Number(at.toFixed(2)),
+          clock: mediaClock() === null ? null : Number(mediaClock()!.toFixed(2)),
+          // The pacing decision itself, and the quantity it is meant to
+          // approximate. They measure the same thing - media handed over
+          // against media played - so they have to agree, and a live run where
+          // one read 1.25s while the other read 5.7s is how this was found.
+          fedAhead: Number(fedAhead.toFixed(2)),
+          buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
+          anchorMedia: anchorMedia === null ? null : Number(anchorMedia.toFixed(2)),
+          rawClock: deps.audio.clockSeconds === null
+            ? null : Number(deps.audio.clockSeconds.toFixed(2)),
+          ptsOffset: ptsOffset === null ? null : Number(ptsOffset.toFixed(3)),
+          queuedFields: deps.presenter.queued,
+          presented: deps.presenter.presentedCount,
+        });
         post({ type: "segment", bytes }, [bytes]);
         takenThrough = sequence;
         fedThroughMedia = at + duration;
@@ -262,20 +346,30 @@ export function createSession(deps: SessionDeps): LiveSession {
       fallback = reduceFallback(fallback, { kind: "starved", atMs: nowMs });
       emit("waiting");
     }
+    if (fallback.failed && !failureLogged) {
+      failureLogged = true;
+      log.warn(`wasm session failed: ${fallback.failed}`, {
+        detail: failureDetail,
+        workerBooted,
+        decoder: decoderStats,
+        fedThroughMedia,
+        takenThrough,
+        presented: deps.presenter.presentedCount,
+        buffered: deps.audio.bufferedSeconds,
+      });
+    }
     if (fallback.failed) emit("error");
   };
 
   return {
     async start() {
+      log.wasm("session starting", { playlistUrl: deps.playlistUrl, originMs: deps.originMs });
       post({ type: "open" });
       // The clock only advances while audio is being rendered, so a suspended
       // context is a frozen picture rather than merely a silent one.
       void deps.audio.resume();
       await safePoll();
-      stopPolling = deps.schedule(
-        () => { void safePoll(); },
-        ((playlist?.targetDuration ?? 6) / 2) * 1000,
-      );
+      stopPolling = deps.schedule(() => { void safePoll(); }, POLL_INTERVAL_MS);
       emit("ready");
       emit("playing");
     },
@@ -337,8 +431,10 @@ export function createSession(deps: SessionDeps): LiveSession {
       takenThrough,
       failure: fallback.failed,
       failureDetail,
+      workerBooted,
       // What the decoder itself says. Null here means the worker has never
-      // answered — a different problem from a decoder that answered badly.
+      // answered — a different problem from a decoder that answered badly,
+      // and `workerBooted` says which.
       decoder: decoderStats,
     }),
 
