@@ -59,6 +59,16 @@ class SegmentRing:
     def holds(self, name: str) -> bool:
         return any(s.name == name for s in self.segments)
 
+    @property
+    def held_seconds(self) -> float:
+        """How much media the window currently holds.
+
+        What priming waits on: a browser handed a ring holding one segment has
+        to demux a live stream from a trickle, which is the only condition the
+        WASM path has ever failed under.
+        """
+        return sum(s.duration for s in self.segments)
+
     def window(self) -> tuple[float, float]:
         """The held window in media seconds since ``origin``."""
         if not self.segments:

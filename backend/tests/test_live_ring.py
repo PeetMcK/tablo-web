@@ -101,3 +101,14 @@ def test_holds_returns_a_name_it_published():
     assert not ring.holds("00009.ts")
     ring.trim(max_seconds=6.0)
     assert not ring.holds("00000.ts")
+
+
+def test_held_seconds_is_zero_for_an_empty_ring():
+    assert SegmentRing(origin=T0).held_seconds == 0.0
+
+
+def test_held_seconds_sums_what_the_window_holds():
+    ring = SegmentRing(origin=T0)
+    ring.append(6.0, T0)
+    ring.append(1.5, T0)
+    assert ring.held_seconds == 7.5

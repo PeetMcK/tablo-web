@@ -42,6 +42,20 @@ LIVE_DVR_SECONDS = LIVE_DVR_SEGMENTS * HLS_TIME
 RAW_DIR = Path("/tmp/tablo_raw")
 RAW_DIR.mkdir(exist_ok=True)
 
+# How much media the ring must hold before the browser is told the session
+# exists, and how long that may take.
+#
+# MPEG-TS has no header: it describes itself periodically, so opening a live
+# stream means listening until the tables come round. A browser handed a ring
+# holding one segment gets a trickle - a segment per poll - and that is the one
+# condition the WASM path has never reliably started under. Filling the ring
+# first makes a cold channel open under the conditions a warm one works under.
+#
+# The wait is not new. The transcode path already waits up to twelve seconds
+# for its first playlist segment behind the same spinner.
+RING_PRIME_SECONDS = float(os.environ.get("RING_PRIME_SECONDS", "8"))
+RING_PRIME_TIMEOUT_SECONDS = float(os.environ.get("RING_PRIME_TIMEOUT_SECONDS", "15"))
+
 # A session id is hex, and a raw segment is the five-digit name the ring gave
 # it. Both are matched rather than sanitised: anything else is not ours.
 _SESSION_RE = re.compile(r"^[0-9a-f]{8,64}$")
@@ -73,6 +87,47 @@ def _startup_cleanup():
             shutil.rmtree(d)
         except Exception:
             pass
+    sweep_stale_raw_dirs()
+
+
+def sweep_stale_raw_dirs(idle_seconds: float = 60.0, now: float | None = None) -> list[str]:
+    """Delete ring directories nothing is writing to any more.
+
+    A ring session that ends without its DELETE - a crash, a kill -9 - leaves
+    its segments behind, and an hour of 1080i is gigabytes.
+
+    Only directories untouched for ``idle_seconds`` go. A live follower writes
+    a segment every couple of seconds, so this cannot take the ring out from
+    under a *different* backend sharing the directory. That is not a
+    hypothetical: running a second backend beside the user's own is the
+    documented way to test this path, and the transcode cleanup above already
+    kills the other one's FFmpeg for exactly the want of this check.
+    """
+    import time
+
+    cutoff = (time.time() if now is None else now) - idle_seconds
+    removed: list[str] = []
+    try:
+        entries = list(RAW_DIR.iterdir())
+    except Exception:
+        return removed
+
+    for directory in entries:
+        if not directory.is_dir() or directory.name in ring_sessions:
+            continue
+        try:
+            newest = max(
+                (f.stat().st_mtime for f in directory.iterdir()),
+                default=directory.stat().st_mtime,
+            )
+            if newest >= cutoff:
+                continue
+            shutil.rmtree(directory)
+            removed.append(directory.name)
+        except Exception:
+            pass
+    return removed
+
 
 _startup_cleanup()
 
@@ -175,15 +230,7 @@ async def start_stream(
         await start_transcoder(session_id, sess.stream.playlist_url)
         stream_url = f"/api/transcoded/{session_id}/playlist.m3u8"
     elif resolved == "ring":
-        ring = SegmentRing(origin=started_at)
-        follower = RingFollower(
-            ring=ring,
-            directory=RAW_DIR / session_id,
-            playlist_url=sess.stream.playlist_url,
-            fetch=_fetch_bytes,
-            max_seconds=float(LIVE_DVR_SECONDS),
-        )
-        ring_sessions[session_id] = (ring, follower, asyncio.create_task(follower.run()))
+        await _start_ring_session(session_id, sess.stream.playlist_url, started_at)
         stream_url = f"/api/raw/{session_id}/playlist.m3u8"
     else:
         stream_url = f"/api/hls/{session_id}/playlist.m3u8"
@@ -198,6 +245,46 @@ async def start_stream(
         "started_at": started_at.isoformat(),
         "transcoded": resolved == "transcode",
     }
+
+
+async def _start_ring_session(
+    session_id: str,
+    playlist_url: str,
+    started_at: datetime,
+    fetch=None,
+    prime_seconds: float | None = None,
+    prime_timeout: float | None = None,
+    interval: float | None = None,
+) -> SegmentRing | None:
+    """Open a ring session and fill it before handing it to the browser.
+
+    Returns the ring, or ``None`` if the session was stopped while priming.
+    """
+    ring = SegmentRing(origin=started_at)
+    follower = RingFollower(
+        ring=ring,
+        directory=RAW_DIR / session_id,
+        playlist_url=playlist_url,
+        fetch=fetch or _fetch_bytes,
+        max_seconds=float(LIVE_DVR_SECONDS),
+        **({"interval": interval} if interval is not None else {}),
+    )
+    # Registered before the wait, not after: a player closed mid-open calls
+    # DELETE, and there has to be something there for it to remove.
+    ring_sessions[session_id] = (ring, follower, None)
+
+    await follower.prime(
+        RING_PRIME_SECONDS if prime_seconds is None else prime_seconds,
+        RING_PRIME_TIMEOUT_SECONDS if prime_timeout is None else prime_timeout,
+    )
+
+    # Stopped while we were filling. Starting the poller now would hold the
+    # tuner for the life of the process with nobody watching.
+    if session_id not in ring_sessions:
+        return None
+
+    ring_sessions[session_id] = (ring, follower, asyncio.create_task(follower.run()))
+    return ring
 
 
 async def _fetch_bytes(url: str, byte_range: tuple[int, int] | None = None) -> bytes:

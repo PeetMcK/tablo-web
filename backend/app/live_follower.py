@@ -171,6 +171,41 @@ class RingFollower:
             (self.directory / evicted.name).unlink(missing_ok=True)
         return written
 
+    async def prime(self, seconds: float, timeout: float) -> float:
+        """Poll until the ring holds ``seconds`` of media. Returns what it holds.
+
+        The browser's demuxer has no header to read: MPEG-TS describes itself
+        periodically, so opening a live stream means listening until the tables
+        come round. Handed a ring holding one segment it gets a trickle - a
+        segment every poll interval - and that is the only condition the WASM
+        path has ever failed to start under. Filling the ring first makes every
+        channel open under the conditions a warm one already works under.
+
+        The wait is real but it is not new: the transcode path budgets twelve
+        seconds for its first playlist segment, and the UI already shows a
+        spinner for it.
+
+        Returns rather than raises on timeout. A device that will not fill is
+        still worth handing to the client, which falls back on its own.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        while self.ring.held_seconds < seconds:
+            try:
+                await self.poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Same reasoning as `run`: a transient device failure is not the
+                # end of the session, and the deadline below bounds the retrying.
+                pass
+            if self.ring.held_seconds >= seconds or loop.time() >= deadline:
+                break
+            await asyncio.sleep(self.interval)
+
+        return self.ring.held_seconds
+
     async def run(self) -> None:
         while True:
             try:

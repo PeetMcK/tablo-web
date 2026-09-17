@@ -107,3 +107,118 @@ def test_start_stream_rejects_an_unknown_mode():
     resp = client.post("/api/stream/some-channel-id?mode=nonsense")
     # Rejected on the mode or on auth, but never accepted.
     assert resp.status_code in (401, 422)
+
+
+# ---------------------------------------------------------------------------
+# Starting a ring session primes it before the browser hears about it
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+
+class _Trickle:
+    """One more segment per poll, like a channel that has just been tuned."""
+
+    def __init__(self, duration=1.5):
+        self.duration = duration
+        self.polls = 0
+
+    async def fetch(self, url, byte_range=None):
+        if url.endswith(".m3u8"):
+            self.polls += 1
+            lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
+            for i in range(self.polls):
+                lines += [f"#EXTINF:{self.duration},", f"seg{i}.ts"]
+            return ("\n".join(lines) + "\n").encode()
+        return b"TS"
+
+
+def test_starting_a_ring_session_fills_it_before_returning(tmp_path):
+    _clear()
+    stream_routes.RAW_DIR = tmp_path
+    device = _Trickle()
+
+    async def drive():
+        return await stream_routes._start_ring_session(
+            VALID_HEX, "http://device/live/playlist.m3u8", T0,
+            fetch=device.fetch, prime_seconds=6.0, prime_timeout=5.0, interval=0.0,
+        )
+
+    try:
+        ring = asyncio.run(drive())
+        # The browser is handed a window it can demux, not a single segment.
+        assert ring is not None and ring.held_seconds >= 6.0
+    finally:
+        _cancel_ring_tasks()
+        _clear()
+
+
+def test_a_session_stopped_while_priming_does_not_leave_a_follower_running(tmp_path):
+    """Closing the player mid-open must not leak a tuner for the whole window."""
+    _clear()
+    stream_routes.RAW_DIR = tmp_path
+    device = _Trickle()
+
+    async def drive():
+        task = asyncio.create_task(stream_routes._start_ring_session(
+            VALID_HEX, "http://device/live/playlist.m3u8", T0,
+            fetch=device.fetch, prime_seconds=600.0, prime_timeout=1.0, interval=0.01,
+        ))
+        await asyncio.sleep(0.05)
+        stream_routes.ring_sessions.pop(VALID_HEX, None)   # what stop_stream does
+        return await task
+
+    try:
+        assert asyncio.run(drive()) is None
+        assert VALID_HEX not in stream_routes.ring_sessions
+    finally:
+        _cancel_ring_tasks()
+        _clear()
+
+
+def _cancel_ring_tasks():
+    for _ring, _follower, task in stream_routes.ring_sessions.values():
+        if task is not None:
+            task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Orphaned ring directories
+# ---------------------------------------------------------------------------
+
+def test_sweep_removes_a_ring_directory_nothing_is_writing(tmp_path):
+    _clear()
+    stream_routes.RAW_DIR = tmp_path
+    stale = tmp_path / "deadbeef00000000"
+    stale.mkdir()
+    (stale / "00000.ts").write_bytes(b"TS")
+
+    assert stream_routes.sweep_stale_raw_dirs(idle_seconds=0.0) == ["deadbeef00000000"]
+    assert not stale.exists()
+
+
+def test_sweep_leaves_a_directory_another_backend_is_still_filling(tmp_path):
+    """Two backends share this directory; one must not wipe the other's ring."""
+    _clear()
+    stream_routes.RAW_DIR = tmp_path
+    live = tmp_path / "abcdef0123456789"
+    live.mkdir()
+    (live / "00000.ts").write_bytes(b"TS")
+
+    assert stream_routes.sweep_stale_raw_dirs(idle_seconds=3600.0) == []
+    assert live.exists()
+
+
+def test_sweep_leaves_a_directory_this_backend_owns(tmp_path):
+    _clear()
+    stream_routes.RAW_DIR = tmp_path
+    owned = tmp_path / VALID_HEX
+    owned.mkdir()
+    (owned / "00000.ts").write_bytes(b"TS")
+    stream_routes.ring_sessions[VALID_HEX] = (SegmentRing(origin=T0), None, None)
+
+    try:
+        assert stream_routes.sweep_stale_raw_dirs(idle_seconds=0.0) == []
+        assert owned.exists()
+    finally:
+        _clear()

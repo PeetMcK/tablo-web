@@ -316,3 +316,90 @@ def test_run_stops_when_cancelled(tmp_path):
 
     assert asyncio.run(drive())
     assert follower.ring.segments  # it did some work before being stopped
+
+
+# ---------------------------------------------------------------------------
+# Priming: filling the ring before the browser is told the session exists
+# ---------------------------------------------------------------------------
+
+class TricklingDevice:
+    """One new segment per poll, the way a freshly tuned channel arrives."""
+
+    def __init__(self, count: int = 10, duration: float = 1.5):
+        self.count = count
+        self.duration = duration
+        self.polls = 0
+
+    async def fetch(self, url: str, byte_range=None) -> bytes:
+        if url.endswith(".m3u8"):
+            self.polls += 1
+            lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2",
+                     "#EXT-X-MEDIA-SEQUENCE:0"]
+            for i in range(min(self.polls, self.count)):
+                lines += [f"#EXTINF:{self.duration},", f"seg{i}.ts"]
+            return ("\n".join(lines) + "\n").encode()
+        return b"TS" + url.encode()
+
+
+def test_prime_waits_until_the_ring_holds_enough(tmp_path):
+    device = TricklingDevice()
+    follower = _follower(tmp_path, device)
+    follower.interval = 0.0
+
+    held = asyncio.run(follower.prime(seconds=6.0, timeout=5.0))
+
+    # Four segments of 1.5s is the first moment 6s is satisfied.
+    assert held >= 6.0
+    assert len(follower.ring.segments) == 4
+
+
+def test_prime_returns_early_rather_than_waiting_for_a_device_that_stalled(tmp_path):
+    """A device that never fills must not hold the request open for ever."""
+
+    class Stalled:
+        async def fetch(self, url: str, byte_range=None) -> bytes:
+            if url.endswith(".m3u8"):
+                return b"#EXTM3U\n"
+            return b"TS"
+
+    follower = _follower(tmp_path, Stalled())
+    follower.interval = 0.0
+
+    async def drive():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        held = await follower.prime(seconds=6.0, timeout=0.2)
+        return held, loop.time() - started
+
+    held, elapsed = asyncio.run(drive())
+    assert held == 0.0
+    assert elapsed < 2.0
+
+
+def test_prime_keeps_trying_through_a_device_error(tmp_path):
+    class Flaky(TricklingDevice):
+        async def fetch(self, url: str, byte_range=None) -> bytes:
+            if url.endswith(".m3u8") and self.polls == 1:
+                self.polls += 1
+                raise RuntimeError("device hiccup")
+            return await super().fetch(url, byte_range)
+
+    follower = _follower(tmp_path, Flaky())
+    follower.interval = 0.0
+
+    assert asyncio.run(follower.prime(seconds=3.0, timeout=5.0)) >= 3.0
+
+
+def test_prime_does_not_refetch_what_run_then_polls(tmp_path):
+    """Priming advances the same bookmark ``run`` uses, so nothing is doubled."""
+    device = TricklingDevice()
+    follower = _follower(tmp_path, device)
+    follower.interval = 0.0
+
+    asyncio.run(follower.prime(seconds=3.0, timeout=5.0))
+    before = len(follower.ring.segments)
+    asyncio.run(follower.poll_once())
+
+    names = [s.name for s in follower.ring.segments]
+    assert len(names) == len(set(names))
+    assert len(follower.ring.segments) >= before
