@@ -137,17 +137,30 @@ device is ahead and we take it; watch here, open here, ours is ahead and we
 keep it; adopting the device wholesale would have rewound eleven recordings —
 Saturday Night Live from 21:36 back to 33 seconds — and this does not.
 
-Two consequences follow from the rule rather than from any defect:
+**The comparison happens once, when deciding where Resume opens.** After that,
+playback writes our position to the device unconditionally, exactly as it writes
+to our own server — no comparing, no merging. So a deliberate rewind does stick:
+going back to ten minutes and carrying on writes ten minutes, and the higher
+value is simply overwritten. The two sides can only disagree when another client
+moved one of them, which is the case the comparison exists for.
 
-- **A deliberate rewind does not stick.** Watching to 40 minutes, going back to
-  10 and stopping leaves 40 on the device, so the next open resumes at 40. The
-  Mark unwatched toggle is the escape hatch, which is a good reason for it to
-  clear the position as well as the flag — a deliberate "start this again"
-  rather than an afterthought.
-- **It does not settle the mid-recording doubt below.** A position captured
-  while recording that is *larger* than the finished media would be enshrined
-  by "greater wins". Guard: once a recording is finished, clamp any position to
-  its `duration` and discard anything past it.
+One guard still needed: a position captured while recording can be *larger* than
+the finished media, and "greater wins" would enshrine it. Once a recording is
+finished, clamp any position to its `duration` and discard anything past it.
+
+**Write pace: every 30 seconds of continuous playback, and immediately on pause,
+on seek, and on leaving.** A small box also serving video gains nothing from
+finer granularity — 30s is ~120 writes an hour against 720 at the five-second
+cadence we use for our own server — and losing at most half a minute sits inside
+the 30-second floor `loadResume` already applies. The event writes carry the
+common case: almost every session ends deliberately, so the timer only covers
+the browser being killed. Seeks write at once because a seek is a discontinuity,
+where a throttled write would leave the device wrong rather than merely stale,
+and nothing is written at all while the position is unchanged.
+
+This matches what the phone appears to do: an early write a few seconds after
+opening, then a value that sat still at 521 for 84 seconds once playback
+stopped — write-on-stop plus a timer, not a heartbeat.
 
 The write works, and its shape is not the read's:
 
