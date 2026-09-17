@@ -150,7 +150,29 @@ describe("the player's chrome", () => {
     const titles = [...container.querySelectorAll("button")]
       .map((b) => b.getAttribute("title") ?? "")
       .filter((t) => /Mute|Unmute|picture|Fullscreen/i.test(t));
-    expect(titles).toEqual(["Mute (M)", "Picture in picture", "Fullscreen (F)"]);
+    // Every control that has a key says so. This one was the odd one out
+    // between two that did, which read as though it had no shortcut.
+    expect(titles).toEqual(["Mute (M)", "Picture in picture (P)", "Fullscreen (F)"]);
+  });
+
+  it("keeps naming the key once it is popped out", async () => {
+    // The same key closes it, so the labels that replace it carry it too —
+    // otherwise the hint disappears exactly when it is being looked for. What
+    // the tab shows while the window is out is a placeholder whose caption is
+    // the only text on the screen, so it says the key in full.
+    renderLive();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() =>
+      expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
+
+    expect(screen.getByTitle("Close picture-in-picture (P)")).toBeInTheDocument();
+    expect(screen.getByText("Close picture-in-picture (P)")).toBeInTheDocument();
+    // And the pop-out's own button, which is the one under the pointer there.
+    expect(pipDoc.body.querySelector('[title="Close picture-in-picture (P)"]'))
+      .not.toBeNull();
   });
 
   /**
@@ -185,7 +207,7 @@ describe("the player's chrome", () => {
     const { pipDoc, requestWindow } = fakePipWindow();
 
     const video = container.querySelector("video")!;
-    fireEvent.click(screen.getByTitle("Picture in picture"));
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
 
     await waitFor(() => expect(requestWindow).toHaveBeenCalledTimes(1));
     await waitFor(() =>
@@ -212,7 +234,7 @@ describe("the player's chrome", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture"));
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 
@@ -231,7 +253,7 @@ describe("the player's chrome", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture"));
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 

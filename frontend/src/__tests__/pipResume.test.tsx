@@ -89,7 +89,7 @@ describe("popping out leaves the playing element alone", () => {
     play.mockClear();
     pause.mockClear();
 
-    fireEvent.click(screen.getByTitle("Picture in picture"));
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     // Same parent, and nobody asked it to stop or to start again.
@@ -112,7 +112,7 @@ describe("popping out leaves the playing element alone", () => {
     const { pipDoc } = fakePipWindow();
     const video = container.querySelector("video")!;
 
-    fireEvent.click(screen.getByTitle("Picture in picture"));
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     // Anything that re-renders the tab's stage will do; playback does this
@@ -135,7 +135,7 @@ describe("popping out leaves the playing element alone", () => {
     const { pipDoc, close } = fakePipWindow();
     void container;
 
-    fireEvent.click(screen.getByTitle("Picture in picture"));
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     fireEvent.keyDown(window, { key: "Escape" });

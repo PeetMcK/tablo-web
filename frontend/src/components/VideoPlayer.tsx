@@ -1393,12 +1393,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             onClick={togglePictureInPicture}
             className="w-20 h-20 rounded-full glass text-player-fg flex items-center
                        justify-center hover:bg-fill transition"
-            title="Close picture-in-picture"
-            aria-label="Close picture-in-picture"
+            title="Close picture-in-picture (P)"
+            aria-label="Close picture-in-picture (P)"
           >
             <PictureInPictureExit className="w-9 h-9" aria-hidden />
           </button>
-          <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
+          {/* The key, on the one screen with room to say it plainly: this
+              placeholder is all the tab has while the window is out, so it is
+              where someone looking for the way back will read it. */}
+          <p className="text-player-fg-muted text-sm">Close picture-in-picture (P)</p>
         </div>
       )}
       <Stage view={view} pip={false} />
@@ -2004,8 +2007,14 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                   onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
                   className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
                   ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
-                  title={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
-                  aria-label={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
+                  /* Named with its key, the way Mute and Fullscreen either
+                     side of it are. `p` has been bound the whole time; this
+                     button sitting between two that advertise theirs read as
+                     though it had none. Both labels carry it, because the same
+                     key closes the window and the hint should not vanish
+                     exactly when it is in use. */
+                  title={poppedOut ? "Close picture-in-picture (P)" : "Picture in picture (P)"}
+                  aria-label={poppedOut ? "Close picture-in-picture (P)" : "Picture in picture (P)"}
                 >
                   {/* The same button either side of the pop-out, so the icon
                       carries which way it goes: the plain frame out of the
