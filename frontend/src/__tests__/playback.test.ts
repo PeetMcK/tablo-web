@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-import { airingAt, clampSkip, mediaAt, programWindow, readyRange } from "../lib/playback";
+import {
+  airingAt, clampSkip, LIVE_EDGE_MARGIN, mediaAt, programWindow, readyRange,
+  SEGMENT_SECONDS,
+} from "../lib/playback";
 
 describe("readyRange", () => {
   const cached: [number, number][] = [[0, 600], [1800, 2400]];
@@ -15,6 +18,15 @@ describe("readyRange", () => {
       .toEqual([0, 600]);
     expect(readyRange(2000, { ranges: cached, start: 0, end: 3600, whole: false }))
       .toEqual([1800, 2400]);
+  });
+
+  it("still belongs to the island whose frontier it is stalled on", () => {
+    // A forward skip parks at the last playable instant, playback rolls the
+    // remaining half-second, and the playhead comes to rest exactly on the
+    // window boundary waiting for the encoder. It has not left the island it
+    // was watching, and rewinding into it is the one move guaranteed warm.
+    expect(readyRange(600, { ranges: cached, start: 0, end: 3600, whole: false }))
+      .toEqual([0, 600]);
   });
 
   it("is a point when the playhead sits in a gap", () => {
@@ -33,8 +45,11 @@ describe("clampSkip", () => {
     // The range is half-open: 600 is the first instant that does not exist yet,
     // so landing exactly there would stall on the window being encoded.
     expect(clampSkip(592, 30, [0, 600])).toBe(599.5);
-    // At the live edge, forward stays put rather than seeking past it.
-    expect(clampSkip(600, 30, [0, 600])).toBe(599.5);
+    // Standing on the frontier already, forward genuinely stays put — it used
+    // to answer 599.5, which is to say a tap on Forward stepped backwards. The
+    // caller reads "no movement" and does not seek at all, so there is no
+    // landing on 600 to stall on.
+    expect(clampSkip(600, 30, [0, 600])).toBe(600);
   });
 
   it("will not rewind out of the ready range either", () => {
@@ -105,6 +120,106 @@ describe("airingAt", () => {
     expect(airingAt(schedule, EIGHT_PM - 1)).toBeNull();
     expect(airingAt([], EIGHT_FIFTEEN)).toBeNull();
     expect(airingAt([{ start: "whenever", duration: 60 }], EIGHT_FIFTEEN)).toBeNull();
+  });
+});
+
+describe("stalled on the encoder's frontier", () => {
+  const cached: [number, number][] = [[0, 600]];
+  const opts = { ranges: cached, start: 0, end: 3600, whole: false };
+
+  it("rewinds out of the stall instead of holding still", () => {
+    // Skipping forward near the frontier lands just inside it; half a second of
+    // playback later the playhead is on the boundary, waiting for the next
+    // 60s window to encode. A rewind from there must move.
+    const parked = clampSkip(590, 30, readyRange(590, opts));
+    expect(parked).toBe(599.5);
+    expect(clampSkip(600, -10, readyRange(600, opts))).toBe(590);
+  });
+
+  it("does not jump forward into the window being encoded", () => {
+    // Not past 600, and not backwards away from it either: the playhead is
+    // already as far on as anything that exists, so forward holds still.
+    expect(clampSkip(600, 30, readyRange(600, opts))).toBe(600);
+  });
+});
+
+describe("playing ahead of what the cache report knows", () => {
+  // The published playlist names every segment of the recording, so hls.js
+  // keeps pulling 180s ahead and the backend transcodes each cold window on
+  // demand. Playback sails past the cached island without stalling. Meanwhile
+  // `cached_ranges` only grows a whole 60s window at a time and is polled every
+  // 3s, so for most of a minute the report says the playhead is nowhere.
+  const cached: [number, number][] = [[0, 600]];
+  const buffered: [number, number][] = [[480, 790]];
+  const opts = { ranges: cached, buffered, start: 0, end: 3600, whole: false };
+
+  it("trusts the buffer, which is the only thing that knows", () => {
+    expect(readyRange(605, opts)).toEqual([0, 790]);
+  });
+
+  it("skips both ways while the report still says nothing is here", () => {
+    expect(clampSkip(605, -10, readyRange(605, opts))).toBe(595);
+    expect(clampSkip(605, 30, readyRange(605, opts))).toBe(635);
+  });
+
+  it("holds still where neither the cache nor the buffer reaches", () => {
+    expect(readyRange(2000, opts)).toEqual([2000, 2000]);
+    expect(clampSkip(2000, -10, readyRange(2000, opts))).toBe(2000);
+  });
+
+  it("leaves live alone — its whole DVR window is served from disk", () => {
+    // Narrowing live to what happens to be buffered would break the rewind
+    // that already works there.
+    expect(readyRange(605, { ...opts, whole: true })).toEqual([0, 3600]);
+  });
+});
+
+describe("skipping forward on a live edge", () => {
+  // A live encoder publishes one 6s segment every 6s, so the seekable end is a
+  // frontier rather than an end: there is nothing past it yet, and there will
+  // not be for another segment. Landing a half-second short of it buys a
+  // half-second of video and then a wait.
+  const edge: [number, number] = [0, 36];
+
+  it("stops a segment's worth short of the frontier, not a hair", () => {
+    const landed = clampSkip(21, 30, edge, LIVE_EDGE_MARGIN);
+    expect(landed).toBe(26);
+    // The cushion has to outlast the gap between segments, or the viewer is
+    // watching the encoder work.
+    expect(36 - landed).toBeGreaterThan(SEGMENT_SECONDS);
+  });
+
+  it("gives a repeat tap nowhere new to go", () => {
+    // Which is what makes the caller's no-op guard fire instead of seeking to
+    // the same spot again — thirteen times, in the log that prompted this.
+    const first = clampSkip(21, 30, edge, LIVE_EDGE_MARGIN);
+    expect(clampSkip(first, 30, edge, LIVE_EDGE_MARGIN)).toBe(first);
+  });
+
+  it("still rewinds freely from there", () => {
+    expect(clampSkip(26, -10, edge, LIVE_EDGE_MARGIN)).toBe(16);
+  });
+
+  it("will not turn a forward tap into a rewind", () => {
+    // Playback on live rides a few seconds behind the edge, so the playhead is
+    // normally *inside* the cushion already. Clamping to `hi - margin` without
+    // regard to direction sent it backwards: measured in the browser, Forward
+    // moved the playhead from 139.92 to 134.18 against an edge of 144.18.
+    expect(clampSkip(139.92, 30, [0, 144.18], LIVE_EDGE_MARGIN)).toBe(139.92);
+    expect(clampSkip(35, 30, edge, LIVE_EDGE_MARGIN)).toBe(35);
+  });
+
+  it("will not turn a rewind into a jump forward", () => {
+    // The same trap at the other end: standing before `lo`, a back-10 must not
+    // be dragged up to it.
+    expect(clampSkip(5, -10, [10, 36], LIVE_EDGE_MARGIN)).toBe(5);
+  });
+
+  it("leaves a finished recording able to reach its own ending", () => {
+    // Nothing is being produced there: the last second is on disk like every
+    // other, so the wide live cushion would only fence off the credits.
+    expect(clampSkip(3500, 30, [0, 3600])).toBe(3530);
+    expect(clampSkip(3590, 30, [0, 3600])).toBe(3599.5);
   });
 });
 

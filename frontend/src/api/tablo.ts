@@ -105,10 +105,66 @@ export interface GuideChannel {
   display_name: string;
   logo_url: string | null;
   current_program: Program | null;
+  /**
+   * Scan type as the station broadcasts it, e.g. `1080i`, `720p`, `480i`.
+   *
+   * From the device, not the cloud: the cloud's channel record carries no
+   * resolution at all — verified against the live account, where the union of
+   * every key across all 28 channels had nothing about resolution, scan or
+   * favourites. The device has all three at `/guide/channels/{id}`.
+   *
+   * Optional, though the backend always sends all three: it is null where the
+   * device did not answer, and absent in fixtures that are not about channels.
+   */
+  scan?: string | null;
+  interlaced?: boolean;
+  /** Marked as a favourite on the device. Nothing reads it yet. */
+  favourite?: boolean;
 }
 
 export interface GridChannel extends Omit<GuideChannel, 'current_program'> {
   airings: Program[];
+}
+
+/**
+ * One airing joined to its series — everything the show sheet renders.
+ *
+ * Read from the guide mirror, never the device, so this resolves at local
+ * speed. Almost every field is nullable: a channel with no EPG data yields a
+ * sheet that is mostly title and channel, which is honest rather than broken.
+ */
+export interface AiringDetail {
+  title: string | null;
+  episode_title: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  description: string | null;
+  start: string;
+  duration: number;
+  orig_air_date: string | null;
+  genres: string[];
+  rating: string | null;
+  /**
+   * Ready to put in a `src`, or null when there is no artwork.
+   *
+   * Two shapes, deliberately not normalised: a local `/api/channels/image/{id}`
+   * for OTA, whose artwork lives on the device behind a signed request, and an
+   * absolute `lighthousetv-cdn` URL for OTT, which has no device artwork at
+   * all. Channel logos already come from that CDN, so both are the same kind
+   * of thing to an `<img>`.
+   */
+  image_url: string | null;
+  /** Computed server-side — the browser's clock may differ from the guide's. */
+  airing_now: boolean;
+  channel: {
+    identifier: string;
+    call_sign: string | null;
+    major: number | null;
+    minor: number | null;
+    network: string | null;
+    logo_url: string | null;
+    kind: string | null;
+  };
 }
 
 export type CacheState = "absent" | "partial" | "complete" | "failed";
@@ -228,6 +284,8 @@ export interface SearchTarget {
   watch?: string | number;
   /** ISO start, for a guide result. */
   at?: string;
+  /** Channel the airing is on, for a guide result. With `at`, keys the show sheet. */
+  channel_id?: string;
 }
 
 export interface SearchItem {
@@ -320,6 +378,30 @@ export const api = {
 
   channels: (refresh = false) =>
     req<Channel[]>(`/channels${refresh ? "?refresh=true" : ""}`),
+
+  /**
+   * Re-read the account's channel list and rebuild the guide from it.
+   *
+   * Not a tuner scan — the backend re-fetches the list the Tablo cloud holds
+   * for this device, which is the same one read on first connect. A channel
+   * disabled in the Tablo app disappears because the account stops listing it.
+   */
+  refreshChannels: () =>
+    req<{ channels: number; added: string[]; removed: string[] }>(
+      "/channels/refresh", { method: "POST" },
+    ),
+
+  /**
+   * One airing's full detail, keyed the way the grid already holds it.
+   *
+   * (channel, start) is `guide_airing`'s primary key, so no new identifier
+   * has to be carried through the guide for this.
+   */
+  airingDetail: (channel: string, start: string) =>
+    req<AiringDetail>(
+      `/channels/airing-detail?channel=${encodeURIComponent(channel)}` +
+      `&start=${encodeURIComponent(start)}`,
+    ),
 
   guide: () => req<GuideChannel[]>("/channels/guide"),
   guideStream: (signal?: AbortSignal) => guideStream(signal),

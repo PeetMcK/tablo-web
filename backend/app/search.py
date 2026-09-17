@@ -7,8 +7,11 @@ already written in terms of groups of kinds.
 
 import json
 import re
+import time
+from datetime import datetime, timedelta, timezone
 
 from . import db
+from .store import GUIDE_RETENTION_DAYS
 
 MIN_QUERY = 2
 
@@ -16,11 +19,32 @@ MIN_QUERY = 2
 # coming, then where to watch it.
 KIND_ORDER = ("recording", "airing", "channel")
 
+# How far a recording's start may drift from the airing's and still be the same
+# showing. Recordings carry padding, so they rarely start on the minute. Wider
+# than this starts matching a different repeat of the same programme, which is
+# a worse answer than admitting we do not know.
+MATCH_WINDOW = 300
+
 # bm25 returns negative numbers and more negative is a better match, so results
 # order ascending. Weights are title, subtitle, body, channel - a title hit
 # should beat the same word buried in a description, which is most of what
 # makes a five-item dropdown useful.
 _RANK = "bm25(search_fts, 10.0, 5.0, 1.0, 2.0)"
+
+# Breaks a bm25 tie upcoming-before-past, nearest-to-now first within each
+# side. Ties are the common case, not the exotic one: repeat airings of one
+# programme share title, subtitle, body and channel, so bm25 cannot tell them
+# apart. Every surface truncates, so which of several identical-rank rows
+# survive the cut IS the feature - plain ascending order (the previous
+# tiebreak) buried tonight's airing under a month of reruns that happened to
+# air earlier. Two orderings, not one: future rows sort soonest-first (0,
+# start_epoch ASC), past rows sort most-recent-first (1, start_epoch DESC).
+# Three `?` placeholders, all bound to the same `now`.
+_TIEBREAK = (
+    "CASE WHEN d.start_epoch >= ? THEN 0 ELSE 1 END, "
+    "CASE WHEN d.start_epoch >= ? THEN d.start_epoch END ASC, "
+    "CASE WHEN d.start_epoch >= ? THEN NULL ELSE d.start_epoch END DESC"
+)
 
 _WORD = re.compile(r"[^\w]+", re.UNICODE)
 
@@ -47,10 +71,28 @@ def coverage() -> dict:
 
     Without this an empty result cannot be told apart from a period the sync
     never saw - which is the exact confusion this feature exists to remove.
+
+    `guide_sync` itself is never pruned, but the airings a sync recorded are -
+    `store.prune_guide` deletes anything older than GUIDE_RETENTION_DAYS. Left
+    unconstrained, `since` would report the very first sync this install ever
+    ran, long after every airing from back then has been deleted - a confident
+    "since <install date>" standing in for a history that no longer exists.
+    `since` is therefore the earliest successful sync still inside the window
+    that is actually still on disk.
+
+    The cutoff is formatted exactly like `guide_sync.started_at`
+    (`guide_sync._now()`, `isoformat(timespec="seconds")`) so the comparison
+    stays a safe lexicographic one - both are UTC ISO 8601 with a `+00:00`
+    offset, and mismatched fractional-second precision would otherwise sort
+    the wrong way at the boundary.
     """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=GUIDE_RETENTION_DAYS)
+    ).isoformat(timespec="seconds")
     row = db.query_one(
         "SELECT MIN(started_at) AS since, MAX(finished_at) AS last "
-        "FROM guide_sync WHERE ok = 1"
+        "FROM guide_sync WHERE ok = 1 AND started_at >= ?",
+        (cutoff,),
     )
     return {
         "since": row["since"] if row else None,
@@ -74,6 +116,7 @@ def search(q: str, limit: int = 5, kinds: list[str] | None = None) -> dict:
     if not match:
         return out
 
+    now = int(time.time())
     wanted = [k for k in KIND_ORDER if not kinds or k in kinds]
     for kind in wanted:
         total = db.query_one(
@@ -89,9 +132,9 @@ def search(q: str, limit: int = 5, kinds: list[str] | None = None) -> dict:
             "       d.start_epoch, d.duration, d.target "
             "FROM search_fts JOIN search_doc d ON d.rowid = search_fts.rowid "
             f"WHERE search_fts MATCH ? AND d.kind = ? ORDER BY {_RANK}, "
-            "       d.start_epoch IS NULL DESC, d.start_epoch "
+            f"       {_TIEBREAK} "
             "LIMIT ?",
-            (match, kind, limit),
+            (match, kind, now, now, now, limit),
         )
         out["groups"].append({
             "kind": kind,
@@ -99,6 +142,20 @@ def search(q: str, limit: int = 5, kinds: list[str] | None = None) -> dict:
             "items": [_item(r) for r in rows],
         })
     return out
+
+
+def _recorded_for(title: str | None, start_epoch: int | None) -> dict | None:
+    """The recording of this showing, if there is one."""
+    if not title or not start_epoch or start_epoch > time.time():
+        return None
+    row = db.query_one(
+        "SELECT ref FROM search_doc WHERE kind = 'recording' "
+        "  AND lower(trim(title)) = lower(trim(?)) "
+        "  AND abs(start_epoch - ?) <= ? "
+        "ORDER BY abs(start_epoch - ?) LIMIT 1",
+        (title, start_epoch, MATCH_WINDOW, start_epoch),
+    )
+    return {"object_id": int(row["ref"])} if row else None
 
 
 def _item(row) -> dict:
@@ -111,4 +168,8 @@ def _item(row) -> dict:
         "start_epoch": row["start_epoch"] or None,
         "duration": row["duration"],
         "target": json.loads(row["target"]),
+        "recorded": (
+            _recorded_for(row["title"], row["start_epoch"])
+            if row["kind"] == "airing" else None
+        ),
     }

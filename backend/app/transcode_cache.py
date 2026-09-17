@@ -291,7 +291,7 @@ _BIF_SENTINEL = 0xFFFFFFFF
 
 
 def _http_get(url: str, timeout: int = 120) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 - device URL
+    with urllib.request.urlopen(url, timeout=timeout) as r:
         return r.read()
 
 
@@ -416,7 +416,7 @@ class TranscodeCache:
     def read_meta(self, object_id: int) -> CacheMeta | None:
         try:
             row = store.read_recording(object_id)
-        except Exception:  # noqa: BLE001 - storage must not break playback
+        except Exception:
             return None
         return CacheMeta(**row) if row else None
 
@@ -609,7 +609,7 @@ class TranscodeCache:
             print(f"[cache] {object_id} bif: {frames} frames, "
                   f"{len(data) / 1024**2:.1f} MB", flush=True)
             return True
-        except Exception as e:  # noqa: BLE001 - previews are a nicety
+        except Exception as e:
             print(f"[cache] {object_id} bif failed: {e}", flush=True)
             return False
 
@@ -885,7 +885,7 @@ class TranscodeCache:
         """
         try:
             return store.pinned_recording_ids()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
 
     def set_paused(self, object_id: int, paused: bool) -> bool:
@@ -1079,7 +1079,7 @@ class TranscodeCache:
                 continue
             try:
                 proc.send_signal(sig)
-            except Exception:  # noqa: BLE001 - process may have just exited
+            except Exception:
                 pass
 
     def _kill_procs(self, object_id: int) -> None:
@@ -1096,7 +1096,7 @@ class TranscodeCache:
                 # Resume first: a SIGSTOPped process cannot act on SIGKILL.
                 proc.send_signal(signal.SIGCONT)
                 proc.kill()
-            except Exception:  # noqa: BLE001 - may have just exited
+            except Exception:
                 pass
 
     def _reap_abandoned(self, object_id: int) -> None:
@@ -1181,7 +1181,7 @@ class TranscodeCache:
             # Resume first: a SIGSTOPped process cannot act on SIGKILL.
             proc.send_signal(signal.SIGCONT)
             proc.kill()
-        except Exception:  # noqa: BLE001 - may have just exited
+        except Exception:
             pass
 
     def _pause_background(self) -> None:
@@ -1401,7 +1401,7 @@ class TranscodeCache:
             if self._ondemand and not on_demand and (object_id, w) not in self._ondemand:
                 try:
                     proc.send_signal(signal.SIGSTOP)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             rc = await proc.wait()
         finally:
@@ -1504,7 +1504,7 @@ class TranscodeCache:
                     return
                 try:
                     await self.ensure_window(object_id, w, path, duration)
-                except Exception as e:  # noqa: BLE001 - background best-effort
+                except Exception as e:
                     print(f"[cache] window {w} of {object_id} failed: {e}")
 
         while True:

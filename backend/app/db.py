@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -179,6 +179,58 @@ END;
 """
 
 
+# Version 3 adds the show-information fields.
+#
+# The airing columns are all nullable: existing rows stay valid and fill in as
+# syncs run, so no backfill step is needed. `series_path` is deliberately NOT a
+# foreign key - airings are captured before their series is fetched, and a
+# constraint would make the capture order matter.
+_SCHEMA_V3 = """
+ALTER TABLE guide_airing ADD COLUMN episode_title TEXT;
+ALTER TABLE guide_airing ADD COLUMN season_number INTEGER;
+ALTER TABLE guide_airing ADD COLUMN episode_number INTEGER;
+ALTER TABLE guide_airing ADD COLUMN orig_air_date TEXT;
+ALTER TABLE guide_airing ADD COLUMN series_path TEXT;
+ALTER TABLE guide_airing ADD COLUMN airing_path TEXT;
+ALTER TABLE guide_airing ADD COLUMN schedule_state TEXT;
+ALTER TABLE guide_airing ADD COLUMN schedule_qualifier TEXT;
+ALTER TABLE guide_airing ADD COLUMN skip_reason TEXT;
+
+CREATE TABLE IF NOT EXISTS guide_series (
+    path                TEXT PRIMARY KEY,
+    identifier          TEXT,
+    title               TEXT,
+    description         TEXT,
+    genres              TEXT,
+    rating              TEXT,
+    orig_air_date       TEXT,
+    episode_runtime     INTEGER,
+    cast                TEXT,
+    cover_image_id      INTEGER,
+    thumbnail_image_id  INTEGER,
+    background_image_id INTEGER,
+    schedule_rule       TEXT,
+    keep_rule           TEXT,
+    keep_count          INTEGER,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS guide_airing_series ON guide_airing(series_path);
+"""
+
+
+# Version 4 gives an airing its own artwork.
+#
+# A URL, not an image id, because this is for the airings that have no series
+# record to hang a `cover_image_id` on - the OTT/FAST channels, which exist
+# only in the cloud (see docs/tablo-api.md). The cloud hands back absolute CDN
+# URLs rather than device image ids, and the browser already loads channel
+# logos from that same host, so storing the URL keeps the artwork path free of
+# any server-side fetch.
+_SCHEMA_V4 = """
+ALTER TABLE guide_airing ADD COLUMN image_url TEXT;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -257,6 +309,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V1)
             if version < 2:
                 conn.executescript(_SCHEMA_V2)
+            if version < 3:
+                conn.executescript(_SCHEMA_V3)
+            if version < 4:
+                conn.executescript(_SCHEMA_V4)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

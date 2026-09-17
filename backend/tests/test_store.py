@@ -17,6 +17,26 @@ def test_schema_is_created_and_versioned():
     assert db.query_one("PRAGMA user_version")[0] == db.SCHEMA_VERSION
 
 
+def test_schema_v3_adds_episode_fields_and_series_table():
+    """Show information needs per-episode fields and a series record.
+
+    The airing columns are nullable so existing rows keep working and
+    backfill happens as syncs run, rather than in a migration step.
+    """
+    cols = {r["name"] for r in db.query("PRAGMA table_info(guide_airing)")}
+    assert {"episode_title", "season_number", "episode_number", "orig_air_date",
+            "series_path", "airing_path", "schedule_state", "schedule_qualifier",
+            "skip_reason"} <= cols
+
+    series_cols = {r["name"] for r in db.query("PRAGMA table_info(guide_series)")}
+    assert {"path", "identifier", "title", "description", "genres", "rating",
+            "orig_air_date", "episode_runtime", "cast", "cover_image_id",
+            "thumbnail_image_id", "background_image_id", "schedule_rule",
+            "keep_rule", "keep_count", "updated_at"} <= series_cols
+
+    assert db.query_one("PRAGMA user_version")["user_version"] >= 3
+
+
 def test_reopening_does_not_re_run_migrations():
     store.save_credentials("a@b.com", "pw")
     db.close()
@@ -234,11 +254,25 @@ def test_guide_round_trips():
     assert rows[0]["logo_url"] == "http://logo"
 
 
-def test_ended_airings_are_pruned_on_write():
+def test_load_guide_hides_airings_that_have_ended_without_deleting_them():
+    """Hidden at read, kept on disk - the name of this test used to say the
+    opposite, which is the one thing the guide mirror must never do.
+
+    Nothing is pruned on write. The device's guide is forward-looking, so an
+    aired programme falls off it permanently and our copy is the only record
+    that it happened; `prune_guide` removes rows by age and nothing else
+    does. What `load_guide` gives back is a view for the grid, which has no
+    use for a programme that has finished.
+    """
     now = datetime.now(timezone.utc)
     store.save_guide(_guide(now))
+
     titles = [a["title"] for a in store.load_guide()[0]["airings"]]
     assert titles == ["Upcoming"]
+
+    # Still stored, and still findable - this is the half the old name denied.
+    stored = {r["title"] for r in db.query("SELECT title FROM guide_airing")}
+    assert stored == {"Over", "Upcoming"}
 
 
 def test_genres_survive_the_round_trip():

@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -25,7 +26,24 @@ TRANSCODE_DIR.mkdir(exist_ok=True)
 
 transcode_procs: dict[str, subprocess.Popen] = {}
 
+# When each live session was last asked for, by session id. A player fetches
+# the playlist about every segment, so silence here means nobody is watching.
+session_touched: dict[str, float] = {}
+
 MAX_TRANSCODE_SESSIONS = 4
+
+# How long a live transcode may go unasked-for before it is killed, and how
+# often to look. The only orderly way a session ends is DELETE /stream/{id},
+# which a closed laptop, a killed tab or a dropped network never sends - and
+# the transcode holds a tuner on the device until something stops it.
+#
+# Segment fetches alone are not the signal: a player paused on live fills its
+# buffer and then stops asking, while still being watched in every sense that
+# matters. The player pings /transcode/status while it holds a live session,
+# which is what this timeout is really measuring the absence of - two minutes
+# of silence from a thirty-second heartbeat.
+LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "120"))
+REAP_INTERVAL = 30.0
 
 # Rolling DVR window for live transcodes, in segments of HLS_TIME seconds.
 # A 6-segment window (~36s) leaves nothing to rewind into; widening it is what
@@ -77,22 +95,30 @@ LIVE_MODES = ("transcode", "raw", "ring")
 # session_id -> (ring, follower, polling task)
 ring_sessions: dict[str, tuple[SegmentRing, RingFollower | None, asyncio.Task | None]] = {}
 
+# What identifies one of our FFmpeg processes from the outside, once the dict
+# that held it is gone. It has to appear in the command line for `pgrep -f` to
+# find it - see the absolute playlist path in `live_ffmpeg_cmd`.
+SWEEP_MARKER = TRANSCODE_DIR.name
+
+
 # Kill any FFmpeg processes left over from a previous run and wipe stale dirs.
 # After a container restart transcode_procs is empty but old FFmpeg processes
 # may still be alive (or their directories still on disk), which exhaust CPU
 # and cause new sessions to time out waiting for their first playlist segment.
 def _startup_cleanup():
     try:
-        import signal
-        result = subprocess.run(["pgrep", "-f", "tablo_transcode"], capture_output=True, text=True)
+        # `check=False`: pgrep exits 1 when it matches nothing, which is the
+        # ordinary case on a clean start, not a failure.
+        result = subprocess.run(
+            ["pgrep", "-f", SWEEP_MARKER], capture_output=True, text=True, check=False
+        )
         for pid in result.stdout.split():
             try:
-                import os; os.kill(int(pid), signal.SIGKILL)
+                os.kill(int(pid), signal.SIGKILL)
             except Exception:
                 pass
     except Exception:
         pass
-    import shutil
     for d in TRANSCODE_DIR.iterdir():
         try:
             shutil.rmtree(d)
@@ -143,6 +169,75 @@ def sweep_stale_raw_dirs(idle_seconds: float = 60.0, now: float | None = None) -
 _startup_cleanup()
 
 
+def touch_session(session_id: str) -> None:
+    """Mark a live session as still wanted. Cheap enough for every request."""
+    if session_id in transcode_procs:
+        session_touched[session_id] = time.monotonic()
+
+
+def _kill(session_id: str) -> None:
+    proc = transcode_procs.pop(session_id, None)
+    session_touched.pop(session_id, None)
+    if proc:
+        try:
+            proc.kill()
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+
+
+def reap_idle_transcoders() -> list[str]:
+    """Kill live transcodes nobody has asked about in LIVE_IDLE_SECONDS.
+
+    Returns the sessions it killed, for the log.
+    """
+    now = time.monotonic()
+    stale = [
+        sid for sid in list(transcode_procs)
+        # A session that has never been touched is one started moments ago,
+        # before its player asked for anything. Give it the same grace.
+        if now - session_touched.setdefault(sid, now) > LIVE_IDLE_SECONDS
+    ]
+    for sid in stale:
+        _kill(sid)
+        import shutil
+        try:
+            shutil.rmtree(TRANSCODE_DIR / sid)
+        except Exception:
+            pass
+        state.stop_session(sid)
+    return stale
+
+
+async def reap_forever():
+    """The sweep has to run on a timer, not on a request.
+
+    The case it exists for is precisely the one where no request is ever coming
+    again: the tab is gone and nothing will ask for this session or any other.
+    """
+    while True:
+        await asyncio.sleep(REAP_INTERVAL)
+        try:
+            if killed := reap_idle_transcoders():
+                print(f"[stream] reaped {len(killed)} idle transcode(s): {killed}",
+                      flush=True)
+        except Exception as e:
+            print(f"[stream] reap failed: {e}", flush=True)
+
+
+def shutdown_transcoders():
+    """Kill every live transcoder this process started.
+
+    A live transcode holds a tuner on the device for as long as it runs, and
+    these PIDs live nowhere but the dict above. Exiting without this leaves them
+    reparented to init - still pulling segments, still holding the tuner, with
+    nothing left that knows how to stop them. Two were found that way after a
+    restart, 23 and 10 minutes old.
+    """
+    for session_id in list(transcode_procs):
+        _kill(session_id)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCODED
 # ─────────────────────────────────────────────────────────────────────────────
@@ -152,6 +247,8 @@ async def transcoded_stream(session_id: str, path: str, request: Request):
     # Security: Ensure session_id is a valid hex string to prevent path traversal
     if not all(c in "0123456789abcdefABCDEF" for c in session_id):
         raise HTTPException(400, "Invalid session ID")
+
+    touch_session(session_id)
 
     session_dir = TRANSCODE_DIR / session_id
     # Security: Normalize path and prevent traversing out of session_dir
@@ -600,6 +697,10 @@ def encoded_seconds(log_text: str) -> float | None:
 async def transcode_status(session_id: str):
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    # This is the player's heartbeat as well as its progress read: it keeps
+    # asking while it holds the session, including while paused, when no
+    # segment is being fetched at all.
+    touch_session(session_id)
     proc = transcode_procs.get(session_id)
     session_dir = TRANSCODE_DIR / session_id
 
@@ -633,28 +734,17 @@ async def transcode_status(session_id: str):
 # Start FFmpeg
 # ---------------------------------------------------------------------------
 
-async def start_transcoder(session_id: str, input_url: str):
-    # Evict oldest session if at the cap to prevent CPU exhaustion from zombies
-    if len(transcode_procs) >= MAX_TRANSCODE_SESSIONS:
-        oldest_id, oldest_proc = next(iter(transcode_procs.items()))
-        try:
-            oldest_proc.kill()
-            oldest_proc.wait(timeout=2)
-        except Exception:
-            pass
-        transcode_procs.pop(oldest_id, None)
-        import shutil
-        try:
-            shutil.rmtree(TRANSCODE_DIR / oldest_id)
-        except Exception:
-            pass
+def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
+    """The live transcode command, run with ``cwd`` set to ``session_dir``.
 
-    session_dir = TRANSCODE_DIR / session_id
-    session_dir.mkdir(exist_ok=True, parents=True)
-
-    log_file = session_dir / "ffmpeg.log"
-
-    cmd = [
+    The playlist is named by its absolute path while everything else stays
+    relative. That is deliberate and load-bearing: the segment URIs written into
+    the playlist are the `-hls_segment_filename` string, so that one must stay
+    relative, but with every argument relative the command line named the
+    transcode directory nowhere at all - and `_startup_cleanup`, which is how a
+    process orphaned by a crash is ever found again, greps for exactly that.
+    """
+    return [
         "ffmpeg",
         "-y",
         "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
@@ -673,20 +763,62 @@ async def start_transcoder(session_id: str, input_url: str):
         "-hls_segment_filename", "%05d.ts",
         "-hls_flags", "delete_segments+independent_segments",
         "-loglevel", "info",
-        "playlist.m3u8"
+        str(session_dir / "playlist.m3u8"),
     ]
 
+
+def _evict_transcoder(session_id: str, proc: subprocess.Popen) -> None:
+    """Kill an evicted session and delete what it left behind.
+
+    Blocking, and deliberately so — `wait` gives FFmpeg up to two seconds to
+    die, and `rmtree` walks a directory of segments. Called from a thread.
+    """
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+    try:
+        shutil.rmtree(TRANSCODE_DIR / session_id)
+    except Exception:
+        pass
+
+
+def _spawn_transcoder(
+    session_dir: Path, cmd: list[str], session_id: str, input_url: str
+) -> subprocess.Popen:
+    """Open the session's log and start FFmpeg against it.
+
+    Both halves block — `open` touches the filesystem and `Popen` forks and
+    execs — which is why this is a plain function called from a thread rather
+    than part of the coroutine. The handle is closed as soon as the child has
+    it; the child keeps its own copy of the descriptor.
+    """
+    log_file = session_dir / "ffmpeg.log"
     with open(log_file, "w") as f:
         f.write(f"Starting FFmpeg for session {session_id}\n")
         f.write(f"Input: {input_url}\n")
         f.write(f"Command: {' '.join(cmd)}\n\n")
         f.flush()
-        
-        proc = subprocess.Popen(
-            cmd,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            cwd=session_dir
-        )
+        return subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=session_dir)
+
+
+async def start_transcoder(session_id: str, input_url: str):
+    # Evict oldest session if at the cap to prevent CPU exhaustion from zombies.
+    # Dropped from the registry before the kill, so a second request arriving
+    # mid-eviction picks a different victim rather than this one again.
+    if len(transcode_procs) >= MAX_TRANSCODE_SESSIONS:
+        oldest_id, oldest_proc = next(iter(transcode_procs.items()))
+        transcode_procs.pop(oldest_id, None)
+        await asyncio.to_thread(_evict_transcoder, oldest_id, oldest_proc)
+
+    session_dir = TRANSCODE_DIR / session_id
+    session_dir.mkdir(exist_ok=True, parents=True)
+
+    cmd = live_ffmpeg_cmd(session_dir, input_url)
+
+    # Off the loop: this same process is serving segments to a player holding a
+    # few seconds of buffer, so a fork/exec stall here is a stall there.
+    proc = await asyncio.to_thread(_spawn_transcoder, session_dir, cmd, session_id, input_url)
 
     transcode_procs[session_id] = proc

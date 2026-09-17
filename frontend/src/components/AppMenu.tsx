@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
-import { ChevronDown } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { api } from "../api/tablo";
-import { useTheme, THEME_LABELS } from "../lib/theme";
 import { ThemeControl } from "./ThemeControl";
 
 interface Props {
@@ -31,11 +30,11 @@ interface Props {
 export function AppMenu({ email, onLogout }: Props) {
   const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const themeLabelId = useId();
   const panelId = useId();
-  const { theme, resolvedTheme } = useTheme();
 
   useEffect(() => {
     if (!open) return;
@@ -57,6 +56,28 @@ export function AppMenu({ email, onLogout }: Props) {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  /**
+   * Re-read the channel list, then reload.
+   *
+   * The guide is fed by `useGridStream`, which runs once on mount and is not a
+   * react-query cache, so an open grid would keep showing the list the server
+   * has just replaced. A reload is near-transparent here — `route.ts` restores
+   * the tab and whatever is playing from the hash — and this is a rare
+   * maintenance action, which is a better trade than threading a refresh
+   * signal from this menu down into the grid.
+   */
+  const refreshChannels = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await api.refreshChannels();
+      window.location.reload();
+    } catch (e) {
+      console.error("Channel refresh failed:", e);
+      setRefreshing(false);
+      setOpen(false);
+    }
+  }, []);
 
   const generateDebugReport = useCallback(async () => {
     setGenerating(true);
@@ -88,17 +109,20 @@ export function AppMenu({ email, onLogout }: Props) {
   }, []);
 
   return (
-    <div className="relative mr-6" ref={ref}>
+    // No trailing margin here: the header sets the gap to the nav, and it is
+    // the same 4px the tab pills sit apart from each other.
+    <div className="relative" ref={ref}>
       {/* A disclosure, not a `role="menu"`: the panel holds a radiogroup and a
           couple of buttons, and `menu` would promise menuitem children it does
-          not have. `aria-expanded` plus the chevron carry the state. */}
+          not have. `aria-expanded` carries the state. */}
       <button
         ref={triggerRef}
         onClick={() => setOpen(v => !v)}
         aria-haspopup="true"
+        aria-label="Tablo-Web menu"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        className="group flex items-center gap-2.5 -m-1 p-1 rounded-xl hover:bg-fill-soft
+        className="touch-target group flex items-center justify-center -m-1 p-1 rounded-xl hover:bg-fill-soft
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent transition"
       >
         {/* The brand ramp, via `.accent-gradient` — both stops are the brand's
@@ -117,14 +141,9 @@ export function AppMenu({ email, onLogout }: Props) {
             <path d="M8 21h8" />
           </svg>
         </div>
-        {/* No colour class: the wordmark inherits `text-fg` from <body>, which
-            is white in dark and ink in light. */}
-        <span className="font-black text-lg tracking-tight uppercase italic italic-accent">Tablo-Web</span>
-        <ChevronDown
-          className={`w-4 h-4 shrink-0 text-fg-muted group-hover:text-fg-secondary transition ${open ? "rotate-180" : ""}`}
-          strokeWidth={2.5}
-          aria-hidden
-        />
+        {/* Wordmark and chevron are both gone: the mark alone is the trigger.
+            `aria-label` carries the button's name and `aria-expanded` its
+            state, so nothing an assistive reader needs went with them. */}
       </button>
 
       {open && (
@@ -148,14 +167,20 @@ export function AppMenu({ email, onLogout }: Props) {
               Appearance
             </p>
             <ThemeControl labelledBy={themeLabelId} />
-            <p className="mt-1.5 text-[10px] font-medium text-fg-muted">
-              {theme === "system"
-                ? `Following your system · ${THEME_LABELS[resolvedTheme].toLowerCase()}`
-                : `Always ${THEME_LABELS[theme].toLowerCase()}`}
-            </p>
           </div>
 
           <div className="p-2">
+            <button
+              onClick={refreshChannels}
+              disabled={refreshing}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-fg-secondary hover:text-fg hover:bg-fill-soft transition text-left disabled:opacity-50 disabled:cursor-wait"
+            >
+              <RefreshCw className={`w-4 h-4 shrink-0 ${refreshing ? "animate-spin" : ""}`} strokeWidth={2} aria-hidden />
+              {refreshing ? "Refreshing…" : "Refresh Channel List"}
+            </button>
+
+            <div className="my-1 border-t border-border-subtle" />
+
             <button
               onClick={generateDebugReport}
               disabled={generating}

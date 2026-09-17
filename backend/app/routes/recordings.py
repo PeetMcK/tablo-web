@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from functools import partial
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -79,9 +80,19 @@ async def list_recordings():
 
     # Feed the search index from the listing: the device owns the library, so
     # this is the only moment we reliably see all of it.
+    #
+    # Pruning needs to know the listing is the whole library, which only this
+    # caller can tell: `state.recordings_total` is the device's own count, so
+    # holding as many as it claims means anything still indexed has since been
+    # deleted there. A truncated listing looks identical to a shrunken library
+    # from inside the index, and pruning on one would delete most of it - hence
+    # the count guard rather than trusting the list. Without this, a deleted
+    # recording stayed searchable, and clicking the result failed.
+    expected = state.recordings_total + len(orphans)
+    complete = state.recordings_total > 0 and len(merged) >= expected
     try:
-        await _run_sync(store.index_recordings, merged)
-    except Exception as e:  # noqa: BLE001 - indexing must never break the library
+        await _run_sync(partial(store.index_recordings, prune=complete), merged)
+    except Exception as e:
         print(f"[search] indexing recordings failed: {e}", flush=True)
 
     return {
@@ -315,7 +326,7 @@ async def keep_recording(object_id: int):
         if image_id:
             body, _ = await state.fetch_device_image(image_id)
             cache.thumbnail_path(object_id).write_bytes(body)
-    except Exception as e:  # noqa: BLE001 - a missing thumbnail is cosmetic
+    except Exception as e:
         print(f"[keep] {object_id} thumbnail not saved: {e}")
 
     # Pinned entries fill completely and ignore the watcher-idle timeout.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import crypto, db
@@ -340,6 +340,12 @@ def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
 
     Uses `ON CONFLICT DO UPDATE`, not `INSERT OR REPLACE` - see the note on
     `index_channel` for why the latter silently corrupts `search_fts` here.
+
+    The target carries `channel_id` as well as `at` because opening an airing
+    needs both halves of the `guide_airing` key - the show sheet is fetched by
+    (channel, start). `ref` happens to concatenate exactly those two, but
+    splitting it client-side would make this function's key format part of the
+    API, so the target states them outright.
     """
     genres = air.get("genres") or []
     body = " ".join(
@@ -361,12 +367,16 @@ def index_airing(conn, channel_id: str, label: str, air: dict) -> None:
             label,
             _start_epoch(air.get("start")),
             int(air.get("duration") or 0),
-            json.dumps({"tab": "grid", "at": air.get("start")}),
+            json.dumps({
+                "tab": "grid",
+                "at": air.get("start"),
+                "channel_id": channel_id,
+            }),
         ),
     )
 
 
-def index_recordings(items: list[dict]) -> None:
+def index_recordings(items: list[dict], *, prune: bool = False) -> None:
     """Index the library from a device listing.
 
     Called on every listing rather than on a write, because the device holds
@@ -377,8 +387,18 @@ def index_recordings(items: list[dict]) -> None:
     `index_channel` for why the latter silently corrupts `search_fts` here.
     This is the writer that reindexes most often (every listing), so it is
     the one where that bug would bite hardest.
+
+    `prune=True` says the caller is holding the whole library, so anything
+    indexed and absent from it has been deleted on the device and is dropped
+    from the index. Only the caller can know that: a truncated listing looks
+    identical to a shrunken library from in here, and pruning on one would
+    delete most of the index. `/recordings` compares what it fetched against
+    the device's own count - see there.
+
+    An empty complete listing is a real state (everything deleted), so the
+    early return is only safe when there is nothing to prune against.
     """
-    if not items:
+    if not items and not prune:
         return
     with db.write() as conn:
         for rec in items:
@@ -406,8 +426,27 @@ def index_recordings(items: list[dict]) -> None:
                 ),
             )
 
+        if prune:
+            # A deleted recording left in the index is worse than a missing
+            # one: it is offered, clicked, and fails.
+            refs = [str(r.get("object_id")) for r in items]
+            if refs:
+                marks = ",".join("?" * len(refs))
+                conn.execute(
+                    "DELETE FROM search_doc WHERE kind = 'recording' "
+                    f"AND ref NOT IN ({marks})",
+                    refs,
+                )
+            else:
+                conn.execute("DELETE FROM search_doc WHERE kind = 'recording'")
 
-def save_guide(rows: list[dict], now: float | None = None) -> None:
+
+def save_guide(
+    rows: list[dict],
+    now: float | None = None,
+    *,
+    record_sync: bool = True,
+) -> None:
     """Merge the guide into the mirror, keeping everything already stored.
 
     Append-only by design. This used to issue `DELETE FROM guide_channel`,
@@ -429,9 +468,18 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
     `guide_synced_at`. `load_guide` uses it to show only the channels seen in
     the latest sync, without deleting the ones the device stopped listing -
     see `load_guide` for why.
+
+    `record_sync=False` writes the rows without claiming a sync happened, for
+    the startup backfill: it re-indexes what is already on disk, and stamping
+    that as a fresh sync would report month-old listings as just-fetched for
+    as long as the next sync took to arrive. It reuses the stamp already
+    stored so the channels it writes still match `guide_synced_at`, which is
+    what `load_guide` filters on.
     """
     del now  # retained for signature compatibility; pruning is prune_guide's job
     stamp = _now()
+    if not record_sync:
+        stamp = db.get_setting("guide_synced_at") or stamp
     with db.write() as conn:
         for position, ch in enumerate(rows):
             conn.execute(
@@ -457,18 +505,27 @@ def save_guide(rows: list[dict], now: float | None = None) -> None:
                 end = _end_epoch(air.get("start"), air.get("duration"))
                 conn.execute(
                     "INSERT OR REPLACE INTO guide_airing(channel_id, start, duration, "
-                    "    end_epoch, title, subtitle, description, genres, kind) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "    end_epoch, title, subtitle, description, genres, kind, "
+                    "    episode_title, season_number, episode_number, orig_air_date, "
+                    "    series_path, airing_path, schedule_state, schedule_qualifier, "
+                    "    skip_reason, image_url) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(ch.get("identifier")), air.get("start"),
                         int(air.get("duration") or 0), end, air.get("title"),
                         air.get("subtitle"), air.get("description"),
                         json.dumps(air.get("genres") or []), air.get("kind"),
+                        air.get("episode_title"), air.get("season_number"),
+                        air.get("episode_number"), air.get("orig_air_date"),
+                        air.get("series_path"), air.get("airing_path"),
+                        air.get("schedule_state"), air.get("schedule_qualifier"),
+                        air.get("skip_reason"), air.get("image_url"),
                     ),
                 )
                 index_airing(conn, str(ch.get("identifier")), label, air)
-    db.set_setting("guide_updated_at", stamp)
-    db.set_setting("guide_synced_at", stamp)
+    if record_sync:
+        db.set_setting("guide_updated_at", stamp)
+        db.set_setting("guide_synced_at", stamp)
 
 
 def prune_guide(now: float | None = None) -> int:
@@ -500,6 +557,18 @@ def _airing_row(a) -> dict:
         "description": a["description"],
         "genres": json.loads(a["genres"]) if a["genres"] else [],
         "kind": a["kind"],
+        # Read back so a re-save (backfill_index re-writes what load_guide
+        # returned) does not blank the columns it just read.
+        "episode_title": a["episode_title"],
+        "season_number": a["season_number"],
+        "episode_number": a["episode_number"],
+        "orig_air_date": a["orig_air_date"],
+        "series_path": a["series_path"],
+        "airing_path": a["airing_path"],
+        "schedule_state": a["schedule_state"],
+        "schedule_qualifier": a["schedule_qualifier"],
+        "skip_reason": a["skip_reason"],
+        "image_url": a["image_url"],
     }
 
 
@@ -573,6 +642,165 @@ def load_guide(now: float | None = None) -> list[dict]:
         "kind": c["kind"],
         "airings": by_channel.get(c["identifier"], []),
     } for c in channels]
+
+
+# ---------------------------------------------------------------------------
+# Series
+# ---------------------------------------------------------------------------
+#
+# `cast` is quoted everywhere below: CAST is a SQL keyword, and while SQLite
+# happens to accept it bare in these positions, a bare keyword as a column name
+# is the kind of thing that works until one statement is rephrased.
+
+def save_series(rows: list[dict]) -> None:
+    """Upsert series records. Never deletes - same reasoning as guide_channel."""
+    stamp = _now()
+    with db.write() as conn:
+        for s in rows:
+            conn.execute(
+                "INSERT INTO guide_series(path, identifier, title, description, "
+                "    genres, rating, orig_air_date, episode_runtime, \"cast\", "
+                "    cover_image_id, thumbnail_image_id, background_image_id, "
+                "    schedule_rule, keep_rule, keep_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "  identifier=excluded.identifier, title=excluded.title, "
+                "  description=excluded.description, genres=excluded.genres, "
+                "  rating=excluded.rating, orig_air_date=excluded.orig_air_date, "
+                "  episode_runtime=excluded.episode_runtime, "
+                "  \"cast\"=excluded.\"cast\", "
+                "  cover_image_id=excluded.cover_image_id, "
+                "  thumbnail_image_id=excluded.thumbnail_image_id, "
+                "  background_image_id=excluded.background_image_id, "
+                "  schedule_rule=excluded.schedule_rule, "
+                "  keep_rule=excluded.keep_rule, keep_count=excluded.keep_count, "
+                "  updated_at=excluded.updated_at",
+                (
+                    s.get("path"), s.get("identifier"), s.get("title"),
+                    s.get("description"), json.dumps(s.get("genres") or []),
+                    s.get("rating"), s.get("orig_air_date"),
+                    s.get("episode_runtime"), json.dumps(s.get("cast") or []),
+                    s.get("cover_image_id"), s.get("thumbnail_image_id"),
+                    s.get("background_image_id"), s.get("schedule_rule"),
+                    s.get("keep_rule"), s.get("keep_count"), stamp,
+                ),
+            )
+
+
+def load_series(path: str) -> dict | None:
+    row = db.query_one("SELECT * FROM guide_series WHERE path = ?", (path,))
+    if row is None:
+        return None
+    out = dict(row)
+    out["genres"] = json.loads(out["genres"] or "[]")
+    out["cast"] = json.loads(out["cast"] or "[]")
+    return out
+
+
+def series_needing_refresh(paths: list[str], max_age_days: int = 30) -> list[str]:
+    """Which of `paths` we have never fetched, or fetched too long ago.
+
+    Ratings and artwork effectively never change, so a long window keeps every
+    sync after the first down to only what is new.
+    """
+    if not paths:
+        return []
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    ).isoformat(timespec="seconds")
+    known = {
+        r["path"] for r in db.query(
+            "SELECT path FROM guide_series WHERE updated_at >= ?", (cutoff,)
+        )
+    }
+    return [p for p in paths if p not in known]
+
+
+def airing_series_paths() -> list[str]:
+    """Distinct series paths seen in the mirror, for the sync to fill in."""
+    return [
+        r["series_path"] for r in db.query(
+            "SELECT DISTINCT series_path FROM guide_airing "
+            "WHERE series_path IS NOT NULL"
+        )
+    ]
+
+
+def imminent_cover_ids(hours: int = 12, now: float | None = None) -> list[int]:
+    """Cover image ids for programmes on air within the next `hours`.
+
+    The prefetch window - a few dozen images, against the ~3,190 the full
+    guide covers. Everything outside it is fetched when a sheet asks.
+
+    "On air within the window" means still running and already started by the
+    end of it, so a programme half-way through right now counts. There is no
+    start column; `end_epoch - duration` is the start, which is exactly how
+    `_end_epoch` built it.
+    """
+    at = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    rows = db.query(
+        "SELECT DISTINCT s.cover_image_id AS id "
+        "FROM guide_airing a JOIN guide_series s ON s.path = a.series_path "
+        "WHERE s.cover_image_id IS NOT NULL "
+        "  AND a.end_epoch >= ? AND a.end_epoch - a.duration <= ? "
+        "ORDER BY s.cover_image_id",
+        (at, at + hours * 3600),
+    )
+    return [r["id"] for r in rows]
+
+
+def airing_detail(channel: str, start: str, now: float | None = None) -> dict | None:
+    """Everything the show sheet renders, from the mirror alone.
+
+    `airing_now` is computed here rather than in the browser: the client's
+    clock can differ from the one the guide was built against, and a sheet
+    offering to tune to a programme that finished is worse than one that does
+    not offer at all.
+    """
+    air = db.query_one(
+        "SELECT * FROM guide_airing WHERE channel_id = ? AND start = ?",
+        (channel, start),
+    )
+    if air is None:
+        return None
+    ch = db.query_one(
+        "SELECT * FROM guide_channel WHERE identifier = ?", (channel,)
+    )
+    series = load_series(air["series_path"]) if air["series_path"] else None
+
+    at = now if now is not None else datetime.now(timezone.utc).timestamp()
+    start_epoch = _start_epoch(air["start"])
+    end_epoch = air["end_epoch"]
+
+    # The airing's own artwork wins: it is about this episode, where a series
+    # cover is about the whole run. It is also the only artwork an OTT airing
+    # has - those carry no series record at all, so without this every FAST
+    # sheet renders hero-less.
+    cover = (series or {}).get("cover_image_id")
+    image_url = air["image_url"] or (f"/api/channels/image/{cover}" if cover else None)
+    return {
+        "title": air["title"],
+        "episode_title": air["episode_title"],
+        "season_number": air["season_number"],
+        "episode_number": air["episode_number"],
+        "description": air["description"] or (series or {}).get("description"),
+        "start": air["start"],
+        "duration": air["duration"],
+        "orig_air_date": air["orig_air_date"],
+        "genres": json.loads(air["genres"] or "[]") or (series or {}).get("genres") or [],
+        "rating": (series or {}).get("rating"),
+        "image_url": image_url,
+        "airing_now": start_epoch <= at < end_epoch,
+        "channel": {
+            "identifier": channel,
+            "call_sign": ch["call_sign"] if ch else None,
+            "major": ch["major"] if ch else None,
+            "minor": ch["minor"] if ch else None,
+            "network": ch["network"] if ch else None,
+            "logo_url": ch["logo_url"] if ch else None,
+            "kind": ch["kind"] if ch else None,
+        },
+    }
 
 
 def guide_age_seconds(now: datetime | None = None) -> float | None:

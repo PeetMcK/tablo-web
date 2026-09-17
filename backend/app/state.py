@@ -1,23 +1,102 @@
 """Global in-process state — auth, active device, live stream sessions."""
 
 import asyncio
+import html
 import json
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 
 import httpx
-
 from tablo_api import TabloAuth, TabloClient
-from tablo_api.models import TabloDevice, TabloChannel, TabloStream
+from tablo_api.models import TabloChannel, TabloDevice, TabloStream
 
 from . import store
 
 # Default suits the container, where /data is a volume. Running the backend
 # natively on macOS - the only way to reach VideoToolbox - needs it elsewhere.
 CONFIG_PATH = Path(os.environ.get("TABLO_CONFIG_PATH", "/data/config.json"))
+
+# Matches guide_sync's own concurrency: this runs on the same background loop
+# and shares the device with playback, which saturates around 10x realtime.
+SERIES_SYNC_CONCURRENCY = int(os.environ.get("TABLO_SERIES_SYNC_CONCURRENCY", "8"))
+
+# How far the cloud guide is walked, one request per day.
+#
+# Fourteen because that is where the data stops: the device publishes its own
+# horizon at /server/guide/status.limit, and the cloud grid returns partial
+# data one day past it and nothing two days past. Asking for more is free but
+# pointless. See docs/tablo-api.md.
+CLOUD_GUIDE_DAYS = int(os.environ.get("TABLO_CLOUD_GUIDE_DAYS", "14"))
+
+# These are someone else's servers, not the Tablo, so the reasoning that keeps
+# the device sync slow does not apply - but fourteen requests need no fan-out
+# either, and a burst is a poor way to greet a rate limiter.
+CLOUD_GUIDE_CONCURRENCY = int(os.environ.get("TABLO_CLOUD_GUIDE_CONCURRENCY", "4"))
+
+
+def _scan_label(resolution: str | None, flags: list[str]) -> str | None:
+    """`1080i`, `720p`, `480i` — what a station is actually broadcasting.
+
+    The device gives `resolution` as `hd_1080`, `hd_720` or `sd`, and puts
+    `interlaced` in `flags` when it applies. Measured across all 23 channels on
+    a real lineup: hd_1080 x4, every one interlaced; hd_720 x5, not one of them
+    interlaced; sd x14, every one interlaced.
+
+    `sd` carries no height of its own, and OTA standard definition is 480
+    lines, so that one is spelled out — deriving the number from the string
+    would print "sdi".
+    """
+    heights = {"hd_1080": 1080, "hd_720": 720, "sd": 480}
+    height = heights.get((resolution or "").strip().lower())
+    if not height:
+        return None
+    return f"{height}{'i' if 'interlaced' in flags else 'p'}"
+
+
+async def _settled(task) -> dict:
+    """Whatever a started task has to give, without letting it break the caller.
+
+    The lineup's extras are worth having and worth nothing next to the guide
+    itself, so a device that refuses or stalls costs an empty dict rather than
+    a failed stream.
+    """
+    try:
+        return await task
+    except Exception as e:  # noqa: BLE001
+        print(f"[channels] lineup extras unavailable: {e}", flush=True)
+        return {}
+
+
+def _channel_extras(detail: dict | None) -> dict:
+    """The device's channel facts, in the shape every guide payload carries.
+
+    Always the same three keys, present whether the device answered or not: a
+    client that has to ask "did this field arrive?" ends up with a resolution
+    pill that appears a second after the card it belongs to.
+    """
+    d = detail or {}
+    return {
+        "scan": d.get("scan"),
+        "interlaced": bool(d.get("interlaced")),
+        "favourite": bool(d.get("favourite")),
+    }
+
+
+def _unescape(text: str | None) -> str | None:
+    """Undo the cloud's HTML escaping. The device sends none.
+
+    The cloud sends `Follow what&#x27;s happening`, and React escapes again on
+    render, so anything left encoded is displayed literally - the sheet showed
+    `what&#x27;s`. Decoding on the way in keeps the mirror holding text rather
+    than markup, which also means search indexes the word someone would type.
+
+    Safe against double-decoding: `html.unescape` on already-plain text is a
+    no-op, and the device's text has no entities to begin with.
+    """
+    return html.unescape(text) if isinstance(text, str) else text
 
 _lock = Lock()
 
@@ -38,6 +117,9 @@ class AppState:
         self.devices: list[TabloDevice] = []
         self.active_device: TabloDevice | None = None
         self._channels: list[TabloChannel] | None = None
+        # Scan type, interlacing and favourites, by channel identifier. Lives
+        # and dies with `_channels`: both describe the lineup.
+        self._channel_details: dict[str, dict] | None = None
         self.streams: dict[str, StreamSession] = {}  # session_id → session
         self._http = httpx.AsyncClient(timeout=30)
         # Grid enrichment cache — avoids re-fetching 800 airing details on every guide load
@@ -75,7 +157,7 @@ class AppState:
                 self.auth = TabloAuth(email, password)
                 self.email = email
                 self._restore_devices()
-        except Exception as e:  # noqa: BLE001 - never block startup on storage
+        except Exception as e:
             print(f"[state] could not load credentials: {e}", flush=True)
 
     def _restore_devices(self) -> None:
@@ -115,6 +197,7 @@ class AppState:
         self.devices = []
         self.active_device = None
         self._channels = None
+        self._channel_details = None
         self.streams.clear()
 
     # ------------------------------------------------------------------
@@ -129,6 +212,7 @@ class AppState:
         self.devices = devices
         self.active_device = devices[0] if len(devices) == 1 else None
         self._channels = None
+        self._channel_details = None
         self.save_config(email, password)
         # Persist the tokens discovery just produced. They, not the password,
         # are what every later request uses - so a restart can skip the cloud.
@@ -141,12 +225,69 @@ class AppState:
             raise ValueError(f"Device {sid} not found")
         self.active_device = dev
         self._channels = None
+        self._channel_details = None
         store.set_active_device(sid)
         return dev
 
     # ------------------------------------------------------------------
     # Channels
     # ------------------------------------------------------------------
+
+    async def channel_details(self, refresh: bool = False) -> dict[str, dict]:
+        """Per-channel facts the cloud guide does not carry, keyed by identifier.
+
+        The cloud's channel record is six fields - identifier, kind, logos,
+        name, and an `ota`/`ott` block with the number and network. Verified
+        against the live account: the union of every key across all 28 channels
+        was exactly that, with nothing about resolution, scan or favourites.
+
+        The device has all of it, per channel, at `/guide/channels/{id}`:
+
+            {"channel": {"call_sign": "KSPS-HD", "resolution": "hd_1080",
+                         "flags": ["mpeg2", "interlaced", "canRecord"],
+                         "favourite": false,
+                         "channel_identifier": "S79600_007_01", ...}}
+
+        `channel_identifier` is the join - it is what the cloud calls
+        `identifier`, and nothing else in the device record is.
+
+        One pass over the lineup, cached with the channel list itself, because
+        this is 23 signed round trips on a real device and none of it changes
+        until the lineup does. Fetched concurrently: sequentially it is about a
+        second and a half, which is a second and a half of the guide.
+        """
+        if self._channel_details is not None and not refresh:
+            return self._channel_details
+        if self.active_device is None:
+            return {}
+
+        try:
+            paths = await self.request_device("GET", "/guide/channels")
+        except Exception as e:  # noqa: BLE001 - see the docstring on failure
+            print(f"[channels] device lineup unavailable: {e}", flush=True)
+            return {}
+
+        gate = asyncio.Semaphore(8)
+
+        async def one(path: str) -> tuple[str, dict] | None:
+            async with gate:
+                try:
+                    rec = (await self.request_device("GET", path)).get("channel") or {}
+                except Exception:  # noqa: BLE001 - one bad channel, not the lineup
+                    return None
+            ident = rec.get("channel_identifier")
+            if not ident:
+                return None
+            flags = rec.get("flags") or []
+            return ident, {
+                "scan": _scan_label(rec.get("resolution"), flags),
+                "interlaced": "interlaced" in flags,
+                "favourite": bool(rec.get("favourite")),
+            }
+
+        found = await asyncio.gather(*(one(p) for p in paths if isinstance(p, str)))
+        self._channel_details = {ident: d for ident, d in filter(None, found)}
+        return self._channel_details
 
     async def channels(self, refresh: bool = False, include_ott: bool = True) -> list[TabloChannel]:
         """Get channels from Tablo (OTA + OTT)."""
@@ -199,10 +340,16 @@ class AppState:
         resp = await self._request_device_raw(method, path, body)
         return resp.json()
 
-    async def _request_device_raw(self, method: str, path: str, body: str = ""):
+    async def _request_device_raw(
+        self, method: str, path: str, body: str = "", follow_redirects: bool = False
+    ):
         """Signed device request returning the raw httpx response.
 
         Used directly for non-JSON responses such as snapshot images.
+
+        `follow_redirects` is off by default and only `fetch_device_image` turns
+        it on. On the API port a redirect means something unexpected happened;
+        on the image path it is the normal answer. See `fetch_device_image`.
         """
         if self.active_device is None:
             raise RuntimeError("No active device")
@@ -219,14 +366,32 @@ class AppState:
                 "Authorization": auth_header,
                 "Date": date_header,
                 "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
-            }
+            },
+            follow_redirects=follow_redirects,
         )
         resp.raise_for_status()
         return resp
 
     async def fetch_device_image(self, image_id: int) -> tuple[bytes, str]:
-        """Fetch a snapshot image from the device. Returns (bytes, content_type)."""
-        resp = await self._request_device_raw("GET", f"/images/{int(image_id)}")
+        """Fetch an image from the device. Returns (bytes, content_type).
+
+        Follows redirects, which is the whole trick. `/images/{id}` returns a
+        body for a few ids and a 302 for most, pointing at the device's *stream*
+        port: `http://<device>:80/stream/thumb?id=...&path=<base64>`. Measured
+        on a real guide, 157 of 160 imminent cover images answered that way.
+
+        Without following it, `raise_for_status` turns every one into an error
+        and `guide_images.get` reports it as an absent poster - which is silent
+        by design, so the symptom is simply that almost no sheet has artwork.
+
+        This is the same split `start_recording_session` documents: media lives
+        on port 80, the API on 8887, and `local_url` is the API. httpx drops the
+        Authorization header on a cross-origin hop, which is correct here - the
+        redirect target carries its own signed `path` parameter.
+        """
+        resp = await self._request_device_raw(
+            "GET", f"/images/{int(image_id)}", follow_redirects=True
+        )
         return resp.content, resp.headers.get("content-type", "image/jpeg")
 
     async def start_recording_session(self, path: str) -> dict:
@@ -289,52 +454,181 @@ class AppState:
 
         return logo_map, identifiers
 
-    async def _fetch_cloud_airings(self, identifiers: list[str]) -> dict:
-        """Fetch current airing for each OTT channel identifier (parallel, semaphore-limited).
+    @staticmethod
+    def _airing_on_now(airings: list, now: datetime | None = None) -> dict | None:
+        """Whichever of `airings` is on air, or None.
 
-        Returns airing_map keyed by identifier.
+        The cloud schedule is a full timeline now, so the current programme has
+        to be picked out of it rather than handed over ready-made as the
+        single-airing endpoint used to do.
         """
-        if self.active_device is None or not identifiers:
+        at = now or datetime.now(timezone.utc)
+        for air in airings:
+            start_str = air.get("start")
+            if not start_str:
+                continue
+            try:
+                start = datetime.fromisoformat(str(start_str).replace("Z", "+00:00"))
+                end = start + timedelta(seconds=air.get("duration") or 0)
+                if start <= at < end:
+                    return air
+            except ValueError:
+                continue
+        return None
+
+    # Which cloud artwork the sheet wants, best first.
+    #
+    # The hero is a 16:9 frame, so the wide kinds come first and `poster` - a
+    # 2:3 portrait - is the last resort rather than the first. An episode still
+    # beats a series cover because it is about this episode. Kinds outside this
+    # list are ignored rather than guessed at: an unrecognised name could be
+    # any shape, and a banner stretched across the hero looks like a bug.
+    _CLOUD_IMAGE_KINDS = ("stillLarge", "coverLarge", "background",
+                          "stillSmall", "coverSmall", "poster")
+
+    @staticmethod
+    def _cloud_image_url(images: list | None) -> str | None:
+        """The best available artwork URL from a cloud airing, or None."""
+        by_kind = {
+            i.get("kind"): i.get("url")
+            for i in (images or []) if isinstance(i, dict) and i.get("url")
+        }
+        for kind in AppState._CLOUD_IMAGE_KINDS:
+            if by_kind.get(kind):
+                return by_kind[kind]
+        return None
+
+    @staticmethod
+    def _cloud_airing_row(a: dict) -> dict:
+        """One cloud airing, in the shape the mirror stores.
+
+        The naming is inverted relative to the device, and getting it wrong is
+        silent: the cloud's `title` is the *episode* and `show.title` is the
+        programme, where the device has `airing_details.show_title` for the
+        programme and `episode.title` for the episode. Mapping `title` to
+        `title` puts "Oh, the Humidity!" in the grid cell and loses "Weather
+        Hunters" altogether.
+
+        Movies and one-off events repeat the same string in both fields, so the
+        episode title is dropped when it matches - otherwise the sheet renders
+        the title twice, once under itself.
+
+        `airing_path`, `series_path` and the schedule fields stay None. The
+        cloud has no device paths, and a non-null `airing_path` that is not one
+        would be a PATCH target that 404s. See docs/tablo-api.md.
+        """
+        show = a.get("show") or {}
+        ep = a.get("episode") or {}
+        season = ep.get("season") or {}
+
+        programme = _unescape(show.get("title") or a.get("title"))
+        episode_title = _unescape(a.get("title"))
+        if episode_title == programme:
+            episode_title = None
+
+        # `season.number` is 0 on plenty of real records - 500.1 is full of
+        # them - and that means "no season", not "season zero". The `kind`
+        # field exists at all because the slot is not always a season index, so
+        # anything other than "number" is not one either.
+        season_number = season.get("number")
+        if season.get("kind") != "number" or not season_number:
+            season_number = None
+
+        return {
+            "title": programme,
+            "subtitle": None,
+            "description": _unescape(a.get("description")),
+            "start": a.get("datetime"),
+            "duration": a.get("duration"),
+            "genres": a.get("genres") or [],
+            "kind": a.get("kind"),
+            "episode_title": episode_title,
+            "season_number": season_number,
+            "episode_number": ep.get("episodeNumber"),
+            "orig_air_date": ep.get("originalAirDate"),
+            # An absolute CDN URL, not a device image id. OTT airings have no
+            # series record to hang a cover on, and the browser already loads
+            # channel logos from this host - so no proxy and no server-side
+            # fetch is involved. See docs/tablo-api.md.
+            "image_url": AppState._cloud_image_url(a.get("images")),
+            # Display source only - the cloud carries no device handles.
+            "series_path": None,
+            "airing_path": None,
+            "schedule_state": None,
+            "schedule_qualifier": None,
+            "skip_reason": None,
+        }
+
+    async def _fetch_cloud_schedule(
+        self, days: int = CLOUD_GUIDE_DAYS, today: str | None = None
+    ) -> dict[str, list[dict]]:
+        """The cloud guide, keyed by channel identifier. Never raises.
+
+        This is the only source of OTT/FAST schedules - the device returns zero
+        airings for every one of them.
+
+        Two undocumented parameters do the work. `limit=50` collapses the
+        grid's four-channels-per-page pagination into a single response, and
+        `day` walks forward; nothing else moves the window. So the whole
+        14-day guide for every channel is `days` requests, against the ~9,166
+        the device walk costs for the same period.
+
+        Consecutive days overlap at their edges because the grid's day boundary
+        is local rather than UTC, so airings are keyed on start and deduped.
+        """
+        if self.active_device is None:
             return {}
         host, headers = self._cloud_headers()
         token = self.active_device.lighthouse_token
-        sem = asyncio.Semaphore(20)
+        start = (
+            datetime.fromisoformat(today) if today
+            else datetime.now(timezone.utc)
+        )
+        url = f"{host}/api/v2/account/{token}/guide/grid/"
+        sem = asyncio.Semaphore(CLOUD_GUIDE_CONCURRENCY)
 
-        async def fetch_one(ident: str):
+        async def fetch_day(offset: int):
+            day = (start + timedelta(days=offset)).strftime("%Y-%m-%d")
             async with sem:
                 try:
                     r = await self._http.get(
-                        f"{host}/api/v2/account/{token}/guide/channels/{ident}/airings/",
-                        headers=headers,
-                        timeout=10,
+                        url, headers=headers,
+                        params={"limit": 50, "day": day}, timeout=30,
                     )
-                    if r.status_code == 200:
-                        items = r.json()
-                        if isinstance(items, list) and items:
-                            a = items[0]
-                            return ident, {
-                                "title": a.get("title") or a.get("show", {}).get("title"),
-                                "description": a.get("description"),
-                                "start": a.get("datetime"),
-                                "duration": a.get("duration"),
-                                "genres": a.get("genres") or [],
-                                "kind": a.get("kind"),
-                            }
+                    if r.status_code != 200:
+                        return []
+                    return (r.json() or {}).get("grid") or []
                 except Exception:
-                    pass
-                return ident, None
+                    return []
 
-        results = await asyncio.gather(*[fetch_one(i) for i in identifiers])
-        return {ident: data for ident, data in results if data is not None}
+        pages = await asyncio.gather(*[fetch_day(d) for d in range(days)])
+
+        by_channel: dict[str, dict[str, dict]] = {}
+        for grid in pages:
+            for row in grid:
+                ident = ((row or {}).get("channel") or {}).get("identifier")
+                if not ident:
+                    continue
+                slot = by_channel.setdefault(ident, {})
+                for a in row.get("airings") or []:
+                    mapped = AppState._cloud_airing_row(a)
+                    if mapped["start"]:
+                        slot[mapped["start"]] = mapped
+
+        return {
+            ident: [slot[k] for k in sorted(slot)]
+            for ident, slot in by_channel.items()
+        }
 
     async def _fetch_cloud_data(self) -> tuple[dict, dict]:
-        """Fetch OTT channel logos and current airings from the Tablo cloud API.
+        """Fetch cloud channel logos and the cloud guide.
 
-        Returns (logo_map, airing_map) both keyed by channel identifier.
+        Returns (logo_map, schedule_map). The schedule is keyed by channel
+        identifier and each value is the channel's airings, in order.
         """
-        logo_map, identifiers = await self._fetch_cloud_channels()
-        airing_map = await self._fetch_cloud_airings(identifiers)
-        return logo_map, airing_map
+        logo_map, _ = await self._fetch_cloud_channels()
+        schedule = await self._fetch_cloud_schedule()
+        return logo_map, schedule
 
     async def _fetch_guide_enrichment_local(self) -> tuple[dict, dict, dict]:
         """Fetch local device logos and current airings (OTA only).
@@ -416,9 +710,9 @@ class AppState:
     async def _fetch_guide_enrichment(self) -> tuple[dict, dict, dict, dict]:
         """Fetch logo and airing data from local device and cloud in parallel.
 
-        Returns (logo_map, path_to_ident, channel_airing_map, cloud_airing_map).
+        Returns (logo_map, path_to_ident, channel_airing_map, cloud_schedule).
         channel_airing_map is keyed by local channel path (OTA only).
-        cloud_airing_map is keyed by channel identifier (OTT).
+        cloud_schedule is keyed by channel identifier (OTT).
         """
         path_results = await asyncio.gather(
             self.request_device("GET", "/guide/channels"),
@@ -429,11 +723,11 @@ class AppState:
         detail_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
         airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
         cloud_logos: dict
-        cloud_airing_map: dict
+        cloud_schedule: dict
         if isinstance(path_results[2], Exception):
-            cloud_logos, cloud_airing_map = {}, {}
+            cloud_logos, cloud_schedule = {}, {}
         else:
-            cloud_logos, cloud_airing_map = path_results[2]
+            cloud_logos, cloud_schedule = path_results[2]
 
         sem = asyncio.Semaphore(30)
 
@@ -502,7 +796,7 @@ class AppState:
             if ident not in logo_map:
                 logo_map[ident] = url
 
-        return logo_map, path_to_ident, channel_airing_map, cloud_airing_map
+        return logo_map, path_to_ident, channel_airing_map, cloud_schedule
 
     async def get_guide_data(self) -> list[dict]:
         """Aggregate channels with logos and current airing info."""
@@ -510,12 +804,16 @@ class AppState:
             raise RuntimeError("No active device")
 
         channels = await self.channels()
-        logo_map, path_to_ident, channel_airing_map, cloud_airing_map = await self._fetch_guide_enrichment()
+        logo_map, path_to_ident, channel_airing_map, cloud_schedule = await self._fetch_guide_enrichment()
+        details = await self.channel_details()
 
         guide = []
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
-            current_program = (channel_airing_map.get(c_path) if c_path else None) or cloud_airing_map.get(c.identifier)
+            current_program = (
+                (channel_airing_map.get(c_path) if c_path else None)
+                or AppState._airing_on_now(cloud_schedule.get(c.identifier) or [])
+            )
             guide.append({
                 "identifier": c.identifier,
                 "call_sign": c.call_sign,
@@ -526,6 +824,7 @@ class AppState:
                 "display_name": c.display_name,
                 "logo_url": logo_map.get(c.identifier),
                 "current_program": current_program,
+                **_channel_extras(details.get(c.identifier)),
             })
 
         return guide
@@ -541,6 +840,14 @@ class AppState:
 
         channels = await self.channels()
 
+        # Started, not awaited: the lineup's scan types and favourites are 23
+        # signed round trips on a cold cache, and the first paint is not going
+        # to wait on them. Phase 1 goes out without them; every later phase
+        # carries whatever has landed by then, and the client merges by
+        # identifier the same way it does for logos.
+        details_task = asyncio.create_task(self.channel_details())
+        details: dict[str, dict] = {}
+
         def _stub(c, logo_url=None, current_program=None):
             return json.dumps({
                 "identifier": c.identifier,
@@ -552,6 +859,7 @@ class AppState:
                 "display_name": c.display_name,
                 "logo_url": logo_url,
                 "current_program": current_program,
+                **_channel_extras(details.get(c.identifier)),
             }) + "\n"
 
         # Phase 1: bare stubs so the UI renders immediately on cold start.
@@ -567,40 +875,29 @@ class AppState:
 
         # Phase 2: cloud logos fast path — only when enrichment cache is cold
         if not cache_warm:
+            details = await _settled(details_task)
             cloud_logo_map, _ = await self._fetch_cloud_channels()
             for c in channels:
                 if c.identifier in cloud_logo_map:
                     yield _stub(c, logo_url=cloud_logo_map[c.identifier])
 
         # Phase 3: full enrichment via shared grid cache (instant on hit, ~90s on cold start)
+        details = await _settled(details_task)
         try:
-            logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
+            logo_map, path_to_ident, channel_to_airings, cloud_schedule = await asyncio.wait_for(
                 self._build_grid_enrichment(), timeout=90
             )
         except Exception as e:
             print(f"[guide-live] Phase 3 failed: {type(e).__name__}: {e}")
             return
 
-        now = datetime.now(timezone.utc)
-
-        def _current_airing(airings: list) -> dict | None:
-            for air in airings:
-                start_str = air.get("start")
-                if not start_str:
-                    continue
-                try:
-                    start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                    end = start + timedelta(seconds=air.get("duration") or 0)
-                    if start <= now < end:
-                        return air
-                except Exception:
-                    pass
-            return None
-
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
             airings = channel_to_airings.get(c_path, []) if c_path else []
-            current_program = _current_airing(airings) or cloud_airing_map.get(c.identifier)
+            current_program = (
+                AppState._airing_on_now(airings)
+                or AppState._airing_on_now(cloud_schedule.get(c.identifier) or [])
+            )
             yield _stub(c, logo_url=logo_map.get(c.identifier), current_program=current_program)
 
     @staticmethod
@@ -743,13 +1040,133 @@ class AppState:
         ad = data.get("airing_details") or {}
         return path, int(vd.get("duration") or ad.get("duration") or 0)
 
-    async def _build_grid_enrichment(self, max_airings: int = 1000) -> tuple[dict, dict, dict, dict]:
+    @staticmethod
+    def _series_row(data: dict) -> dict:
+        """One series record, as the mirror stores it."""
+        s = data.get("series") or {}
+        keep = data.get("keep") or {}
+
+        def image_id(key: str):
+            return (s.get(key) or {}).get("image_id")
+
+        return {
+            "path": data.get("path"),
+            "identifier": data.get("identifier"),
+            "title": s.get("title"),
+            "description": s.get("description"),
+            "genres": s.get("genres") or [],
+            "rating": s.get("series_rating"),
+            "orig_air_date": s.get("orig_air_date"),
+            "episode_runtime": s.get("episode_runtime"),
+            "cast": s.get("cast") or [],
+            "cover_image_id": image_id("cover_image"),
+            "thumbnail_image_id": image_id("thumbnail_image"),
+            "background_image_id": image_id("background_image"),
+            # Captured, not yet exposed - see docs/tablo-api.md.
+            "schedule_rule": data.get("schedule_rule"),
+            "keep_rule": keep.get("rule"),
+            "keep_count": keep.get("count"),
+        }
+
+    async def sync_series(self, paths: list[str]) -> int:
+        """Fetch and store the series we do not already have. Never raises.
+
+        Runs on the background sync, never on the interactive guide path: a
+        cold guide load spans ~350 distinct series, and 350 round trips is the
+        wrong thing to put in front of someone waiting for the grid.
+        """
+        if self.active_device is None:
+            return 0
+        wanted = await _run_sync(store.series_needing_refresh, paths)
+        if not wanted:
+            return 0
+
+        sem = asyncio.Semaphore(SERIES_SYNC_CONCURRENCY)
+
+        async def fetch(path: str):
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:
+                    return None
+
+        results = [r for r in await asyncio.gather(*[fetch(p) for p in wanted]) if r]
+        if not results:
+            return 0
+        rows = [AppState._series_row(r) for r in results]
+        await _run_sync(store.save_series, rows)
+        return len(rows)
+
+    async def prefetch_artwork(self) -> int:
+        """Warm the cache for what airs soon. Never raises.
+
+        Paired with `sync_series`: that fills in which image each series has,
+        this fetches the ones a viewer is about to be able to see.
+        """
+        from . import guide_images
+
+        ids = await _run_sync(store.imminent_cover_ids)
+        missing = [i for i in ids if not guide_images.cached_path(i).exists()]
+        if not missing:
+            return 0
+        sem = asyncio.Semaphore(SERIES_SYNC_CONCURRENCY)
+
+        async def one(image_id: int):
+            async with sem:
+                return await guide_images.get(image_id, self.fetch_device_image)
+
+        got = await asyncio.gather(*[one(i) for i in missing])
+        return sum(1 for g in got if g)
+
+    @staticmethod
+    def _airing_row(a: dict) -> dict:
+        """One guide airing, as the mirror stores it.
+
+        Extracted from the loop in `_build_grid_enrichment` so it can be tested
+        without a device, and widened: the record carries an `episode` object
+        and a `schedule` block that the previous six-field mapping discarded.
+        Both arrive in a response already being fetched, so keeping them costs
+        nothing.
+
+        `airing_path` is the PATCH target for recording management (see
+        docs/tablo-api.md). It is captured now so that work needs no
+        migration and no re-sync.
+        """
+        ad = a.get("airing_details") or {}
+        ep = a.get("episode") or {}
+        sched = a.get("schedule") or {}
+        return {
+            "title": ad.get("show_title"),
+            "description": ep.get("description") or (a.get("series") or {}).get("description"),
+            "start": ad.get("datetime"),
+            "duration": ad.get("duration"),
+            "genres": ad.get("genres") or [],
+            "kind": ad.get("event_type"),
+            # Displayed by the show sheet.
+            "episode_title": ep.get("title"),
+            "season_number": ep.get("season_number"),
+            "episode_number": ep.get("number"),
+            "orig_air_date": ep.get("orig_air_date"),
+            "series_path": a.get("series_path"),
+            # Captured, not yet exposed - see docs/tablo-api.md.
+            "airing_path": a.get("path"),
+            "schedule_state": sched.get("state"),
+            "schedule_qualifier": sched.get("qualifier"),
+            "skip_reason": sched.get("skip_reason"),
+        }
+
+    async def _build_grid_enrichment(self, max_airings: int = 1000, concurrency: int = 30) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
-        Returns (logo_map, path_to_ident, channel_to_airings, cloud_airing_map).
+        Returns (logo_map, path_to_ident, channel_to_airings, cloud_schedule).
         Results are cached for _GRID_CACHE_TTL seconds so repeated guide loads
         don't re-fetch hundreds of airing detail records from the device.
         The EPG endpoint passes max_airings=15000 and bypasses the cache.
+
+        `concurrency` bounds how many device requests are in flight at once.
+        The background guide sync (up to 8455 airings) passes a value lower
+        than the interactive default so it does not starve a concurrent seek -
+        the Tablo saturates around 10x realtime, and it is shared with playback.
         """
         import time as _time
 
@@ -769,13 +1186,13 @@ class AppState:
         local_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
         airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
         cloud_logos: dict
-        cloud_airing_map: dict
+        cloud_schedule: dict
         if isinstance(path_results[2], Exception):
-            cloud_logos, cloud_airing_map = {}, {}
+            cloud_logos, cloud_schedule = {}, {}
         else:
-            cloud_logos, cloud_airing_map = path_results[2]
+            cloud_logos, cloud_schedule = path_results[2]
 
-        sem = asyncio.Semaphore(30)
+        sem = asyncio.Semaphore(concurrency)
 
         async def fetch_detail(path):
             async with sem:
@@ -814,37 +1231,34 @@ class AppState:
             if ident not in logo_map:
                 logo_map[ident] = url
 
-        cloud_airing_map_local = cloud_airing_map  # rename for closure clarity
+        cloud_schedule_local = cloud_schedule  # rename for closure clarity
         channel_to_airings: dict = {}
         for a in airing_details:
             if not a or "airing_details" not in a:
                 continue
-            ad = a["airing_details"]
-            c_path = ad.get("channel_path")
+            c_path = (a["airing_details"] or {}).get("channel_path")
             if not c_path:
                 continue
-            channel_to_airings.setdefault(c_path, []).append({
-                "title": ad.get("show_title"),
-                "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
-                "start": ad.get("datetime"),
-                "duration": ad.get("duration"),
-                "genres": ad.get("genres") or [],
-                "kind": ad.get("event_type"),
-            })
+            channel_to_airings.setdefault(c_path, []).append(AppState._airing_row(a))
 
-        result = logo_map, path_to_ident, channel_to_airings, cloud_airing_map_local
+        result = logo_map, path_to_ident, channel_to_airings, cloud_schedule_local
         if use_cache:
             async with self._grid_cache_lock:
                 self._grid_cache = result
                 self._grid_cache_time = _time.monotonic()
         return result
 
-    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_airing_map: dict) -> dict:
+    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
         airings = channel_to_airings.get(c_path, []) if c_path else []
-        # For OTT channels with no local airings, inject cloud current program
-        if not airings and c.identifier in cloud_airing_map:
-            airings = [cloud_airing_map[c.identifier]]
+        # OTT/FAST channels have no device schedule at all, so the cloud is not
+        # a fallback here - it is the only source. This used to inject a single
+        # current programme, which is why those rows drew exactly one cell.
+        #
+        # The device still wins where it has anything, because its records
+        # carry the recording handles the cloud has no equivalent for.
+        if not airings:
+            airings = list(cloud_schedule.get(c.identifier) or [])
         airings.sort(key=lambda x: x.get("start") or "")
         return {
             "identifier": c.identifier,
@@ -861,30 +1275,91 @@ class AppState:
             "airings": airings,
         }
 
-    async def get_grid_guide(self) -> list[dict]:
+    async def get_grid_guide(self, max_airings: int = 1000, concurrency: int = 30) -> list[dict]:
         """The grid guide: channels plus their upcoming airings.
 
         Served from the database when it is fresh enough. Previously the only
         cache was in process memory, so every restart paid a cold rebuild of
         hundreds of airing records from the device.
+
+        The stored-guide short-circuit only applies at the default
+        `max_airings`. A caller asking for more (the background guide sync
+        passes 15000) wants a deeper fetch than the grid already cached -
+        serving the stored guide back to it would just hand it its own mirror,
+        and the mirror would never deepen past what the interactive grid path
+        happens to have cached.
         """
-        stored = await self._stored_guide()
-        if stored is not None:
-            return stored
+        if max_airings == 1000:
+            stored = await self._stored_guide()
+            if stored is not None:
+                return stored
 
         if self.active_device is None:
             raise RuntimeError("No active device")
-        channels = await self.channels()
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        # refresh=True, because `self._channels` has no TTL of its own - it is
+        # only cleared when the device changes. Without this, a channel the
+        # account has since dropped survives every guide rebuild and only
+        # disappears when the process restarts, which made the hour-long guide
+        # TTL above look like it expired the channel list when it did not.
+        # Only reached when the stored guide was already stale, so this costs
+        # no extra device traffic at rest.
+        channels = await self.channels(refresh=True)
+        logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(
+            max_airings=max_airings, concurrency=concurrency
+        )
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
             for c in channels
         ]
         try:
             await _run_sync(store.save_guide, rows)
-        except Exception as e:  # noqa: BLE001 - caching must not fail the request
+        except Exception as e:
             print(f"[db] could not store guide: {e}", flush=True)
         return rows
+
+    async def refresh_channel_list(self) -> dict:
+        """Re-fetch the account's channel list and rebuild the guide from it.
+
+        Not a tuner scan. `TabloClient.channels` is a GET against the Tablo
+        cloud guide for this device - the same list read on first connect - so
+        nothing here touches the antenna and a channel disabled in the Tablo
+        app disappears because their cloud stops listing it, not because the
+        broadcast changed.
+
+        Deliberately does not go through `get_grid_guide`, which returns the
+        stored guide whenever it is fresh and would make this a no-op for an
+        hour after any normal load. Every cache between the device and the grid
+        is dropped first, in order: the channel list, the enrichment cache, and
+        then the stored guide by way of `save_guide` stamping a newer sync -
+        `load_guide` returns only channels carrying the newest stamp, so a
+        dropped channel stops appearing while its airing history stays on disk
+        for the search index.
+        """
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        before = {c.identifier for c in (self._channels or [])}
+
+        self._channels = None
+        self._channel_details = None
+        async with self._grid_cache_lock:
+            self._grid_cache = None
+            self._grid_cache_time = 0.0
+
+        channels = await self.channels(refresh=True)
+        logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment()
+        rows = [
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
+            for c in channels
+        ]
+        await _run_sync(store.save_guide, rows)
+
+        after = {c.identifier for c in channels}
+        return {
+            "channels": len(rows),
+            "added": sorted(after - before),
+            "removed": sorted(before - after),
+        }
 
     async def _stored_guide(self) -> list[dict] | None:
         """The stored guide, if it is fresh and still has something to show.
@@ -897,7 +1372,7 @@ class AppState:
             if age is None or age > self._GRID_CACHE_TTL:
                 return None
             rows = await _run_sync(store.load_guide)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[db] could not read guide: {e}", flush=True)
             return None
         if not rows or not any(r.get("airings") for r in rows):
@@ -909,8 +1384,8 @@ class AppState:
         if self.active_device is None:
             raise RuntimeError("No active device")
         channels = await self.channels()
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment(max_airings=15000)
-        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map) for c in channels]
+        logo_map, path_to_ident, channel_to_airings, cloud_schedule = await self._build_grid_enrichment(max_airings=15000)
+        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule) for c in channels]
 
     async def stream_grid_guide_data(self):
         """Async generator for NDJSON grid guide streaming.
@@ -930,7 +1405,10 @@ class AppState:
         if self.active_device is None:
             raise RuntimeError("No active device")
 
-        channels = await self.channels()
+        # refresh=True for the same reason as `get_grid_guide`: only reached
+        # when the stored guide is already stale, and without it a dropped
+        # channel is pinned in memory until the process restarts.
+        channels = await self.channels(refresh=True)
 
         # Phase 1: channel stubs — grid rows appear immediately
         for c in channels:
@@ -948,14 +1426,14 @@ class AppState:
 
         # Phase 2: enriched rows with logos and timelines (90s hard timeout)
         try:
-            logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
+            logo_map, path_to_ident, channel_to_airings, cloud_schedule = await asyncio.wait_for(
                 self._build_grid_enrichment(), timeout=90
             )
         except Exception as e:
             print(f"[guide-grid] Phase 2 failed: {type(e).__name__}: {e}")
             return
         rows = [
-            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)
+            self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_schedule)
             for c in channels
         ]
         for row in rows:
@@ -964,7 +1442,7 @@ class AppState:
         # Stored after streaming so the client is never kept waiting on a write.
         try:
             await _run_sync(store.save_guide, rows)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[db] could not store guide: {e}", flush=True)
 
     def stop_session(self, session_id: str) -> None:

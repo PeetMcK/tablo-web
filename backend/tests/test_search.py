@@ -7,9 +7,14 @@ from app import db, store
 from app import search as search_mod
 
 
-def test_schema_is_at_version_two():
+def test_the_search_migration_has_run():
+    """`>=`, not `==`: this asserts v2 landed, not that v2 is the newest.
+
+    Pinning the literal made every later migration break a search test that
+    has nothing to say about it.
+    """
     row = db.query_one("PRAGMA user_version")
-    assert row[0] == 2
+    assert row[0] >= 2
 
 
 def test_index_tables_exist():
@@ -42,6 +47,35 @@ def test_fts_follows_a_delete():
     assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'broncos'")
 
 
+def test_coverage_excludes_a_sync_older_than_the_retention_window():
+    """`since` must not outlive the airings that back it up.
+
+    `guide_sync` rows are never pruned, but `prune_guide` deletes airings once
+    they are older than GUIDE_RETENTION_DAYS. A sync from outside that window
+    is therefore not evidence of anything still on disk, and must not be
+    reported as the start of trustworthy history.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.store import GUIDE_RETENTION_DAYS
+
+    now = datetime.now(timezone.utc)
+    stale = (now - timedelta(days=GUIDE_RETENTION_DAYS + 5)).isoformat(timespec="seconds")
+    fresh = (now - timedelta(days=GUIDE_RETENTION_DAYS - 5)).isoformat(timespec="seconds")
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO guide_sync(started_at, finished_at, ok) VALUES (?, ?, 1)",
+            (stale, stale),
+        )
+        conn.execute(
+            "INSERT INTO guide_sync(started_at, finished_at, ok) VALUES (?, ?, 1)",
+            (fresh, fresh),
+        )
+
+    cov = search_mod.coverage()
+    assert cov["since"] == fresh
+
+
 def _ch(ident="ch1", **kw):
     base = {
         "identifier": ident, "call_sign": "KPAX", "major": 8, "minor": 1,
@@ -64,6 +98,25 @@ def test_saving_the_guide_indexes_channels_and_airings():
     assert kinds["channel"]["title"] == "KPAX"
     assert kinds["airing"]["title"] == "Survivor"
     assert kinds["airing"]["channel"] == "8.1 CBS"
+
+
+def test_an_airing_target_carries_both_halves_of_its_key():
+    """Opening the show sheet needs (channel, start), so the target states both.
+
+    Without `channel_id` the only way to the channel is splitting `ref` on its
+    separator, which would freeze `index_airing`'s key format into the API.
+    """
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+    store.save_guide([_ch(ident="S34654_008_01", airings=[{
+        "title": "NFL Football", "subtitle": "", "description": "",
+        "start": start, "duration": 12300, "genres": [], "kind": "sportEvent",
+    }])], now=now)
+
+    row = db.query_one("SELECT target FROM search_doc WHERE kind = 'airing'")
+    assert json.loads(row["target"]) == {
+        "tab": "grid", "at": start, "channel_id": "S34654_008_01",
+    }
 
 
 def test_reindexing_the_same_airing_does_not_duplicate_it():
@@ -180,6 +233,35 @@ def _doc(kind, ref, title, body="", channel="8.1 CBS", start=0):
         )
 
 
+def test_ties_rank_upcoming_before_past():
+    """Repeat airings of one programme share title, subtitle, body and
+    channel, so bm25 cannot break the tie - identical rank is the common case
+    here, not the exotic one. Every surface truncates, so which of several
+    tied rows survive IS the feature: an upcoming showing must not be buried
+    under stored history that happened to air earlier in calendar order.
+    """
+    now = int(time.time())
+    _doc("airing", "a|past", "Survivor", start=now - 3600)
+    _doc("airing", "a|future", "Survivor", start=now + 3600)
+
+    items = search_mod.search("survivor")["groups"][0]["items"]
+    assert [i["ref"] for i in items] == ["a|future", "a|past"]
+
+
+def test_past_ties_rank_most_recent_first():
+    """Among two past showings tied on rank, the nearer one to now wins.
+
+    Plain ascending order (the previous tiebreak) put the oldest of the two
+    first instead.
+    """
+    now = int(time.time())
+    _doc("airing", "a|older", "Survivor", start=now - 7200)
+    _doc("airing", "a|newer", "Survivor", start=now - 3600)
+
+    items = search_mod.search("survivor")["groups"][0]["items"]
+    assert [i["ref"] for i in items] == ["a|newer", "a|older"]
+
+
 def test_a_title_match_outranks_a_description_match():
     """Every surface truncates, so which results appear IS the feature."""
     _doc("airing", "a|1", "Broncos at Chiefs", body="afc west")
@@ -231,3 +313,178 @@ def test_punctuation_in_a_query_does_not_break_fts():
     _doc("airing", "a|1", "Rick Steves' Europe")
     out = search_mod.search('steves"')
     assert out["groups"]
+
+
+def test_a_past_airing_says_whether_it_was_recorded():
+    """Searching backwards is about whether you missed something."""
+    aired = 1_760_000_000
+    _doc("airing", "ch1|x", "Broncos at Chiefs", start=aired)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+            "    channel, start_epoch, duration, target) "
+            "VALUES ('recording', '80888', 'Broncos at Chiefs', '', '', "
+            "        '8.1 CBS', ?, 3600, '{}')",
+            (aired + 60,),        # a recording starts a touch late
+        )
+
+    item = search_mod.search("broncos", kinds=["airing"])["groups"][0]["items"][0]
+    assert item["recorded"] == {"object_id": 80888}
+
+
+def test_a_different_showing_of_the_same_title_is_not_claimed_as_recorded():
+    """Repeats share a title; only a near-simultaneous start is the same showing."""
+    aired = 1_760_000_000
+    _doc("airing", "ch1|y", "Broncos at Chiefs", start=aired)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO search_doc(kind, ref, title, subtitle, body, "
+            "    channel, start_epoch, duration, target) "
+            "VALUES ('recording', '999', 'Broncos at Chiefs', '', '', "
+            "        '8.1 CBS', ?, 3600, '{}')",
+            (aired + 1800,),      # half an hour off: a different showing
+        )
+
+    item = search_mod.search("broncos", kinds=["airing"])["groups"][0]["items"][0]
+    assert item["recorded"] is None
+
+
+def test_an_upcoming_airing_is_not_cross_referenced():
+    import time
+    _doc("airing", "ch1|z", "Future Game", start=int(time.time()) + 86_400)
+    item = search_mod.search("future", kinds=["airing"])["groups"][0]["items"][0]
+    assert item["recorded"] is None
+
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_search_requires_auth():
+    assert client.get("/api/search?q=broncos").status_code == 401
+
+
+def test_limit_is_clamped_rather_than_rejected(monkeypatch):
+    """A surface asking for too much should get a lot, not an error."""
+    import app.routes.search as route
+
+    # is_authenticated is a read-only @property (`return self.auth is not None`),
+    # so it cannot be set directly on the instance - monkeypatch the underlying
+    # `auth` attribute instead to fake an authenticated session.
+    monkeypatch.setattr(route.state, "auth", object())
+    _doc("airing", "a|1", "Survivor")
+    r = client.get("/api/search?q=survivor&limit=9999")
+    assert r.status_code == 200
+    assert r.json()["groups"][0]["items"]
+
+
+def _authed(monkeypatch):
+    import app.routes.search as route
+    monkeypatch.setattr(route.state, "auth", object())
+
+
+def test_a_trailing_comma_does_not_wipe_out_a_valid_kind(monkeypatch):
+    """'airing,' must filter to airing, not match nothing.
+
+    A bare split-on-comma leaves a trailing empty token in the list, which
+    defeats the `not kinds` "no filter" fallback downstream and silently
+    returns zero groups - indistinguishable from a real no-match.
+    """
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    _doc("recording", "1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=airing,").json()
+    want = client.get("/api/search?q=survivor&kinds=airing").json()
+    assert got == want
+    assert [g["kind"] for g in got["groups"]] == ["airing"]
+
+
+def test_stray_commas_alone_mean_no_filter(monkeypatch):
+    """',,' has no real kind in it, so it must behave like no filter at all."""
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    _doc("recording", "1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=,,").json()
+    want = client.get("/api/search?q=survivor").json()
+    assert got == want
+    assert {g["kind"] for g in got["groups"]} == {"airing", "recording"}
+
+
+def test_a_leading_comma_does_not_wipe_out_a_valid_kind(monkeypatch):
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=,airing").json()
+    assert [g["kind"] for g in got["groups"]] == ["airing"]
+
+
+def test_an_unknown_kind_still_matches_nothing(monkeypatch):
+    """A real, named, unrecognized kind is not the same bug as a stray comma."""
+    _authed(monkeypatch)
+    _doc("airing", "a|1", "Survivor")
+    got = client.get("/api/search?q=survivor&kinds=bogus").json()
+    assert got["groups"] == []
+
+
+def _rec(object_id: int, title: str) -> dict:
+    return {
+        "object_id": object_id, "title": title, "subtitle": "", "description": "",
+        "start": "2026-09-15T00:15:00Z", "duration": 60, "channel": None,
+    }
+
+
+def test_a_deleted_recording_leaves_the_index():
+    """A listing known to be complete is also a statement about what is gone.
+
+    Left in, a deleted recording is still offered by search, and clicking the
+    result fails - which is worse than it simply not being there.
+    """
+    store.index_recordings([_rec(1, "Kept"), _rec(2, "Deleted")])
+    assert len(db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")) == 2
+
+    store.index_recordings([_rec(1, "Kept")], prune=True)
+
+    refs = [r["ref"] for r in db.query("SELECT ref FROM search_doc WHERE kind = 'recording'")]
+    assert refs == ["1"]
+    # And it is gone from the text index too, not just the table behind it.
+    assert not db.query("SELECT 1 FROM search_fts WHERE search_fts MATCH 'deleted'")
+
+
+def test_an_incomplete_listing_deletes_nothing():
+    """Truncated and shrunken look identical from inside the index.
+
+    Only the caller knows which it is holding, so pruning is off unless it
+    says otherwise - see `/recordings`, which compares what it fetched against
+    the device's own count.
+    """
+    store.index_recordings([_rec(1, "Kept"), _rec(2, "Also kept")])
+    store.index_recordings([_rec(1, "Kept")])
+
+    assert len(db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")) == 2
+
+
+def test_an_empty_complete_listing_empties_the_library():
+    """Everything deleted on the device is a real state, not a missing answer."""
+    store.index_recordings([_rec(1, "Kept")])
+    store.index_recordings([], prune=True)
+
+    assert not db.query("SELECT 1 FROM search_doc WHERE kind = 'recording'")
+
+
+def test_pruning_recordings_leaves_the_guide_alone():
+    """The prune is scoped to one kind; airings and channels are another
+    writer's business entirely."""
+    now = time.time()
+    store.save_guide([_ch(airings=[{
+        "title": "Survivor", "subtitle": "", "description": "",
+        "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600)),
+        "duration": 3600, "genres": [], "kind": "episode",
+    }])], now=now)
+    store.index_recordings([_rec(1, "Kept")])
+
+    store.index_recordings([], prune=True)
+
+    assert db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+    assert db.query("SELECT 1 FROM search_doc WHERE kind = 'channel'")

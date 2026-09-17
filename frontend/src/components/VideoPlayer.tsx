@@ -1,14 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { useQuery } from "@tanstack/react-query";
-import { X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize } from "lucide-react";
+import {
+  X, Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize,
+  PictureInPicture2,
+} from "lucide-react";
+import { PictureInPictureExit } from "./icons";
 import { usePlayer } from "../hooks/usePlayer";
 import { api, previewUrl } from "../api/tablo";
 import type {
   Channel, Program, Recording, CacheState, EncodingProgress,
 } from "../api/tablo";
-import { log, fmt, isCached, rangesLabel, installSnapshot } from "../lib/debug";
 import {
-  airingAt, clampSkip, covers, programWindow, readyRange, type LiveAnchor,
+  log, fmt, isCached, rangesLabel, installSnapshot, timeRangesToArray,
+} from "../lib/debug";
+import {
+  airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
+  programWindow, readyRange, type LiveAnchor,
 } from "../lib/playback";
 import { createHlsSurface, type PlaybackSurface } from "../lib/playbackSurface";
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
@@ -41,11 +49,20 @@ interface Props {
  */
 const COMMIT_DEBOUNCE_MS = 280;
 
+/**
+ * How long a stall must last before it earns the waiting overlay.
+ *
+ * The media element reports a stall the instant the playhead moves, so a skip
+ * into buffered video announces one and takes it back a millisecond later.
+ * Painting on the event itself strobed the panel on every press of the skip
+ * buttons — dozens of times a minute during normal watching, each one lasting
+ * a few frames. A real wait, the kind this overlay exists to explain, is a
+ * window being encoded and runs for seconds; it still shows, a beat late.
+ */
+const STALL_GRACE_MS = 1000;
+
 /** Must not exceed the backend's LIVE_DVR_MINUTES window (default 60). */
 const LIVE_DVR_SECONDS = 3600;
-
-/** Within this many seconds of the seekable end counts as "at the live edge". */
-const LIVE_EDGE_THRESHOLD = 12;
 
 /**
  * Encoder lead a live stream needs before playback starts, in seconds.
@@ -54,6 +71,15 @@ const LIVE_EDGE_THRESHOLD = 12;
  * Used as the denominator of the progress shown while the stream is blocked.
  */
 const LIVE_LEAD_SECONDS = 12;
+
+/**
+ * How often a live session says it is still wanted, in milliseconds.
+ *
+ * Well inside the backend's LIVE_IDLE_SECONDS (default 120), which is what
+ * reaps a transcode whose player is gone — several heartbeats have to be missed
+ * before a session that is merely slow is taken for an abandoned one.
+ */
+const KEEPALIVE_MS = 30_000;
 
 /**
  * Seeking into an un-encoded window makes the backend transcode it before
@@ -72,6 +98,23 @@ const RECORDING_FRAG_TIMEOUT = 120_000;
  * demand cold windows the viewer may never reach.
  */
 const RECORDING_BUFFER_SECONDS = 180;
+
+/**
+ * How far up from the bottom of a pop-out window summons the transport.
+ *
+ * Generous enough to catch a pointer on its way down without being so tall
+ * that half a small window counts as the control area.
+ */
+const PIP_BAR_REACH = 96;
+
+/**
+ * How long the pop-out's transport stays after the pointer leaves its reach.
+ *
+ * Matched to the chrome's own 300ms fade with room either side: short enough
+ * that a window left alone is a picture again, long enough to cross the
+ * boundary without the bar strobing.
+ */
+const PIP_BAR_LINGER = 750;
 
 /**
  * Legibility halo for chrome that sits bare on the gradient scrim.
@@ -159,13 +202,143 @@ function formatTime(seconds: number): string {
     : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** The three invisible click targets across the picture. */
+type SurfaceZone = "back" | "play" | "forward";
+
+/**
+ * Which zone a point across the frame falls in: two fifths, one, two.
+ *
+ * One definition for both the click and the highlight that previews it. Two
+ * copies of these fractions would be free to drift, and a button that lights
+ * up without being the one that fires is worse than no highlight at all.
+ */
+function zoneAtEvent(e: React.MouseEvent<HTMLDivElement>): SurfaceZone | null {
+  const rect = e.currentTarget.getBoundingClientRect();
+  if (!rect.width) return null;
+  const x = (e.clientX - rect.left) / rect.width;
+  if (x < 0.4) return "back";
+  if (x > 0.6) return "forward";
+  return "play";
+}
+
+/**
+ * What `Stage` renders from. Assembled by VideoPlayer, handed across
+ * unchanged, and destructured back into the same names on arrival.
+ */
+interface PlayerView {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  rootRef: React.RefObject<HTMLDivElement | null>;
+  // No host ref here, deliberately. Each stage keeps its own — see `Stage`.
+  placeVideo: (host: HTMLDivElement, forPip: boolean) => void;
+  barRef: React.RefObject<HTMLDivElement | null>;
+  showControls: boolean;
+  resetHideTimer: () => void;
+  handleSurfaceClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  holdControls: (held: boolean) => void;
+  loading: boolean;
+  combinedError: string | null;
+  onClose: () => void;
+  waiting: boolean;
+  waitPct: number | null;
+  /**
+   * Whether this stage is the one in the popped-out window.
+   *
+   * The markup is the same either side, so anything that differs between the
+   * two has to be told which side it is on: the chrome sizes down to the
+   * smaller window, and the picture-in-picture button turns around — out of
+   * the tab there, back into it here.
+   */
+  poppedOut: boolean;
+  togglePictureInPicture: () => void;
+  enterFullscreen: () => void;
+  paused: boolean;
+  togglePlay: () => void;
+  skip: (delta: number) => void;
+  muted: boolean;
+  toggleMute: () => void;
+  isLive: boolean;
+  atLiveEdge: boolean;
+  goLive: () => void;
+  title: string;
+  subtitle: string | null;
+  program: Program | null | undefined;
+  programRemaining: number;
+  barStart: number;
+  barEnd: number;
+  span: number;
+  pct: number;
+  shownPos: number;
+  rangeEnd: number;
+  readyBands: { key: string; left: number; width: number }[];
+  hoverAt: number | null;
+  scrubbing: boolean;
+  shownPreview: string | null;
+  fineFactor: number;
+  onBarPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onBarPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onBarPointerUp: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onBarKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
+  setHoverAt: (t: number | null) => void;
+  formatTime: (seconds: number) => string;
+  clockTime: (iso: string) => string;
+  clockAt: (t: number) => string;
+  onProgramBar: boolean;
+  position: number;
+  previewAt: number | null;
+  rangeStart: number;
+}
+
 function clockTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/**
+ * The one video element, made here rather than rendered.
+ *
+ * Two React roots render the stage — the tab's and the picture-in-picture
+ * window's — and each would build a `<video>` of its own from the same JSX.
+ * Only one element can carry the stream: hls.js attaches a MediaSource to it,
+ * and a second element would start from nothing. So it is created once, owned
+ * by nobody, and appended to whichever host is mounted.
+ */
+function createStageVideo(): HTMLVideoElement {
+  const video = document.createElement("video");
+  video.className = "w-full h-full object-contain";
+  video.playsInline = true;
+  // Suppresses the browser's own floating picture-in-picture button, which
+  // sits in the middle of the frame in browser chrome rather than ours. It
+  // also closes off `requestPictureInPicture`, which is why the pop-out
+  // goes through the Document Picture-in-Picture API instead.
+  //
+  // Only where that API exists to replace it. Safari implements no Document
+  // Picture-in-Picture, so our own button never renders there; taking the
+  // native one away as well would leave that browser with no
+  // picture-in-picture at all, which is a loss rather than a trade.
+  if ("documentPictureInPicture" in window) video.disablePictureInPicture = true;
+  return video;
+}
+
+/**
+ * The stage's canvas, where MPEG-2 decoded in WASM is drawn.
+ *
+ * Built once and moved between hosts for the same reason the video is: two
+ * React roots render this stage, and a JSX canvas would give each of them one
+ * of its own while the decoder holds a WebGL context on exactly one.
+ */
+function createStageCanvas(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.className = "w-full h-full object-contain";
+  canvas.hidden = true;
+  return canvas;
+}
+
 export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
   const isLive = source.kind === "live";
-  const videoRef = useRef<HTMLVideoElement>(null);
+  /** The stage's video element, built once on the first render. */
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  if (videoRef.current == null) videoRef.current = createStageVideo();
+  /** The whole player. What goes fullscreen, so the chrome goes with it. */
+  const rootRef = useRef<HTMLDivElement>(null);
   /**
    * What playback is actually happening on.
    *
@@ -181,7 +354,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   /** Detaches the transport from the surface currently held. */
   const detachRef = useRef<(() => void) | null>(null);
   /** Where the WASM path draws. Shown instead of the element while it plays. */
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  if (canvasRef.current == null) canvasRef.current = createStageCanvas();
   const [usingWasm, setUsingWasm] = useState(false);
 
   // Latched at mount. These decide how the stream is opened; letting a later
@@ -207,6 +381,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [apiError, setApiError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const [muted, setMuted] = useState(false);
+  /** True while the stage is mounted on a picture-in-picture window instead. */
+  const [poppedOut, setPoppedOut] = useState(false);
   const [paused, setPaused] = useState(!openPlaying);
   const [waiting, setWaiting] = useState(false);
   const [position, setPosition] = useState(0);
@@ -392,14 +568,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   // unsubscribe, so a surface swap (a WASM session giving up mid-playback and
   // handing the channel back to the transcode) is a detach and a re-attach.
   const attachTransport = useCallback((surface: PlaybackSurface) => {
-    const sync = () => {
+    const sync = (initial = false) => {
       setPosition(surface.currentTime);
       // Arrived (or the player moved on its own) — stop overriding the bar.
       setPendingSeek((want) =>
         want !== null && Math.abs(surface.currentTime - want) < 1.5 ? null : want,
       );
       onPositionRef.current?.(surface.currentTime);
-      setPaused(surface.paused);
+      // Not on the first pass. Attaching happens before playback has actually
+      // begun, so the surface still reports itself paused; taking that reading
+      // puts a Play button under a frame that is about to start, until the
+      // first event corrects it. What the eager pass is for is the seekable
+      // range, which the bar is scaled by and which arrives before any event.
+      if (!initial) setPaused(surface.paused);
       const sk = surface.seekable;
       if (sk) {
         setRangeStart(sk[0]);
@@ -417,16 +598,25 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     };
     const onVolume = () => setMuted(surface.muted);
     let stalledAt = 0;
+    let grace: ReturnType<typeof setTimeout> | undefined;
     const onWait = () => {
+      // Already counting: a seek fires `seeking` and `waiting` back to back,
+      // and re-arming on the second would push the overlay a grace further out
+      // every time the player twitched.
+      if (grace !== undefined) return;
       stalledAt = performance.now();
       const t = surface.currentTime;
       log.warn(`stalled at ${fmt(t)}`, {
         cachedHere: isCached(t, cachedRangesRef.current),
         ...surface.diagnostics(),
       });
-      setWaiting(true);
+      // A stall earns the overlay rather than being given it: most are shorter
+      // than the time it takes to read one.
+      grace = setTimeout(() => setWaiting(true), STALL_GRACE_MS);
     };
     const onPlaying = () => {
+      clearTimeout(grace);
+      grace = undefined;
       if (stalledAt) {
         log.player(`resumed after ${Math.round(performance.now() - stalledAt)}ms at ${fmt(surface.currentTime)}`);
         stalledAt = 0;
@@ -442,7 +632,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       surface.on("waiting", onWait),
       surface.on("playing", onPlaying),
     ];
-    sync();
+    sync(true);
     return () => offs.forEach((off) => off());
   }, []);
 
@@ -669,10 +859,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * black frame with no idea how long it will last. Polling how much video
    * exists turns that into a real percentage of the lead it needs.
    *
-   * Only while blocked — a playing stream has nothing to report.
+   * It keeps polling once the picture arrives, a great deal slower, because the
+   * call is also this session's heartbeat. The backend kills a live transcode
+   * nobody has asked about — the tuner it holds is real and a closed laptop
+   * sends no goodbye — and segment fetches alone are the wrong thing for it to
+   * listen to: a player paused on live fills its buffer and then asks for
+   * nothing, while being watched in every sense that matters.
    */
   useEffect(() => {
-    if (!isLive || !liveTranscoded || !sessionId || !(waiting || loading)) return;
+    if (!isLive || !liveTranscoded || !sessionId) return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -683,7 +878,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       }
     };
     tick();
-    const id = setInterval(tick, 1000);
+    const id = setInterval(tick, waiting || loading ? 1000 : KEEPALIVE_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [isLive, liveTranscoded, sessionId, waiting, loading]);
 
@@ -719,8 +914,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * Jump by `delta`, held inside what is playable right now.
    *
    * Live is the whole DVR window, ending at the live edge; a partially cached
-   * recording is the island the playhead stands in. The scrubber is still free
-   * to go anywhere and wait.
+   * recording is the run the playhead stands in, across both the encoder's
+   * report and the browser's own buffer. The buffer has to be in there: it is
+   * read fresh here while the report is a 3s poll of 60s windows, and playback
+   * routinely runs minutes past the last window the report knows about. The
+   * scrubber is still free to go anywhere and wait.
    */
   const skip = useCallback((delta: number) => {
     const s = surfaceRef.current;
@@ -728,14 +926,33 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     const from = s.currentTime;
     const range = readyRange(from, {
       ranges: cachedRangesRef.current,
+      buffered: timeRangesToArray(videoRef.current?.buffered),
       start: rangeStart,
       end: rangeEnd,
       whole: isLive || cacheState === "complete",
     });
-    seekTo(clampSkip(from, delta, range));
+    // A live edge is a frontier the encoder is still extending, so a skip has
+    // to stop well short of it. Anywhere else `hi` is a settled end.
+    const target = clampSkip(from, delta, range, isLive ? LIVE_EDGE_MARGIN : undefined);
+    // Already as far that way as there is anything to go. Seeking again would
+    // land on the spot it is already on, and every one of those announces
+    // itself as a stall — thirteen in a row, in the log that found this.
+    if (Math.abs(target - from) < 0.25) return;
+    seekTo(target);
   }, [seekTo, isLive, cacheState, rangeStart, rangeEnd]);
 
-  const goLive = useCallback(() => seekTo(rangeEnd), [seekTo, rangeEnd]);
+  /**
+   * Back to the live edge — stopping the same distance short of it as a skip.
+   *
+   * Seeking onto the frontier itself lands where the encoder has not reached,
+   * so Go Live bought a stall every time, most visibly after a pause. Ten
+   * seconds behind still reads as live: the badge's own threshold for "at the
+   * edge" is wider than this, so the button correctly greys out on arrival.
+   */
+  const goLive = useCallback(
+    () => seekTo(Math.max(rangeStart, rangeEnd - LIVE_EDGE_MARGIN)),
+    [seekTo, rangeStart, rangeEnd],
+  );
 
   /**
    * Seek once, when the drag ends.
@@ -804,7 +1021,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // bar's domain, which on a programme bar runs past the live edge into time
     // that has not been broadcast; without this a click out there threw the
     // thumb into the future for the length of the commit debounce, and drove
-    // `liveLead` negative, which reads on screen as "Transcoding 0%".
+    // `liveLead` negative, which reads on screen as "Buffering 0%".
     const t = Math.min(rangeEnd, Math.max(rangeStart, timeAtX(e.clientX)));
     dragRef.current = { x: e.clientX, base: t };
     setFineFactor(1);
@@ -881,14 +1098,198 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     setMuted(s.muted);
   }, []);
 
-  // iOS Safari uses webkitEnterFullscreen on the video element itself;
-  // standard requestFullscreen() is not supported on iOS.
+  /**
+   * Fullscreen the player, not the picture inside it.
+   *
+   * Calling this on the `<video>` promotes that element alone, so the browser
+   * supplies its own transport and every part of ours — the programme-spanning
+   * bar, the cached bands, thumbnail scrubbing, the skip buttons — is left
+   * outside the fullscreen element and simply vanishes. Promoting the
+   * container takes the whole player up with it, and the chrome is the same
+   * chrome at both sizes.
+   *
+   * iOS is the exception and has to stay one: Safari there implements only
+   * `webkitEnterFullscreen`, on the video element, with its native controls.
+   * There is no arbitrary-element fullscreen to reach for.
+   */
   const enterFullscreen = useCallback(() => {
     const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
-    if (!video) return;
-    if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
-    else video.requestFullscreen?.();
+    if (video?.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return; }
+    (rootRef.current ?? video)?.requestFullscreen?.();
   }, []);
+
+  /**
+   * Pop the picture out into its own always-on-top window, and back.
+   *
+   * The browser already offered this, as a floating button of its own in the
+   * middle of the frame — browser chrome rather than ours, and a moving target
+   * to hit. The only way a page can take that button away is
+   * `disablePictureInPicture`, which also closes the ordinary
+   * `requestPictureInPicture` door, so the pop-out goes through the Document
+   * Picture-in-Picture API: it hands back an empty always-on-top window and
+   * the page furnishes it.
+   *
+   * What we put in it is the video element itself, moved. Re-rendering it
+   * there instead would build a second element, and the stream is attached to
+   * this one — hls.js feeds it through a MediaSource, so a fresh element would
+   * start over from nothing. Moving keeps the buffer, the playhead and the
+   * attachment; the window is furnished with the picture and nothing else,
+   * which is what the browser's own version showed too.
+   */
+
+  /**
+   * Put the one video element in `host`, and make it work there.
+   *
+   * Three things, and all three are needed. The move itself, which no React
+   * root can do because the element belongs to none of them. Rebinding the
+   * stream, because hls.js publishes its MediaSource as a `blob:` URL owned
+   * by the document that made it — carried across and back, that URL stops
+   * resolving and the next append kills the stream outright. And resuming,
+   * because taking a media element out of a document pauses it.
+   */
+  /**
+   * A second video element showing the same picture, for the pop-out window.
+   *
+   * Carrying the real element across was tried and cannot be made to work.
+   * Two independent walls: hls.js feeds it through a MediaSource published as
+   * a `blob:` URL owned by the document that created it, so the stream dies
+   * on arrival with a fatal bufferAppendError; and a picture-in-picture
+   * window is a fresh document with no user activation, so `play()` there is
+   * refused outright however it is timed.
+   *
+   * A mirror has neither problem. `captureStream` hands out the tracks the
+   * element is already decoding, the mirror plays them with no MediaSource of
+   * its own, and it is muted — the one case the autoplay policy allows
+   * without a gesture. The sound stays on the original, in the tab, where the
+   * gesture happened. The controls drive the original too; this element only
+   * ever shows.
+   */
+  const mirrorRef = useRef<HTMLVideoElement | null>(null);
+
+  const openMirror = useCallback(() => {
+    const video = videoRef.current as (HTMLVideoElement & {
+      captureStream?: () => MediaStream;
+    }) | null;
+    if (!video?.captureStream) return false;
+    const mirror = document.createElement("video");
+    mirror.className = "w-full h-full object-contain";
+    mirror.playsInline = true;
+    mirror.muted = true;
+    mirror.autoplay = true;
+    mirror.srcObject = video.captureStream();
+    mirrorRef.current = mirror;
+    return true;
+  }, []);
+
+  const closeMirror = useCallback(() => {
+    const mirror = mirrorRef.current;
+    if (!mirror) return;
+    (mirror.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());
+    mirror.srcObject = null;
+    mirror.remove();
+    mirrorRef.current = null;
+  }, []);
+
+  /**
+   * Put the right element in `host`: the real one in the tab, the mirror in
+   * the pop-out. Neither ever crosses between documents.
+   */
+  const placeVideo = useCallback((host: HTMLDivElement, forPip: boolean) => {
+    const el = forPip ? mirrorRef.current : videoRef.current;
+    if (el && el.parentElement !== host) host.append(el);
+    // The canvas travels with it, and only into the tab's own stage: the
+    // pop-out is fed by a mirror of the video element's stream, which a canvas
+    // has no part in. Picture-in-picture on the WASM path is a known gap.
+    const canvas = canvasRef.current;
+    if (!forPip && canvas && canvas.parentElement !== host) host.append(canvas);
+  }, []);
+
+  // Which of the two is on screen. Set on the elements rather than through
+  // React, because React does not own them - it owns the host they sit in.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.hidden = usingWasm;
+    if (canvasRef.current) canvasRef.current.hidden = !usingWasm;
+  }, [usingWasm]);
+
+  const pipWindow = useRef<Window | null>(null);
+  /** The live shortcut handler, so a new pop-out can be given it too. */
+  const keyHandler = useRef<((e: KeyboardEvent) => void) | null>(null);
+  const pipRoot = useRef<Root | null>(null);
+
+  const togglePictureInPicture = useCallback(async () => {
+    const video = videoRef.current;
+    const dpip = (window as unknown as { documentPictureInPicture?: {
+      requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
+    } }).documentPictureInPicture;
+    if (!video || !dpip) return;
+
+    if (pipWindow.current) { pipWindow.current.close(); return; }
+
+    try {
+      // No size, no position: the browser reopens the window where the viewer
+      // last left it, and neither is ours to set — `resizeTo` is refused on a
+      // picture-in-picture window and there are no coordinates to pass.
+      const w = await dpip.requestWindow();
+      pipWindow.current = w;
+
+      // The window arrives with no styles at all, so every class the stage
+      // uses has to be carried over or it lands there unstyled.
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          const css = Array.from(sheet.cssRules).map((r) => r.cssText).join("");
+          const style = w.document.createElement("style");
+          style.textContent = css;
+          w.document.head.append(style);
+        } catch {
+          // A sheet we are not allowed to read. Ours are same-origin, so
+          // there is nothing here worth failing the pop-out over.
+        }
+      }
+      w.document.title = title;
+      w.document.body.style.cssText = "margin:0;overflow:hidden";
+      // The root too, and for a reason the copied sheets create: one of them
+      // makes `html` a scroll container deliberately — `overflow-y: scroll`
+      // is what reserves the gutter that stops the tabs shifting 2px between
+      // Live and Guide. Here it reserves a groove down the side of a video
+      // that never scrolls. Inline, so it beats the sheet without the sheet
+      // needing to know this window exists.
+      w.document.documentElement.style.cssText = "overflow:hidden";
+
+      // A React root of the window's own. This is the whole point: React
+      // delegates events to the root container, so a stage merely moved into
+      // this document would fire its clicks where nothing is listening —
+      // which is exactly what happened. A root here listens here.
+      const mount = w.document.createElement("div");
+      w.document.body.append(mount);
+      openMirror();
+      pipRoot.current = createRoot(mount);
+      if (keyHandler.current) w.addEventListener("keydown", keyHandler.current);
+      setPoppedOut(true);
+
+      // However it closes — our button, the window's own, the tab going away
+      // — the root has to come down and the video come home, or the player is
+      // left with nothing to show.
+      w.addEventListener("pagehide", () => {
+        pipRoot.current?.unmount();
+        closeMirror();
+        pipRoot.current = null;
+        pipWindow.current = null;
+        setPoppedOut(false);
+        // The stage puts the picture back when it remounts in the tab, and it
+        // does that as one step with resuming playback — the move pauses the
+        // element whichever way it goes. Appending here as well would move it
+        // first and leave that remount with nothing to notice, so the video
+        // would come home stopped.
+      }, { once: true });
+    } catch (e) {
+      // Refused for want of a user gesture, or not implemented here after all.
+      log.warn("picture-in-picture rejected", e);
+    }
+  }, [title, openMirror, closeMirror]);
+
+  // A player torn down while popped out would leave the window orphaned,
+  // holding a video element that no longer belongs to anything.
+  useEffect(() => () => pipWindow.current?.close(), []);
 
   /**
    * Click zones across the video surface: left two fifths rewind, middle fifth
@@ -900,19 +1301,37 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    */
   const handleSurfaceClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     resetHideTimerRef.current?.();
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (!rect.width) return;
-    const x = (e.clientX - rect.left) / rect.width;
-    if (x < 0.4) skip(-10);
-    else if (x > 0.6) skip(30);
-    else togglePlay();
+    const zone = zoneAtEvent(e);
+    if (zone === "back") skip(-10);
+    else if (zone === "forward") skip(30);
+    else if (zone === "play") togglePlay();
   }, [skip, togglePlay]);
+
+  /**
+   * Keeps the chrome up while the cursor is resting on the transport.
+   *
+   * Fading out from under a hand that is on its way to the scrubber is the
+   * complaint; a pointer parked there is a viewer mid-decision, not an idle
+   * one. Held in a ref rather than state because the timer closure reads it
+   * and nothing renders from it.
+   *
+   * The region is the transport cluster itself, which sits inside the overlay's
+   * own gutter — so the true corners of the frame, outside the controls, go on
+   * timing out as before.
+   */
+  const cursorOnTransport = useRef(false);
 
   const resetHideTimer = useCallback(() => {
     setShowControls(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (cursorOnTransport.current) return;
     hideTimer.current = setTimeout(() => setShowControls(false), 3500);
   }, []);
+
+  const holdControls = useCallback((held: boolean) => {
+    cursorOnTransport.current = held;
+    resetHideTimer();
+  }, [resetHideTimer]);
 
   useEffect(() => { resetHideTimerRef.current = resetHideTimer; }, [resetHideTimer]);
 
@@ -937,15 +1356,41 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     };
   }), [isLive, source, title, cacheState]);
 
+  // The opening fade, scheduled through the same timer every other reset uses.
+  // It used to keep a timer of its own, which knew nothing about the cursor
+  // resting on the transport and hid the controls out from under it — and
+  // which no reset could cancel, so it fired once whatever the viewer did.
   useEffect(() => {
-    const timer = setTimeout(() => setShowControls(false), 3500);
-    return () => clearTimeout(timer);
+    resetHideTimerRef.current?.();
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
   }, []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "q") onClose();
+      // Bare-key shortcuts ("q" to close, space/"k" to play/pause, and so
+      // on) are normal for a media player, but this listener is global — it
+      // fires no matter what has focus. Without this guard, typing into any
+      // text field anywhere on the page (the topbar search box, the Cmd-K
+      // palette) is read as player shortcuts: "q" in "Quantico" closes the
+      // video out from under the typist, and a space anywhere in the query
+      // toggles play/pause instead of reaching the input. Anything that
+      // looks like text entry gets the keystroke to itself instead.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
+      // Escape dismisses the nearest thing, and while the picture is out in
+      // its own window that is the window — not the player behind it. Closing
+      // the player from here would take away a pop-out the viewer was
+      // watching and the programme with it.
+      if (e.key === "Escape" || e.key === "q") {
+        if (poppedOut) togglePictureInPicture();
+        else onClose();
+      }
       if (e.key === "f") enterFullscreen();
+      // Symmetrical with the button: out if it is in, in if it is out.
+      if (e.key === "p") togglePictureInPicture();
       if (e.key === "m") toggleMute();
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
       if (e.key === "ArrowLeft") skip(-10);
@@ -953,8 +1398,18 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       resetHideTimer();
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer]);
+    // The pop-out is a window of its own: while it has focus its keys go to
+    // it and never reach this one, so it is given the same handler. Added
+    // here for a window already open, and at open time for one that is not.
+    pipWindow.current?.addEventListener("keydown", handler);
+    keyHandler.current = handler;
+    return () => {
+      window.removeEventListener("keydown", handler);
+      pipWindow.current?.removeEventListener("keydown", handler);
+      if (keyHandler.current === handler) keyHandler.current = null;
+    };
+  }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer,
+      poppedOut, togglePictureInPicture]);
 
   const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
@@ -987,7 +1442,6 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     ? Math.min(100, Math.max(0, Math.round((liveLead / LIVE_LEAD_SECONDS) * 100)))
     : null;
   const waitPct = encodePct ?? livePct;
-  const encoding = isLive ? liveTranscoded : cacheState !== "complete";
   // Drawn from the real encoded ranges. A single bar scaled by percent-complete
   // would be wrong the moment the viewer seeks: jumping an hour in leaves the
   // opening cached and starts a separate island further along.
@@ -1019,6 +1473,215 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     programRemaining = Math.max(0, Math.round((start + dur - now) / 60000));
   }
 
+  /**
+   * Everything the stage renders from, as one object.
+   *
+   * The stage is rendered by two React roots — the tab's, and one mounted on
+   * the picture-in-picture window — and a second root cannot reach the first
+   * one's context. So the whole view is handed over explicitly and
+   * destructured back into the same names on the other side, which is what
+   * keeps the markup itself identical in both places.
+   */
+  const view: PlayerView = {
+    videoRef, rootRef, barRef, placeVideo,
+    showControls, resetHideTimer, handleSurfaceClick, holdControls,
+    loading, combinedError, onClose, waiting, waitPct,
+    poppedOut, togglePictureInPicture, enterFullscreen,
+    paused, togglePlay, skip, muted, toggleMute,
+    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
+    barStart, barEnd, span, pct, shownPos, rangeEnd,
+    readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
+    onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
+    formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
+  };
+
+  // Keep the popped-out root in step. It renders the same stage from the same
+  // view, so every state change in here reaches that window too — without this
+  // it would show the moment it was opened at, frozen.
+  //
+  // Declared here rather than with the other effects because it renders from
+  // the view: carrying the view to an earlier effect meant writing a ref
+  // during render, which is what this replaces.
+  useEffect(() => {
+    if (pipRoot.current) pipRoot.current.render(<Stage view={view} pip />);
+  });
+
+  // Popped out, the stage stays mounted here but hands the picture over and
+  // steps behind the way back.
+  //
+  // Mounted, not removed: unmounting it takes the host out of the document,
+  // and with nowhere for the element to be between one root's commit and the
+  // other's the browser pauses it — a media element removed from a document
+  // is paused on the next task unless it is back in one by then. Two hosts,
+  // both always present, make every hand-over a move rather than a removal.
+  return (
+    <>
+      {poppedOut && (
+        <div className="dark fixed inset-0 z-[60] bg-media flex flex-col items-center
+                        justify-center gap-4">
+          <button
+            onClick={togglePictureInPicture}
+            className="w-20 h-20 rounded-full glass text-player-fg flex items-center
+                       justify-center hover:bg-fill transition"
+            title="Close picture-in-picture"
+            aria-label="Close picture-in-picture"
+          >
+            <PictureInPictureExit className="w-9 h-9" aria-hidden />
+          </button>
+          <p className="text-player-fg-muted text-sm">Close picture-in-picture</p>
+        </div>
+      )}
+      <Stage view={view} pip={false} />
+    </>
+  );
+}
+
+/**
+ * The player's whole surface, rendered from a view rather than its own state.
+ *
+ * Separated for one reason: it has to be mountable inside a
+ * picture-in-picture window, on a React root of that window's own, because
+ * React delegates its events to the root container and a subtree merely moved
+ * into another document fires them where nothing is listening. Everything in
+ * here is presentation; the state and the handlers belong to VideoPlayer.
+ */
+function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
+  const {
+    rootRef, barRef, placeVideo,
+    showControls, resetHideTimer, handleSurfaceClick, holdControls,
+    loading, combinedError, onClose, waiting, waitPct,
+    poppedOut, togglePictureInPicture, enterFullscreen,
+    paused, togglePlay, skip, muted, toggleMute,
+    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
+    barStart, barEnd, span, pct, shownPos, rangeEnd,
+    readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
+    onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
+    formatTime, clockTime, clockAt, onProgramBar, position, previewAt, rangeStart,
+  } = view;
+
+  /**
+   * Where this stage puts the picture — one host per stage, never shared.
+   *
+   * Sharing a single ref across both stages is what broke pop-in: the two
+   * hosts write to the same ref, the pop-out mounts second and so wins it,
+   * and the tab's stage then reads that ref on its next render and appends
+   * the real element into the *pop-out's* host. Closing the window destroyed
+   * the document with the picture still inside it, which reset the element to
+   * time zero and left hls.js appending into it — a fatal bufferAppendError
+   * at fragment 0, every time.
+   */
+  const videoHostRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Whether the pop-out's controls are showing.
+   *
+   * A window of a few hundred pixels is nearly all picture, and chrome that
+   * appears because the pointer moved anywhere in it would be up almost
+   * permanently. So there it is the bottom strip alone that summons the
+   * transport, and the rest of the frame leaves the programme alone. Local to
+   * the stage because it is presentation and nothing outside needs it.
+   */
+  const [barHover, setBarHover] = useState(false);
+  const chromeUp = poppedOut ? barHover : showControls;
+
+  /**
+   * Coming up is instant; going away waits.
+   *
+   * The bar answers the pointer's height, so it drops the moment the cursor
+   * clears the strip — which punishes a hand on its way to the scrubber and
+   * flickers outright when the pointer tracks along the boundary. A held
+   * moment covers both: long enough to come back to, short enough that a
+   * window left alone is a picture again almost at once.
+   */
+  const barLeaveTimer = useRef<ReturnType<typeof setTimeout>>(null);
+
+  const showBar = useCallback((next: boolean) => {
+    if (barLeaveTimer.current) {
+      clearTimeout(barLeaveTimer.current);
+      barLeaveTimer.current = null;
+    }
+    if (next) { setBarHover(true); return; }
+    barLeaveTimer.current = setTimeout(() => setBarHover(false), PIP_BAR_LINGER);
+  }, []);
+
+  useEffect(() => () => {
+    if (barLeaveTimer.current) clearTimeout(barLeaveTimer.current);
+  }, []);
+
+  /**
+   * Read from the pointer's height, not from entering and leaving a strip.
+   *
+   * A strip would sit under the transport it summons, so the controls
+   * appearing on top of it would fire its own mouseleave and take them away
+   * again. Measuring against the frame cannot contradict itself that way.
+   */
+  const trackBottomHover = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    showBar(rect.height > 0 && rect.bottom - e.clientY <= PIP_BAR_REACH);
+  }, [showBar]);
+
+  /**
+   * Lights the button that a click on the picture would press.
+   *
+   * The zones are deliberately invisible — no overlay, no icon — which leaves
+   * nothing to say they exist or which one the pointer is in. Borrowing the
+   * matching button's own hover state answers both, in the place the viewer
+   * is already looking, and costs the frame nothing.
+   */
+  const [hoverZone, setHoverZone] = useState<SurfaceZone | null>(null);
+
+  const trackZone = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const zone = zoneAtEvent(e);
+    // Returning the held value makes React bail out of the render, so a
+    // pointer crossing the frame renders three times rather than per pixel.
+    setHoverZone((held) => (held === zone ? held : zone));
+  }, []);
+
+  const onStageMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (poppedOut) trackBottomHover(e);
+    else resetHideTimer();
+    trackZone(e);
+  }, [poppedOut, trackBottomHover, resetHideTimer, trackZone]);
+
+  const onStageLeave = useCallback(() => {
+    // Through the same wait: leaving the window entirely is the case the
+    // linger is most obviously for, and a pointer that has left has not
+    // necessarily finished.
+    showBar(false);
+    setHoverZone(null);
+  }, [showBar]);
+
+  /** Crossing onto the controls surrenders the borrowed highlight. */
+  const holdAndRelease = useCallback((held: boolean) => {
+    holdControls(held);
+    if (held) setHoverZone(null);
+  }, [holdControls]);
+
+  /** The hover a zone lends a button, matching its own `hover:bg-fill`. */
+  const lent = (zone: SurfaceZone) => (hoverZone === zone ? "bg-fill" : "");
+
+  // Whichever root mounted this stage, the one video element belongs in its
+  // host. Called from here rather than done in VideoPlayer so it cannot race
+  // the other root's commit: by the time this runs, the host below exists.
+  useEffect(() => {
+    const host = videoHostRef.current;
+    // The tab hosts the real element and the pop-out hosts the mirror, so
+    // each stage fills its own host and nothing is ever taken from the other.
+    if (host) placeVideo(host, pip);
+  });
+
+  // The tab's stage while the picture is out: all it owes anyone is a home
+  // for the real element, which keeps playing there and feeds the mirror.
+  // Drawing its chrome too would put a second set of controls in the document
+  // — duplicates that answer queries, take clicks, and read as a bug.
+  if (!pip && poppedOut) {
+    return (
+      <div className="dark fixed inset-0 z-50 bg-media flex items-center justify-center">
+        <div ref={videoHostRef} className="w-full h-full" />
+      </div>
+    );
+  }
+
   return (
     // `dark`, unconditionally. The player is the one surface that does not
     // follow the theme: it is a fullscreen media UI sitting on frames we do not
@@ -1033,27 +1696,27 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // as well as its own player-* family, which pinning the player tokens alone
     // would have missed. No call site in this file needs to know.
     <div
-      className="dark fixed inset-0 z-50 bg-media flex items-center justify-center"
-      onMouseMove={resetHideTimer}
+      ref={rootRef}
+      // The pointer goes with the chrome. A cursor left sitting over the
+      // picture is the one piece of interface that never faded, and on a
+      // fullscreen frame it is the only thing on screen that is not the
+      // programme. Any movement brings both back.
+      className={`dark fixed inset-0 z-50 bg-media flex items-center justify-center
+        ${showControls ? "" : "cursor-none"}`}
+      onMouseMove={onStageMove}
+      onMouseLeave={onStageLeave}
       onClick={handleSurfaceClick}
     >
-      {/* No autoPlay attribute: usePlayer starts playback explicitly. Leaving it
-          on let the browser resume by itself whenever the element received data
-          after a stall, so pause would not stick and playback could jump. */}
-      <video
-        ref={videoRef}
-        className={`w-full h-full object-contain${usingWasm ? " hidden" : ""}`}
-        playsInline
-      />
+      {/* An empty host. The video element is not rendered here — it is made
+          once, imperatively, and moved into whichever host is currently
+          mounted (see `ensureVideo`). It has to be, because this stage is
+          rendered by two different React roots — the tab's and the
+          picture-in-picture window's — and a JSX `<video>` would give each
+          root an element of its own. The stream is attached to one element
+          through a MediaSource; a second would start from nothing. */}
+      <div ref={videoHostRef} className="w-full h-full" />
 
-      {/* Where MPEG-2 decoded in WASM is drawn. Kept mounted rather than
-          conditionally rendered: the canvas has to exist before the session
-          starts, and a fallback to the transcode swaps which one is shown
-          without either being torn down. */}
-      <canvas
-        ref={canvasRef}
-        className={`w-full h-full object-contain${usingWasm ? "" : " hidden"}`}
-      />
+
 
       {/* A blocking sheet, not a see-through veil: it carries text and a button,
           so it uses the player's own panel rather than a scrim. In light that is
@@ -1091,7 +1754,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                                 border-t-transparent animate-spin" />
               )}
               <span className="text-player-fg-muted text-[11px] uppercase tracking-widest">
-                {encoding ? "Transcoding" : "Buffering"}
+                {/* Always the viewer's word for it. Whether the wait is an
+                    encoder working or bytes arriving is our distinction, not
+                    theirs — both look like a paused picture, and "Buffering"
+                    is the one everyone already knows. */}
+                Buffering
               </span>
               {/* Full muted weight, not a dimmed one: the player ladder has no
                   rung below `muted`, and thinning it with an opacity modifier
@@ -1120,8 +1787,9 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       )}
 
       <div
-        className={`absolute inset-0 flex flex-col justify-between p-6 transition-opacity duration-300 pointer-events-none
-          ${showControls ? "opacity-100" : "opacity-0"}`}
+        className={`absolute inset-0 flex flex-col transition-opacity duration-300 pointer-events-none
+          ${poppedOut ? "justify-end p-2" : "justify-between p-6"}
+          ${chromeUp ? "opacity-100" : "opacity-0"}`}
         style={{
           // Sized in pixels to the two bands that actually hold content — the
           // title block and the transport — rather than as a percentage, which
@@ -1131,27 +1799,44 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           // controls legible over arbitrary video, so in light it lays down a
           // near-white plate for the ink chrome exactly as dark lays down a
           // black one for the white chrome.
-          background:
-            "linear-gradient(to bottom," +
-            " rgb(var(--c-player-scrim) / var(--c-player-scrim-soft-a)) 0," +
-            " rgb(var(--c-player-scrim) / 0) 88px," +
-            " rgb(var(--c-player-scrim) / 0) calc(100% - 132px)," +
-            " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)",
+          //
+          // Popped out there is nothing along the top to make legible — no
+          // close button, no title — so the wash there would only be a shadow
+          // over the picture.
+          background: poppedOut
+            ? "linear-gradient(to bottom," +
+              " rgb(var(--c-player-scrim) / 0) calc(100% - 96px)," +
+              " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)"
+            : "linear-gradient(to bottom," +
+              " rgb(var(--c-player-scrim) / var(--c-player-scrim-soft-a)) 0," +
+              " rgb(var(--c-player-scrim) / 0) 88px," +
+              " rgb(var(--c-player-scrim) / 0) calc(100% - 132px)," +
+              " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)",
         }}
       >
-        {/* Top bar — just the close affordance; the title sits under the bar */}
-        <div className="flex items-start justify-end pointer-events-auto">
-          <button
-            onClick={onClose}
-            className="w-10 h-10 shrink-0 rounded-full glass text-player-fg flex items-center justify-center hover:bg-fill transition"
-            title="Close (Esc)"
-          >
-            <X className="w-5 h-5" aria-hidden style={SCRIM_HALO_ICON} />
-          </button>
-        </div>
+        {/* Top bar — just the close affordance; the title sits under the bar.
+            Not in a pop-out: that window has its own close button, and ours
+            would only sit over the picture offering to shut the whole player
+            when all the viewer wanted was the window gone. */}
+        {!poppedOut && (
+          <div className="flex items-start justify-end pointer-events-auto">
+            <button
+              onClick={onClose}
+              className="w-10 h-10 shrink-0 rounded-full glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+              title="Close (Esc)"
+            >
+              <X className="w-5 h-5" aria-hidden style={SCRIM_HALO_ICON} />
+            </button>
+          </div>
+        )}
 
-        {/* Bottom: scrubber + transport */}
-        <div className="flex flex-col gap-3 pointer-events-auto">
+        {/* Bottom: scrubber + transport. Resting the cursor anywhere in here
+            holds the chrome up — see `cursorOnTransport`. */}
+        <div
+          className="flex flex-col gap-3 pointer-events-auto"
+          onMouseEnter={() => holdAndRelease(true)}
+          onMouseLeave={() => holdAndRelease(false)}
+        >
 
           <div className="flex items-center gap-3">
             <span
@@ -1213,12 +1898,20 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
               {/* Transcoded extent. This is the only thing that grows on its
                   own, so it is the only thing that eases - it advances in
                   window-sized jumps as encoding completes, and easing hides
-                  the step. */}
+                  the step.
+
+                  Width only. Where a band *starts* is not something that grows:
+                  it changes when the DVR window rolls or the bar it is measured
+                  against moves under it, and easing that read as the cached
+                  region sliding along the timeline of its own accord - a
+                  motion nothing in the recording corresponds to. Snapping the
+                  position and gliding only the edge leaves the one animation
+                  that describes something real. */}
               {readyBands.map((b) => (
                 <div
                   key={b.key}
                   className={`absolute h-1.5 rounded-full bg-player-buffered
-                              ${scrubbing ? "" : "transition-[width,left] duration-[2800ms] ease-linear"}`}
+                              ${scrubbing ? "" : "transition-[width] duration-[2800ms] ease-linear"}`}
                   style={{ left: `${b.left}%`, width: `${b.width}%` }}
                 />
               ))}
@@ -1324,7 +2017,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             {/* What is playing, on the left. The transport is centered over it
                 absolutely, so a long title cannot push the controls off centre. */}
             <div
-              className="max-w-[30%] text-left pointer-events-none select-none"
+              // Nothing to gain from it in a pop-out: the window is named
+              // after the programme, and at that width the name and the
+              // controls are fighting over the same strip of picture. The
+              // element stays in place rather than being dropped, so the row
+              // keeps three cells and the transport stays centred.
+              className={`max-w-[30%] text-left pointer-events-none select-none
+                ${poppedOut ? "invisible" : ""}`}
               // A crisp outline rather than a blurred shadow: over flat white
               // content a soft shadow reads as a smudge. `paint-order: stroke`
               // draws the stroke beneath the fill, so the glyphs keep their
@@ -1359,17 +2058,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
               <button
                 onClick={(e) => { e.stopPropagation(); skip(-10); }}
-                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
+                className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"} ${lent("back")}`}
                 title="Back 10s (Left arrow)"
                 aria-label="Back 10 seconds"
               >
                 <RotateCcw className="w-4 h-4" aria-hidden />
-                <span className="text-[10px] font-black tabular-nums">10</span>
+                {!poppedOut && <span className="text-[10px] font-black tabular-nums">10</span>}
               </button>
 
               <button
                 onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${lent("play")}`}
                 title={paused ? "Play (Space)" : "Pause (Space)"}
               >
                 {paused
@@ -1379,12 +2080,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
               <button
                 onClick={(e) => { e.stopPropagation(); skip(30); }}
-                className="flex items-center gap-1 px-2.5 h-9 rounded-lg glass text-player-fg hover:bg-fill transition"
+                className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"} ${lent("forward")}`}
                 title="Forward 30s (Right arrow)"
                 aria-label="Forward 30 seconds"
               >
                 <RotateCw className="w-4 h-4" aria-hidden />
-                <span className="text-[10px] font-black tabular-nums">30</span>
+                {!poppedOut && <span className="text-[10px] font-black tabular-nums">30</span>}
               </button>
             </div>
 
@@ -1417,7 +2119,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
 
               <button
                 onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
+                className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
                 title={muted ? "Unmute (M)" : "Mute (M)"}
               >
                 {muted
@@ -1425,13 +2128,39 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
                   : <Volume2 className="w-4 h-4" aria-hidden />}
               </button>
 
-              <button
-                onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
-                className="w-9 h-9 rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition"
-                title="Fullscreen (F)"
-              >
-                <Maximize className="w-4 h-4" aria-hidden />
-              </button>
+              {/* Only where the API exists. Safari has no Document
+                  Picture-in-Picture, so the button would promise nothing
+                  there — better absent than dead. */}
+              {"documentPictureInPicture" in window && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
+                  className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
+                  title={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
+                  aria-label={poppedOut ? "Close picture-in-picture" : "Picture in picture"}
+                >
+                  {/* The same button either side of the pop-out, so the icon
+                      carries which way it goes: the plain frame out of the
+                      tab, the arrow back into it. */}
+                  {poppedOut
+                    ? <PictureInPictureExit className="w-4 h-4" aria-hidden />
+                    : <PictureInPicture2 className="w-4 h-4" aria-hidden />}
+                </button>
+              )}
+
+              {/* Not offered from a pop-out. A picture-in-picture window
+                  cannot take itself fullscreen — the request is refused there
+                  — so the button could only ever have done nothing. */}
+              {!poppedOut && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); enterFullscreen(); }}
+                  className="w-9 h-9 rounded-lg glass text-player-fg flex items-center
+                             justify-center hover:bg-fill transition"
+                  title="Fullscreen (F)"
+                >
+                  <Maximize className="w-4 h-4" aria-hidden />
+                </button>
+              )}
             </div>
           </div>
         </div>

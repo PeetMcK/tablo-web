@@ -269,7 +269,10 @@ async def live_stream(identifier: str, request: Request):
 
     playlist_url = sess.stream.playlist_url
 
-    proc = subprocess.Popen(
+    # Off the loop: a fork/exec stalls every other request in this process,
+    # including the segments a player is waiting on.
+    proc = await asyncio.to_thread(
+        subprocess.Popen,
         [
             "ffmpeg", "-y",
             "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
@@ -282,6 +285,15 @@ async def live_stream(identifier: str, request: Request):
         stderr=subprocess.DEVNULL,
     )
 
+    def _reap() -> None:
+        """Kill the remux and wait for it. `wait` has no timeout, so it waits
+        in a thread rather than holding the loop for as long as FFmpeg takes."""
+        try:
+            proc.kill()
+            proc.wait()
+        except Exception:
+            pass
+
     async def generate():
         loop = asyncio.get_event_loop()
         try:
@@ -291,11 +303,7 @@ async def live_stream(identifier: str, request: Request):
                     break
                 yield chunk
         finally:
-            try:
-                proc.kill()
-                proc.wait()
-            except Exception:
-                pass
+            await asyncio.to_thread(_reap)
             state.stop_session(session_id)
 
     return StreamingResponse(

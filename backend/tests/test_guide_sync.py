@@ -1,8 +1,12 @@
 """The guide mirror is a record of what aired, not a snapshot of the device."""
 
+import asyncio
+import sqlite3
 import time
 
-from app import db, store
+import pytest
+
+from app import db, guide_sync, store
 
 
 def _channel(ident: str, airings: list[dict]) -> dict:
@@ -19,6 +23,51 @@ def _airing(title: str, start_epoch: int, duration: int = 3600) -> dict:
         "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start_epoch)),
         "duration": duration, "genres": [], "kind": "episode",
     }
+
+
+def test_episode_fields_round_trip():
+    """The sheet needs these; the grid ignores them."""
+    now = time.time()
+    air = _airing("Finding Your Roots", int(now + 3600))
+    air.update({
+        "episode_title": "Rags to Riches",
+        "season_number": 12,
+        "episode_number": 10,
+        "orig_air_date": "2026-09-16",
+        "series_path": "/guide/series/6472",
+        "airing_path": "/guide/series/episodes/67388",
+        "schedule_state": "none",
+        "schedule_qualifier": "none",
+        "skip_reason": "none",
+    })
+    store.save_guide([_channel("ch1", [air])], now=now)
+
+    got = store.load_guide(now=now)[0]["airings"][0]
+    assert got["episode_title"] == "Rags to Riches"
+    assert got["season_number"] == 12
+    assert got["episode_number"] == 10
+    assert got["airing_path"] == "/guide/series/episodes/67388"
+    assert got["series_path"] == "/guide/series/6472"
+
+
+def test_an_airings_own_artwork_round_trips():
+    """OTT artwork is a URL on the airing, not an image id on a series."""
+    now = time.time()
+    air = _airing("M-1 Global Stars of MMA", int(now + 3600))
+    air["image_url"] = "https://lighthousetv-cdn.ewscloud.com/assets/p1.jpg"
+    store.save_guide([_channel("ch1", [air])], now=now)
+
+    got = store.load_guide(now=now)[0]["airings"][0]
+    assert got["image_url"] == "https://lighthousetv-cdn.ewscloud.com/assets/p1.jpg"
+
+
+def test_an_airing_without_episode_fields_still_saves():
+    """Most airings have no episode data; nulls must not break the write."""
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Bare", int(now + 3600))])], now=now)
+    got = store.load_guide(now=now)[0]["airings"][0]
+    assert got["episode_title"] is None
+    assert got["season_number"] is None
 
 
 def test_a_later_sync_does_not_wipe_earlier_airings():
@@ -113,6 +162,171 @@ def test_a_current_channel_with_nothing_in_the_window_still_shows_an_empty_row()
     assert grid[0]["airings"] == []
 
 
+def test_a_sync_records_its_coverage():
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 1
+    row = db.query_one("SELECT * FROM guide_sync ORDER BY id DESC LIMIT 1")
+    assert row["ok"] == 1
+    assert row["airings_seen"] == 1
+    assert row["finished_at"]
+
+
+def test_a_failed_sync_is_recorded_and_does_not_raise():
+    """A stale mirror still serves search; returning nothing would be worse."""
+    async def fetch():
+        raise RuntimeError("device unreachable")
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 0
+    row = db.query_one("SELECT * FROM guide_sync ORDER BY id DESC LIMIT 1")
+    assert row["ok"] == 0
+    assert "unreachable" in row["error"]
+
+
+def test_a_failed_sync_does_not_delete_history():
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Kept", int(now - 3600))])], now=now)
+
+    async def fetch():
+        raise RuntimeError("device unreachable")
+
+    asyncio.run(guide_sync.sync_once(fetch))
+    assert db.query("SELECT 1 FROM guide_airing WHERE title = 'Kept'")
+
+
+def test_sync_once_does_not_double_write_the_guide(monkeypatch):
+    """`fetch` (state.get_grid_guide in production) already persists the rows;
+    sync_once must not save them again - that would double an ~8455-row write
+    and double the FTS trigger firing on every cycle."""
+    calls = []
+    monkeypatch.setattr(store, "save_guide", lambda *a, **k: calls.append((a, k)))
+
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 1
+    assert calls == []
+
+
+def test_sync_once_survives_a_failure_starting_the_run(monkeypatch):
+    """The opening INSERT that allocates `run_id` can itself fail (disk full,
+    lock contention). That must not escape sync_once's 'never raises'
+    contract just because it happens before the main try block."""
+    def boom_write():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "write", boom_write)
+
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 0
+
+
+def test_sync_once_survives_even_when_recording_the_outcome_fails(monkeypatch):
+    """Critical: the guide_sync UPDATE (recording success OR failure) can
+    itself fail. A test that only covers fetch() failing does not exercise
+    this - here fetch succeeds, and it is *recording that* which breaks, and
+    then recording the resulting failure breaks too. Neither may escape."""
+    def boom_execute(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "execute", boom_execute)
+
+    async def fetch():
+        return [_channel("ch1", [_airing("Survivor", int(time.time() + 3600))])]
+
+    seen = asyncio.run(guide_sync.sync_once(fetch))
+
+    assert seen == 0
+
+
+def test_run_forever_survives_a_sync_once_that_raises(monkeypatch):
+    """Belt and braces: even though sync_once is documented never to raise,
+    run_forever must not let one unlucky exception silently kill background
+    syncing for the rest of the process's life.
+
+    `StopTest` is deliberately a `BaseException`, not an `Exception` - the
+    broad `except Exception` guard around the `sync_once` call must NOT
+    swallow it, since that would (a) prove the guard is too broad and (b)
+    hang this test in an infinite loop. It is raised from the sleep call,
+    which sits outside that guard, once the loop has proven it survived the
+    first exception and reached a second iteration.
+    """
+    calls = {"n": 0}
+
+    class StopTest(BaseException):
+        pass
+
+    # *args because this stands in for sync_once, whose optional injected
+    # collaborators grow; the test has nothing to say about how many there are.
+    async def boom(*args):
+        calls["n"] += 1
+        raise RuntimeError("boom")
+
+    async def fake_sleep(_seconds):
+        raise StopTest()
+
+    monkeypatch.setattr(guide_sync, "sync_once", boom)
+    monkeypatch.setattr(guide_sync.asyncio, "sleep", fake_sleep)
+
+    async def fetch():
+        return []
+
+    with pytest.raises(StopTest):
+        asyncio.run(guide_sync.run_forever(fetch))
+
+    # The loop reached the sleep call at all only because the RuntimeError
+    # from sync_once was caught rather than propagating out of run_forever.
+    assert calls["n"] == 1
+
+
+def test_backfill_index_reindexes_what_is_already_stored():
+    """Migration creates empty index tables; this is what makes search work
+    before the first sync completes, rather than looking like a broken
+    feature until then."""
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Survivor", int(now + 3600))])], now=now)
+    db.execute("DELETE FROM search_doc")
+    assert not db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+
+    indexed = asyncio.run(guide_sync.backfill_index())
+
+    assert indexed == 1
+    assert db.query("SELECT 1 FROM search_doc WHERE kind = 'airing'")
+
+
+def test_backfill_does_not_claim_a_sync_happened():
+    """A restart re-indexes what is on disk; that is not a fetch.
+
+    `coverage()` reports `last_sync` so an empty result can be told apart from
+    a period nothing was watching. Stamping the backfill as a sync made every
+    restart report whatever was stored as just-fetched, for as long as the
+    next real sync took to arrive - which is precisely the confusion the
+    coverage line exists to remove.
+    """
+    now = time.time()
+    store.save_guide([_channel("ch1", [_airing("Survivor", int(now + 3600))])], now=now)
+    stamped = db.get_setting("guide_synced_at")
+    assert stamped
+
+    asyncio.run(guide_sync.backfill_index())
+
+    assert db.get_setting("guide_synced_at") == stamped
+    # And the channel is still visible, so the backfill did not orphan it from
+    # the stamp `load_guide` filters on.
+    assert [c["identifier"] for c in store.load_guide()] == ["ch1"]
+
+
 def test_one_channel_airings_start_at_what_is_on_now():
     """The live player asks "what is on this channel, and what is next".
 
@@ -149,3 +363,99 @@ def test_one_channel_airings_carry_what_the_player_renders():
 
 def test_an_unknown_channel_has_no_airings():
     assert store.channel_airings("nobody", now=time.time()) == []
+
+
+# ---------------------------------------------------------------------------
+# Series records
+# ---------------------------------------------------------------------------
+
+def _series(path: str, title: str = "Odd Squad") -> dict:
+    return {
+        "path": path, "identifier": "C11086138_SHOW_SH020042990000",
+        "title": title, "description": "Agents solve odd problems.",
+        "genres": ["Children", "Educational"], "rating": "tvy",
+        "orig_air_date": "2014-11-26", "episode_runtime": 1800,
+        "cast": [], "cover_image_id": 56113, "thumbnail_image_id": 56112,
+        "background_image_id": 56114, "schedule_rule": "new",
+        "keep_rule": "none", "keep_count": None,
+    }
+
+
+def test_series_round_trips():
+    store.save_series([_series("/guide/series/6408")])
+    got = store.load_series("/guide/series/6408")
+    assert got["title"] == "Odd Squad"
+    assert got["rating"] == "tvy"
+    assert got["genres"] == ["Children", "Educational"]
+    assert got["cover_image_id"] == 56113
+    assert got["schedule_rule"] == "new"
+
+
+def test_saving_a_series_twice_updates_rather_than_duplicates():
+    store.save_series([_series("/guide/series/6408", title="Old")])
+    store.save_series([_series("/guide/series/6408", title="New")])
+    assert store.load_series("/guide/series/6408")["title"] == "New"
+    assert len(db.query("SELECT 1 FROM guide_series")) == 1
+
+
+def test_only_unknown_or_stale_series_need_refreshing():
+    """The first sync fetches ~1,100; later ones must fetch almost none."""
+    store.save_series([_series("/guide/series/6408")])
+    want = store.series_needing_refresh(
+        ["/guide/series/6408", "/guide/series/9999"]
+    )
+    assert want == ["/guide/series/9999"]
+
+
+def test_an_unknown_series_reads_as_none():
+    assert store.load_series("/guide/series/nope") is None
+
+
+def test_series_capture_fetches_only_what_is_missing(monkeypatch):
+    """A cold guide load spans ~350 series and a full guide ~1,100.
+
+    Re-fetching them every sync would be most of the sync's cost for data that
+    effectively never changes.
+    """
+    from app.state import AppState
+
+    store.save_series([_series("/guide/series/6408")])
+
+    asked = []
+
+    async def fake_request(method, path, body=""):
+        asked.append(path)
+        return {
+            "path": path, "identifier": "X", "object_id": 1,
+            "schedule": {"rule": "none"}, "schedule_rule": "none",
+            "keep": {"rule": "none", "count": None},
+            "series": {"title": "Fetched", "genres": [], "cast": [],
+                       "description": None, "series_rating": None,
+                       "orig_air_date": None, "episode_runtime": None,
+                       "cover_image": {"image_id": 1},
+                       "thumbnail_image": None, "background_image": None},
+        }
+
+    st = AppState()
+    st.active_device = object()
+    monkeypatch.setattr(st, "request_device", fake_request)
+
+    saved = asyncio.run(st.sync_series(["/guide/series/6408", "/guide/series/7777"]))
+
+    assert asked == ["/guide/series/7777"]      # the known one is skipped
+    assert saved == 1
+    assert store.load_series("/guide/series/7777")["title"] == "Fetched"
+
+
+def test_a_failing_series_fetch_does_not_fail_the_sync(monkeypatch):
+    """The guide is the point; artwork and ratings are not worth losing it over."""
+    from app.state import AppState
+
+    async def boom(method, path, body=""):
+        raise RuntimeError("device unreachable")
+
+    st = AppState()
+    st.active_device = object()
+    monkeypatch.setattr(st, "request_device", boom)
+
+    assert asyncio.run(st.sync_series(["/guide/series/7777"])) == 0

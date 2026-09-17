@@ -2,11 +2,11 @@ import platform
 import sys
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import store
+from .. import guide_images, store
 from ..log_buffer import recent_logs
 from ..state import _run_sync, state
 
@@ -117,6 +117,23 @@ async def get_guide_grid():
         raise HTTPException(status_code=502, detail=f"Guide grid error: {e}")
 
 
+@router.post("/refresh")
+async def refresh_channels():
+    """Re-read the account's channel list and rebuild the guide from it.
+
+    POST rather than GET: it drops caches and writes a new guide sync, so it is
+    not safe to repeat blindly or to prefetch.
+    """
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        return await state.refresh_channel_list()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Channel refresh error: {e}")
+
+
 @router.get("/library")
 async def get_library():
     if not state.is_authenticated:
@@ -125,6 +142,36 @@ async def get_library():
         return await state.get_recordings()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Library error: {e}")
+
+
+@router.get("/airing-detail")
+async def airing_detail(channel: str = Query(...), start: str = Query(...)):
+    """One airing, joined to its series. Read from the mirror, never the device."""
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    detail = await _run_sync(store.airing_detail, channel, start)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Airing not found")
+    return detail
+
+
+@router.get("/image/{image_id}")
+async def guide_image(image_id: int):
+    """Guide artwork, from the disk cache or the device on first ask.
+
+    Declared above `/{identifier}/airings` so the literal prefix is matched
+    first - FastAPI resolves in declaration order, and a channel identifier is
+    an opaque string that could in principle be "image".
+    """
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    data = await guide_images.get(image_id, state.fetch_device_image)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Image not available")
+    # A week: an image id names one immutable picture on the device, so the
+    # only thing that changes is which id a series points at.
+    return Response(content=data, media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 @router.get("/{identifier}/airings")

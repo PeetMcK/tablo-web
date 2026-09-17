@@ -336,6 +336,27 @@
 @layer base {
   html, body, #root { @apply h-full bg-surface text-fg antialiased; }
 
+  /* Keep the scrollbar's 4px whether the page scrolls or not.
+
+     Styling ::-webkit-scrollbar below opts this app out of macOS's overlay
+     scrollbars, so that 4px is real layout width — and the Guide is the one
+     tab that never scrolls the page (it is a viewport with its own inner
+     scroller), so on the Guide the 4px came back and everything centred by
+     `mx-auto` moved half of it. Measured: the header's tabs sat at x=134 on
+     Live and Library against x=136 on the Guide, a 2px jump on every switch
+     between them.
+
+     `overflow-y: scroll` is what actually reserves it: the root has to be a
+     scroll container for the gutter to exist at all, and with `overflow:
+     visible` it is not — measured, `scrollbar-gutter: stable` by itself left
+     the Guide at 1400px against the others' 1396. With both, all three report
+     1396 and the tabs sit at 134 everywhere.
+
+     The track is transparent (below), so the Guide shows a 4px groove with no
+     thumb in it and nothing to see. Where scrollbars ARE overlays and take no
+     width, this reserves nothing and changes nothing. */
+  html { overflow-y: scroll; scrollbar-gutter: stable; }
+
   ::selection { background: var(--selection-bg); }
 
   ::-webkit-scrollbar { width: 4px; }
@@ -402,6 +423,56 @@
     -ms-overflow-style: none;         /* old Edge */
   }
   .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; }
+
+  /* The guide scrolls in two directions but only ever advertised one. Channels
+     answer any mouse; time answered shift+wheel, a trackpad swipe, or the jump
+     control - so a plain wheel mouse could not move the clock at all, and
+     nothing on screen said the guide ran a fortnight to the right.
+
+     Giving the time axis its scrollbar back is the one control everybody
+     already knows, and it doubles as the position indicator the guide never
+     had. The channel axis stays bare: it is the axis a wheel already handles,
+     and a second bar down the right-hand side would sit over the listings for
+     no gain.
+
+     Firefox cannot hide one axis and show the other - `scrollbar-width` takes
+     no axis - so it gets a thin bar on both. That is a smaller wrong than
+     leaving it with no visible way to move time. */
+  .scroll-time-only { scrollbar-width: thin; }
+  .scroll-time-only::-webkit-scrollbar { height: 10px; width: 0; }
+  .scroll-time-only::-webkit-scrollbar-track {
+    background: rgb(var(--c-fill-soft) / var(--c-fill-soft-a));
+  }
+  .scroll-time-only::-webkit-scrollbar-thumb {
+    /* Inset by a 3px transparent border so the thumb reads as a pill floating
+       in the track rather than a bar welded across the full height. */
+    background: rgb(var(--c-border-medium) / 0.45);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+  .scroll-time-only::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-fg-muted) / 0.6);
+    background-clip: padding-box;
+  }
+
+  /* Controls sized for a finger rather than a cursor.
+     Measured at 400px before this existed: the mark 40x40, the tabs 32 tall,
+     the search icon 38, the filter pill 30. All of them clear WCAG 2.2's AA
+     floor of 24px and none of them clear 44, which is Apple's figure, Google's
+     48 rounded down, and WCAG's AAA — the size at which a thumb stops missing.
+
+     Gated on `pointer: coarse`, not a width breakpoint: it is the input device
+     that decides this, not the screen. A touch laptop or a tablet gets the
+     bigger targets at any width, and a 380px browser window on a desktop keeps
+     the tight ones. `min-*`, so anything already larger is left alone.
+
+     Applied to the topbar and the filter controls — the small, repeatedly-hit
+     chrome. The cards, channel tiles and programme cells are already well past
+     44px and carry no class. */
+  @media (pointer: coarse) {
+    .touch-target { min-width: 44px; min-height: 44px; }
+  }
 
   /* The ring and spread are the accent, so this now glows the brand swatch in
      dark - the same rgba(71,140,201,0.5)/0.2 the hardcoded rule spelled out -
