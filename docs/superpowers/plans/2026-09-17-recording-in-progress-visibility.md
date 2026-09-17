@@ -294,6 +294,26 @@ is silently ignored.
   the local one so nothing regresses if the device is unreachable.
 - [ ] **Step 6: Run both suites. Commit**
 
+**Blocked until grilled.** Two questions the spec records and nothing answers:
+what a position means when it was captured while the programme was still
+recording, and how the phone app paces its writes. Both need the device and a
+phone in hand.
+
+---
+
+### Task 6c: Watched, marked by hand
+
+**Files:**
+- Modify: `backend/app/routes/recordings.py`, `frontend/src/components/ShowInfo.tsx`
+
+The device did not set `watched` for a recording played to 43%, so it flips
+near the end or never. Either way the sheet should let a person say so.
+
+- [ ] Project `watched` and `protected` from `user_info`.
+- [ ] A Mark watched / Mark unwatched toggle on the sheet, flat-shape PATCH.
+- [ ] Clearing `watched` should probably clear the resume position too —
+  decide, do not assume.
+
 ---
 
 ### Task 7: Live and Guide show what is recording

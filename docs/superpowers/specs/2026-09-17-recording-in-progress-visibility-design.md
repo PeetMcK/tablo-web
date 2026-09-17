@@ -124,6 +124,20 @@ The nested form is the shape the GET returns, answers `200`, and does nothing �
 the same trap `schedule.py` documents for `scheduled`. Verified by writing 618
 to a recording and reading it back, then restoring zero.
 
+**Proposed rule: change detection, not a timestamp.** The device carries no
+modified time — `user_info` is exactly `{position, watched, protected}`, and a
+search of the whole record found nothing time-shaped but the airing's own
+datetime. So no honest last-writer-wins is possible from its data alone.
+
+It does not need to be. Store, beside our own position, *the device value we
+last saw*. On open: if the device's position differs from that, something else
+wrote it — the phone — so it is newer and wins; if it matches, nobody else
+touched it and ours is newer. That gets both directions right without the device
+cooperating, and it avoids the cost of adopting the device wholesale, which
+today would rewind eleven recordings (Saturday Night Live from 21:36 back to
+33 seconds). The one case it cannot resolve is genuine simultaneous playback on
+two clients, which nothing could without a clock.
+
 **The device is the source of authority**, once we write to it. Our own server
 keeps positions today and the device keeps the phone's, and they disagree
 plainly: SNL reads 1296s on ours and 33s on the device. Rather than invent a
@@ -139,9 +153,31 @@ writes on the way out or only on a timer. Whatever it does is what a Tablo
 expects, and matching it avoids both hammering the device and losing the last
 minute of a session. **Needs a phone in hand; do it before building the write.**
 
-`watched` sits beside `position` in the same object and is presumably writable
-the same way. "Finished it" and "stopped here" are different states and the
-Library shows neither today.
+### Watched, and why position cannot be trusted blindly — GRILL FIRST
+
+`watched` sits beside `position` and is presumably writable the same flat way.
+The info sheet wants an explicit **Mark watched / unwatched** toggle: the device
+never set `watched` for a recording played to 43% (521 of 1213), so it evidently
+flips near the end or not at all, and either way a person wants to say so
+themselves.
+
+**The open problem, to be settled before any of this is built:** a position
+recorded while the programme was still recording may not mean what the same
+number means afterwards. Measured facts that bear on it — `recorded_offsets.end`
+goes *negative* when a recording is cut short, and `duration` is 0 throughout
+recording and only settles at the end — so the media a position indexes into is
+still changing while it is being written. Whether the device re-bases position
+when a recording finishes, whether the phone app stores it relative to the
+recording's first frame or to something else, and what happens to a position
+captured past the point a stopped recording actually ends, are all unknown.
+
+Until they are known, a position observed on a recording that was in progress
+at the time is not safe to resume from. Ways it could be handled, none chosen:
+ignore positions captured while `state` was `recording`; re-validate a position
+against `duration` once a recording finishes and discard anything beyond it; or
+record alongside our own positions whether the recording was live when we saw
+them. **Grill the device before implementing — this decides whether resume is
+trustworthy at all for the case we have spent today making possible.**
 
 ### Delete and protect belong on the info sheet
 
