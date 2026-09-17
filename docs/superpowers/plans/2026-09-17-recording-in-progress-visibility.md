@@ -431,49 +431,78 @@ Whether back should become 20 is a separate decision from the debounce.
 ### Task 10: What happens when a recording ends
 
 **Files:**
-- Modify: `frontend/src/components/VideoPlayer.tsx`
+- Modify: `backend/app/state.py` (`_recording_fields` — project the episode keys)
 - Modify: `backend/app/routes/recordings.py` (a `watched` write)
-- Create: a next-episode lookup — source undecided, see below
-- Test: `frontend/src/__tests__/playerChrome.test.tsx`, `backend/tests/test_recordings.py`
+- Create: `frontend/src/components/SeriesEndCard.tsx`
+- Modify: `frontend/src/components/VideoPlayer.tsx`
+- Test: `backend/tests/test_recordings.py`, `frontend/src/__tests__/`
 
 Today a recording plays to its end, the frame holds, and nothing happens.
-Three things should.
 
-**1. Mark it watched.** The device never does this itself — a recording played
-to 43% still read `watched: false`, which is what made the manual toggle in
-6c necessary in the first place. Reaching the end is the unambiguous case.
-Same flat PATCH as `position` (`{"watched": true}`); the nested form answers
-200 and does nothing.
+**No autoplay and no countdown.** A card appears carrying the series cover,
+and under it every recorded episode of that series, in the best order the data
+supports, with the watched ones clearly marked. The viewer picks. An autoplay
+setting may come later; this is not it, and nothing here should assume it.
 
-**2. Offer the next one, with a ten-second countdown.** The card appears at
-the end, names the next episode, and starts it when the count runs out.
-Cancelling it leaves the player where it is.
+**Mark the finished one watched.** The device never does this itself — one
+played to 43% still read `watched: false`, which is why 6c needs a manual
+toggle at all. Reaching the end is the unambiguous case. Flat PATCH,
+`{"watched": true}`; the nested form answers 200 and does nothing.
 
-**Opt-in later.** An autoplay setting is coming and this must respect it, so
-build the countdown so it can be defaulted off without unpicking anything.
-Until the setting exists the countdown runs — that is the behaviour being
-asked for now, not a permanent default.
+### The ordering rule
 
-**3. Close to the Library when there is no next.** The end of the last episode
-is the end of the session.
+Decided per series, not per episode, because a series either has usable
+numbering or it does not:
 
-**The open question is what "next" means.** There is no such notion in the app
-yet. Candidates, none chosen:
+1. **If the episodes carry season and episode numbers**, sort by
+   `(season_number, episode_number)` ascending — **oldest at the top**.
+2. **Otherwise** — sport, news, anything the guide numbers poorly — sort by
+   `orig_air_date`, falling back to the recording's own `start`, again
+   **oldest first**.
 
-- Same series, next by season and episode number. The mirror has both
-  (`guide_airing.season_number`, `episode_number`), but recordings are not
-  ordered by them anywhere.
-- Same series, next by recording date. Cruder, and right more often than it
-  sounds for series recorded off a rule.
-- Whatever the Library's own sort puts next. Cheapest, and matches what the
-  viewer just scrolled past.
+Both were considered and rejected as a global rule. Measured on the live
+library: `Scrambled Up` is S2E7 then S2E8, which episode order gets right and
+date order also gets right. `Saturday Night Live` holds S24E16 and S49E7 —
+decades apart — and `Carl the Collector` holds S1E5 and S1E30. Sorting those
+by number is correct; sorting the NFL by number would not be, because it has
+none.
 
-Settle this before building; the countdown is trivial and the lookup is not.
+**Coverage, measured:** 18 recordings, 7 distinct series, 4 of them with more
+than one recording. 12 of 18 carry both numbers; 6 carry no `series_path` at
+all — movies and one-offs, which have no series and so get no card.
 
-- [ ] **Step 1: Decide what "next" means.** Write the answer here first.
-- [ ] **Step 2: `POST /{id}/watched`**, flat shape, with the read-shape trap
-  documented as `position` has it.
-- [ ] **Step 3: Mark watched on reaching the end**, once per playback.
-- [ ] **Step 4: The countdown card**, cancellable, ten seconds.
-- [ ] **Step 5: Close to the Library when the lookup finds nothing.**
-- [ ] **Step 6: Run both suites. Commit.**
+### What has to be projected
+
+`_recording_fields` drops all of it today, and every field is already in the
+record being fetched, so this costs no extra device traffic:
+
+```python
+"series_path":    data.get("series_path"),
+"season_number":  ep.get("season_number"),
+"episode_number": ep.get("number"),
+"orig_air_date":  ep.get("orig_air_date"),
+```
+
+`series_path` is `/recordings/series/{id}` — the *recordings* series, not the
+guide's. That is the right grouping here: it means "other recordings of this
+show", which is what the card lists.
+
+- [ ] **Step 1: Project the four fields**, with a test that a recording with
+  no episode data still lists.
+- [ ] **Step 2: Group and order**, in a pure helper beside `recordedSpan` so
+  the two rules can be tested without a device. Include the SNL case.
+- [ ] **Step 3: `POST /{id}/watched`**, flat shape, read-shape trap documented
+  as `position` has it.
+- [ ] **Step 4: Mark watched on reaching the end**, once per playback.
+- [ ] **Step 5: The card** — cover above, list below, watched marked, the
+  just-finished episode identified as such.
+- [ ] **Step 6: Nothing to show is not an error.** A movie, a one-off, or the
+  only recording of its series gets no list; the card falls back to closing to
+  the Library.
+- [ ] **Step 7: Run both suites. Commit.**
+
+**Open:** where the cover comes from. The recordings series record has not
+been inspected for artwork, and the guide's `cover_image_id` is keyed by the
+*guide* series path, which a recording does not carry. The info sheet already
+solves the equivalent problem; check what it does before inventing a second
+route.
