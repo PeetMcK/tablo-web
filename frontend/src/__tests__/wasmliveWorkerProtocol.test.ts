@@ -43,7 +43,7 @@ describe("createWorkerHandler", () => {
     const posted: FromWorker[] = [];
     const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));
     await handle({ type: "open" });
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     expect(media(posted).map((m) => m.type)).toEqual(["opened", "video", "audio"]);
   });
 
@@ -53,7 +53,7 @@ describe("createWorkerHandler", () => {
     const transfers: Transferable[][] = [];
     const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (_m, t) => transfers.push(t));
     await handle({ type: "open" });
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     expect(transfers[1]).toEqual([frame.data.buffer]);
     expect(transfers[2]).toEqual([chunk.samples.buffer]);
   });
@@ -63,7 +63,7 @@ describe("createWorkerHandler", () => {
     const decoder = fakeDecoder(() => {}, { push: vi.fn(async () => {}) });
     const handle = createWorkerHandler(async () => decoder, (m) => posted.push(m));
     await handle({ type: "open" });
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     expect(media(posted)).toEqual([{ type: "opened" }]);
   });
 
@@ -74,7 +74,7 @@ describe("createWorkerHandler", () => {
     });
     const handle = createWorkerHandler(async () => decoder, (m) => posted.push(m));
     await handle({ type: "open" });
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     expect(posted[1]).toEqual({ type: "error", message: "bad packet" });
   });
 
@@ -92,10 +92,59 @@ describe("createWorkerHandler", () => {
     const decoder = fakeDecoder(() => {});
     const handle = createWorkerHandler(async () => decoder, () => {});
     await handle({ type: "open" });
-    await handle({ type: "reset" });
+    await handle({ type: "reset", epoch: 1 });
     await handle({ type: "close" });
     expect(decoder.reset).toHaveBeenCalledOnce();
     expect(decoder.close).toHaveBeenCalledOnce();
+  });
+
+  it("stamps decoded media with the epoch it belongs to", async () => {
+    const posted: FromWorker[] = [];
+    const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));
+    await handle({ type: "open" });
+    await handle({ type: "reset", epoch: 4 });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 4 });
+
+    expect(media(posted).filter((m) => m.type === "video" || m.type === "audio"))
+      .toEqual([
+        { type: "video", frames: [frame], epoch: 4 },
+        { type: "audio", chunks: [chunk], epoch: 4 },
+      ]);
+  });
+
+  it("keeps the old epoch on whatever drains out of the decoder being torn down", async () => {
+    // The teardown decodes what is still queued, and that came from the old
+    // position. Adopting the new epoch before the rebuild would stamp the very
+    // frames the seek exists to discard with the epoch that means "keep me".
+    const posted: FromWorker[] = [];
+    let emit!: (out: { video: typeof frame[]; audio: typeof chunk[] }) => void;
+    const decoder = fakeDecoder(() => {}, {
+      reset: vi.fn(async () => { emit({ video: [frame], audio: [] }); }),
+    });
+    const handle = createWorkerHandler(
+      async (onOutput) => { emit = onOutput; return decoder; },
+      (m) => posted.push(m),
+    );
+    await handle({ type: "open" });
+    await handle({ type: "reset", epoch: 1 });
+
+    expect(posted.find((m) => m.type === "video")).toMatchObject({ epoch: 0 });
+  });
+
+  it("acknowledges a reset even when the reset itself fails", async () => {
+    // Skipped on failure, the acknowledgement leaves the page waiting on a
+    // watershed that will never arrive — and under the old gate that meant
+    // every later message was dropped for the life of the session.
+    const posted: FromWorker[] = [];
+    const decoder = fakeDecoder(() => {}, {
+      reset: vi.fn(async () => { throw new Error("teardown failed"); }),
+    });
+    const handle = createWorkerHandler(async () => decoder, (m) => posted.push(m));
+    await handle({ type: "open" });
+    await handle({ type: "reset", epoch: 2 });
+
+    expect(posted).toContainEqual({ type: "reset", epoch: 2 });
+    expect(posted).toContainEqual({ type: "error", message: "teardown failed" });
   });
 
   it("holds segments sent while the decoder is still opening", async () => {
@@ -113,7 +162,7 @@ describe("createWorkerHandler", () => {
     );
 
     const first = handle({ type: "open" });
-    const second = handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    const second = handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     release();
     await Promise.all([first, second]);
 
@@ -123,7 +172,7 @@ describe("createWorkerHandler", () => {
   it("ignores a segment that arrives before open", async () => {
     const posted: FromWorker[] = [];
     const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     expect(posted).toEqual([]);
   });
 
@@ -142,7 +191,7 @@ describe("createWorkerHandler", () => {
     const posted: FromWorker[] = [];
     const handle = createWorkerHandler(async (onOutput) => fakeDecoder(onOutput), (m) => posted.push(m));
     await handle({ type: "open" });
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
 
     const stats = posted.find((m) => m.type === "stats");
     expect(stats).toBeDefined();
@@ -154,7 +203,7 @@ describe("createWorkerHandler", () => {
     const handle = createWorkerHandler(async () => decoder, () => {});
     await handle({ type: "open" });
     await handle({ type: "close" });
-    await handle({ type: "segment", bytes: new ArrayBuffer(8) });
+    await handle({ type: "segment", bytes: new ArrayBuffer(8), epoch: 0 });
     expect(decoder.push).not.toHaveBeenCalled();
   });
 });

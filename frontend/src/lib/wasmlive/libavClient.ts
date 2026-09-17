@@ -537,8 +537,13 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     },
 
     async reset() {
-      await teardown();
+      // Emptied before the teardown, not after. `teardown` signals EOF and
+      // waits for the pump to drain, and the pump decodes whatever is still
+      // queued on its way out — so a seek spent up to a lookahead's worth of
+      // decode on media it was about to throw away, while the viewer waited
+      // for the new position.
       queue = [];
+      await teardown();
       atEof = false;
       starved = false;
       pumpError = null;

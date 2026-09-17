@@ -224,8 +224,16 @@ export function createSession(deps: SessionDeps): LiveSession {
   let workerBooted = false;
   /** Whether any audio has ever arrived, which separates startup from a stall. */
   let sawAudio = false;
-  /** Set from a seek until the worker confirms the decoder was rebuilt. */
-  let awaitingReset = false;
+  /**
+   * Which side of the last seek we are on.
+   *
+   * Bumped by `seek`, stamped on every segment sent and checked on every piece
+   * of media that comes back. It replaces a flag that was set from the seek
+   * until the worker acknowledged it, and which covered only half the race:
+   * messages already in flight *from the worker*, never fetches already in
+   * flight *from the page*.
+   */
+  let epoch = 0;
   /** For the frozen-picture watchdog, which starvation cannot detect. */
   let lastPresentedCount = 0;
   let lastProgressAtMs = 0;
@@ -247,15 +255,21 @@ export function createSession(deps: SessionDeps): LiveSession {
 
   deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const message = event.data;
-    // Everything in flight when a seek was issued belongs to where playback
-    // was. Audio especially: it anchors the clock, so one stale chunk landing
-    // after the flush puts the playhead back at the old position while frames
-    // arrive from the new one. Measured on a press of Back 10s: "starved by
-    // 12.32s" twice in the same millisecond, and the channel handed back to
+    // Media from before the last seek belongs to where playback was. Audio
+    // especially: it anchors the clock, so one stale chunk landing after the
+    // flush puts the playhead back where the viewer just left while frames
+    // arrive from where they went. Measured on a press of Back 10s: "starved
+    // by 12.32s" twice in the same millisecond, and the channel handed back to
     // the transcode before a single new frame was drawn.
-    if (awaitingReset && message.type !== "reset") return;
+    //
+    // Only media is filtered. An error or a set of counters from the old
+    // decoder still describes something that went wrong, and dropping it would
+    // hide the failure rather than the position.
+    if ((message.type === "video" || message.type === "audio") && message.epoch !== epoch) {
+      return;
+    }
     if (message.type === "reset") {
-      awaitingReset = false;
+      log.wasm(`decoder rebuilt at epoch ${message.epoch}`);
       return;
     }
     if (message.type === "video") {
@@ -323,7 +337,16 @@ export function createSession(deps: SessionDeps): LiveSession {
     deps.playlistUrl.replace(/[^/]*$/, "") + uri;
 
   const poll = async () => {
+    // The epoch this poll belongs to, captured before the first await.
+    //
+    // Every await below is a place a seek can happen, and a poll that resumes
+    // afterwards is working from the old position: its `takenThrough`, its
+    // `anchorMedia` and the bytes it is holding all belong to where playback
+    // was. Checking after each one is the page-side half of the seek race —
+    // the worker-side half is the epoch stamped on what comes back.
+    const mine = epoch;
     const text = await deps.fetchText(deps.playlistUrl);
+    if (mine !== epoch) return;
     playlist = parseMediaPlaylist(text);
     const { start: windowStart } = playlistWindow(playlist, deps.originMs);
 
@@ -389,6 +412,13 @@ export function createSession(deps: SessionDeps): LiveSession {
 
         if (anchorMedia === null) anchorMedia = at;
         const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
+        // The seek race, in the one place it actually bites: this fetch was
+        // outstanding when the viewer pressed Back 10s, so the worker would
+        // receive `reset` and *then* this segment from before it. Its audio
+        // would set the clock's origin to the old position, every new frame
+        // would read ten seconds early, and the session would fall back to the
+        // transcode before drawing anything.
+        if (mine !== epoch) return;
         log.wasm(`fed segment ${sequence}`, {
           bytes: bytes.byteLength,
           mediaFrom: Number(at.toFixed(2)),
@@ -406,7 +436,7 @@ export function createSession(deps: SessionDeps): LiveSession {
           queuedFields: deps.presenter.queued,
           presented: deps.presenter.presentedCount,
         });
-        post({ type: "segment", bytes }, [bytes]);
+        post({ type: "segment", bytes, epoch }, [bytes]);
         takenThrough = sequence;
         fedThisPoll += 1;
         fedThroughMedia = at + duration;
@@ -536,8 +566,10 @@ export function createSession(deps: SessionDeps): LiveSession {
       ptsOffset = null;
       anchorMedia = null;
       fedThroughMedia = null;
-      awaitingReset = true;
-      post({ type: "reset" });
+      // Bumped before the reset is posted, so a poll already awaiting a fetch
+      // abandons what it is holding rather than sending it on afterwards.
+      epoch += 1;
+      post({ type: "reset", epoch });
       deps.audio.flush();
       deps.presenter.destroy();
       void safePoll();

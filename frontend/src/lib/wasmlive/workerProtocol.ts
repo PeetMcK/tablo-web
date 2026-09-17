@@ -8,10 +8,22 @@
 import type { DecodeOutput, DecoderStats, LibavDecoder } from "./libavClient";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
+/**
+ * Which side of a seek a message belongs to.
+ *
+ * The page bumps it on every seek and stamps it on what it sends; the worker
+ * adopts it from the reset and stamps it on the media it sends back. Anything
+ * carrying a stale epoch came from where playback *was*, and the page discards
+ * it without having to reason about ordering.
+ *
+ * ffplay does the same thing under the name `serial`: every packet and frame
+ * carries one, `video_refresh` drops frames whose serial is stale, and
+ * `get_clock` returns NAN rather than a time from the old position.
+ */
 export type ToWorker =
   | { type: "open" }
-  | { type: "segment"; bytes: ArrayBuffer }
-  | { type: "reset" }
+  | { type: "segment"; bytes: ArrayBuffer; epoch: number }
+  | { type: "reset"; epoch: number }
   | { type: "close" };
 
 export type FromWorker =
@@ -27,17 +39,25 @@ export type FromWorker =
   | { type: "booted" }
   | { type: "opened" }
   /**
-   * The decoder has been torn down and rebuilt, and everything the page was
-   * sent before this belongs to where playback was.
+   * The decoder has been torn down and rebuilt at this epoch.
    *
-   * Messages are handled in order, so this is a watershed: frames and audio
-   * posted before it came from the old position. Without it the page cannot
-   * tell them apart, and a seek re-anchors its clock on whatever stale audio
-   * happens to land after the flush.
+   * No longer load-bearing for correctness — the epoch on the media itself is
+   * what the page filters on — but it is the only confirmation that the
+   * rebuild happened at all, and it is posted from a `finally` so that a reset
+   * which throws still says so. An ack that is skipped on failure is worse
+   * than no ack: it leaves the page waiting on a watershed that will never
+   * come.
    */
-  | { type: "reset" }
-  | { type: "video"; frames: DecodedVideoFrame[] }
-  | { type: "audio"; chunks: DecodedAudioChunk[] }
+  | { type: "reset"; epoch: number }
+  /**
+   * Decoded media, stamped with the epoch it was decoded under.
+   *
+   * Audio especially: it anchors the clock, so one chunk from before a seek
+   * landing after the flush puts the playhead back at the old position while
+   * frames arrive from the new one.
+   */
+  | { type: "video"; frames: DecodedVideoFrame[]; epoch: number }
+  | { type: "audio"; chunks: DecodedAudioChunk[]; epoch: number }
   | { type: "stats"; stats: DecoderStats }
   | { type: "error"; message: string };
 
@@ -48,15 +68,17 @@ export function createWorkerHandler(
 ): (message: ToWorker) => Promise<void> {
   let decoder: LibavDecoder | null = null;
   let opening: Promise<LibavDecoder> | null = null;
+  /** Which side of the last seek this decoder's output belongs to. */
+  let epoch = 0;
 
   const emit = (out: DecodeOutput) => {
     // Buffers are transferred, not copied: a 1080p frame is 3.1MB, and at 60p
     // copying them would cost more than the decode does.
     if (out.video.length) {
-      post({ type: "video", frames: out.video }, out.video.map((f) => f.data.buffer));
+      post({ type: "video", frames: out.video, epoch }, out.video.map((f) => f.data.buffer));
     }
     if (out.audio.length) {
-      post({ type: "audio", chunks: out.audio }, out.audio.map((c) => c.samples.buffer));
+      post({ type: "audio", chunks: out.audio, epoch }, out.audio.map((c) => c.samples.buffer));
     }
   };
 
@@ -94,8 +116,19 @@ export function createWorkerHandler(
           return;
 
         case "reset":
-          await decoder?.reset();
-          post({ type: "reset" }, []);
+          try {
+            // Tearing down drains the decoder, and what drains out of it came
+            // from the old position — so the epoch moves *after* the rebuild,
+            // not before. Adopting it first would stamp the very frames this
+            // exists to discard with the epoch that means "keep me".
+            await decoder?.reset();
+          } finally {
+            epoch = message.epoch;
+            // In a `finally`, so a reset that throws still reports the
+            // watershed, and the outer catch's `error` follows it. An ack
+            // skipped on failure is worse than no ack at all.
+            post({ type: "reset", epoch }, []);
+          }
           return;
 
         case "close":

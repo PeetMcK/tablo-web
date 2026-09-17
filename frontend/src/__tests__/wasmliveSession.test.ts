@@ -291,7 +291,7 @@ describe("createSession", () => {
     // of 9000: everything after this is offset by the difference.
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 0,
         chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
@@ -309,19 +309,19 @@ describe("createSession", () => {
     await session.start();
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 0,
         chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
 
     session.seek(31);
     await session.poll();
-    // The worker confirms the decoder was rebuilt. Everything before this
-    // belongs to where playback was.
-    worker.onmessage?.({ data: { type: "reset" } } as MessageEvent);
+    // The worker confirms the decoder was rebuilt, and everything it decodes
+    // from here carries the new epoch.
+    worker.onmessage?.({ data: { type: "reset", epoch: 1 } } as MessageEvent);
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 1,
         chunks: [{ ptsSeconds: 8500, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
@@ -330,7 +330,7 @@ describe("createSession", () => {
     expect(session.currentTime).toBe(30);
   });
 
-  it("ignores what the worker sent before it acknowledged a seek", async () => {
+  it("ignores media the worker decoded before the seek", async () => {
     // Messages already in flight carry the old position, and audio anchors the
     // clock — so one stale chunk landing after the flush puts the playhead back
     // where the viewer just left while frames arrive from where they went.
@@ -346,23 +346,88 @@ describe("createSession", () => {
 
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 0,
         chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
-    worker.onmessage?.({ data: { type: "video", frames: [{ ptsSeconds: 9000 }] } } as MessageEvent);
+    worker.onmessage?.({
+      data: { type: "video", epoch: 0, frames: [{ ptsSeconds: 9000 }] },
+    } as MessageEvent);
     expect(audio.push).not.toHaveBeenCalled();
     expect(presenter.offer).not.toHaveBeenCalled();
 
-    // And takes everything after the acknowledgement.
-    worker.onmessage?.({ data: { type: "reset" } } as MessageEvent);
+    // And takes everything decoded at the new position.
+    worker.onmessage?.({ data: { type: "reset", epoch: 1 } } as MessageEvent);
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 1,
         chunks: [{ ptsSeconds: 8500, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
     expect(audio.push).toHaveBeenCalledOnce();
+  });
+
+  it("drops a segment whose fetch was still in flight when a seek happened", async () => {
+    // The half the reset acknowledgement never covered. The gate could only
+    // filter messages in flight *from the worker*; a fetch in flight *from the
+    // page* resumed afterwards and posted its bytes after the reset, so the
+    // worker decoded the old position on top of the new one and the first
+    // chunk of audio re-anchored the clock ten seconds away from every frame
+    // arriving. The test that was supposed to catch this resolved `fetchBytes`
+    // synchronously, which is exactly why it could not.
+    let release: (bytes: ArrayBuffer) => void = () => {};
+    let outstanding = false;
+    const h = harness({
+      // Only the first fetch is held open; the seek's own poll must be able to
+      // finish, or the chain never settles.
+      fetchBytes: async (url: string) => {
+        if (outstanding) return new ArrayBuffer(8);
+        outstanding = true;
+        void url;
+        return new Promise<ArrayBuffer>((resolve) => { release = resolve; });
+      },
+    });
+
+    const polling = h.session.poll();
+    // Let the poll get as far as the segment fetch, which is the state this is
+    // about: bytes on their way to a page that is about to seek away.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(outstanding).toBe(true);
+
+    h.session.seek(31);
+    // Distinctive bytes, because the stamp cannot tell this story: a stale
+    // segment posted after the seek carries the *new* epoch — `post` reads the
+    // variable the seek just bumped — so the worker would decode the old
+    // position believing it to be the new one. The bytes are the evidence.
+    release(new ArrayBuffer(99));
+    await polling;
+
+    const segments = h.posted.filter((m) => m.type === "segment");
+    expect(segments.some((m) => (m as { bytes: ArrayBuffer }).bytes.byteLength === 99))
+      .toBe(false);
+  });
+
+  it("leaves no window open between two seeks in quick succession", async () => {
+    // The acknowledgement cleared on the *first* reset, so everything the old
+    // decoder produced between the two passed the gate. An epoch has no such
+    // window: media is compared against where playback is now, not against
+    // whether an acknowledgement has arrived.
+    const { session, worker, audio } = harness();
+    await session.start();
+
+    session.seek(31);
+    session.seek(35);
+    audio.push.mockClear();
+
+    worker.onmessage?.({ data: { type: "reset", epoch: 1 } } as MessageEvent);
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 1,
+        chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    expect(audio.push).not.toHaveBeenCalled();
   });
 
   it("fetches segments from the playlist's own directory", async () => {
@@ -395,8 +460,8 @@ describe("createSession", () => {
     await session.start();
     const frame = { ptsSeconds: 30, data: new Uint8Array(6) };
     const chunk = { ptsSeconds: 30, samples: new Float32Array(2), sampleRate: 48000 };
-    worker.onmessage?.({ data: { type: "video", frames: [frame] } } as MessageEvent);
-    worker.onmessage?.({ data: { type: "audio", chunks: [chunk] } } as MessageEvent);
+    worker.onmessage?.({ data: { type: "video", epoch: 0, frames: [frame] } } as MessageEvent);
+    worker.onmessage?.({ data: { type: "audio", epoch: 0, chunks: [chunk] } } as MessageEvent);
     expect(presenter.offer).toHaveBeenCalledWith(frame);
     expect(audio.push).toHaveBeenCalledWith(chunk);
   });
