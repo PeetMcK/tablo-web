@@ -725,6 +725,80 @@ describe("createSession", () => {
     }
   });
 
+  it("does not let scheduled polls pile up behind a slow one", async () => {
+    // Polls are chained so two cannot claim the same segments, but chaining on
+    // its own only defers: a poll that outlasts the 500ms interval — remote
+    // access, a proxied backend, one slow segment — leaves the next tick queued
+    // behind it, and the one after that, without bound. Each then runs against
+    // a playlist minutes out of date.
+    let scheduled: (() => void) | null = null;
+    let defer = false;
+    let release: (text: string) => void = () => {};
+    let playlistFetches = 0;
+    // Several turns: a queued poll is a chain of awaits, and one macrotask is
+    // not enough for three of them to run.
+    const settle = async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    const h = harness({
+      schedule: (callback) => { scheduled = callback; return () => {}; },
+      fetchText: async () => {
+        playlistFetches += 1;
+        if (!defer) return DEEP_PLAYLIST;
+        return new Promise<string>((resolve) => { release = resolve; });
+      },
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    defer = true;
+    const slow = h.session.poll();
+    await settle();
+    const before = playlistFetches;
+
+    scheduled!();
+    scheduled!();
+    scheduled!();
+    await settle();
+    defer = false;
+    release(DEEP_PLAYLIST);
+    await slow;
+    await settle();
+
+    // Nothing queued behind the slow poll, so nothing ran once it finished.
+    expect(playlistFetches).toBe(before);
+  });
+
+  it("calls a worker that has been running for a while a decode failure", async () => {
+    // "init failed" is the first thing anyone reads when working out why a
+    // channel fell back, and a worker that booted, opened and ran for a minute
+    // before throwing did not fail to initialise.
+    const { session, worker } = harness();
+    await session.start();
+    worker.onmessage?.({ data: { type: "booted" } } as MessageEvent);
+
+    worker.onerror?.({ message: "out of memory" } as unknown as Event);
+
+    expect(session.failure).toBe("decode error");
+  });
+
+  it("reports a failure once, not on every animation frame", async () => {
+    let nowMs = 0;
+    const errors: string[] = [];
+    const { session, presenter } = harness({ nowMs: () => nowMs });
+    await session.start();
+    session.on("error", () => errors.push("error"));
+
+    presenter.presentedCount = 10;
+    session.tick();
+    nowMs = 30000;
+    for (let i = 0; i < 10; i++) session.tick();
+
+    expect(session.failure).toBe("decode error");
+    expect(errors).toHaveLength(1);
+  });
+
   it("survives a failed poll rather than ending the session", async () => {
     const { session } = harness({
       fetchText: async () => { throw new Error("backend restarted"); },

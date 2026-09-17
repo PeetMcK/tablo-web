@@ -332,7 +332,13 @@ export function createSession(deps: SessionDeps): LiveSession {
   deps.worker.onerror = (event: ErrorEvent | Event) => {
     failureDetail = (event as ErrorEvent).message || "worker failed to load";
     log.warn(`wasm worker error: ${failureDetail}`, { workerBooted });
-    fallback = reduceFallback(fallback, { kind: "init-failed" });
+    // Only a worker that never got as far as saying "booted" failed to
+    // initialise. One that has been running for a minute and then throws is a
+    // decode failure wearing the wrong label, and the label is what anyone
+    // reads first when working out why a channel fell back.
+    fallback = reduceFallback(fallback, {
+      kind: workerBooted ? "decode-error" : "init-failed",
+    });
     emit("error");
   };
   deps.worker.onmessageerror = () => {
@@ -469,13 +475,33 @@ export function createSession(deps: SessionDeps): LiveSession {
    * decode, for nothing.
    */
   let pollChain: Promise<void> = Promise.resolve();
+  /** Polls queued or running, so the timer does not pile up behind a slow one. */
+  let pollsQueued = 0;
 
   const safePoll = () => {
-    pollChain = pollChain.then(() => poll()).catch(() => {
-      // A backend restart or a dropped request is not the end of the session;
-      // the next poll is a couple of seconds away.
-    });
+    pollsQueued += 1;
+    pollChain = pollChain
+      .then(() => poll())
+      .catch(() => {
+        // A backend restart or a dropped request is not the end of the session;
+        // the next poll is a couple of seconds away.
+      })
+      .finally(() => { pollsQueued -= 1; });
     return pollChain;
+  };
+
+  /**
+   * The timer's poll, which gives up its turn if one is already in flight.
+   *
+   * The chain is what stops two polls claiming the same segments, but on its
+   * own it only defers the work: a poll that outlasts the interval — remote
+   * access, a proxied backend, one slow segment — leaves the next tick queued
+   * behind it, and the one after that, without bound. A seek still enqueues
+   * unconditionally, because a seek must always be acted on.
+   */
+  const scheduledPoll = () => {
+    if (pollsQueued > 0) return;
+    void safePoll();
   };
 
   const tick = () => {
@@ -567,6 +593,9 @@ export function createSession(deps: SessionDeps): LiveSession {
         fallback = reduceFallback(fallback, { kind: "decode-error" });
       }
     }
+    // Once, not sixty times a second. `emit("error")` used to fire on every
+    // animation frame for the rest of the session, and the same flag that
+    // already keeps the log line to one occurrence serves for both.
     if (fallback.failed && !failureLogged) {
       failureLogged = true;
       log.warn(`wasm session failed: ${fallback.failed}`, {
@@ -578,8 +607,8 @@ export function createSession(deps: SessionDeps): LiveSession {
         presented: deps.presenter.presentedCount,
         buffered: deps.audio.bufferedSeconds,
       });
+      emit("error");
     }
-    if (fallback.failed) emit("error");
   };
 
   return {
@@ -590,7 +619,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       // context is a frozen picture rather than merely a silent one.
       void deps.audio.resume();
       await safePoll();
-      stopPolling = deps.schedule(() => { void safePoll(); }, POLL_INTERVAL_MS);
+      stopPolling = deps.schedule(scheduledPoll, POLL_INTERVAL_MS);
       emit("ready");
       emit("playing");
     },

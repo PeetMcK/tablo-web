@@ -120,6 +120,7 @@ export async function createAudioSink(
   const state = createSinkState(context.sampleRate);
   let muted = false;
   let pushed = 0;
+  let rateWarned = false;
   let heartbeat: { calls: number; queued: number } | null = null;
 
   /** Frames handed to the worklet, so buffer depth can be derived. */
@@ -157,6 +158,21 @@ export async function createAudioSink(
 
   return {
     push(chunk: DecodedAudioChunk) {
+      // The clock counts at the context's rate, and the resample graph emits at
+      // the stream's. ATSC A/52 mandates 48kHz and the context is created at
+      // 48kHz, so these agree — but the assumption is load-bearing rather than
+      // incidental: a mismatch plays pitch-shifted *and* runs the clock at the
+      // wrong speed, which would look like drift rather than like a wrong
+      // sample rate. Said out loud once, so it is diagnosable if it ever
+      // happens.
+      if (chunk.sampleRate !== state.sampleRate && !rateWarned) {
+        rateWarned = true;
+        console.warn(
+          `[wasmlive] audio is ${chunk.sampleRate}Hz but the output is` +
+          ` ${state.sampleRate}Hz: playback will be pitch-shifted and the clock` +
+          ` will run at the wrong rate`,
+        );
+      }
       notePts(state, chunk.ptsSeconds);
       pushed++;
       // Interleaved stereo: two samples per frame of audio.

@@ -14,6 +14,16 @@ import { createWasmSurface } from "./wasmSurface";
 import type { PlaybackSurface } from "../playbackSurface";
 import workletUrl from "./pcmWorklet.js?url";
 
+/**
+ * How long a request to our own backend may take before it is abandoned.
+ *
+ * Generous: these are loopback or LAN requests, but the backend may be priming
+ * a ring or serving a segment off a device that is thinking about it. Short
+ * enough that a dropped connection does not hold the transport until the
+ * watchdog gives up on the whole session.
+ */
+const FETCH_TIMEOUT_MS = 8000;
+
 export interface OpenOptions {
   /** The ring playlist to follow. */
   playlistUrl: string;
@@ -65,13 +75,18 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     worker,
     audio,
     presenter,
+    // Both bounded. Neither was, and one hung request blocks every later poll
+    // behind it until the frozen-picture watchdog ends the session six seconds
+    // later — for a backend that is merely slow, or a connection that dropped
+    // without closing. The device-side requests were given timeouts; these,
+    // between the page and our own backend, were missed.
     fetchText: async (url) => {
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (!resp.ok) throw new Error(`playlist ${resp.status}`);
       return resp.text();
     },
     fetchBytes: async (url) => {
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (!resp.ok) throw new Error(`segment ${resp.status}`);
       return resp.arrayBuffer();
     },

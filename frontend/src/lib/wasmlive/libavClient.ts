@@ -449,6 +449,19 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
               copyoutFrame: "video_packed", fin,
             });
         for (const frame of frames) out.video.push(toVideoFrame(frame));
+        // Correct each duration from the frame that follows it.
+        //
+        // `toVideoFrame` measures the gap to the *previous* frame, which is
+        // all it can see; ffplay's `vp_duration` uses the next one, and the
+        // difference shows at a cadence change - the second field of an
+        // interlaced frame is placed at pts + duration/2, so a duration
+        // borrowed from the wrong side mistimes it by half the error. The last
+        // frame of a read round keeps its backward estimate, because there is
+        // nothing after it yet.
+        for (let i = 0; i + 1 < out.video.length; i++) {
+          const gap = out.video[i + 1].ptsSeconds - out.video[i].ptsSeconds;
+          if (gap > 0 && gap < 1) out.video[i].durationSeconds = gap;
+        }
       }
 
       const audioPackets = audioStream ? packets[audioStream.index] ?? [] : [];
