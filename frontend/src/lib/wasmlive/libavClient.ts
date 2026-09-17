@@ -20,6 +20,7 @@
  * to start video mid-GOP.
  */
 
+import { createTimeline, noteDecoded, noteEmitted, nextOutputPts } from "./audioTimeline";
 import libavLoader from "./vendor/libav-6.10.9.0-tablo-mpeg2.mjs";
 import glueUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs?url";
 import wasmUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm?url";
@@ -134,6 +135,17 @@ export interface DecoderOptions {
   deinterlace?: boolean;
   /** Override the open deadline. For tests, which cannot wait ten seconds. */
   openDeadlineMs?: number;
+  /**
+   * Called when the read pump dies, at the moment it dies.
+   *
+   * Without it a pump failure waits for the next `push` to be reported, and
+   * the transport does not always make one: pacing holds segments back when
+   * the field queue is full or the viewer has paused. The failure then
+   * surfaced six seconds later as the frozen-picture watchdog's "nothing drawn
+   * for 6s" — the right session ended for the wrong stated reason, with the
+   * actual error still sitting in a variable.
+   */
+  onError?: (error: Error) => void;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- libav.js ships no types
@@ -153,6 +165,22 @@ function absolute(url: string): string {
   const base = typeof self !== "undefined" ? self.location?.href : undefined;
   if (!base || /^[a-z]+:/i.test(url)) return url;
   return new URL(url, base).href;
+}
+
+/**
+ * Sample frames in a decoded audio frame, however libav.js chose to hand it over.
+ *
+ * `nb_samples` is the answer when it is there. When it is not, the shape of
+ * `data` says: planar formats — which AC-3 decodes to — give one array per
+ * channel, so the first plane's length is the frame count; a packed format
+ * gives one interleaved array, which has to be divided by the channel count.
+ */
+function sampleFramesOf(frame: LibavFrame): number {
+  if (typeof frame.nb_samples === "number") return frame.nb_samples;
+  const data = frame.data;
+  if (Array.isArray(data)) return data[0]?.length ?? 0;
+  const channels = frame.channels ?? 2;
+  return data.length / Math.max(1, channels);
 }
 
 function ptsSeconds(frame: LibavFrame): number {
@@ -190,6 +218,53 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     wasmurl: options.wasmUrl ?? absolute(wasmUrl),
   });
 
+  let bytesFed = 0;
+  let bytesDelivered = 0;
+  let opened = false;
+  let bytesAtOpen: number | null = null;
+  let msToOpen: number | null = null;
+  let firstByteAtMs: number | null = null;
+  let videoFrames = 0;
+  let audioChunks = 0;
+
+  /**
+   * Bound a call that may never return, and clean up either way.
+   *
+   * The reader device blocks until it is given data, so a feed too thin to
+   * demux leaves `ff_init_demuxer_file` outstanding for ever — and an open
+   * that never returns is invisible from the page: no frames, no audio, no
+   * error, just a session that times out with nothing to say.
+   *
+   * The `finally` is the part that was missing. When the open won its race the
+   * timer was left to fire ten seconds later against a promise nobody was
+   * holding: one dangling timer and one unhandled rejection per open, and an
+   * open happens on every seek.
+   */
+  const withDeadline = async <T>(work: Promise<T>, failure: string): Promise<T> => {
+    const limit = options.openDeadlineMs ?? OPEN_DEADLINE_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(
+          `${failure} within ${limit}ms` +
+          ` (fed ${bytesFed} bytes, delivered ${bytesDelivered})`,
+        )),
+        limit,
+      );
+      // Node keeps the process alive for a pending timer; the browser does not
+      // care either way. Either way this must not outlive the decode.
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
+    // If the deadline wins, `work` is still outstanding and may reject later
+    // against nobody. Claimed here so that is not an unhandled rejection.
+    work.catch(() => {});
+    try {
+      return await Promise.race([work, expired]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  };
+
   /**
    * Loading the runtime, bounded.
    *
@@ -199,21 +274,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
    * finishes being created, and above it a session that waits for frames from
    * a thing that does not exist yet — silently, until its deadline.
    */
-  const loadLibav = async (): Promise<Libav> => {
-    const limit = options.openDeadlineMs ?? OPEN_DEADLINE_MS;
-    let timer: ReturnType<typeof setTimeout>;
-    const expired = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`libav runtime did not load within ${limit}ms`)),
-        limit,
-      );
-    });
-    try {
-      return await Promise.race([openLibav(), expired]);
-    } finally {
-      clearTimeout(timer!);
-    }
-  };
+  const loadLibav = (): Promise<Libav> => withDeadline(openLibav(), "libav runtime did not load");
 
   let libav: Libav = await loadLibav();
 
@@ -229,22 +290,15 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   let fmtCtx = 0;
   let vctx = 0, vpkt = 0, vframe = 0;
   let actx = 0, apkt = 0, aframe = 0;
-  let vsrc = 0, vsink = 0;
-  let asrc = 0, asink = 0;
+  // The graph handles are kept, not discarded. `libav.terminate()` is a no-op
+  // in `noworker` mode in this vendored build, so nothing else ever frees
+  // them, and a graph is rebuilt on every seek.
+  let vgraph = 0, vsrc = 0, vsink = 0;
+  let agraph = 0, asrc = 0, asink = 0;
   let frameDuration = DEFAULT_FRAME_DURATION;
   let lastVideoPts: number | null = null;
-  /** First decoded audio timestamp, and samples emitted since. */
-  let audioAnchorPts: number | null = null;
-  let audioFramesEmitted = 0;
-
-  let bytesFed = 0;
-  let bytesDelivered = 0;
-  let opened = false;
-  let bytesAtOpen: number | null = null;
-  let msToOpen: number | null = null;
-  let firstByteAtMs: number | null = null;
-  let videoFrames = 0;
-  let audioChunks = 0;
+  /** The output timeline, corrected from the decoder's own timestamps. */
+  let audioTimeline = createTimeline();
 
   const feed = () => {
     if (queue.length) {
@@ -267,22 +321,6 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     feed();
   };
 
-  /** Rejects if the demuxer has not named the streams in time. */
-  const openDeadline = (): Promise<never> => {
-    const limit = options.openDeadlineMs ?? OPEN_DEADLINE_MS;
-    return new Promise((_resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(
-          `demuxer did not open within ${limit}ms` +
-          ` (fed ${bytesFed} bytes, delivered ${bytesDelivered})`,
-        ));
-      }, limit);
-      // Node keeps the process alive for a pending timer; the browser does not
-      // care either way. Either way this must not outlive the decode.
-      (timer as unknown as { unref?: () => void }).unref?.();
-    });
-  };
-
   const open = async () => {
     await libav.mkreaderdev(DEVICE);
     libav.onread = feed;
@@ -295,14 +333,10 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     opts = await libav.av_dict_set_js(opts, "probesize", String(PROBE_BYTES), 0);
     opts = await libav.av_dict_set_js(opts, "analyzeduration", String(ANALYZE_MICROSECONDS), 0);
 
-    // Raced against a deadline. The reader device blocks until it is given
-    // data, so a feed too thin to demux leaves this call outstanding for ever
-    // — and an open that never returns is invisible from the page: no frames,
-    // no audio, no error, just a session that times out with nothing to say.
-    const [ctx, streams] = await Promise.race([
+    const [ctx, streams] = await withDeadline<[number, LibavStream[]]>(
       libav.ff_init_demuxer_file(DEVICE, { format: "mpegts", open_input_options: opts }),
-      openDeadline(),
-    ]);
+      "demuxer did not open",
+    );
     fmtCtx = ctx;
     opened = true;
     bytesAtOpen = bytesDelivered;
@@ -334,7 +368,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       if (num > 0 && den > 0) frameDuration = den / num;
 
       if (deinterlace) {
-        [, vsrc, vsink] = await libav.ff_init_filter_graph(
+        [vgraph, vsrc, vsink] = await libav.ff_init_filter_graph(
           "bwdif=mode=send_field:parity=auto:deint=all,format=pix_fmts=yuv420p",
           {
             type: libav.AVMEDIA_TYPE_VIDEO,
@@ -361,7 +395,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
    * is refused outright ("changing audio frame properties on the fly").
    */
   const openAudioGraph = async (frame: LibavFrame) => {
-    [, asrc, asink] = await libav.ff_init_filter_graph(
+    [agraph, asrc, asink] = await libav.ff_init_filter_graph(
       "aresample,aformat=sample_fmts=flt:channel_layouts=stereo",
       {
         type: libav.AVMEDIA_TYPE_AUDIO,
@@ -415,6 +449,19 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
               copyoutFrame: "video_packed", fin,
             });
         for (const frame of frames) out.video.push(toVideoFrame(frame));
+        // Correct each duration from the frame that follows it.
+        //
+        // `toVideoFrame` measures the gap to the *previous* frame, which is
+        // all it can see; ffplay's `vp_duration` uses the next one, and the
+        // difference shows at a cadence change - the second field of an
+        // interlaced frame is placed at pts + duration/2, so a duration
+        // borrowed from the wrong side mistimes it by half the error. The last
+        // frame of a read round keeps its backward estimate, because there is
+        // nothing after it yet.
+        for (let i = 0; i + 1 < out.video.length; i++) {
+          const gap = out.video[i + 1].ptsSeconds - out.video[i].ptsSeconds;
+          if (gap > 0 && gap < 1) out.video[i].durationSeconds = gap;
+        }
       }
 
       const audioPackets = audioStream ? packets[audioStream.index] ?? [] : [];
@@ -423,14 +470,23 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
         const decoded = await libav.ff_decode_multi(actx, apkt, aframe, audioPackets, { fin });
         if (decoded.length) {
           if (!asink) await openAudioGraph(decoded[0]);
-          // Anchored on the decoder's own timestamps, before the graph.
+          // Accounted before the graph, where the timestamps mean something.
           // buffersink re-bases what it emits onto the filter's timeline, and
           // that timeline is not the stream's: on a live feed it reported
           // audio at 30.6s while video from the same instant read 69.6s, which
           // is a 39-second lip-sync error dressed up as a starving decoder.
-          if (audioAnchorPts === null) {
-            audioAnchorPts = ptsSeconds(decoded[0]);
-            audioFramesEmitted = 0;
+          //
+          // So the output timeline counts samples and takes its corrections
+          // from here: a frame that lands where it was not expected is a drop
+          // or a discontinuity, and either way the media really is somewhere
+          // other than the sample count believes.
+          for (const frame of decoded) {
+            noteDecoded(
+              audioTimeline,
+              ptsSeconds(frame),
+              sampleFramesOf(frame),
+              frame.sample_rate ?? 48000,
+            );
           }
 
           const filtered = await libav.ff_filter_multi(asrc, asink, aframe, decoded, { fin });
@@ -440,9 +496,9 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
             out.audio.push({
               samples: frame.data,
               sampleRate: rate,
-              ptsSeconds: audioAnchorPts + audioFramesEmitted / rate,
+              ptsSeconds: nextOutputPts(audioTimeline, rate),
             });
-            audioFramesEmitted += frames;
+            noteEmitted(audioTimeline, frames);
           }
         }
       }
@@ -465,7 +521,13 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
 
   const start = () => {
     if (pump) return;
-    pump = runPump().catch((e) => { pumpError = e; });
+    pump = runPump().catch((e) => {
+      pumpError = e;
+      // Reported now, not on the next push. Tearing down is a normal way for
+      // the pump to end, so the caller is told only about failures that are
+      // not our own teardown.
+      if (!atEof) options.onError?.(e instanceof Error ? e : new Error(String(e)));
+    });
   };
 
   /** Let the pump make progress, and surface anything it threw. */
@@ -484,22 +546,27 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     try {
       if (videoStream) await libav.ff_free_decoder(vctx, vpkt, vframe);
       if (audioStream) await libav.ff_free_decoder(actx, apkt, aframe);
+      if (vgraph) await libav.avfilter_graph_free_js(vgraph);
+      if (agraph) await libav.avfilter_graph_free_js(agraph);
       if (fmtCtx) await libav.avformat_close_input_js(fmtCtx);
     } catch {
       // Freeing a half-built graph may fail; the instance goes away next
       // regardless, which frees everything with it.
     }
+    // `terminate` is defined but empty in `noworker` mode, which is the mode
+    // this runs in. It is called anyway because the same code path is used
+    // under a real libav.js worker, where it does free the instance - but the
+    // frees above are what actually matter here.
     libav.terminate?.();
     fmtCtx = 0;
     videoStream = null;
     audioStream = null;
     vctx = vpkt = vframe = 0;
     actx = apkt = aframe = 0;
-    vsrc = vsink = 0;
-    asrc = asink = 0;
+    vgraph = vsrc = vsink = 0;
+    agraph = asrc = asink = 0;
     lastVideoPts = null;
-    audioAnchorPts = null;
-    audioFramesEmitted = 0;
+    audioTimeline = createTimeline();
     opened = false;
     bytesAtOpen = null;
     msToOpen = null;
@@ -537,8 +604,13 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     },
 
     async reset() {
-      await teardown();
+      // Emptied before the teardown, not after. `teardown` signals EOF and
+      // waits for the pump to drain, and the pump decodes whatever is still
+      // queued on its way out — so a seek spent up to a lookahead's worth of
+      // decode on media it was about to throw away, while the viewer waited
+      // for the new position.
       queue = [];
+      await teardown();
       atEof = false;
       starved = false;
       pumpError = null;

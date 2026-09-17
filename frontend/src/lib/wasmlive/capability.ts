@@ -40,10 +40,16 @@ export function wasmLiveEligible(
   storage: Pick<Storage, "getItem">,
   channelKind: string | null | undefined,
 ): Eligibility {
-  // Private mode, or a browser set to block site data, throws on read. Treat
-  // that as off rather than letting a storage exception take the player down.
+  // On unless explicitly switched off. Deliberately ungated for now: the point
+  // of this pass is to find every way the WASM path breaks under the real
+  // player, which means letting it take every channel a viewer opens rather
+  // than only the ones someone thought to test.
+  //
+  // `tablo.wasmlive = "0"` remains the kill switch. Private mode, or a browser
+  // set to block site data, throws on read; that reads as unset, which is now
+  // on, so the exception path is the same as everyone else's.
   const flag = readFlag(storage);
-  if (!flag || flag === "0") return { eligible: false, reason: "flag off" };
+  if (flag === "0") return { eligible: false, reason: "flag off" };
 
   // A guide row without a kind is a broadcast until proven otherwise, which is
   // the assumption the transcode branch already makes.

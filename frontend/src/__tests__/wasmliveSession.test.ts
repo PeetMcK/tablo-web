@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
 import {
-  createSession, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
+  createSession, CLOSE_GRACE_MS, LOOKAHEAD_SECONDS, POLL_INTERVAL_MS,
+  STARVED_LOOKAHEAD_SECONDS,
 } from "../lib/wasmlive/session";
 import { MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
@@ -31,13 +32,14 @@ const PLAYLIST_NEXT = `#EXTM3U
 `;
 
 function harness(overrides: Partial<SessionDeps> = {}) {
-  const posted: { type: string }[] = [];
+  const posted: { type: string; bytes?: ArrayBuffer; epoch?: number }[] = [];
   const fetched: string[] = [];
   let clockSeconds: number | null = 36;
   let bufferedSeconds = 0;
+  let contextState: AudioContextState = "running";
 
   const worker = {
-    postMessage: (m: { type: string }) => posted.push(m),
+    postMessage: (m: { type: string; bytes?: ArrayBuffer; epoch?: number }) => posted.push(m),
     terminate: vi.fn(),
     onmessage: null as ((e: MessageEvent) => void) | null,
     onerror: null as ((e: Event) => void) | null,
@@ -48,6 +50,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     push: vi.fn(),
     get clockSeconds() { return clockSeconds; },
     get bufferedSeconds() { return bufferedSeconds; },
+    get contextState() { return contextState; },
     starvedBy: vi.fn(() => 0),
     setMuted: vi.fn(),
     muted: false,
@@ -87,6 +90,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     slide: () => { playlist = PLAYLIST_NEXT; },
     setClock: (t: number | null) => { clockSeconds = t; },
     setBuffered: (s: number) => { bufferedSeconds = s; },
+    setContextState: (s: AudioContextState) => { contextState = s; },
   };
 }
 
@@ -291,7 +295,7 @@ describe("createSession", () => {
     // of 9000: everything after this is offset by the difference.
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 0,
         chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
@@ -309,22 +313,124 @@ describe("createSession", () => {
     await session.start();
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 0,
         chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
 
     session.seek(31);
     await session.poll();
+    // The worker confirms the decoder was rebuilt, and everything it decodes
+    // from here carries the new epoch.
+    worker.onmessage?.({ data: { type: "reset", epoch: 1 } } as MessageEvent);
     worker.onmessage?.({
       data: {
-        type: "audio",
+        type: "audio", epoch: 1,
         chunks: [{ ptsSeconds: 8500, samples: new Float32Array(2), sampleRate: 48000 }],
       },
     } as MessageEvent);
     setClock(8500);
 
     expect(session.currentTime).toBe(30);
+  });
+
+  it("ignores media the worker decoded before the seek", async () => {
+    // Messages already in flight carry the old position, and audio anchors the
+    // clock — so one stale chunk landing after the flush puts the playhead back
+    // where the viewer just left while frames arrive from where they went.
+    // Measured on a press of Back 10s: "starved by 12.32s" twice in the same
+    // millisecond, and the channel handed back to the transcode before a single
+    // new frame was drawn.
+    const { session, worker, audio, presenter } = harness();
+    await session.start();
+
+    session.seek(31);
+    audio.push.mockClear();
+    presenter.offer.mockClear();
+
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 0,
+        chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+    worker.onmessage?.({
+      data: { type: "video", epoch: 0, frames: [{ ptsSeconds: 9000 }] },
+    } as MessageEvent);
+    expect(audio.push).not.toHaveBeenCalled();
+    expect(presenter.offer).not.toHaveBeenCalled();
+
+    // And takes everything decoded at the new position.
+    worker.onmessage?.({ data: { type: "reset", epoch: 1 } } as MessageEvent);
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 1,
+        chunks: [{ ptsSeconds: 8500, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+    expect(audio.push).toHaveBeenCalledOnce();
+  });
+
+  it("drops a segment whose fetch was still in flight when a seek happened", async () => {
+    // The half the reset acknowledgement never covered. The gate could only
+    // filter messages in flight *from the worker*; a fetch in flight *from the
+    // page* resumed afterwards and posted its bytes after the reset, so the
+    // worker decoded the old position on top of the new one and the first
+    // chunk of audio re-anchored the clock ten seconds away from every frame
+    // arriving. The test that was supposed to catch this resolved `fetchBytes`
+    // synchronously, which is exactly why it could not.
+    let release: (bytes: ArrayBuffer) => void = () => {};
+    let outstanding = false;
+    const h = harness({
+      // Only the first fetch is held open; the seek's own poll must be able to
+      // finish, or the chain never settles.
+      fetchBytes: async (url: string) => {
+        if (outstanding) return new ArrayBuffer(8);
+        outstanding = true;
+        void url;
+        return new Promise<ArrayBuffer>((resolve) => { release = resolve; });
+      },
+    });
+
+    const polling = h.session.poll();
+    // Let the poll get as far as the segment fetch, which is the state this is
+    // about: bytes on their way to a page that is about to seek away.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(outstanding).toBe(true);
+
+    h.session.seek(31);
+    // Distinctive bytes, because the stamp cannot tell this story: a stale
+    // segment posted after the seek carries the *new* epoch — `post` reads the
+    // variable the seek just bumped — so the worker would decode the old
+    // position believing it to be the new one. The bytes are the evidence.
+    release(new ArrayBuffer(99));
+    await polling;
+
+    const segments = h.posted.filter((m) => m.type === "segment");
+    expect(segments.some((m) => m.bytes?.byteLength === 99)).toBe(false);
+  });
+
+  it("leaves no window open between two seeks in quick succession", async () => {
+    // The acknowledgement cleared on the *first* reset, so everything the old
+    // decoder produced between the two passed the gate. An epoch has no such
+    // window: media is compared against where playback is now, not against
+    // whether an acknowledgement has arrived.
+    const { session, worker, audio } = harness();
+    await session.start();
+
+    session.seek(31);
+    session.seek(35);
+    audio.push.mockClear();
+
+    worker.onmessage?.({ data: { type: "reset", epoch: 1 } } as MessageEvent);
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 1,
+        chunks: [{ ptsSeconds: 9000, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    expect(audio.push).not.toHaveBeenCalled();
   });
 
   it("fetches segments from the playlist's own directory", async () => {
@@ -357,8 +463,8 @@ describe("createSession", () => {
     await session.start();
     const frame = { ptsSeconds: 30, data: new Uint8Array(6) };
     const chunk = { ptsSeconds: 30, samples: new Float32Array(2), sampleRate: 48000 };
-    worker.onmessage?.({ data: { type: "video", frames: [frame] } } as MessageEvent);
-    worker.onmessage?.({ data: { type: "audio", chunks: [chunk] } } as MessageEvent);
+    worker.onmessage?.({ data: { type: "video", epoch: 0, frames: [frame] } } as MessageEvent);
+    worker.onmessage?.({ data: { type: "audio", epoch: 0, chunks: [chunk] } } as MessageEvent);
     expect(presenter.offer).toHaveBeenCalledWith(frame);
     expect(audio.push).toHaveBeenCalledWith(chunk);
   });
@@ -382,6 +488,26 @@ describe("createSession", () => {
     session.seek(31);
     await session.poll();
     expect(fetched).toContain("/api/raw/abc/00005.ts");
+  });
+
+  it("seeks to the live edge, not the front of the window, when asked past the end", async () => {
+    // Dragging the scrubber to the right-hand end. The target lands at or past
+    // the window end about half the time — the range end the player clamps to
+    // is up to half a second stale and the ring grows every second — and the
+    // session used to answer that by feeding from `mediaSequence`, up to an
+    // hour behind where the viewer was pointing.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    await h.session.start();
+    h.fetched.length = 0;
+
+    h.session.seek(1000);              // well past a 60s window
+    await h.session.poll();
+
+    const taken = h.fetched.filter((u) => u.endsWith(".ts"));
+    expect(taken.length).toBeGreaterThan(0);
+    expect(taken.some((u) => u.includes("00000.ts"))).toBe(false);
+    expect(taken[0]).toContain("00039.ts");
   });
 
   it("fails when the worker reports an error", async () => {
@@ -448,13 +574,229 @@ describe("createSession", () => {
     expect(String(session.diagnostics().failureDetail)).toMatch(/nothing drawn/);
   });
 
-  it("terminates the worker and tears down audio on destroy", async () => {
-    const { session, worker, audio, presenter } = harness();
+  it("does not give up while the audio context is suspended", async () => {
+    // A context created without user activation behind it starts suspended: a
+    // deep link, a background tab, a first visit under Chrome's autoplay
+    // policy. Suspended, the worklet renders nothing, the clock never
+    // advances, no field is ever due and nothing is presented — which is
+    // indistinguishable from a broken decoder, and used to be failed as one
+    // after eight seconds, before the viewer could click anything.
+    let nowMs = 0;
+    const h = harness({ nowMs: () => nowMs });
+    h.setContextState("suspended");
+    await h.session.start();
+
+    nowMs = 60000;
+    h.session.tick();
+
+    expect(h.session.failure).toBeNull();
+  });
+
+  it("does not count the wait against the session once the context starts", async () => {
+    // Held, not skipped. Leaving the marks where they were means the first
+    // tick after the viewer presses play looks back over the whole wait and
+    // calls it a stall.
+    let nowMs = 0;
+    const h = harness({ nowMs: () => nowMs });
+    h.setContextState("suspended");
+    await h.session.start();
+
+    nowMs = 60000;
+    h.session.tick();
+    h.setContextState("running");
+    h.presenter.presentedCount = 1;
+    h.session.tick();
+
+    expect(h.session.failure).toBeNull();
+  });
+
+  it("does not end the session because the queue ran dry", async () => {
+    // The old starvation rule ended it on two consecutive animation frames —
+    // 33ms of an empty queue. A rebuffer is not a broken decoder, and the
+    // frozen-picture watchdog already covers the failure that is.
+    let nowMs = 0;
+    const { session, worker, presenter } = harness({ nowMs: () => nowMs });
     await session.start();
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 0,
+        chunks: [{ ptsSeconds: 36, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    // Drawing, then nothing queued for a good while — but still drawing.
+    for (let i = 1; i <= 200; i++) {
+      presenter.presentedCount = i;
+      presenter.queued = 0;
+      nowMs = i * 100;
+      session.tick();
+    }
+
+    expect(session.failure).toBeNull();
+  });
+
+  it("says it is playing again once there is something to draw", async () => {
+    // `waiting` used to be emitted with no matching `playing`, and the stall
+    // overlay clears only on `playing` — so one spurious event left "stalled"
+    // on screen until the session was replaced.
+    const events: string[] = [];
+    const { session, worker, presenter } = harness();
+    await session.start();
+    session.on("waiting", () => events.push("waiting"));
+    session.on("playing", () => events.push("playing"));
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 0,
+        chunks: [{ ptsSeconds: 36, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    presenter.queued = 0;
+    session.tick();
+    session.tick();                    // still empty: one event, not two
+    presenter.queued = 40;
+    session.tick();
+
+    expect(events).toEqual(["waiting", "playing"]);
+  });
+
+  it("does not call an empty queue a stall before any audio has arrived", async () => {
+    // Startup has an empty queue by definition. Calling that a stall would put
+    // the spinner up on every channel change.
+    const events: string[] = [];
+    const { session, presenter } = harness();
+    await session.start();
+    session.on("waiting", () => events.push("waiting"));
+
+    presenter.queued = 0;
+    session.tick();
+
+    expect(events).toEqual([]);
+  });
+
+  it("lets the worker free its decoder before terminating it", async () => {
+    // This used to post `close` and call `terminate()` on the next line, which
+    // kills the thread before it dequeues the message — so the decoder's own
+    // teardown never ran, and everything in it was dead code that had never
+    // executed in production.
+    const { session, worker, posted, audio, presenter } = harness();
+    await session.start();
+    posted.length = 0;
+
     session.destroy();
+
+    expect(posted.map((m) => m.type)).toContain("close");
+    expect(worker.terminate).not.toHaveBeenCalled();
+
+    worker.onmessage?.({ data: { type: "closed" } } as MessageEvent);
+
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(audio.destroy).toHaveBeenCalledOnce();
     expect(presenter.destroy).toHaveBeenCalled();
+  });
+
+  it("terminates a worker that never answers, rather than leaving the thread", async () => {
+    vi.useFakeTimers();
+    try {
+      const { session, worker } = harness();
+      await session.start();
+      session.destroy();
+
+      vi.advanceTimersByTime(CLOSE_GRACE_MS + 1);
+
+      expect(worker.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminates once, however the close resolves", async () => {
+    vi.useFakeTimers();
+    try {
+      const { session, worker } = harness();
+      await session.start();
+      session.destroy();
+      worker.onmessage?.({ data: { type: "closed" } } as MessageEvent);
+      vi.advanceTimersByTime(CLOSE_GRACE_MS + 1);
+
+      expect(worker.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let scheduled polls pile up behind a slow one", async () => {
+    // Polls are chained so two cannot claim the same segments, but chaining on
+    // its own only defers: a poll that outlasts the 500ms interval — remote
+    // access, a proxied backend, one slow segment — leaves the next tick queued
+    // behind it, and the one after that, without bound. Each then runs against
+    // a playlist minutes out of date.
+    let scheduled: (() => void) | null = null;
+    let defer = false;
+    let release: (text: string) => void = () => {};
+    let playlistFetches = 0;
+    // Several turns: a queued poll is a chain of awaits, and one macrotask is
+    // not enough for three of them to run.
+    const settle = async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    const h = harness({
+      schedule: (callback) => { scheduled = callback; return () => {}; },
+      fetchText: async () => {
+        playlistFetches += 1;
+        if (!defer) return DEEP_PLAYLIST;
+        return new Promise<string>((resolve) => { release = resolve; });
+      },
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    defer = true;
+    const slow = h.session.poll();
+    await settle();
+    const before = playlistFetches;
+
+    scheduled!();
+    scheduled!();
+    scheduled!();
+    await settle();
+    defer = false;
+    release(DEEP_PLAYLIST);
+    await slow;
+    await settle();
+
+    // Nothing queued behind the slow poll, so nothing ran once it finished.
+    expect(playlistFetches).toBe(before);
+  });
+
+  it("calls a worker that has been running for a while a decode failure", async () => {
+    // "init failed" is the first thing anyone reads when working out why a
+    // channel fell back, and a worker that booted, opened and ran for a minute
+    // before throwing did not fail to initialise.
+    const { session, worker } = harness();
+    await session.start();
+    worker.onmessage?.({ data: { type: "booted" } } as MessageEvent);
+
+    worker.onerror?.({ message: "out of memory" } as unknown as Event);
+
+    expect(session.failure).toBe("decode error");
+  });
+
+  it("reports a failure once, not on every animation frame", async () => {
+    let nowMs = 0;
+    const errors: string[] = [];
+    const { session, presenter } = harness({ nowMs: () => nowMs });
+    await session.start();
+    session.on("error", () => errors.push("error"));
+
+    presenter.presentedCount = 10;
+    session.tick();
+    nowMs = 30000;
+    for (let i = 0; i < 10; i++) session.tick();
+
+    expect(session.failure).toBe("decode error");
+    expect(errors).toHaveLength(1);
   });
 
   it("survives a failed poll rather than ending the session", async () => {

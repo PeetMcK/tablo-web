@@ -19,9 +19,6 @@ import type { Presenter } from "./presenter";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 import type { FromWorker, ToWorker } from "./workerProtocol";
 
-/** How far the clock may run past the newest decoded frame before it counts. */
-const STARVED_SECONDS = 1;
-
 /**
  * How long a picture that was playing may stop dead before the channel goes
  * back to the transcode.
@@ -42,7 +39,7 @@ const FROZEN_MS = 6000;
  *
  * This must stay comfortably under what the field queue holds, or the queue is
  * permanently full and evicting in normal running. At 59.94 fields a second,
- * two seconds is about 120 of the 150 it can keep.
+ * two seconds is about 120 of the 200 it can keep.
  *
  * It also has to cover the lag between handing bytes over and getting decoded
  * audio back, because that lag comes out of the buffer. At 1.25s the measured
@@ -68,10 +65,11 @@ const MIN_BUFFER_SECONDS = 0.5;
  * Well clear of `MIN_BUFFER_SECONDS`, and that gap is the point. The queue
  * gate below stops the transport when the presenter already has all the fields
  * it can hold; gating it on merely being above the starvation floor makes the
- * floor a set point, and the floor is what the fallback counts starvation
- * events against. Measured: a soak that held the buffer at exactly 0.5s for
- * eighty-four seconds, drifting from ten seconds behind the live edge to
- * twenty, and then gave up with "repeated starvation".
+ * floor a set point, and a session sitting on its floor has no margin for a
+ * slow device poll. Measured: a soak that held the buffer at exactly 0.5s for
+ * eighty-four seconds while drifting from ten seconds behind the live edge to
+ * twenty, and then gave up. (The rule it gave up under has since been removed
+ * — see `fallback.ts` — but riding the floor is still the wrong place to sit.)
  */
 const COMFORTABLE_BUFFER_SECONDS = 1.5;
 
@@ -160,6 +158,15 @@ const START_BEHIND_EDGE_SECONDS = 10;
  */
 export const POLL_INTERVAL_MS = 500;
 
+/**
+ * How long the worker gets to free its decoder before it is terminated anyway.
+ *
+ * Generous enough for a `close` that has to drain a read in flight, short
+ * enough that a worker wedged inside libav — the failure that started all of
+ * this — cannot keep its thread alive after the session is gone.
+ */
+export const CLOSE_GRACE_MS = 2000;
+
 export interface SessionDeps {
   playlistUrl: string;
   /** When the backend opened this session, which media time is measured from. */
@@ -224,9 +231,21 @@ export function createSession(deps: SessionDeps): LiveSession {
   let workerBooted = false;
   /** Whether any audio has ever arrived, which separates startup from a stall. */
   let sawAudio = false;
-  /** For the frozen-picture watchdog, which starvation cannot detect. */
+  /**
+   * Which side of the last seek we are on.
+   *
+   * Bumped by `seek`, stamped on every segment sent and checked on every piece
+   * of media that comes back. It replaces a flag that was set from the seek
+   * until the worker acknowledged it, and which covered only half the race:
+   * messages already in flight *from the worker*, never fetches already in
+   * flight *from the page*.
+   */
+  let epoch = 0;
+  /** For the frozen-picture watchdog, which is now the only failure detector. */
   let lastPresentedCount = 0;
   let lastProgressAtMs = 0;
+  /** Whether the presenter currently has nothing to draw. */
+  let wasStalled = false;
   /** The worker's last word on what the decoder is doing. */
   let decoderStats: Record<string, unknown> | null = null;
   /**
@@ -245,6 +264,23 @@ export function createSession(deps: SessionDeps): LiveSession {
 
   deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const message = event.data;
+    // Media from before the last seek belongs to where playback was. Audio
+    // especially: it anchors the clock, so one stale chunk landing after the
+    // flush puts the playhead back where the viewer just left while frames
+    // arrive from where they went. Measured on a press of Back 10s: "starved
+    // by 12.32s" twice in the same millisecond, and the channel handed back to
+    // the transcode before a single new frame was drawn.
+    //
+    // Only media is filtered. An error or a set of counters from the old
+    // decoder still describes something that went wrong, and dropping it would
+    // hide the failure rather than the position.
+    if ((message.type === "video" || message.type === "audio") && message.epoch !== epoch) {
+      return;
+    }
+    if (message.type === "reset") {
+      log.wasm(`decoder rebuilt at epoch ${message.epoch}`);
+      return;
+    }
     if (message.type === "video") {
       for (const frame of message.frames as DecodedVideoFrame[]) deps.presenter.offer(frame);
       return;
@@ -296,7 +332,13 @@ export function createSession(deps: SessionDeps): LiveSession {
   deps.worker.onerror = (event: ErrorEvent | Event) => {
     failureDetail = (event as ErrorEvent).message || "worker failed to load";
     log.warn(`wasm worker error: ${failureDetail}`, { workerBooted });
-    fallback = reduceFallback(fallback, { kind: "init-failed" });
+    // Only a worker that never got as far as saying "booted" failed to
+    // initialise. One that has been running for a minute and then throws is a
+    // decode failure wearing the wrong label, and the label is what anyone
+    // reads first when working out why a channel fell back.
+    fallback = reduceFallback(fallback, {
+      kind: workerBooted ? "decode-error" : "init-failed",
+    });
     emit("error");
   };
   deps.worker.onmessageerror = () => {
@@ -310,13 +352,27 @@ export function createSession(deps: SessionDeps): LiveSession {
     deps.playlistUrl.replace(/[^/]*$/, "") + uri;
 
   const poll = async () => {
+    // The epoch this poll belongs to, captured before the first await.
+    //
+    // Every await below is a place a seek can happen, and a poll that resumes
+    // afterwards is working from the old position: its `takenThrough`, its
+    // `anchorMedia` and the bytes it is holding all belong to where playback
+    // was. Checking after each one is the page-side half of the seek race —
+    // the worker-side half is the epoch stamped on what comes back.
+    const mine = epoch;
     const text = await deps.fetchText(deps.playlistUrl);
+    if (mine !== epoch) return;
     playlist = parseMediaPlaylist(text);
     const { start: windowStart } = playlistWindow(playlist, deps.originMs);
 
     // After a seek, start again from the segment covering the target.
     if (seekTarget !== null) {
-      const at = segmentAt(playlist, deps.originMs, seekTarget);
+      // A target the window cannot place falls back to the live edge, never to
+      // the front of the window. `takenThrough = -1` used to mean the latter,
+      // and it also skipped the `else if` below — so a seek past the end fed
+      // from `mediaSequence` and took the viewer up to an hour backwards.
+      const at = segmentAt(playlist, deps.originMs, seekTarget)
+        ?? startNearEdge(playlist, START_BEHIND_EDGE_SECONDS);
       takenThrough = at ? at.sequence - 1 : -1;
       seekTarget = null;
     } else if (takenThrough < 0) {
@@ -376,6 +432,13 @@ export function createSession(deps: SessionDeps): LiveSession {
 
         if (anchorMedia === null) anchorMedia = at;
         const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
+        // The seek race, in the one place it actually bites: this fetch was
+        // outstanding when the viewer pressed Back 10s, so the worker would
+        // receive `reset` and *then* this segment from before it. Its audio
+        // would set the clock's origin to the old position, every new frame
+        // would read ten seconds early, and the session would fall back to the
+        // transcode before drawing anything.
+        if (mine !== epoch) return;
         log.wasm(`fed segment ${sequence}`, {
           bytes: bytes.byteLength,
           mediaFrom: Number(at.toFixed(2)),
@@ -393,7 +456,7 @@ export function createSession(deps: SessionDeps): LiveSession {
           queuedFields: deps.presenter.queued,
           presented: deps.presenter.presentedCount,
         });
-        post({ type: "segment", bytes }, [bytes]);
+        post({ type: "segment", bytes, epoch }, [bytes]);
         takenThrough = sequence;
         fedThisPoll += 1;
         fedThroughMedia = at + duration;
@@ -412,13 +475,33 @@ export function createSession(deps: SessionDeps): LiveSession {
    * decode, for nothing.
    */
   let pollChain: Promise<void> = Promise.resolve();
+  /** Polls queued or running, so the timer does not pile up behind a slow one. */
+  let pollsQueued = 0;
 
   const safePoll = () => {
-    pollChain = pollChain.then(() => poll()).catch(() => {
-      // A backend restart or a dropped request is not the end of the session;
-      // the next poll is a couple of seconds away.
-    });
+    pollsQueued += 1;
+    pollChain = pollChain
+      .then(() => poll())
+      .catch(() => {
+        // A backend restart or a dropped request is not the end of the session;
+        // the next poll is a couple of seconds away.
+      })
+      .finally(() => { pollsQueued -= 1; });
     return pollChain;
+  };
+
+  /**
+   * The timer's poll, which gives up its turn if one is already in flight.
+   *
+   * The chain is what stops two polls claiming the same segments, but on its
+   * own it only defers the work: a poll that outlasts the interval — remote
+   * access, a proxied backend, one slow segment — leaves the next tick queued
+   * behind it, and the one after that, without bound. A seek still enqueues
+   * unconditionally, because a seek must always be acted on.
+   */
+  const scheduledPoll = () => {
+    if (pollsQueued > 0) return;
+    void safePoll();
   };
 
   const tick = () => {
@@ -427,6 +510,25 @@ export function createSession(deps: SessionDeps): LiveSession {
     const nowMs = deps.nowMs();
     if (deps.presenter.presentedCount > 0) {
       fallback = reduceFallback(fallback, { kind: "first-frame", atMs: nowMs });
+    }
+
+    // Neither timer may run while the audio context is not rendering.
+    //
+    // A suspended context renders no samples, so the clock never advances, so
+    // no field is ever due and nothing is ever presented — which is exactly
+    // what a broken decoder looks like from here. The session duly failed with
+    // "no first frame" after eight seconds, before the viewer had a chance to
+    // click. The context starts suspended whenever there is no user activation
+    // behind it: a deep link, a tab opened in the background, or a first visit
+    // under Chrome's autoplay policy.
+    //
+    // Held rather than skipped, for the same reason as the pause below: the
+    // first tick after the context starts must not look back over the whole
+    // wait and call it a stall.
+    if (deps.audio.contextState !== "running") {
+      fallback = { ...fallback, startedAtMs: nowMs };
+      lastProgressAtMs = nowMs;
+      return;
     }
 
     // The deadline measures the decoder, not the device. A freshly opened ring
@@ -441,9 +543,31 @@ export function createSession(deps: SessionDeps): LiveSession {
 
     fallback = reduceFallback(fallback, { kind: "tick", atMs: nowMs });
 
-    if (!paused && deps.audio.starvedBy(deps.presenter.newestPts) > STARVED_SECONDS) {
-      fallback = reduceFallback(fallback, { kind: "starved", atMs: nowMs });
-      emit("waiting");
+    // Whether there is anything left to draw, reported as a state rather than
+    // as an event.
+    //
+    // A rebuffer is not a failure — the old rule ended the session on two
+    // consecutive animation frames — and it is not permanent either. `waiting`
+    // used to be emitted with no matching `playing`, and the stall overlay
+    // clears only on `playing`, so a single spurious event pinned "stalled" on
+    // screen until the session was replaced. A state has both edges by
+    // construction.
+    const stalled = !paused && sawAudio && deps.presenter.queued === 0;
+    if (stalled !== wasStalled) {
+      wasStalled = stalled;
+      if (stalled) {
+        log.warn("waiting for fields", {
+          clock: deps.audio.clockSeconds,
+          // How far the clock has run past the newest field. Useful here, as a
+          // description of a stall that has already been detected some other
+          // way; useless as the detector, which is what it used to be.
+          aheadOfNewest: Number(deps.audio.starvedBy(deps.presenter.newestPts).toFixed(2)),
+          buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
+          fedThroughMedia,
+          presented: deps.presenter.presentedCount,
+        });
+      }
+      emit(stalled ? "waiting" : "playing");
     }
 
     // A stopped clock is the one failure starvation cannot see: it measures how
@@ -451,7 +575,14 @@ export function createSession(deps: SessionDeps): LiveSession {
     // never outruns anything. A session wedged at buffered zero with a full
     // queue therefore sat there indefinitely, showing a still picture, with
     // nothing to hand the channel back to the transcode.
-    if (!paused && deps.presenter.presentedCount > 0) {
+    if (paused) {
+      // A pause is not a freeze, and the difference is the whole point of the
+      // watchdog. Held rather than merely skipped: leaving the mark where it
+      // was means the first tick after resuming looks back over however long
+      // the viewer sat paused and calls it a stall, which fell the session
+      // back to the transcode on every resume more than six seconds later.
+      lastProgressAtMs = nowMs;
+    } else if (deps.presenter.presentedCount > 0) {
       if (deps.presenter.presentedCount !== lastPresentedCount) {
         lastPresentedCount = deps.presenter.presentedCount;
         lastProgressAtMs = nowMs;
@@ -462,6 +593,9 @@ export function createSession(deps: SessionDeps): LiveSession {
         fallback = reduceFallback(fallback, { kind: "decode-error" });
       }
     }
+    // Once, not sixty times a second. `emit("error")` used to fire on every
+    // animation frame for the rest of the session, and the same flag that
+    // already keeps the log line to one occurrence serves for both.
     if (fallback.failed && !failureLogged) {
       failureLogged = true;
       log.warn(`wasm session failed: ${fallback.failed}`, {
@@ -473,8 +607,8 @@ export function createSession(deps: SessionDeps): LiveSession {
         presented: deps.presenter.presentedCount,
         buffered: deps.audio.bufferedSeconds,
       });
+      emit("error");
     }
-    if (fallback.failed) emit("error");
   };
 
   return {
@@ -485,7 +619,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       // context is a frozen picture rather than merely a silent one.
       void deps.audio.resume();
       await safePoll();
-      stopPolling = deps.schedule(() => { void safePoll(); }, POLL_INTERVAL_MS);
+      stopPolling = deps.schedule(scheduledPoll, POLL_INTERVAL_MS);
       emit("ready");
       emit("playing");
     },
@@ -503,7 +637,10 @@ export function createSession(deps: SessionDeps): LiveSession {
       ptsOffset = null;
       anchorMedia = null;
       fedThroughMedia = null;
-      post({ type: "reset" });
+      // Bumped before the reset is posted, so a poll already awaiting a fetch
+      // abandons what it is holding rather than sending it on afterwards.
+      epoch += 1;
+      post({ type: "reset", epoch });
       deps.audio.flush();
       deps.presenter.destroy();
       void safePoll();
@@ -564,8 +701,29 @@ export function createSession(deps: SessionDeps): LiveSession {
       stopPolling?.();
       stopPolling = null;
       deps.presenter.destroy();
+
+      // Let the worker free its decoder before the thread goes.
+      //
+      // This posted `close` and called `terminate()` on the next line, which
+      // kills the thread before it dequeues the message — so `close` never ran
+      // and everything inside it was dead code that had never once executed in
+      // production. Terminating does reclaim the thread's memory either way,
+      // which is why nothing was visibly wrong; it is also why this is cheap
+      // to do properly.
+      let terminated = false;
+      const finish = () => {
+        if (terminated) return;
+        terminated = true;
+        deps.worker.terminate();
+      };
+      deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
+        if (event.data?.type === "closed") finish();
+      };
       post({ type: "close" });
-      deps.worker.terminate();
+      // And a deadline, because a worker wedged inside libav would otherwise
+      // never be terminated at all.
+      setTimeout(finish, CLOSE_GRACE_MS);
+
       void deps.audio.destroy();
       handlers.clear();
     },

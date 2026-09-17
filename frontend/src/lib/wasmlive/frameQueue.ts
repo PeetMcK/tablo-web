@@ -30,36 +30,45 @@ export interface Selection<T> {
  * nine tenths of every segment before its moment arrived.
  *
  * It has to exceed what the transport will feed ahead, or it stops being a
- * backstop and becomes the policy. At 59.94 fields a second, the session's
- * lookahead is about 75 fields; a cap of 96 sat close enough to that to fill in
- * normal running, and a full queue evicting from the front drew three fields a
- * second out of sixty on the real device. 120 leaves real headroom.
+ * backstop and becomes the policy. At 59.94 fields a second the session's
+ * lookahead of two seconds is about 120 fields; a cap of 96 sat below that and
+ * filled in normal running, and a full queue evicting from the front drew
+ * three fields a second out of sixty on the real device.
  *
- * The cost is memory: the two fields of a frame share one 3.1MB I420 buffer,
- * so 120 fields is ~60 frames, ~190MB at a theoretical peak that pacing means
- * we do not reach. That is the going rate for buffering decoded 1080p, and it
- * is why the transport paces at all rather than letting the decoder run at 8x.
+ * The cost is memory, and it is the real argument against this design. The two
+ * fields of a frame share one 3.1MB I420 buffer, so 200 fields is 100 frames
+ * and 311MB at the cap; pacing keeps it nearer 120-150 fields, 190-230MB, in
+ * normal running. ffplay holds *three frames* and blocks its decoder thread on
+ * a condvar when they are full, bounding compressed input at 15MB instead;
+ * jsmpeg keeps no decoded queue at all and decodes inside the animation frame.
+ * Both hold bytes and decode just in time, which is what this should become —
+ * the worker keeping the compressed segments and decoding only while the page
+ * has credit. That is a redesign of the transport rather than a constant.
  */
 export const MAX_QUEUED_FRAMES = 200;
 
 /**
- * How far behind the clock may fall before entries are skipped rather than shown.
+ * Draw the newest field whose moment has come, and discard what it passed.
  *
- * Presentation is driven by animation frames at 60Hz against fields that are
- * due every 16.68ms, so the two are always on the point of sliding past each
- * other: one frame that takes a millisecond too long leaves two fields due at
- * once. Skipping straight to the newest on every such tick threw one field in
- * five away as ordinary jitter - measured at 47 presentations a second against
- * the 59.94 offered, with the queue backing up to its cap.
+ * There was a rule here that drew the *oldest* due field unless three or more
+ * were waiting, and it was wrong. It came from a real measurement — 47
+ * presentations a second against the 59.94 offered — but the wrong diagnosis:
+ * those were animation frames the main thread had missed, and drawing an old
+ * field on the next tick does not recover a missed one, it just shows the
+ * viewer something stale.
  *
- * Below the threshold the oldest due field is drawn, so a late tick costs a
- * millisecond of lateness instead of a discarded field, and the next tick
- * catches up. Above it there is a real backlog - a hidden tab coming back, a
- * stall - and jumping to the newest is right, because the viewer needs to see
- * where the programme is now rather than a second of history at high speed.
+ * What it produced at any tick rate below the field rate was an oscillation.
+ * At 30Hz — battery saver, an occluded window, a main thread under load — two
+ * fields are due and the oldest is drawn 33ms late; then three are due and the
+ * oldest is drawn 50ms late; then four, and the rule finally jumps to the
+ * newest and throws three away. The picture slides up to 66ms behind the sound
+ * and snaps back, three times a second.
+ *
+ * Neither reference does this. ffplay's `video_refresh` drops a frame whenever
+ * the one after it is also due, so it never shows a frame whose successor has
+ * already arrived; jsmpeg simply shows the newest. Both keep the picture on the
+ * clock and let the display rate be whatever it is.
  */
-export const MAX_LATE_FIELDS = 3;
-
 export function selectFrame<T extends Timed>(queue: T[], clockSeconds: number): Selection<T> {
   let lastDue = -1;
   for (let i = 0; i < queue.length; i++) {
@@ -68,14 +77,10 @@ export function selectFrame<T extends Timed>(queue: T[], clockSeconds: number): 
   }
   if (lastDue < 0) return { present: null, drop: [], keep: queue.slice() };
 
-  // Ordinary running draws the oldest due field and lets the next tick take
-  // the next; only a real backlog skips ahead to the newest.
-  const presentIndex = lastDue >= MAX_LATE_FIELDS ? lastDue : 0;
-
   return {
-    present: queue[presentIndex],
-    drop: queue.slice(0, presentIndex),
-    keep: queue.slice(presentIndex + 1),
+    present: queue[lastDue],
+    drop: queue.slice(0, lastDue),
+    keep: queue.slice(lastDue + 1),
   };
 }
 

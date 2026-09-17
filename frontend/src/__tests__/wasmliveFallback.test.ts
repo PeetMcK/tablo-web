@@ -32,9 +32,12 @@ describe("wasmLiveEligible", () => {
     });
   });
 
-  it("refuses when the flag is off", () => {
+  it("takes a broadcast when nothing has been said either way", () => {
+    // Ungated on purpose: the way to find out how this breaks under the real
+    // player is to let it take every channel a viewer opens, not only the ones
+    // someone thought to switch it on for.
     expect(wasmLiveEligible(capableWindow(CHROME), flagOff, "ota")).toEqual({
-      eligible: false, reason: "flag off",
+      eligible: true, reason: "",
     });
   });
 
@@ -42,8 +45,11 @@ describe("wasmLiveEligible", () => {
     expect(wasmLiveEligible(capableWindow(CHROME), flagKilled, "ota").eligible).toBe(false);
   });
 
-  it("refuses rather than throwing when site data is blocked", () => {
-    expect(wasmLiveEligible(capableWindow(CHROME), storageThrows, "ota").eligible).toBe(false);
+  it("does not throw when site data is blocked", () => {
+    // Private mode reads as unset, which is now on. What matters is that a
+    // storage exception cannot take the player down with it.
+    expect(() => wasmLiveEligible(capableWindow(CHROME), storageThrows, "ota")).not.toThrow();
+    expect(wasmLiveEligible(capableWindow(CHROME), storageThrows, "ota").eligible).toBe(true);
   });
 
   it("refuses OTT channels, which are already H.264", () => {
@@ -121,23 +127,21 @@ describe("reduceFallback", () => {
     expect(state.failed).toBeNull();
   });
 
-  it("tolerates one starvation", () => {
+  it("never gives up for running dry, however long it runs", () => {
+    // There was a starvation rule here and it has been removed. It asked how
+    // far the clock had outrun the newest queued field, but the session ticks
+    // the presenter first — which removes every field that is due — so a
+    // decoder that had genuinely fallen behind emptied the queue and read
+    // zero. What it actually detected was a stale field or two arriving after
+    // a seek, and two consecutive animation frames of that ended the session.
+    //
+    // ffplay's AV_NOSYNC_THRESHOLD of ten seconds is where it stops correcting
+    // drift, not where it quits. jsmpeg drops audio to stay live and never
+    // quits either. A rebuffer is not a decoder failure.
     let state = reduceFallback(initialFallbackState(0), { kind: "first-frame", atMs: 500 });
-    state = reduceFallback(state, { kind: "starved", atMs: 4000 });
-    expect(state.failed).toBeNull();
-  });
-
-  it("gives up on a second starvation inside the window", () => {
-    let state = reduceFallback(initialFallbackState(0), { kind: "first-frame", atMs: 500 });
-    state = reduceFallback(state, { kind: "starved", atMs: 4000 });
-    state = reduceFallback(state, { kind: "starved", atMs: 20000 });
-    expect(state.failed).toBe("repeated starvation");
-  });
-
-  it("forgets starvations that have aged out", () => {
-    let state = reduceFallback(initialFallbackState(0), { kind: "first-frame", atMs: 500 });
-    state = reduceFallback(state, { kind: "starved", atMs: 4000 });
-    state = reduceFallback(state, { kind: "starved", atMs: 90000 });
+    for (let at = 1000; at < 600000; at += 16) {
+      state = reduceFallback(state, { kind: "tick", atMs: at });
+    }
     expect(state.failed).toBeNull();
   });
 

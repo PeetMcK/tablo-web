@@ -15,7 +15,7 @@ import type { ToWorker } from "./workerProtocol";
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 
 const handle = createWorkerHandler(
-  (onOutput) => createDecoder({ onOutput }),
+  (onOutput, onError) => createDecoder({ onOutput, onError }),
   (message, transfer) => worker.postMessage(message, transfer),
 );
 

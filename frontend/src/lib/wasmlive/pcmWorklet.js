@@ -13,14 +13,23 @@ class PcmProcessor extends AudioWorkletProcessor {
     this.queue = [];
     this.offset = 0;
     this.rendered = 0;
+    /** Which side of the last flush this processor's counting belongs to. */
+    this.epoch = 0;
     this.port.onmessage = (event) => {
-      if (event.data === null) {
+      if (event.data === null || event.data.flush) {
         // A seek: drop what was queued rather than playing the old position.
         this.queue = [];
         this.offset = 0;
+        // And the partial count with it. Left standing, up to 4799 frames
+        // rendered from the old position were added to a total the page had
+        // just zeroed — a tenth of a second of permanent video-early offset
+        // per seek, and a buffer depth under-reported by the same amount for
+        // the rest of the session.
+        this.rendered = 0;
+        this.epoch = event.data?.epoch ?? this.epoch + 1;
         return;
       }
-      this.queue.push(event.data);
+      this.queue.push(event.data.samples ?? event.data);
     };
   }
 
@@ -57,8 +66,14 @@ class PcmProcessor extends AudioWorkletProcessor {
 
     // One message per render quantum would be 375 a second at 48kHz. Ten a
     // second is plenty for a clock that video reads every frame.
+    //
+    // Stamped with `currentTime` here rather than on the page. The page reads
+    // the clock when the message *arrives*, on a thread that is also uploading
+    // 3MB textures, so the anchor carried a frame or more of jitter and was
+    // re-anchored ten times a second. Taken here it is the time the samples
+    // were actually rendered.
     if (this.rendered >= 4800) {
-      this.port.postMessage(this.rendered);
+      this.port.postMessage({ rendered: this.rendered, at: currentTime, epoch: this.epoch });
       this.rendered = 0;
     }
     return true;

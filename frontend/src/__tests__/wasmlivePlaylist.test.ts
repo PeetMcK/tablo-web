@@ -76,8 +76,16 @@ describe("segmentAt", () => {
     expect(segmentAt(pl, ORIGIN, 5)).toEqual({ index: 0, startSeconds: 30, sequence: 5 });
   });
 
-  it("has nothing for a target past the live edge", () => {
-    expect(segmentAt(pl, ORIGIN, 90)).toBeNull();
+  it("clamps a target at or past the live edge to its last segment", () => {
+    // The mirror of the rewind case, and a real bug rather than tidiness.
+    // This returned null, and the session read null as "start from the front
+    // of the window" — so dragging the scrubber to the right-hand end of the
+    // bar jumped the viewer up to an hour backwards. The player clamps
+    // inclusively to a range end that is up to half a second stale while the
+    // ring gains a segment every second or so, so about half of all drags to
+    // the end asked for a time at or past it.
+    expect(segmentAt(pl, ORIGIN, 90)).toEqual({ index: 2, startSeconds: 42, sequence: 7 });
+    expect(segmentAt(pl, ORIGIN, 48)).toEqual({ index: 2, startSeconds: 42, sequence: 7 });
   });
 
   it("has nothing when the playlist is empty", () => {

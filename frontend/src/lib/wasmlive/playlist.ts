@@ -76,11 +76,24 @@ export function segmentAt(
 ): SegmentLocation | null {
   const { start, end } = playlistWindow(pl, originMs);
   if (!pl.segments.length) return null;
-  if (mediaSeconds >= end) return null;
   // Rewinding past the window lands on the oldest thing that still exists,
   // rather than refusing to play anything.
   if (mediaSeconds < start) {
     return { index: 0, startSeconds: start, sequence: pl.mediaSequence };
+  }
+  // And asking for the live edge lands on the newest, for the same reason.
+  //
+  // This returned null, and the caller read null as "start from the beginning
+  // of the window" — so dragging the scrubber to the right-hand end jumped the
+  // viewer up to an hour *back*. It is not an edge case: the player clamps
+  // inclusively to a range end that is up to half a second stale, and the ring
+  // gains a segment every second or so, so roughly half of all drags to the end
+  // asked for a time at or past it.
+  if (mediaSeconds >= end) {
+    const index = pl.segments.length - 1;
+    let startSeconds = start;
+    for (let i = 0; i < index; i++) startSeconds += pl.segments[i].duration;
+    return { index, startSeconds, sequence: pl.mediaSequence + index };
   }
 
   let at = start;
