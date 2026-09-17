@@ -1095,3 +1095,55 @@ describe("saying why it failed", () => {
     });
   });
 });
+
+describe("seeking at or past the end of a recording", () => {
+  const VOD = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-PROGRAM-DATE-TIME:2026-09-16T20:00:00+00:00
+#EXTINF:6.000,
+00000.ts
+#EXTINF:6.000,
+00001.ts
+#EXTINF:6.000,
+00002.ts
+#EXT-X-ENDLIST
+`;
+
+  /** The index covers 0-18s. The device reports a slightly longer duration. */
+  const deps = { vod: { durationSeconds: 19 }, fetchText: async () => VOD };
+
+  it("stays at the end rather than falling back to the beginning", async () => {
+    // `seekable` is [0, durationSeconds], and the device's duration can run a
+    // little past what the index actually covers - padding, or a recording
+    // rounded up. A forward skip clamps to that end, so it can land beyond the
+    // last segment.
+    //
+    // `segmentAt` then finds nothing, the live-edge fallback finds nothing
+    // either, and `takenThrough = -1` made the feed loop start from
+    // `mediaSequence` - the front of the recording. The playhead came back as
+    // zero and a viewer near the end was thrown to the first minute.
+    //
+    // The comment at the seek-resolution branch describes exactly this going
+    // wrong once before, for live; a recording needs the same guarantee.
+    const { session, setClock } = harness(deps);
+    setClock(null);
+    await session.start();
+
+    session.seek(18.6);                    // past the last segment, inside seekable
+    await session.poll();
+
+    expect(session.currentTime).toBeGreaterThan(11);
+  });
+
+  it("never reports the beginning after seeking to the end", async () => {
+    const { session, setClock } = harness(deps);
+    setClock(null);
+    await session.start();
+
+    session.seek(19);                      // the very end of the seekable range
+    await session.poll();
+
+    expect(session.currentTime).not.toBe(0);
+  });
+});

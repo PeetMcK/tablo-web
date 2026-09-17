@@ -1181,6 +1181,16 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     if (target === skipTargetRef.current) return;
     if (skipTargetRef.current === null && Math.abs(target - from) < 0.25) return;
     skipTargetRef.current = target;
+    // Every input the clamp used, because a skip that lands somewhere absurd
+    // is almost always a bad origin rather than bad arithmetic: `from` is read
+    // from the surface, and a surface whose clock has not re-anchored after a
+    // seek can report a position it is not at.
+    log.player(`skip ${delta > 0 ? "+" : ""}${delta} → ${fmt(target)}`, {
+      from: fmt(from),
+      queued: skipTargetRef.current === null ? "first" : "accumulating",
+      range: `${fmt(range[0])}–${fmt(range[1])}`,
+      seekable: s.seekable ? `${fmt(s.seekable[0])}–${fmt(s.seekable[1])}` : "none",
+    });
     // The bar and the timecode follow immediately, so the control answers at
     // once while the decoder is left alone until the taps stop.
     setPendingSeek(target);
