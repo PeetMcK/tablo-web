@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { VideoPlayer } from "../components/VideoPlayer";
+import { SKIP_DEBOUNCE_MS } from "../lib/playback";
 import { api } from "../api/tablo";
 import type { Channel, Program } from "../api/tablo";
 
@@ -341,5 +342,58 @@ describe("the player's chrome", () => {
 
     expect(onRoot).toHaveBeenCalledTimes(1);
     expect(onVideo).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The skip buttons queue.
+ *
+ * Every tap used to seek, and on the MPEG-2 path a seek tears the decoder
+ * down and rebuilds it. Twenty taps to move ten minutes bought twenty
+ * rebuilds — and did not even go ten minutes, because each tap chained off a
+ * `currentTime` that had not moved yet.
+ */
+describe("the skip buttons", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "startStream").mockResolvedValue({
+      session_id: "abc", proxy_url: "/api/hls/abc/playlist.m3u8",
+      stream_url: "/api/transcoded/abc/playlist.m3u8", transcoded: true,
+    });
+    vi.spyOn(api, "stopStream").mockResolvedValue({ ok: true });
+    vi.spyOn(api, "transcodeStatus").mockResolvedValue({
+      status: "active", encoded_seconds: 900,
+    });
+    vi.spyOn(api, "channelAirings").mockResolvedValue({ airings: [NEWS_HOUR] });
+    stubSeekable(900);
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("turns a flurry of taps into a single seek", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const seeks: number[] = [];
+    // The surface writes through to the media element, so this is where a
+    // rebuild would be triggered from.
+    const spy = vi.spyOn(HTMLMediaElement.prototype, "currentTime", "set")
+      .mockImplementation(function (this: HTMLMediaElement, v: number) {
+        seeks.push(v);
+      });
+    try {
+      const { container } = renderLive();
+      await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+      const fwd = container.querySelector<HTMLElement>('[aria-label="Forward 30 seconds"]');
+      if (!fwd) return;              // transport not mounted in this environment
+
+      seeks.length = 0;
+      for (let i = 0; i < 8; i++) fireEvent.click(fwd);
+      // Nothing yet: the decoder is deliberately left alone while taps land.
+      expect(seeks).toHaveLength(0);
+
+      await act(async () => { vi.advanceTimersByTime(SKIP_DEBOUNCE_MS + 60); });
+      expect(seeks.length).toBeLessThanOrEqual(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import {
-  airingAt, clampSkip, LIVE_EDGE_MARGIN, mediaAt, programWindow, readyRange,
-  SEGMENT_SECONDS,
+  airingAt, clampSkip, LIVE_EDGE_MARGIN, mediaAt, planSkip, programWindow,
+  readyRange, SEGMENT_SECONDS,
 } from "../lib/playback";
 
 describe("readyRange", () => {
@@ -252,5 +252,64 @@ describe("a skip never leaves what exists", () => {
     const range = readyRange(880, { ranges: [], start: 0, end: 900, whole: true });
     expect(clampSkip(880, 30, range)).toBe(899.5);
     expect(clampSkip(899.5, 30, range)).toBeLessThan(900);
+  });
+});
+
+describe("queuing a flurry of skips", () => {
+  // Live: a 900s window whose end is a frontier the encoder is still extending.
+  const LIVE: [number, number] = [0, 900];
+  const M = LIVE_EDGE_MARGIN;
+
+  it("accumulates from the pending target, not the playhead", () => {
+    // The whole point. `currentTime` has not moved yet when the second tap
+    // lands - a seek is asynchronous - so chaining from it would make twenty
+    // taps land thirty seconds away instead of ten minutes.
+    let t: number | null = null;
+    for (let i = 0; i < 20; i++) t = planSkip(t, 100, 30, LIVE, M);
+    expect(t).toBe(700);
+  });
+
+  it("lets a burst reach the far end without passing it", () => {
+    let t: number | null = null;
+    for (let i = 0; i < 100; i++) t = planSkip(t, 100, 30, LIVE, M);
+    // Stops a margin short of a frontier still being produced, and stays there
+    // however many more taps arrive.
+    expect(t).toBe(900 - M);
+  });
+
+  it("stops at zero going back, however hard it is pressed", () => {
+    let t: number | null = null;
+    for (let i = 0; i < 50; i++) t = planSkip(t, 100, -10, LIVE, M);
+    expect(t).toBe(0);
+  });
+
+  it("turns around cleanly from a clamped edge", () => {
+    // Forward into the clamp, then back: the return trip starts from where it
+    // actually landed, not from the phantom position the taps asked for.
+    let t: number | null = null;
+    for (let i = 0; i < 100; i++) t = planSkip(t, 100, 30, LIVE, M);
+    expect(t).toBe(890);
+    t = planSkip(t, 100, -10, LIVE, M);
+    expect(t).toBe(880);
+  });
+
+  it("reports no movement when already clamped", () => {
+    // The caller uses this to skip a seek that would go nowhere - each of those
+    // announces itself as a stall.
+    const at = planSkip(null, 895, 30, LIVE, M);
+    expect(planSkip(at, 895, 30, LIVE, M)).toBe(at);
+  });
+
+  it("starts from the playhead when nothing is pending", () => {
+    expect(planSkip(null, 100, 30, LIVE, M)).toBe(130);
+  });
+
+  it("holds a settled end exactly, with no live margin", () => {
+    // A finished recording's end is not a frontier, so a skip may land on it.
+    const vod: [number, number] = [0, 600];
+    let t: number | null = null;
+    for (let i = 0; i < 40; i++) t = planSkip(t, 0, 30, vod);
+    expect(t).toBeGreaterThan(599);
+    expect(t).toBeLessThanOrEqual(600);
   });
 });

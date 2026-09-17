@@ -15,8 +15,8 @@ import {
   log, fmt, isCached, rangesLabel, installSnapshot, timeRangesToArray,
 } from "../lib/debug";
 import {
-  airingAt, clampSkip, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
-  programWindow, readyRange, type LiveAnchor,
+  airingAt, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
+  planSkip, programWindow, readyRange, SKIP_DEBOUNCE_MS, type LiveAnchor,
 } from "../lib/playback";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 import {
@@ -462,6 +462,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * where the scrub started, so the bar disagreed with what was about to play.
    */
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
+  // Where a run of skip taps has got to, and the timer that will commit it.
+  // A ref rather than state: every tap reads the last target to build the
+  // next, and a render between two fast taps would hand the second a stale one.
+  const skipTargetRef = useRef<number | null>(null);
+  const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fineFactor, setFineFactor] = useState(1);
   const barRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; base: number } | null>(null);
@@ -1083,9 +1088,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     else s.pause();
   }, []);
 
+  /** Drop a queued burst of skips — something else has taken the playhead. */
+  const cancelSkip = useCallback(() => {
+    if (skipTimerRef.current !== null) clearTimeout(skipTimerRef.current);
+    skipTimerRef.current = null;
+    skipTargetRef.current = null;
+  }, []);
+
+  useEffect(() => cancelSkip, [cancelSkip]);
+
   const seekTo = useCallback((t: number) => {
     const s = surfaceRef.current;
     if (!s) return;
+    // A scrub, a Go Live, a resume: all of them override whatever the skip
+    // buttons had queued, rather than letting it land a moment later and drag
+    // the playhead back.
+    cancelSkip();
     const target = Math.max(rangeStart, Math.min(t, rangeEnd));
     setPendingSeek(target);
     s.seek(target);
@@ -1104,6 +1122,30 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    * routinely runs minutes past the last window the report knows about. The
    * scrubber is still free to go anywhere and wait.
    */
+  /**
+   * Commit whatever the skip buttons have queued up.
+   *
+   * Runs once the taps stop. Re-reads the playhead because playback has
+   * carried on during the burst, so a target gathered a moment ago may now be
+   * where we already are.
+   */
+  const commitSkip = useCallback(() => {
+    skipTimerRef.current = null;
+    const target = skipTargetRef.current;
+    skipTargetRef.current = null;
+    if (target === null) return;
+    const s = surfaceRef.current;
+    if (!s) return;
+    // Already as far that way as there is anything to go. Seeking again would
+    // land on the spot it is already on, and every one of those announces
+    // itself as a stall — thirteen in a row, in the log that found this.
+    if (Math.abs(target - s.currentTime) < 0.25) {
+      setPendingSeek(null);
+      return;
+    }
+    seekTo(target);
+  }, [seekTo]);
+
   const skip = useCallback((delta: number) => {
     const s = surfaceRef.current;
     if (!s) return;
@@ -1125,13 +1167,26 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     });
     // A live edge is a frontier the encoder is still extending, so a skip has
     // to stop well short of it. Anywhere else `hi` is a settled end.
-    const target = clampSkip(from, delta, range, isLive ? LIVE_EDGE_MARGIN : undefined);
-    // Already as far that way as there is anything to go. Seeking again would
-    // land on the spot it is already on, and every one of those announces
-    // itself as a stall — thirteen in a row, in the log that found this.
-    if (Math.abs(target - from) < 0.25) return;
-    seekTo(target);
-  }, [seekTo, isLive, usingWasm, cacheState, rangeStart, rangeEnd]);
+    //
+    // Accumulated from the pending target, not the playhead: twenty fast taps
+    // are one jump of ten minutes and one decoder rebuild, rather than twenty
+    // of each landing thirty seconds away. `planSkip` clamps every step, so
+    // holding the button down cannot run past either boundary and turning
+    // round starts from where it actually landed.
+    const target = planSkip(
+      skipTargetRef.current, from, delta, range,
+      isLive ? LIVE_EDGE_MARGIN : undefined,
+    );
+    // Pressed into a clamped edge: nothing to queue and nothing to redraw.
+    if (target === skipTargetRef.current) return;
+    if (skipTargetRef.current === null && Math.abs(target - from) < 0.25) return;
+    skipTargetRef.current = target;
+    // The bar and the timecode follow immediately, so the control answers at
+    // once while the decoder is left alone until the taps stop.
+    setPendingSeek(target);
+    if (skipTimerRef.current !== null) clearTimeout(skipTimerRef.current);
+    skipTimerRef.current = setTimeout(commitSkip, SKIP_DEBOUNCE_MS);
+  }, [commitSkip, isLive, usingWasm, cacheState, rangeStart, rangeEnd]);
 
   /**
    * Back to the live edge — stopping the same distance short of it as a skip.

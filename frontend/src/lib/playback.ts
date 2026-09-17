@@ -135,6 +135,44 @@ export function clampSkip(
 }
 
 /**
+ * How long the skip buttons wait for the next tap before committing.
+ *
+ * Long enough to gather a deliberate burst, short enough that a single tap
+ * still feels immediate. The picture does not wait on it: the timecode and the
+ * scrubber move to the pending target the instant a tap lands, and only the
+ * decoder is held back.
+ */
+export const SKIP_DEBOUNCE_MS = 400;
+
+/**
+ * Where a queued run of skips has got to.
+ *
+ * Taps accumulate from the *pending* target rather than from the playhead,
+ * which is the whole point: a seek is asynchronous, so `currentTime` has not
+ * moved when the second tap of a burst arrives. Chaining from it made twenty
+ * taps of Forward 30 land thirty seconds away instead of ten minutes, and
+ * bought twenty decoder rebuilds on the way - each one a teardown, a flushed
+ * audio queue and a black frame.
+ *
+ * Clamping happens per tap, so the target can never run past either boundary
+ * and a turnaround starts from where it actually landed rather than from the
+ * phantom position the taps asked for. Pressing into a clamped edge returns the
+ * same value every time, which is how a caller tells a skip that moves from one
+ * that goes nowhere.
+ *
+ * Pass `pending` as null when no burst is in flight.
+ */
+export function planSkip(
+  pending: number | null,
+  currentTime: number,
+  delta: number,
+  range: [number, number],
+  margin?: number,
+): number {
+  return clampSkip(pending ?? currentTime, delta, range, margin);
+}
+
+/**
  * Ties the media timeline to the wall clock.
  *
  * A live stream's `currentTime` counts from the start of its FFmpeg session,
