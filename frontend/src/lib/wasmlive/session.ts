@@ -53,6 +53,19 @@ export const LOOKAHEAD_SECONDS = 2;
 const MIN_BUFFER_SECONDS = 0.5;
 
 /**
+ * Buffered audio at which the field queue is allowed to hold feeding back.
+ *
+ * Well clear of `MIN_BUFFER_SECONDS`, and that gap is the point. The queue
+ * gate below stops the transport when the presenter already has all the fields
+ * it can hold; gating it on merely being above the starvation floor makes the
+ * floor a set point, and the floor is what the fallback counts starvation
+ * events against. Measured: a soak that held the buffer at exactly 0.5s for
+ * eighty-four seconds, drifting from ten seconds behind the live edge to
+ * twenty, and then gave up with "repeated starvation".
+ */
+const COMFORTABLE_BUFFER_SECONDS = 1.5;
+
+/**
  * How far ahead it may feed while the buffer is empty.
  *
  * Bounded, and that bound is the point. An empty buffer used to bypass pacing
@@ -315,8 +328,11 @@ export function createSession(deps: SessionDeps): LiveSession {
         const starving = deps.audio.bufferedSeconds < MIN_BUFFER_SECONDS;
         const limit = starving ? STARVED_LOOKAHEAD_SECONDS : LOOKAHEAD_SECONDS;
         if (fedAhead > limit) break;
-        // And whatever the media says, do not decode into a full queue.
-        if (!starving && deps.presenter.queued > QUEUE_HIGH_WATER) break;
+        // And whatever the media says, do not decode into a full queue - but
+        // only once there is enough sound to keep the clock moving while we
+        // wait, because the clock is what drains the queue in the first place.
+        if (deps.audio.bufferedSeconds > COMFORTABLE_BUFFER_SECONDS
+            && deps.presenter.queued > QUEUE_HIGH_WATER) break;
 
         if (anchorMedia === null) anchorMedia = at;
         const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));

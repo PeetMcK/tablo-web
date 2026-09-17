@@ -217,6 +217,21 @@ describe("pacing", () => {
     expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
   });
 
+  it("does not hold the audio buffer down on the starvation threshold", async () => {
+    // The queue gate must not make the floor a set point. The floor is what
+    // the fallback counts starvation events against, so a session pinned to it
+    // is a session on its way to giving up: measured at exactly 0.5s held for
+    // eighty-four seconds, drifting from ten seconds behind the live edge to
+    // twenty, then "repeated starvation".
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(0.6);                  // above the floor, nowhere near comfortable
+    h.presenter.queued = MAX_QUEUED_FRAMES;
+    await h.session.start();
+
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
+  });
+
   it("asks for more media more often than playback consumes it", async () => {
     // These two are a pair, and nothing else makes them one. Polling used to
     // run at half the playlist's target duration - 1.5s for this device's ring
