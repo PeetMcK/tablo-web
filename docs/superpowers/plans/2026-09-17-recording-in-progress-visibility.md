@@ -294,10 +294,16 @@ is silently ignored.
   the local one so nothing regresses if the device is unreachable.
 - [ ] **Step 6: Run both suites. Commit**
 
-**Blocked until grilled.** Two questions the spec records and nothing answers:
-what a position means when it was captured while the programme was still
-recording, and how the phone app paces its writes. Both need the device and a
-phone in hand.
+**Merge rule decided: the greater position wins**, in both directions, with our
+own copy always kept and always pushed. Clamp to `duration` once a recording has
+finished, so a position captured mid-recording cannot outlive the media it
+indexed into.
+
+**Still wants grilling, but no longer blocking:** how the phone app paces its
+writes, so ours can match rather than guess. Observed so far - two recordings
+both landed on `position: 6` shortly after being opened, which suggests an early
+write a few seconds in; and a position held steady at 521 for 84 seconds after
+playback stopped, so it is not a heartbeat that keeps ticking.
 
 ---
 

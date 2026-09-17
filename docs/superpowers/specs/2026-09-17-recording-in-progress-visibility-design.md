@@ -124,6 +124,43 @@ The nested form is the shape the GET returns, answers `200`, and does nothing �
 the same trap `schedule.py` documents for `scheduled`. Verified by writing 618
 to a recording and reading it back, then restoring zero.
 
+**The rule: the greater position wins.** Decided 2026-09-17.
+
+Always keep our own copy, always push it to the device, and on open take
+whichever of the two is further in. No timestamp is needed, which matters
+because the device has none — `user_info` is exactly
+`{position, watched, protected}`, and a search of the whole record found
+nothing time-shaped but the airing's own datetime.
+
+It is right in the cases that happen: watch on the phone, open here, the
+device is ahead and we take it; watch here, open here, ours is ahead and we
+keep it; adopting the device wholesale would have rewound eleven recordings —
+Saturday Night Live from 21:36 back to 33 seconds — and this does not.
+
+Two consequences follow from the rule rather than from any defect:
+
+- **A deliberate rewind does not stick.** Watching to 40 minutes, going back to
+  10 and stopping leaves 40 on the device, so the next open resumes at 40. The
+  Mark unwatched toggle is the escape hatch, which is a good reason for it to
+  clear the position as well as the flag — a deliberate "start this again"
+  rather than an afterthought.
+- **It does not settle the mid-recording doubt below.** A position captured
+  while recording that is *larger* than the finished media would be enshrined
+  by "greater wins". Guard: once a recording is finished, clamp any position to
+  its `duration` and discard anything past it.
+
+The write works, and its shape is not the read's:
+
+```
+PATCH /recordings/series/episodes/{id}  {"position": 618}            → takes
+PATCH /recordings/series/episodes/{id}  {"user_info": {"position": 618}}
+                                                → 200, silently ignored
+```
+
+The nested form is the shape the GET returns, answers `200`, and does nothing —
+the same trap `schedule.py` documents for `scheduled`. Verified by writing 618
+to a recording and reading it back, then restoring zero.
+
 **Proposed rule: change detection, not a timestamp.** The device carries no
 modified time — `user_info` is exactly `{position, watched, protected}`, and a
 search of the whole record found nothing time-shaped but the airing's own
