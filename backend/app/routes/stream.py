@@ -170,8 +170,14 @@ _startup_cleanup()
 
 
 def touch_session(session_id: str) -> None:
-    """Mark a live session as still wanted. Cheap enough for every request."""
-    if session_id in transcode_procs:
+    """Mark a live session as still wanted. Cheap enough for every request.
+
+    Both kinds count. A ring session holds a tuner exactly as a transcode does,
+    and grows an hour of raw 1080i besides - so leaving it out of the heartbeat
+    meant nothing ever reaped it, and a closed laptop held both for the life of
+    the backend.
+    """
+    if session_id in transcode_procs or session_id in ring_sessions:
         session_touched[session_id] = time.monotonic()
 
 
@@ -186,27 +192,58 @@ def _kill(session_id: str) -> None:
             pass
 
 
-def reap_idle_transcoders() -> list[str]:
-    """Kill live transcodes nobody has asked about in LIVE_IDLE_SECONDS.
+def _stop_ring(session_id: str) -> None:
+    """Cancel a ring session's follower and drop what it was holding."""
+    entry = ring_sessions.pop(session_id, None)
+    if entry is None:
+        return
+    ring, _follower, task = entry
+    print(
+        f"[ring] {session_id} stopping, held {ring.held_seconds:.1f}s"
+        f" in {len(ring.segments)} segments",
+        flush=True,
+    )
+    if task is not None:
+        task.cancel()
+    shutil.rmtree(RAW_DIR / session_id, ignore_errors=True)
 
-    Returns the sessions it killed, for the log.
+
+def reap_idle_sessions() -> list[str]:
+    """End live sessions nobody has asked about in LIVE_IDLE_SECONDS.
+
+    Both kinds. A transcode holds a tuner and a core; a ring session holds a
+    tuner and up to LIVE_DVR_SECONDS of raw 1080i - about 7-8GB at this
+    device's bitrate, roughly eight times the transcode window's footprint.
+    Neither is ended by a viewer who closes the lid, because the only orderly
+    stop is a DELETE that never arrives.
+
+    Ring sessions were not covered at all until this, and nothing else could
+    have caught them: `sweep_stale_raw_dirs` skips any directory belonging to a
+    live session precisely so it cannot delete one out from under a running
+    follower, and the follower's own loop runs until it is cancelled.
+
+    Returns the sessions it ended, for the log.
     """
     now = time.monotonic()
     stale = [
-        sid for sid in list(transcode_procs)
+        sid for sid in list(transcode_procs) + list(ring_sessions)
         # A session that has never been touched is one started moments ago,
         # before its player asked for anything. Give it the same grace.
         if now - session_touched.setdefault(sid, now) > LIVE_IDLE_SECONDS
     ]
     for sid in stale:
         _kill(sid)
-        import shutil
+        _stop_ring(sid)
         try:
             shutil.rmtree(TRANSCODE_DIR / sid)
         except Exception:
             pass
         state.stop_session(sid)
     return stale
+
+
+# The old name, kept because it says what most callers mean.
+reap_idle_transcoders = reap_idle_sessions
 
 
 async def reap_forever():
@@ -218,8 +255,8 @@ async def reap_forever():
     while True:
         await asyncio.sleep(REAP_INTERVAL)
         try:
-            if killed := reap_idle_transcoders():
-                print(f"[stream] reaped {len(killed)} idle transcode(s): {killed}",
+            if killed := reap_idle_sessions():
+                print(f"[stream] reaped {len(killed)} idle session(s): {killed}",
                       flush=True)
         except Exception as e:
             print(f"[stream] reap failed: {e}", flush=True)
@@ -464,16 +501,10 @@ async def stop_stream(session_id: str):
 
     # A ring session holds a tuner through its polling task, so stopping it is
     # not optional housekeeping - a leaked follower keeps fetching for ever.
-    if entry := ring_sessions.pop(session_id, None):
-        ring, _follower, task = entry
-        print(
-            f"[ring] {session_id} stopping, held {ring.held_seconds:.1f}s"
-            f" in {len(ring.segments)} segments",
-            flush=True,
-        )
-        if task is not None:
-            task.cancel()
-    shutil.rmtree(RAW_DIR / session_id, ignore_errors=True)
+    # The same teardown the idle reaper uses, so there is one way for a ring
+    # session to end rather than two that can drift apart.
+    _stop_ring(session_id)
+    session_touched.pop(session_id, None)
 
     state.stop_session(session_id)
     return {"ok": True}
@@ -486,6 +517,12 @@ async def stop_stream(session_id: str):
 @router.get("/raw/{session_id}/playlist.m3u8")
 async def raw_playlist(session_id: str):
     ring, _follower, _task = _ring_session(session_id)
+    # The player asks for this about twice a second for as long as it holds the
+    # session - including while paused, when no segment is being fetched at
+    # all. That makes it a far better liveness signal than the transcode path's
+    # thirty-second status ping, and it is the only thing that tells the reaper
+    # anyone is still watching.
+    touch_session(session_id)
     return Response(
         content=ring.playlist(),
         media_type="application/vnd.apple.mpegurl",
