@@ -337,6 +337,53 @@ def test_a_finished_recording_is_not_marked_growing(monkeypatch):
             stream.vod_sessions.pop(sid, None)
 
 
+def _watching_for_bif(monkeypatch, variant: str):
+    """Records which recordings a watch-vod asks the device for thumbnails of."""
+    rec = _device_serving(variant, monkeypatch)
+    asked: list[int] = []
+
+    async def fetch_bif(object_id, _path):
+        asked.append(object_id)
+        return True
+
+    monkeypatch.setattr(rec.cache, "preview_available", lambda _oid: False)
+    monkeypatch.setattr(rec.cache, "fetch_bif", fetch_bif)
+    return asked
+
+
+def test_a_finished_recording_fetches_its_thumbnail_pack(monkeypatch):
+    """This path returns long before `register()`, which normally pulls it.
+
+    Measured: of eleven recordings, the only four with thumbnails were the four
+    that had been transcoded - so MPEG-2 playback had no scrub previews at all.
+    """
+    asked = _watching_for_bif(monkeypatch, PLAYLIST)
+    try:
+        with TestClient(app) as client:
+            client.post("/api/recordings/1/watch-vod")
+        assert asked == [1]
+    finally:
+        for sid in list(stream.vod_sessions):
+            stream.vod_sessions.pop(sid, None)
+
+
+def test_a_recording_still_being_written_asks_for_no_thumbnails(monkeypatch):
+    """The device has none to give.
+
+    Watched across a two-hour recording: no pack while `state` was `recording`,
+    then a complete one within five minutes of it ending. Asking earlier only
+    spends a device session on a null url.
+    """
+    asked = _watching_for_bif(monkeypatch, GROWING)
+    try:
+        with TestClient(app) as client:
+            client.post("/api/recordings/1/watch-vod")
+        assert asked == []
+    finally:
+        for sid in list(stream.vod_sessions):
+            stream.vod_sessions.pop(sid, None)
+
+
 def test_an_idle_vod_session_is_reaped():
     _register()
     try:

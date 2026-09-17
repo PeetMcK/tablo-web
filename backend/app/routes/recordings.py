@@ -165,6 +165,26 @@ async def watch_recording_vod(object_id: int):
     )
     stream_routes.touch_session(session_id)
 
+    # Scrub-preview thumbnails, which this path would otherwise never get.
+    #
+    # The pack is normally pulled by `register()`, on the transcode path - and
+    # this returns long before that, exactly as the pinned-offline path above
+    # did until it was fixed. Measured: of eleven recordings, the only four with
+    # thumbnails were the four that had been transcoded.
+    #
+    # Only once finished. Watched across a two-hour recording on 2026-09-17, the
+    # device offered no pack at all while `state` was `recording` - the session
+    # carries `bif_url_hd`/`bif_url_sd` as null - and published a complete one
+    # within five minutes of the recording ending, covering its whole runtime.
+    # So there is nothing to ask for until then, and a session open across the
+    # end simply gets them the next time it is opened.
+    #
+    # Backgrounded, and it fails harmlessly: nothing is written unless a valid
+    # BIF comes back, so a fetch that is merely too early is retried on the next
+    # open rather than caching an empty pack for ever.
+    if index.finished and not cache.preview_available(object_id):
+        asyncio.create_task(cache.fetch_bif(object_id, path))
+
     return {
         "object_id": object_id,
         "session_id": session_id,
