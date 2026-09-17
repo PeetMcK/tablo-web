@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ShowInfo } from "../components/ShowInfo";
 import { api } from "../api/tablo";
 import type { AiringDetail } from "../api/tablo";
@@ -95,8 +95,11 @@ describe("ShowInfo", () => {
     render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /record episode/i }));
+    // This airing is on now, so it asks first: recording would start at once
+    // and capture only what is left.
+    fireEvent.click(await screen.findByRole("button", { name: /^record$/i }));
 
-    expect(schedule).toHaveBeenCalledWith("ch1", "s", true);
+    await waitFor(() => expect(schedule).toHaveBeenCalledWith("ch1", "s", true));
     expect(await screen.findByRole("button", { name: /don't record episode/i }))
       .toBeInTheDocument();
   });
@@ -130,8 +133,10 @@ describe("ShowInfo", () => {
     render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^new$/i }));
+    // On-air episode: setting a rule starts recording it, so it asks first.
+    fireEvent.click(await screen.findByRole("button", { name: /^set rule$/i }));
 
-    expect(schedule).toHaveBeenCalledWith("ch1", "s", "new");
+    await waitFor(() => expect(schedule).toHaveBeenCalledWith("ch1", "s", "new"));
     expect(await screen.findByRole("button", { name: /^new$/i }))
       .toHaveAttribute("aria-pressed", "true");
   });
@@ -143,6 +148,7 @@ describe("ShowInfo", () => {
     render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /record episode/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^record$/i }));
 
     expect(await screen.findByText(/invalid parameter value/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /record episode/i })).toBeInTheDocument();
@@ -218,5 +224,120 @@ describe("ShowInfo", () => {
       fireEvent.click(await screen.findByRole("button", { name: /watch live/i }));
       expect(onTune).toHaveBeenCalled();
     });
+  });
+});
+
+describe("a recording in progress, from the sheet", () => {
+  const SLOT = "2026-09-17T16:00:00Z";
+  const LIVE = {
+    object_id: 86113, channel_identifier: "ch1", start: SLOT, duration: 3600,
+    recording_started: "2026-09-17T16:20:59Z",
+    recorded_seconds: 1020, expected_seconds: 2341, title: "Let's Make a Deal",
+  };
+
+  const airing = (over = {}) => detail({
+    title: "Let's Make a Deal", start: SLOT, duration: 3600,
+    airing_now: true, scheduled: true, past: false,
+    series: { path: "/guide/series/1", schedule_rule: "none" },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says it is recording now, and how much exists", async () => {
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText(/recording now/i)).toBeInTheDocument();
+    expect(screen.getByText(/17m of 39m/i)).toBeInTheDocument();
+  });
+
+  it("draws the same coverage bar the other views draw", async () => {
+    // 1259s into a 3600s slot: the tuner started 21 minutes late, and that gap
+    // is the single most useful thing on this sheet.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing());
+    const { container } = render(
+      <ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+    await screen.findByText(/recording now/i);
+
+    const fill = container.querySelector<HTMLElement>(".bg-danger.inset-y-0");
+    expect(parseFloat(fill!.style.left)).toBeCloseTo(34.97, 1);
+  });
+
+  it("offers to stop it, and asks first", async () => {
+    // Stopping keeps what was captured but does not resume - measured on a
+    // real recording - so it is not something to do by a stray click.
+    const stop = vi.spyOn(api, "scheduleAiring").mockResolvedValue(airing());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /stop recording/i }));
+
+    expect(stop).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: /^stop$/i })).toBeInTheDocument();
+  });
+
+  it("shows no recording block when nothing is recording this airing", async () => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    await screen.findByText("Let's Make a Deal");
+    expect(screen.queryByText(/recording now/i)).toBeNull();
+  });
+});
+
+describe("starting a recording is confirmed", () => {
+  const SLOT = "2026-09-17T16:00:00Z";
+  const onNow = (over = {}) => detail({
+    title: "Let's Make a Deal", start: SLOT, duration: 3600,
+    airing_now: true, scheduled: false, past: false,
+    series: { path: "/guide/series/1", schedule_rule: "none" },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks before recording something already airing", async () => {
+    // It starts at once and captures only what is left, which is how three
+    // stub recordings of four and eight seconds ended up in the library.
+    const sched = vi.spyOn(api, "scheduleAiring").mockResolvedValue(onNow());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(onNow());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /record episode/i }));
+
+    expect(sched).not.toHaveBeenCalled();
+    expect(await screen.findByText(/already airing/i)).toBeInTheDocument();
+  });
+
+  it("asks before a series rule that would start one", async () => {
+    // The rule buttons look like preferences and are not: setting one starts
+    // recording the episode on air immediately.
+    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(onNow());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(onNow());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^all$/i }));
+
+    expect(rule).not.toHaveBeenCalled();
+    expect(await screen.findByText(/already airing/i)).toBeInTheDocument();
+  });
+
+  it("does not ask for an airing that has not started", async () => {
+    // Nothing is captured part-way, so there is nothing to warn about.
+    const sched = vi.spyOn(api, "scheduleAiring").mockResolvedValue(onNow({ airing_now: false }));
+    vi.spyOn(api, "airingDetail").mockResolvedValue(onNow({ airing_now: false }));
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /record episode/i }));
+
+    await waitFor(() => expect(sched).toHaveBeenCalled());
   });
 });
