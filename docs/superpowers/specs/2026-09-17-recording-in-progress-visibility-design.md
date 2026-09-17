@@ -124,9 +124,45 @@ The nested form is the shape the GET returns, answers `200`, and does nothing �
 the same trap `schedule.py` documents for `scheduled`. Verified by writing 618
 to a recording and reading it back, then restoring zero.
 
-`watched` sits beside it and is presumably writable the same way; worth
-settling when this is built, since "finished watching" and "stopped here" are
-different states and the Library shows neither today.
+**The device is the source of authority**, once we write to it. Our own server
+keeps positions today and the device keeps the phone's, and they disagree
+plainly: SNL reads 1296s on ours and 33s on the device. Rather than invent a
+merge rule neither side can support — nothing carries a timestamp — the device
+wins, and our server becomes a cache of it. That is the only arrangement where
+"where was I" has one answer no matter which client asks.
+
+**How often to write is an open question with an empirical answer.** The phone
+app already solved it, so the cadence should be measured rather than guessed:
+watch something on the phone and sample `user_info.position` to see how often it
+moves, then force-quit mid-episode and read it again to learn whether the app
+writes on the way out or only on a timer. Whatever it does is what a Tablo
+expects, and matching it avoids both hammering the device and losing the last
+minute of a session. **Needs a phone in hand; do it before building the write.**
+
+`watched` sits beside `position` in the same object and is presumably writable
+the same way. "Finished it" and "stopped here" are different states and the
+Library shows neither today.
+
+### Delete and protect belong on the info sheet
+
+Both are device-side states we do not touch at all today:
+
+- **`protected`** is in `user_info` and guards a recording against the device
+  reclaiming space. Verified writable, flat, and reversible:
+  `PATCH {"protected": true}` → 200, the flag flips, and `false` restores it.
+  This is the device's own version of the offline "keep" we already offer, and
+  the two want distinguishing in the UI rather than conflating: keep copies it
+  here, protect stops the Tablo deleting it there.
+- **Delete** removes the recording from the device. Nothing in the app does
+  this — our two delete routes are cache-side (`/keep`, `/cache`) and only ever
+  remove our own copy. The device call is presumably `DELETE {recording_path}`
+  but **has deliberately not been tested**: it destroys content irreversibly,
+  and probing it needs a recording nobody wants.
+
+Both go on the info sheet beside the record controls. Delete confirms, names
+the programme, and says plainly that the recording is gone from the Tablo
+rather than merely from here — a distinction the existing "delete cached video"
+wording already has to make.
 
 ### A past airing should say what happened, not what it will do
 
