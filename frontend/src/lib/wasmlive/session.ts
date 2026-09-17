@@ -11,6 +11,7 @@
 import { log } from "../debug";
 import { initialFallbackState, reduceFallback } from "./fallback";
 import type { FallbackState } from "./fallback";
+import { MAX_QUEUED_FRAMES } from "./frameQueue";
 import { parseMediaPlaylist, playlistWindow, segmentAt, startNearEdge } from "./playlist";
 import type { MediaPlaylist } from "./playlist";
 import type { AudioSink } from "./audioSink";
@@ -68,6 +69,31 @@ const MIN_BUFFER_SECONDS = 0.5;
  * starvation causes it somewhere else.
  */
 export const STARVED_LOOKAHEAD_SECONDS = 2.5;
+
+/**
+ * How full the field queue may be before the transport stops feeding.
+ *
+ * Pacing on media alone is not enough, because the decoder is not paced by it:
+ * a segment handed over becomes forty-five frames in about fifty milliseconds,
+ * and those ninety field presentations land on a queue that was draining. Once
+ * it reaches its cap the excess is refused, and refused fields are gone - which
+ * leaves a hole in the timeline rather than merely a short queue. Measured: a
+ * burst of 74 frames against a 150 field cap, then presentation stopping dead
+ * for 300ms with 104 fields queued and the oldest of them 0.286s in the future,
+ * because the clock had to cross the gap the refusal made.
+ *
+ * Holding the segment back instead costs nothing: it stays in the ring, on
+ * disk, where it already is.
+ *
+ * The room left has to be a whole segment's worth, not a fraction of the
+ * queue. The unit the transport deals in is one segment, and this device's
+ * longest run to about 1.8s - sixty frames, a hundred and twenty field
+ * presentations. Gating at six tenths of the cap still let a burst land on
+ * ninety and overflow; leaving less than a burst's room does the same, and
+ * leaving too much starves the sound. Both were measured.
+ */
+const SEGMENT_FIELDS = 120;
+const QUEUE_HIGH_WATER = Math.max(0, MAX_QUEUED_FRAMES - SEGMENT_FIELDS);
 
 /**
  * How much of the window to start behind the live edge.
@@ -289,6 +315,8 @@ export function createSession(deps: SessionDeps): LiveSession {
         const starving = deps.audio.bufferedSeconds < MIN_BUFFER_SECONDS;
         const limit = starving ? STARVED_LOOKAHEAD_SECONDS : LOOKAHEAD_SECONDS;
         if (fedAhead > limit) break;
+        // And whatever the media says, do not decode into a full queue.
+        if (!starving && deps.presenter.queued > QUEUE_HIGH_WATER) break;
 
         if (anchorMedia === null) anchorMedia = at;
         const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));

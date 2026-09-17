@@ -192,6 +192,31 @@ describe("pacing", () => {
     expect(STARVED_LOOKAHEAD_SECONDS).toBeLessThanOrEqual(MAX_QUEUED_FRAMES / 59.94);
   });
 
+  it("does not feed a decoder whose field queue is already full", async () => {
+    // The decoder is not paced by the media limit: a segment handed over
+    // becomes forty-five frames in fifty milliseconds. Landing those on a full
+    // queue means the excess is refused, and refused fields are a hole in the
+    // timeline rather than a short queue - measured as presentation stopping
+    // dead for 300ms with 104 fields held and the oldest 0.286s in the future.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(5);
+    h.presenter.queued = MAX_QUEUED_FRAMES;
+    await h.session.start();
+
+    expect(h.fetched.filter((u) => u.endsWith(".ts"))).toEqual([]);
+  });
+
+  it("feeds a starving decoder even so, because silence stops the clock", async () => {
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(0);
+    h.presenter.queued = MAX_QUEUED_FRAMES;
+    await h.session.start();
+
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
+  });
+
   it("asks for more media more often than playback consumes it", async () => {
     // These two are a pair, and nothing else makes them one. Polling used to
     // run at half the playlist's target duration - 1.5s for this device's ring
