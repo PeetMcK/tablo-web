@@ -253,6 +253,93 @@ describe("before the clock has started", () => {
     ).toBe(offered);
   });
 
+  it("reports how long the picture has held while fields are still queued", () => {
+    let clock = 0;
+    let wall = 0;
+    const presenter = createPresenter({
+      now: () => clock,
+      nowMs: () => wall,
+      upload: () => {},
+      draw: () => {},
+    });
+
+    // A field due now and another a full second later: the shape of a hole in
+    // the middle of a segment. The queue never empties, so the session's
+    // `waiting for fields` edge — which fires on an empty queue — never sees
+    // it, and nothing at all was recorded until the six-second watchdog.
+    presenter.offer(decoded(1, { interlaced: false }));
+    presenter.offer(decoded(2, { interlaced: false }));
+
+    clock = 1;
+    wall = 1000;
+    presenter.tick();
+    expect(presenter.presentedCount).toBe(1);
+    expect(presenter.nothingDueMs).toBe(0);
+
+    // A quarter second on: the clock has moved, a field is in hand, none of it
+    // is due.
+    clock = 1.25;
+    wall = 1250;
+    presenter.tick();
+    expect(presenter.queued).toBe(1);
+    expect(presenter.nothingDueMs).toBe(250);
+
+    // The field reaches its moment and the measure resets.
+    clock = 2;
+    wall = 2000;
+    presenter.tick();
+    expect(presenter.presentedCount).toBe(2);
+    expect(presenter.nothingDueMs).toBe(0);
+  });
+
+  it("reports nothing held when the queue is empty, which is a different failure", () => {
+    let clock = 0;
+    let wall = 0;
+    const presenter = createPresenter({
+      now: () => clock,
+      nowMs: () => wall,
+      upload: () => {},
+      draw: () => {},
+    });
+    presenter.offer(decoded(1, { interlaced: false }));
+    clock = 1;
+    wall = 1000;
+    presenter.tick();
+
+    // An empty queue is starvation, which `waiting for fields` already names.
+    // Reporting it twice under two names would make one stall look like two
+    // problems.
+    clock = 3;
+    wall = 3000;
+    presenter.tick();
+    expect(presenter.queued).toBe(0);
+    expect(presenter.nothingDueMs).toBe(0);
+  });
+
+  it("counts a stopped clock as a pause rather than a held picture", () => {
+    let clock: number | null = 0;
+    let wall = 0;
+    const presenter = createPresenter({
+      now: () => clock,
+      nowMs: () => wall,
+      upload: () => {},
+      draw: () => {},
+    });
+    presenter.offer(decoded(1, { interlaced: false }));
+    clock = 1;
+    wall = 1000;
+    presenter.tick();
+
+    // A suspended AudioContext renders no samples, so the clock has no value.
+    // The picture does hold — that is what the still frame is for — but it is
+    // waiting on a tap, not on a hole in the timeline.
+    presenter.offer(decoded(2, { interlaced: false }));
+    clock = null;
+    wall = 6000;
+    presenter.tick();
+    expect(presenter.nothingDueMs).toBe(0);
+  });
+
   it("counts every tick, including the ones with nothing due", () => {
     const h = harness();
     h.presenter.offer(decoded(1));
