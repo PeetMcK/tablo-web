@@ -293,10 +293,19 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
         : detail?.title ?? "Show information"}
       onClick={onClose}
     >
-      <div className="relative w-full max-w-lg max-h-full"
+      {/* Two boxes, and both parts matter. `relative` gives the confirmation
+          something to sit over; `flex` with `max-h-full` keeps the height
+          chain intact so the sheet inside still scrolls.
+
+          The inner sheet cannot carry `max-h-full` here: a percentage maximum
+          against a parent of automatic height does not resolve, so the sheet
+          grew past the bottom of the screen and took its controls with it -
+          the series buttons were simply unreachable. `min-h-0` is what lets a
+          flex child shrink below its content and scroll instead. */}
+      <div className="relative flex w-full max-w-lg max-h-full"
            onClick={(e) => e.stopPropagation()}>
       <div
-        className="w-full max-h-full overflow-y-auto rounded-3xl
+        className="w-full min-h-0 overflow-y-auto rounded-3xl
                    bg-surface-overlay border border-border shadow-2xl shadow-shade"
       >
         {/* Rendered only when there is art. A placeholder box at hero size
