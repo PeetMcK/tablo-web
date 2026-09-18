@@ -501,8 +501,18 @@ show", which is what the card lists.
   the Library.
 - [ ] **Step 7: Run both suites. Commit.**
 
-**Open:** where the cover comes from. The recordings series record has not
-been inspected for artwork, and the guide's `cover_image_id` is keyed by the
-*guide* series path, which a recording does not carry. The info sheet already
-solves the equivalent problem; check what it does before inventing a second
-route.
+**The cover — settled.** `GET /recordings/series/{id}` carries it directly:
+
+```
+series.cover_image.image_id        e.g. 9345
+series.thumbnail_image.image_id    the poster shape, if the list wants per-item art
+series.background_image.image_id
+```
+
+Present on **7 of 7** series on the live account, so no guide join and no
+fallback path. Served through the existing `/api/channels/image/{id}` route.
+
+That record also carries `guide_path`, an explicit link to the guide series —
+so the join I earlier said recordings did not have does exist, it is just on
+the series record rather than on the airing. Worth knowing for anything else
+that needs to cross from a recording to guide metadata.
