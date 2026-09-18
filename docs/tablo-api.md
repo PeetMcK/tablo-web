@@ -191,6 +191,59 @@ Re-POSTing an active `watch` refreshes its expiry and returns the same
 **`playlist_url` is on port 80, not 8887.** Derive the stream base from the
 returned URL; never assume `local_url`.
 
+### The device does not transcode, and cannot be asked to
+
+This generation hands over exactly what the tuner received. Probed three ways
+(`backend/tools/probe_transcode.py`, `probe_stream_fmt.py`), all against a live
+OTA channel:
+
+**No endpoint.** 24 candidate paths — `/server/transcode`, `/server/encoder`,
+`/server/profiles`, `/server/quality`, `/settings/transcode`,
+`/settings/quality`, `/player/profiles`, `/transcode`, and the rest of the
+obvious spellings — every one `404 none_found`. `/player/sessions/{token}` has
+no `/info` or `/profiles` below it either.
+
+**No parameter.** `POST /guide/channels/{id}/watch` accepts `quality`,
+`profile`, `transcode`, `bitrate`, `resolution`, `codec`, `video_codec`,
+`format`, `max_bitrate` and `audio_track` — and also `zzz_probe`, the control.
+All return `200` with an ordinary session. The same keys as query parameters
+behave identically. **The watch endpoint ignores unknown keys**, unlike the
+strict `PATCH` validator, so the "send an invalid value and read `details`"
+technique finds nothing here: a `200` means nothing was understood, not that
+something was accepted.
+
+**No format selector.** The master playlist's single variant points at
+`/stream/pls.m3u8?<token>&fmt=v4`, and `fmt` is the only knob the device shows
+anywhere in its own URLs. It is inert. 22 values (`v0`–`v6`, `1`, `2`, `4`,
+`h264`, `avc`, `mpeg2`, `hls`, `ts`, `mp4`, `fmp4`, `low`, `sd`, `hd`, `ZZZ`,
+and the parameter omitted entirely) each returned `200` and a first segment
+that ffprobe read as, every time:
+
+```
+video=mpeg2video 1920x1080 tt | audio=ac3
+```
+
+Garbage and omission behave like `v4`, so `fmt` is not a codec or quality
+selector — most likely a playlist-format version the media server no longer
+branches on.
+
+What the watch response does tell you is what you are getting, before a byte is
+fetched: `video_details.container_format` (`mpeg2`), `flags` (`interlaced`),
+`audio_details.container_format` (`ac3`), and a master playlist advertising
+`BANDWIDTH=10000000`. `bif_url_sd` / `bif_url_hd` are null for live.
+
+So client-side transcoding is not a workaround for a feature we have not found;
+it is the only option this hardware leaves. Anything wanting H.264 — a browser,
+a phone, a remote viewer on a slow link — has to re-encode off the device.
+
+**Probing live playback can wedge the API.** During the `fmt` sweep (repeated
+whole-playlist and segment fetches on port 80, ~25 minutes, plus ~20 `watch`
+POSTs) port 8887 stopped answering HTTP entirely while still accepting TCP, and
+stayed that way. Port 80 kept serving segments throughout. The API not
+answering also means sessions cannot be released, so the tuner stays held. It
+recovered by itself after roughly 40 minutes with no reboot. Space live probes
+out and release each session before opening the next.
+
 ## Writes
 
 **`PATCH` only** for the schedule. `POST` and `PUT` against these paths return
