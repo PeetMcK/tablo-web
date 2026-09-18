@@ -213,7 +213,15 @@ export interface AiringDetail {
   /** Null for a one-off, a movie, or an airing whose series is unknown. */
   series: { path: string; schedule_rule: string | null } | null;
   channel: {
-    identifier: string;
+    /**
+     * Null when the answer came from a recording rather than an airing.
+     *
+     * A guide sheet is addressed by this, so it always has one. A recording is
+     * addressed by its own id, and a copy kept offline after the Tablo deleted
+     * the original is described from the snapshot taken when it was pinned -
+     * which carries no identifier if the device had none to record.
+     */
+    identifier: string | null;
     call_sign: string | null;
     major: number | null;
     minor: number | null;
