@@ -211,6 +211,38 @@ def deinterlace_filter() -> list[str]:
     return ["bwdif=mode=send_field:parity=auto:deint=interlaced"]
 
 
+def square_pixels_filter() -> list[str]:
+    """Bake an anamorphic picture's real shape into its pixels.
+
+    Broadcast SD is a 16:9 picture stored in a 4:3 grid with non-square pixels.
+    The shape lives in the sample aspect, which MPEG-2 carries and H.264 keeps
+    in its VUI - and which `h264_videotoolbox` throws away. Measured on
+    704x480 with SAR 40:33:
+
+        libx264              sample_aspect_ratio=40:33   display=16:9
+        h264_videotoolbox    sample_aspect_ratio=N/A     display=N/A
+
+    A player handed the second draws the coded 1.47, and everything in it is
+    tall and thin - which is what Saturday Night Live looked like. It is the
+    same fault `deinterlace.ts` fixes on the MPEG-2 path by sizing the canvas
+    to the display shape (see 05b0153); this is the H.264 half, which was
+    missed because x264 does carry it and the containerised backend uses x264.
+    Only the native macOS path, which is the fast one and the default, is
+    affected.
+
+    `setsar` cannot help: it sets what the encoder then discards. So the
+    correction goes into the pixel grid, where nothing downstream has to
+    understand it - 704x480 becomes 852x480 and is simply 16:9.
+
+    Free on HD. `iw*sar` is the width itself when the pixels are already
+    square, so 1280x720 passes through unchanged; verified against the encoder.
+    Widths are rounded to even because H.264 chroma subsampling requires it,
+    which costs at most one column - 852 where 853 is exact, a tenth of a per
+    cent.
+    """
+    return ["scale=trunc(iw*sar/2)*2:ih", "setsar=1"]
+
+
 def encoder_profile() -> EncoderProfile:
     """Full FFmpeg configuration for the selected encoder."""
     name = video_encoder()
@@ -1343,7 +1375,10 @@ class TranscodeCache:
         # Deinterlace ahead of anything encoder-specific: VAAPI's chain ends in
         # hwupload, and frames have to be progressive before they leave for the
         # GPU.
-        filters = [*deinterlace_filter(), *prof.filters]
+        # Order is load-bearing at both ends: the deinterlace samples real
+        # rows so it must see the coded picture, and VAAPI's chain ends in
+        # hwupload, after which a software scale has nothing to work on.
+        filters = [*deinterlace_filter(), *square_pixels_filter(), *prof.filters]
         cmd = [
             "ffmpeg", "-y",
             # 'file' is deliberately excluded: input_url is device-controlled.
