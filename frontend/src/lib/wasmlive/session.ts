@@ -180,6 +180,30 @@ export const GROWING_MAX_AGE_MS = 8000;
  */
 export const CLOSE_GRACE_MS = 2000;
 
+/**
+ * How long silence at the end of a finished index has to last to be the end.
+ *
+ * Short enough to be invisible against the last frame, long enough to outlast
+ * one decode: a seek landing in the final segment looks exactly like an ending
+ * until its audio arrives, and without this it would end the recording at the
+ * moment the viewer jumped to it.
+ */
+export const ENDED_STILL_MS = 400;
+
+/**
+ * Buffered audio at or below which the sound has run out.
+ *
+ * Not exactly zero. The worklet reports every 4800 frames — a tenth of a second
+ * — so the accounting can come to rest on a residue smaller than one report and
+ * stay there, and an ending gated on a hard zero would then never arrive. A
+ * tenth of a second is also below anything a viewer could notice being cut.
+ *
+ * Safe only in company: mid-recording the buffer dips under this routinely, and
+ * what makes it mean "the end" is that every segment of a finished index has
+ * already been fed and the silence has lasted `ENDED_STILL_MS`.
+ */
+export const ENDED_QUIET_SECONDS = 0.1;
+
 export interface SessionDeps {
   playlistUrl: string;
   /** When the backend opened this session, which media time is measured from. */
@@ -332,6 +356,8 @@ export function createSession(deps: SessionDeps): LiveSession {
   let seekedTo: number | null = null;
   /** So the end is announced once rather than on every animation frame. */
   let announcedEnd = false;
+  /** Since when the end has looked like the end — see the check in `tick`. */
+  let endStillSinceMs: number | null = null;
 
   /**
    * Every segment the index names has been handed to the decoder.
@@ -774,29 +800,51 @@ export function createSession(deps: SessionDeps): LiveSession {
         fallback = reduceFallback(fallback, { kind: "decode-error" });
       }
     }
-    // The recording is over: nothing left to feed, nothing left to draw, and
-    // nothing left to hear.
+    // The recording is over: nothing left to feed, and nothing left to hear.
     //
-    // All three, because the first on its own is a lie. The last segment is
-    // handed over a second or two before the viewer sees it, and announcing the
-    // end there would cut the ending off — which is precisely the part someone
-    // watched the whole programme for.
+    // Both, because the first on its own is a lie. The last segment is handed
+    // over a second or two before the viewer hears it, and announcing the end
+    // there would cut off precisely the part someone watched the programme for.
+    //
+    // Sound is what says it is over, and *not* an empty field queue, which
+    // sounds like the obvious test and can never happen here. The clock is
+    // derived from samples the worklet has rendered, so when audio runs out the
+    // clock stops — and the presenter is then left holding the handful of
+    // fields whose timestamps lie past where it stopped, for ever. Measured on
+    // a 3:55:13 recording: it reached the end, held there correctly, and never
+    // said so, because `queued` was waiting to reach a zero it could not.
+    //
     // Drawing rather than sound is what says playback happened at all: a
     // recording with no audio track buffers nothing from its first frame to its
     // last, and would otherwise never be allowed to end. A decoder that drew
     // nothing is a different thing entirely, and the first-frame deadline above
     // already has it.
-    if (!paused && !announcedEnd && atTheEnd()
-        && deps.presenter.presentedCount > 0
-        && deps.presenter.queued === 0
-        && deps.audio.bufferedSeconds <= 0) {
-      announcedEnd = true;
-      log.player("recording ended", {
-        at: Number((mediaClock() ?? 0).toFixed(2)),
-        takenThrough,
-        presented: deps.presenter.presentedCount,
-      });
-      emit("ended");
+    const drained = !paused
+      && atTheEnd()
+      && deps.presenter.presentedCount > 0
+      && mediaClock() !== null
+      && deps.audio.bufferedSeconds <= ENDED_QUIET_SECONDS;
+    if (!drained) {
+      endStillSinceMs = null;
+    } else {
+      // Held for a moment first. A seek that lands in the last segment passes
+      // every test above while its decode is still in flight — fed to the end,
+      // drawn before, and momentarily silent — and announcing an end there
+      // would end the recording as the viewer arrived at it. Audio coming back
+      // clears this; audio that never comes back is the end.
+      endStillSinceMs ??= nowMs;
+      if (!announcedEnd && nowMs - endStillSinceMs >= ENDED_STILL_MS) {
+        announcedEnd = true;
+        log.player("recording ended", {
+          at: Number((mediaClock() ?? 0).toFixed(2)),
+          takenThrough,
+          presented: deps.presenter.presentedCount,
+          // Fields the stopped clock will never reach. Expected, and small;
+          // worth seeing if it is ever neither.
+          stranded: deps.presenter.queued,
+        });
+        emit("ended");
+      }
     }
 
     // Once, not sixty times a second. `emit("error")` used to fire on every
@@ -842,6 +890,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       // Seeking back out of the end un-ends it, so playing to the end a second
       // time says so a second time.
       announcedEnd = false;
+      endStillSinceMs = null;
       // The decoder restarts, so the timeline it emits does too: both the
       // anchor and the offset have to be re-derived from the next segment.
       ptsOffset = null;

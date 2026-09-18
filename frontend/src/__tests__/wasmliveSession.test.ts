@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
 import {
-  createSession, CLOSE_GRACE_MS, GROWING_MAX_AGE_MS, LOOKAHEAD_SECONDS,
-  POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
+  createSession, CLOSE_GRACE_MS, ENDED_STILL_MS, GROWING_MAX_AGE_MS,
+  LOOKAHEAD_SECONDS, POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
 } from "../lib/wasmlive/session";
 import { MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
@@ -1245,50 +1245,129 @@ describe("a recording that plays to its end", () => {
     expect(h.session.failure).toBe("decode error");
   });
 
-  it("says so once, when the last of it has been drawn and heard", async () => {
+  it("says so once, when the last of it has been heard", async () => {
     // Not merely when the last segment was handed over: the decoder is still
-    // holding a second of it, and the viewer has not seen the ending yet.
+    // holding a second or two of it, and the viewer has not heard the ending.
+    let nowMs = 0;
     const events: string[] = [];
-    const h = harness({ vod: { durationSeconds: 18 }, fetchText: async () => VOD });
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
     h.setClock(null);
     await h.session.start();
     h.session.on("ended", () => events.push("ended"));
     await playOut(h);
 
-    // Fed to the end, but the presenter still holds fields and the sink still
-    // holds sound.
-    h.presenter.queued = 40;
+    // Fed to the end, but the sink still holds sound.
+    h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
     h.session.tick();
     expect(events).toEqual([]);
 
-    h.presenter.queued = 0;
     h.setBuffered(0);
+    h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
     h.session.tick();
     h.session.tick();
 
     expect(events).toEqual(["ended"]);
   });
 
-  it("un-ends when the viewer seeks back into it", async () => {
+  it("does not wait on fields the stopped clock will never reach", async () => {
+    // The obvious test for "everything has been drawn" is an empty field queue,
+    // and it can never happen here: the clock is derived from rendered samples,
+    // so when the sound runs out it stops - leaving the presenter holding the
+    // handful of fields timestamped past where it stopped, for ever. Measured
+    // on a 3:55:13 recording, which reached the end, held there correctly, and
+    // never said so.
+    let nowMs = 0;
     const events: string[] = [];
-    const h = harness({ vod: { durationSeconds: 18 }, fetchText: async () => VOD });
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
+    h.setClock(null);
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    await playOut(h);
+
+    h.presenter.queued = 7;                // stranded, and they stay stranded
+    // A residue rather than a hard zero: the worklet only reports every tenth
+    // of a second, so the accounting can come to rest just above nothing and
+    // an ending gated on exactly zero would never arrive.
+    h.setBuffered(0.04);
+    h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
+    h.session.tick();
+
+    expect(events).toEqual(["ended"]);
+  });
+
+  it("does not end a recording at the moment a seek lands in its last segment", async () => {
+    // Fed to the end, drawn before, and silent while the decode is in flight -
+    // which is every test for an ending, arriving as the viewer does.
+    let nowMs = 0;
+    const events: string[] = [];
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
+    h.setClock(null);
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    await playOut(h);
+
+    h.setClock(13);
+    h.session.seek(13);                     // into the last segment
+    await h.session.poll();
+    h.setBuffered(0);                       // nothing decoded back yet
+    h.session.tick();
+    nowMs += 100;
+    h.session.tick();
+    expect(events).toEqual([]);
+
+    // Audio arrives, and it is playing again rather than over.
+    h.setBuffered(1.2);
+    nowMs += 400;
+    h.session.tick();
+    expect(events).toEqual([]);
+  });
+
+  it("un-ends when the viewer seeks back into it", async () => {
+    let nowMs = 0;
+    const events: string[] = [];
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
     h.setClock(null);
     await h.session.start();
     h.session.on("ended", () => events.push("ended"));
     await playOut(h);
     h.setBuffered(0);
     h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
+    h.session.tick();
     expect(events).toEqual(["ended"]);
 
     h.setClock(2);
     h.session.seek(2);
     await h.session.poll();
+    h.setBuffered(1);
+    nowMs += 1000;
     h.session.tick();
     expect(events).toEqual(["ended"]);
 
     // And says so again when it reaches the end a second time.
     await playOut(h);
     h.setBuffered(0);
+    h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
     h.session.tick();
     expect(events).toEqual(["ended", "ended"]);
   });
@@ -1297,8 +1376,13 @@ describe("a recording that plays to its end", () => {
     // Emitting it into the session alone changes nothing: `createWasmSurface`
     // returned a no-op for `ended` on the grounds that live has no end, and a
     // recording is not live.
+    let nowMs = 0;
     const events: string[] = [];
-    const h = harness({ vod: { durationSeconds: 18 }, fetchText: async () => VOD });
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
     h.setClock(null);
     await h.session.start();
     const surface = createWasmSurface(h.session);
@@ -1306,17 +1390,21 @@ describe("a recording that plays to its end", () => {
     await playOut(h);
     h.setBuffered(0);
     h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
+    h.session.tick();
 
     expect(events).toEqual(["ended"]);
   });
 
   it("does not end a live channel, which has no end", async () => {
+    let nowMs = 0;
     const events: string[] = [];
-    const h = harness();                    // no vod, no ENDLIST
+    const h = harness({ nowMs: () => nowMs });   // no vod, no ENDLIST
     await h.session.start();
     h.session.on("ended", () => events.push("ended"));
     h.setBuffered(0);
     h.session.tick();
+    nowMs += ENDED_STILL_MS + 1;
     h.session.tick();
 
     expect(events).toEqual([]);
@@ -1384,8 +1472,10 @@ describe("catching up to a recording still being written", () => {
     // Waiting at the frontier is a rebuffer, not an ending. The index says so:
     // it carries no EXT-X-ENDLIST until the recording finishes.
     const events: string[] = [];
+    let clockMs = 0;
     const h = harness({
       vod: { durationSeconds: 6, growing: true },
+      nowMs: () => clockMs,
       fetchText: async () => vodPlaylist(4),
     });
     h.setClock(null);
@@ -1398,6 +1488,8 @@ describe("catching up to a recording still being written", () => {
       h.presenter.presentedCount += 120;
     }
     h.setBuffered(0);
+    h.session.tick();
+    clockMs = 60000;
     h.session.tick();
 
     expect(events).toEqual([]);
@@ -1428,6 +1520,8 @@ describe("catching up to a recording still being written", () => {
     clockMs = 1000;
     await h.session.poll();
     h.setBuffered(0);
+    h.session.tick();
+    clockMs += ENDED_STILL_MS + 1;
     h.session.tick();
 
     expect(events).toEqual(["ended"]);
