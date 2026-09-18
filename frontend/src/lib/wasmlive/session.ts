@@ -361,6 +361,20 @@ export function createSession(deps: SessionDeps): LiveSession {
   }
 
   /**
+   * Whether a failed request means the backend has forgotten this session.
+   *
+   * `open.ts` throws `playlist 404` and `segment 404` with the status in the
+   * message, which is the only thing that crosses this boundary. Matched on
+   * the status alone: 404 is the single answer that will never become an
+   * answer, because the only thing that could restore a session is opening a
+   * new one. A 502 is the device blinking and a 503 is it busy - both worth
+   * asking again for.
+   */
+  function sessionGone(e: unknown): boolean {
+    return e instanceof Error && / 404$/.test(e.message);
+  }
+
+  /**
    * And the index is final, so there will never be another segment.
    *
    * `EXT-X-ENDLIST` is the whole of the difference between an ending and a
@@ -686,9 +700,21 @@ export function createSession(deps: SessionDeps): LiveSession {
     pollsQueued += 1;
     pollChain = pollChain
       .then(() => poll())
-      .catch(() => {
-        // A backend restart or a dropped request is not the end of the session;
-        // the next poll is a couple of seconds away.
+      .catch((e: unknown) => {
+        // A dropped request is not the end of the session; the next poll is a
+        // couple of seconds away.
+        //
+        // A 404 from our own backend is. Sessions live in memory, so a backend
+        // restart or the 120s idle reaper removes one out from under a player
+        // still holding its playlist, and every request after that answers 404
+        // for ever. Retrying that quietly is what left thousands of
+        // `/api/vod/{session}/NNNNN.ts` 404s in the console: nothing could
+        // succeed, so `takenThrough` never advanced, so every poll asked for
+        // the same segments again.
+        if (sessionGone(e)) {
+          failureDetail = String((e as Error)?.message ?? e);
+          fallback = reduceFallback(fallback, { kind: "session-gone" });
+        }
       })
       .finally(() => { pollsQueued -= 1; });
     return pollChain;

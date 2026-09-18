@@ -133,7 +133,22 @@ export function createSegmentSupply(deps: {
         pendingSeconds.delete(segment.sequence);
         if (mine !== generation) return;
         unplan(segment.sequence);
-        pump();
+        // Deliberately no `pump()`. Every ceiling below is measured on media
+        // *held*, and a failed fetch holds nothing — so a failure could never
+        // reach the target and pumping on one walked the entire remaining
+        // plan at full concurrency, as fast as the endpoint could refuse.
+        //
+        // That is where the 404 storms came from. Measured: one advise over a
+        // 1,260-segment plan against an endpoint answering 404 issued 1,260
+        // requests in under 200ms, and since `takenThrough` only advances on
+        // success, the next poll re-planned the lot and swept again. Two
+        // sweeps is the 2,316 messages in the console screenshot; four is the
+        // 4,716.
+        //
+        // Stopping here costs nothing real. This queue is speculative: the
+        // transport's own `take` fetches what it actually needs and surfaces
+        // the failure to whoever is waiting, and the next `advise` restarts
+        // the prefetch a poll later.
       },
     );
   };
