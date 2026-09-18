@@ -154,13 +154,18 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      // Innermost first. With a question up, Escape answers that question -
+      // closing the whole sheet would throw the decision away along with the
+      // context that raised it.
+      if (confirming) setConfirming(null);
+      else onClose();
     };
     // On `document`, not `window`: the tests dispatch there, and so does a
     // focused element inside the panel — the event reaches both either way.
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, confirming]);
 
   /**
    * Apply a write optimistically, and put the old state back if it fails.
@@ -318,60 +323,12 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
         : detail?.title ?? "Show information"}
       onClick={onClose}
     >
+      <div className="relative w-full max-w-lg max-h-full"
+           onClick={(e) => e.stopPropagation()}>
       <div
-        className="w-full max-w-lg max-h-full overflow-y-auto rounded-3xl
+        className="w-full max-h-full overflow-y-auto rounded-3xl
                    bg-surface-overlay border border-border shadow-2xl shadow-shade"
-        onClick={(e) => e.stopPropagation()}
       >
-        {/* Anything that starts or stops a recording asks first, in place
-            rather than in a second dialog over this one: the sheet is already
-            a modal, and stacking two reads as a mistake.
-
-            It sits at the top because it is the only thing that matters while
-            it is up, and because the controls that raised it are far enough
-            down a scrolled sheet to be off-screen. */}
-        {confirming && (
-          <div className="p-4 border-b border-border bg-warning-soft">
-            <p className="flex items-center gap-2 text-sm font-semibold text-fg">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-warning" aria-hidden />
-              {confirming.label}
-            </p>
-            <p className="mt-1 text-xs text-fg-muted">{confirming.detail}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                onClick={() => { const { run } = confirming; setConfirming(null); run(); }}
-                className="px-4 py-2 rounded-lg text-sm font-semibold
-                           bg-accent text-accent-fg hover:opacity-90 transition
-                           focus:outline-none focus:ring-2 focus:ring-accent"
-              >
-                {confirming.action}
-              </button>
-              {confirming.alternative && (
-                <button
-                  onClick={() => {
-                    const { run } = confirming.alternative!;
-                    setConfirming(null);
-                    run();
-                  }}
-                  className="px-4 py-2 rounded-lg text-sm font-semibold
-                             bg-fill-soft text-fg hover:bg-fill transition
-                             focus:outline-none focus:ring-2 focus:ring-accent"
-                >
-                  {confirming.alternative.action}
-                </button>
-              )}
-              <button
-                onClick={() => setConfirming(null)}
-                className="px-4 py-2 rounded-lg text-sm font-semibold
-                           bg-fill text-fg-secondary hover:text-fg transition
-                           focus:outline-none focus:ring-2 focus:ring-accent"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Rendered only when there is art. A placeholder box at hero size
             reads as a failed image rather than as an absent one.
 
@@ -608,6 +565,88 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
             </div>
           )}
         </div>
+      </div>
+
+      {/* The question, over the card rather than above it.
+
+          As a banner in the flow it pushed the artwork and every control below
+          it down the sheet, so the card jumped at exactly the moment attention
+          was wanted on the question - and on a scrolled sheet it could open
+          off-screen, above the control that raised it.
+
+          Scoped to the card's own bounds, not the viewport: this is the card
+          asking something, and a second full-screen dialog over the first
+          reads as a mistake.
+
+          `alertdialog` rather than `dialog`: every one of these interrupts to
+          report a consequence - a tuner that stops, a capture that starts
+          part-way through - which is what the role is for. */}
+      {confirming && (
+        <div
+          className="confirm-backdrop absolute inset-0 z-10 flex items-center
+                     justify-center rounded-3xl bg-scrim/80 backdrop-blur-[2px] p-6"
+          onClick={() => setConfirming(null)}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+            aria-describedby="confirm-detail"
+            className="w-full max-w-sm rounded-2xl border border-border
+                       bg-surface-overlay p-5 shadow-2xl shadow-shade"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p id="confirm-title"
+               className="flex items-center gap-2 text-sm font-semibold text-fg">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-warning" aria-hidden />
+              {confirming.label}
+            </p>
+            <p id="confirm-detail" className="mt-2 text-xs leading-relaxed text-fg-muted">
+              {confirming.detail}
+            </p>
+            {/* Stacked, not a row: three side-by-side pills of equal weight
+                made the destructive one just another button. Down the column
+                the safe answer is first and focused, and the one that ends a
+                recording is dressed as what it is. */}
+            <div className="mt-4 flex flex-col gap-2">
+              {confirming.alternative && (
+                <button
+                  autoFocus
+                  onClick={() => {
+                    const { run } = confirming.alternative!;
+                    setConfirming(null);
+                    run();
+                  }}
+                  className="w-full px-4 py-2.5 rounded-xl text-sm font-semibold
+                             bg-accent text-accent-fg hover:opacity-90 transition
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  {confirming.alternative.action}
+                </button>
+              )}
+              <button
+                autoFocus={!confirming.alternative}
+                onClick={() => { const { run } = confirming; setConfirming(null); run(); }}
+                className={`w-full px-4 py-2.5 rounded-xl text-sm font-semibold
+                            transition focus:outline-none focus:ring-2 focus:ring-accent ${
+                  confirming.alternative
+                    ? "bg-danger-solid text-danger-fg hover:opacity-90"
+                    : "bg-accent text-accent-fg hover:opacity-90"}`}
+              >
+                {confirming.action}
+              </button>
+              <button
+                onClick={() => setConfirming(null)}
+                className="w-full px-4 py-2.5 rounded-xl text-sm font-semibold
+                           bg-fill text-fg-secondary hover:text-fg transition
+                           focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );
