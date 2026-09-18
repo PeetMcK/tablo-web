@@ -99,12 +99,22 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
   try {
     const context = new AudioContext({ sampleRate: 48000 });
     audio = await createAudioSink(context, workletUrl);
+    // The unlock goes on first, and the resume is never awaited.
+    //
     // An AudioContext created after an await has no user activation behind it,
     // so it starts suspended — and a suspended context renders no samples, so
     // the clock never advances and video freezes on whatever was due at the
-    // first timestamp. Resuming here covers the usual case.
-    await context.resume().catch(() => {});
+    // first timestamp.
+    //
+    // Chrome does not *reject* `resume()` when the autoplay policy blocks it:
+    // the promise stays pending until activation arrives. Awaiting it on a
+    // fresh page load — a refresh, or a resumed recording opened before the
+    // viewer has touched anything — therefore never returns, so the session is
+    // never started, and the listener that would have rescued it was on the
+    // next line. The symptom is a player that sits at 0:00 with no worker and
+    // no segments, which is exactly what a refresh did.
     releaseUnlock = unlockOnGesture(context);
+    void context.resume().catch(() => {});
   } catch (e) {
     worker.terminate();
     renderer.destroy();
