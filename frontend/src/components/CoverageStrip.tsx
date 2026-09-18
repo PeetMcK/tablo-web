@@ -148,10 +148,27 @@ export function CoverageStrip({
             transform: "translateX(-50%)",
           }}
         >
+          {/* Stretched to 16:9, not cropped to it, because these frames are
+              anamorphic.
+
+              The device sizes them to the *coded* picture — 320x180 from an HD
+              source, 320x240 from an SD one — and broadcast SD here is a 16:9
+              picture stored in a 4:3 grid with non-square pixels. `object-cover`
+              treated the 4:3 ones as genuinely 4:3 and trimmed an eighth off
+              the top and bottom, which on Carl the Collector is the characters'
+              heads; showing them at 320x240 instead would make everything in
+              them tall and thin, the fault `deinterlace.ts` sizes the player's
+              canvas to avoid.
+
+              Assumed rather than read: `video_details` reports the coded size
+              and no sample aspect, so unlike the player — which learns it from
+              the decoder — there is nothing here to ask. Genuinely 4:3
+              material would come out wide. Every SD subchannel measured on this
+              device is anamorphic 16:9. */}
           <img
             src={previewUrl(recording.object_id, seconds!)}
             alt=""
-            className="w-40 aspect-video object-cover rounded-lg border border-border shadow-xl bg-surface-sunken"
+            className="w-40 aspect-video object-fill rounded-lg border border-border shadow-xl bg-surface-sunken"
           />
           <span className="px-1.5 py-0.5 rounded bg-ink/80 text-media-fg text-[10px] tabular-nums">
             {clock(seconds!)}

@@ -567,7 +567,13 @@ export function LibraryView() {
                     <img
                       src={cardArt(rec)!}
                       alt=""
-                      className="w-full h-full object-cover"
+                      // `fill`, not `cover`. The artwork is already 16:9 so
+                      // either behaves the same on it — but a frame from the
+                      // recording is anamorphic, a 16:9 picture in a 4:3 grid
+                      // with non-square pixels, and cropping one to fit takes
+                      // an eighth off the top and bottom instead of
+                      // un-squeezing it.
+                      className="w-full h-full object-fill"
                       loading="lazy"
                       // A card that has artwork and a dead image link would
                       // otherwise show the alt box rather than the frame it
