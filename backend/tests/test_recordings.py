@@ -1261,6 +1261,46 @@ def test_in_progress_lists_only_what_is_recording(monkeypatch):
     assert row["recorded_seconds"] == pytest.approx(30 * 60 - 1259, abs=5)
 
 
+def test_in_progress_carries_the_guide_series_it_belongs_to(monkeypatch):
+    """So the sheet can tell that *this* series is the one recording.
+
+    Looked up in the mirror rather than taken from the recording: a recording's
+    own `series_path` is `/recordings/series/{id}`, a different namespace from
+    the guide's `/guide/series/{id}` that the sheet holds. Comparing the two
+    directly matches nothing.
+    """
+    from app import store
+
+    live = _with_offsets(30, start=1259, scheduled=3600)
+    live["object_id"] = 86113
+    _serving_recordings(monkeypatch, [live])
+    store.save_guide([{
+        "identifier": "S34654_008_01",
+        "airings": [{
+            "start": AppState._recording_fields(live)["start"],
+            "duration": 3600,
+            "title": "Let's Make a Deal",
+            "series_path": "/guide/series/5954",
+            "airing_path": "/guide/series/episodes/74075",
+        }],
+    }])
+
+    row = client.get("/api/recordings/in-progress").json()["recordings"][0]
+
+    assert row["series_path"] == "/guide/series/5954"
+
+
+def test_in_progress_says_nothing_about_a_series_the_mirror_never_saw(monkeypatch):
+    """An airing the guide has no row for still recording is not an error."""
+    live = _with_offsets(30, start=1259, scheduled=3600)
+    live["object_id"] = 86113
+    _serving_recordings(monkeypatch, [live])
+
+    row = client.get("/api/recordings/in-progress").json()["recordings"][0]
+
+    assert row["series_path"] is None
+
+
 def test_in_progress_is_empty_rather_than_absent(monkeypatch):
     """Nothing recording is the ordinary case, and not an error."""
     _serving_recordings(monkeypatch, [DEVICE_RECORDING])

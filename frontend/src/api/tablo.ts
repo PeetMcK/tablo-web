@@ -303,6 +303,14 @@ export interface InProgressRecording {
   recorded_seconds: number | null;
   expected_seconds: number | null;
   title: string | null;
+  /**
+   * The guide series this airing belongs to, or null if the guide never saw it.
+   *
+   * The guide's path, resolved server-side from `(channel, start)` — not the
+   * recording's own `series_path`, which lives in the `/recordings/series/`
+   * namespace and never equals what the info sheet holds.
+   */
+  series_path: string | null;
 }
 
 export interface RecordingChannel {

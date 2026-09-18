@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Circle, CircleSlash, Play, SlidersHorizontal, Square, X } from "lucide-react";
 import { recordedSpan } from "../lib/recording";
-import { recordingFor, useRecordingsInProgress } from "../lib/useRecordingsInProgress";
+import {
+  recordingFor, recordingForSeries, useRecordingsInProgress,
+} from "../lib/useRecordingsInProgress";
 import { api } from "../api/tablo";
-import type { AiringDetail, SeriesRule } from "../api/tablo";
+import type { AiringDetail, InProgressRecording, SeriesRule } from "../api/tablo";
 
 interface Props {
   /** Channel identifier, as the grid holds it. */
@@ -119,7 +121,14 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
    * buttons to decide on a rule.
    */
   const [confirming, setConfirming] = useState<
-    { label: string; detail: string; action: string; run: () => void } | null
+    {
+      label: string;
+      detail: string;
+      action: string;
+      run: () => void;
+      /** A second way out, when there is a course of action worth offering. */
+      alternative?: { action: string; run: () => void };
+    } | null
   >(null);
   // Whatever had focus when the sheet opened, so closing can hand it back.
   const opener = useRef<Element | null>(null);
@@ -198,6 +207,93 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
   const recording = start ? recordingFor(inProgress, channel, start) : null;
   const captured = recording ? recordedSpan(recording) : null;
 
+  /**
+   * An episode of this series on a tuner right now — any episode, not this one.
+   *
+   * Measured on a real device 2026-09-18: setting the rule to None stopped a
+   * recording in flight within twelve seconds, and the ninety seconds already
+   * captured stayed in the library as a stub. So the rule buttons can end a
+   * recording of something the sheet is not even showing, which is why this
+   * asks about the series rather than about the airing.
+   */
+  const seriesRecording = detail?.series
+    ? recordingForSeries(inProgress, detail.series.path)
+    : null;
+
+  /** Set the rule, and immediately put the episode on air back on its own. */
+  async function ruleNoneKeeping(rec: InProgressRecording) {
+    if (!detail || !rec.channel_identifier) return;
+    const before = detail;
+    setDetail({ ...detail, series: { ...detail.series!, schedule_rule: "none" } });
+    setPending(true);
+    setWriteError(null);
+    try {
+      setDetail(await api.scheduleSeries(channel, start!, "none"));
+    } catch (e) {
+      setDetail(before);
+      setWriteError(e instanceof Error ? e.message : "The change did not stick.");
+      setPending(false);
+      return;
+    }
+    // Two writes, and the second is the one that can leave a surprise: the
+    // rule is already off by the time it runs, so a failure here means the
+    // recording the viewer asked to save is gone. Said plainly rather than
+    // rolled back - the rule change was wanted, and undoing it would be a
+    // third write nobody asked for.
+    try {
+      await api.scheduleAiring(rec.channel_identifier, rec.start, true);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : "The Tablo refused the change.";
+      setWriteError(
+        `The series is set to None, but the episode on air was not kept recording. ${why}`,
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  /**
+   * Apply a series rule, asking first when the answer would cost a recording.
+   *
+   * Two different questions hang off these three buttons. Turning the series
+   * on starts capturing whatever is on air part-way through; turning it off
+   * ends whatever it has on a tuner. Neither is what a row of buttons labelled
+   * All / New / None looks like it does.
+   */
+  function applyRule(value: SeriesRule) {
+    const setIt = () => write(
+      { series: { ...detail!.series!, schedule_rule: value } },
+      () => api.scheduleSeries(channel, start!, value),
+    );
+
+    if (value === "none" && seriesRecording?.channel_identifier) {
+      const what = seriesRecording.title ?? "An episode";
+      const so_far = formatDuration(seriesRecording.recorded_seconds ?? 0);
+      setConfirming({
+        label: "An episode is recording now.",
+        detail: `“${what}” — ${so_far} of ${formatDuration(seriesRecording.duration)} `
+          + "captured. Setting the rule to None stops it at once. What was "
+          + "captured stays in your library.",
+        action: "Stop it",
+        run: setIt,
+        alternative: {
+          action: "Keep this one",
+          run: () => void ruleNoneKeeping(seriesRecording),
+        },
+      });
+      return;
+    }
+
+    guard(
+      value !== "none" && !!detail?.airing_now && !detail?.scheduled,
+      "Record this series?",
+      "This episode is already airing, and setting a rule starts recording it "
+        + "now - capturing only what is left of it.",
+      "Set rule",
+      setIt,
+    );
+  }
+
   const number = detail ? channelNumber(detail.channel) : null;
   // Network and channel number are deliberately absent: the eyebrow above the
   // title already carries both, and repeating them put "LOCALFAST · 7.99" two
@@ -241,7 +337,7 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
               {confirming.label}
             </p>
             <p className="mt-1 text-xs text-fg-muted">{confirming.detail}</p>
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <button
                 onClick={() => { const { run } = confirming; setConfirming(null); run(); }}
                 className="px-4 py-2 rounded-lg text-sm font-semibold
@@ -250,6 +346,20 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
               >
                 {confirming.action}
               </button>
+              {confirming.alternative && (
+                <button
+                  onClick={() => {
+                    const { run } = confirming.alternative!;
+                    setConfirming(null);
+                    run();
+                  }}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold
+                             bg-fill-soft text-fg hover:bg-fill transition
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  {confirming.alternative.action}
+                </button>
+              )}
               <button
                 onClick={() => setConfirming(null)}
                 className="px-4 py-2 rounded-lg text-sm font-semibold
@@ -477,18 +587,7 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
                           key={value}
                           aria-pressed={on}
                           disabled={pending}
-                          onClick={() => guard(
-                            value !== "none" && detail.airing_now && !detail.scheduled,
-                            "Record this series?",
-                            "This episode is already airing, and setting a rule "
-                              + "starts recording it now - capturing only what is "
-                              + "left of it.",
-                            "Set rule",
-                            () => write(
-                              { series: { ...detail.series!, schedule_rule: value } },
-                              () => api.scheduleSeries(channel, start!, value),
-                            ),
-                          )}
+                          onClick={() => applyRule(value)}
                           className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
                                       transition disabled:opacity-60
                                       focus:outline-none focus:ring-2 focus:ring-accent ${

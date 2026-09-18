@@ -290,6 +290,118 @@ describe("a recording in progress, from the sheet", () => {
   });
 });
 
+describe("turning a series off while one of its episodes records", () => {
+  // Measured on a real device 2026-09-18: with an episode recording, setting
+  // the series rule to None stopped the tuner within twelve seconds, and the
+  // ninety seconds already captured stayed in the library as a stub.
+  const SERIES = "/guide/series/6137";
+  const LIVE_ELSEWHERE = {
+    object_id: 86323, channel_identifier: "ch2", start: "2026-09-18T06:30Z",
+    duration: 1800, recording_started: "2026-09-18T06:40:18Z",
+    recorded_seconds: 600, expected_seconds: 1182, title: "NHK Newsline",
+    series_path: SERIES,
+  };
+
+  /** The sheet is a future episode; the recording is a different one. */
+  const upcoming = (over = {}) => detail({
+    title: "NHK Newsline", start: "2026-09-19T06:30Z", duration: 1800,
+    airing_now: false, scheduled: true, past: false,
+    series: { path: SERIES, schedule_rule: "all" },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings")
+      .mockResolvedValue({ recordings: [LIVE_ELSEWHERE] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("warns instead of silently stopping the tuner", async () => {
+    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+
+    expect(rule).not.toHaveBeenCalled();
+    expect(await screen.findByText(/an episode is recording now/i)).toBeInTheDocument();
+    expect(screen.getByText(/10m of 30m/i)).toBeInTheDocument();
+  });
+
+  it("stops it when that is what was asked for", async () => {
+    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
+    const airing = vi.spyOn(api, "scheduleAiring").mockResolvedValue(upcoming());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^stop it$/i }));
+
+    await waitFor(() => expect(rule).toHaveBeenCalledWith("ch1", "2026-09-19T06:30Z", "none"));
+    expect(airing).not.toHaveBeenCalled();
+  });
+
+  it("keeps the episode on air when asked to, by rescheduling it alone", async () => {
+    // The rule write cancels it; scheduling that one airing again puts it back
+    // — addressed by the recording's own channel and start, which is not the
+    // airing the sheet is showing.
+    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
+    const airing = vi.spyOn(api, "scheduleAiring").mockResolvedValue(upcoming());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /keep this one/i }));
+
+    await waitFor(() => expect(rule).toHaveBeenCalledWith("ch1", "2026-09-19T06:30Z", "none"));
+    await waitFor(() =>
+      expect(airing).toHaveBeenCalledWith("ch2", "2026-09-18T06:30Z", true));
+  });
+
+  it("says so when the episode could not be saved", async () => {
+    vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
+    vi.spyOn(api, "scheduleAiring").mockRejectedValue(new Error("The Tablo refused."));
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /keep this one/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/not kept recording/i);
+  });
+
+  it("leaves another series' recording out of it", async () => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({
+      recordings: [{ ...LIVE_ELSEWHERE, series_path: "/guide/series/999" }],
+    });
+    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+
+    await waitFor(() => expect(rule).toHaveBeenCalled());
+  });
+
+  it("does not warn when turning the series on", async () => {
+    // All and New do not stop a tuner, and a warning on them would train
+    // people to dismiss the one that matters.
+    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^new$/i }));
+
+    await waitFor(() => expect(rule).toHaveBeenCalledWith("ch1", "2026-09-19T06:30Z", "new"));
+  });
+});
+
 describe("starting a recording is confirmed", () => {
   const SLOT = "2026-09-17T16:00:00Z";
   const onNow = (over = {}) => detail({
