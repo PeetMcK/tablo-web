@@ -12,7 +12,7 @@
 
 import { useRef, useState } from "react";
 
-import { previewUrl } from "../api/tablo";
+import { previewFrameAt, previewUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import type { Fill, Span } from "../lib/recording";
 
@@ -92,9 +92,17 @@ export function CoverageStrip({
       }}
       onContextMenu={(e) => {
         const t = timeAt(fractionOf(e) ?? 0);
-        if (t === null) return;
+        // Nothing to pick from without the pack: the chosen frame would come
+        // back empty and the card would silently swap its artwork for the
+        // device's mid-capture snapshot, with an undo button over it offering
+        // to remove something nobody chose.
+        if (t === null || !recording.has_preview) return;
         e.preventDefault();
-        onPickCover(t);
+        // The position of the frame that was actually on screen, not where the
+        // pointer happened to be. The popup rounds to the nearest frame and the
+        // server returns the one at or before what it is asked for, so keeping
+        // the raw position kept the frame *before* the one being looked at.
+        onPickCover(previewFrameAt(t));
       }}
     >
       {/* Drawn at the bottom of the band, so the strip stays where it was and

@@ -51,19 +51,24 @@ def _decorate(item: dict, meta=None) -> dict:
     return item
 
 
-def _with_art(item: dict) -> dict:
-    """Say what the card leads with, and whether the viewer chose it.
+def _with_art(items: list[dict]) -> None:
+    """Say what each card leads with, and whether the viewer chose it.
 
     `image_url` is the show's own artwork, resolved from the airing when the
     library was last listed. Null is ordinary — sport whose airing has aged out
     of the guide, or anything recorded before a guide sync — and the card falls
     back to the snapshot frame it has always used.
+
+    One query for the listing rather than one per recording, and run through
+    `_run_sync` like every other store call in this handler: reading it inline
+    put a SQLite connection on the event loop thread and a round trip per card.
     """
-    art = store.recording_art(int(item["object_id"])) or {}
-    frame_ms = art.get("cover_frame_ms")
-    item["image_url"] = art.get("cover_url")
-    item["cover_frame"] = None if frame_ms is None else frame_ms / 1000
-    return item
+    art = store.recording_art_for([int(i["object_id"]) for i in items])
+    for item in items:
+        held = art.get(int(item["object_id"])) or {}
+        frame_ms = held.get("cover_frame_ms")
+        item["image_url"] = held.get("cover_url")
+        item["cover_frame"] = None if frame_ms is None else frame_ms / 1000
 
 
 @router.get("")
@@ -124,8 +129,7 @@ async def list_recordings():
         await _run_sync(store.resolve_recording_art, merged)
     except Exception as e:
         print(f"[art] resolving recording artwork failed: {e}", flush=True)
-    for item in merged:
-        _with_art(item)
+    await _run_sync(_with_art, merged)
 
     return {
         "recordings": merged,
@@ -278,9 +282,14 @@ async def set_watched(object_id: int, body: WatchedIn):
 
 
 class CoverIn(BaseModel):
-    """Where in the recording the chosen frame is, in seconds."""
+    """Where in the recording the chosen frame is, in seconds.
 
-    t: float = Field(ge=0)
+    Bounded at both ends. `1e30` is a valid float and `int(t * 1000)` of it
+    overflows SQLite's 64-bit integer, which leaves the handler as a 500; the
+    ceiling is a day, comfortably past the longest thing anything records.
+    """
+
+    t: float = Field(ge=0, le=86_400)
 
 
 @router.post("/{object_id}/cover")

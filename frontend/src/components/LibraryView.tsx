@@ -987,7 +987,18 @@ export function LibraryView() {
                             : <Download className="w-4 h-4" aria-hidden />}
                       </button>
                       <button
-                        onClick={() => playable && setPlaying(rec)}
+                        // Says how it opens as well as what: the mode is
+                        // shared across every card, so a button that only set
+                        // the recording inherited whatever the last one chose.
+                        // Harmless while that was "beginning" or "live"; not
+                        // once a click on the strip could leave behind a
+                        // position from a three-hour film, which then opened a
+                        // half-hour show past its end.
+                        onClick={() => {
+                          if (!playable) return;
+                          setStartMode("resume");
+                          setPlaying(rec);
+                        }}
                         disabled={!playable}
                         className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center hover:bg-accent hover:text-accent-fg transition text-fg-faint disabled:opacity-30 disabled:hover:bg-fill-soft
                                    enabled:hover:scale-110 enabled:active:scale-95"

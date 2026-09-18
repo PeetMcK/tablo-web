@@ -32,9 +32,25 @@ export function setDirectOrigin(origin: string | null): void {
  * and the browser cache serves the repeats instead of the network.
  */
 export function previewUrl(objectId: number, seconds: number): string {
-  const t = Math.max(0, Math.round(seconds / 10) * 10);
-  return `${BASE}/recordings/${objectId}/preview?t=${t}`;
+  return `${BASE}/recordings/${objectId}/preview?t=${previewFrameAt(seconds)}`;
 }
+
+/**
+ * The position of the frame the preview pack actually holds for `seconds`.
+ *
+ * Exported because anything that *keeps* a position has to agree with what the
+ * popup showed at it, and the two roundings differ: this rounds to the nearest
+ * frame, while the server returns the frame at or before what it is asked for.
+ * Storing the raw pointer position instead meant a viewer who picked the frame
+ * they were looking at, at 57s, kept the one from 50s — wrong about half the
+ * time, and unmistakably wrong when the picture changed between them.
+ */
+export function previewFrameAt(seconds: number): number {
+  return Math.max(0, Math.round(seconds / PREVIEW_GRID_SECONDS) * PREVIEW_GRID_SECONDS);
+}
+
+/** How far apart the device's preview frames sit. */
+const PREVIEW_GRID_SECONDS = 10;
 
 export function downloadUrl(objectId: number): string {
   return `${directOrigin ?? ""}${BASE}/recordings/${objectId}/download`;
