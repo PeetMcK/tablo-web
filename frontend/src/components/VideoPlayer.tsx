@@ -1771,6 +1771,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
    */
   const handleSurfaceClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     resetHideTimerRef.current?.();
+    // A tap that only exists to unlock the sound does nothing else.
+    //
+    // Chrome will not start an AudioContext without user activation, so a
+    // page opened or refreshed into a recording sits with a stopped clock and
+    // a black frame until the viewer touches something. That first touch is
+    // handled document-wide by `unlockOnGesture` — but the stage divides the
+    // frame into rewind, play-pause and skip zones, so the same tap also
+    // jumped the playhead thirty seconds or paused a programme that had not
+    // begun. The viewer asked for the picture and got a transport command.
+    //
+    // Only ever the first one: once the context is running this is the
+    // ordinary surface again.
+    if (surfaceRef.current?.diagnostics?.().audioContext === "suspended") return;
     const zone = zoneAtEvent(e);
     if (zone === "back") skip(-10);
     else if (zone === "forward") skip(30);

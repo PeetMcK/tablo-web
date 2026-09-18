@@ -58,7 +58,7 @@ export const REC: Recording = {
 };
 
 /** A surface the player can hold, shaped only as far as the player reads it. */
-export function stubSurface(): PlaybackSurface {
+export function stubSurface(audioContext = "running"): PlaybackSurface {
   return {
     play: vi.fn().mockResolvedValue(undefined),
     pause: vi.fn(),
@@ -72,7 +72,7 @@ export function stubSurface(): PlaybackSurface {
     volume: 1,
     setVolume: vi.fn(),
     error: null,
-    diagnostics: () => ({ kind: "wasm" }),
+    diagnostics: () => ({ kind: "wasm", audioContext }),
     on: () => () => {},
     destroy: vi.fn(),
   };

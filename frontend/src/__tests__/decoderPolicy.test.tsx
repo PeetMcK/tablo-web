@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { VideoPlayer } from "../components/VideoPlayer";
 import { api } from "../api/tablo";
 import type { Channel, OpenOptions, Program, Recording } from "./decoderPolicySupport";
 import { CHANNEL, NEWS_HOUR, REC, stubSurface } from "./decoderPolicySupport";
+import type { PlaybackSurface } from "../lib/playbackSurface";
 
 /**
  * Which decoder plays, and what happens when it cannot.
@@ -216,5 +217,75 @@ describe("the player says when it is playing a local copy", () => {
 
     await waitFor(() => expect(wasm.open).toHaveBeenCalled());
     expect(container.textContent).not.toContain("Offline copy");
+  });
+});
+
+/**
+ * The tap that starts the sound is not also a transport command.
+ *
+ * Chrome will not start an AudioContext without user activation, so a page
+ * opened or refreshed into a recording waits with a stopped clock and a black
+ * frame. `unlockOnGesture` takes the first touch document-wide — but the stage
+ * divides the frame into rewind, play-pause and skip zones, so that same touch
+ * also skipped thirty seconds or paused a programme that had not started.
+ */
+describe("the gesture that unlocks the sound", () => {
+  let surface: PlaybackSurface;
+
+  function renderAt(audioContext: string) {
+    surface = stubSurface(audioContext);
+    wasm.open.mockResolvedValue(surface);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <VideoPlayer source={{ kind: "recording", recording: REC }} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+  }
+
+  /** The stage fills the viewport; jsdom gives it no width, and zones need one. */
+  function clickForwardZone(container: HTMLElement) {
+    const stage = container.querySelector(".fixed.inset-0") as HTMLElement;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, width: 1000, top: 0, height: 500 }) as DOMRect;
+    fireEvent.click(stage, { clientX: 900, clientY: 250 });
+  }
+
+  beforeEach(() => {
+    wasm.eligible = true;
+    wasm.open.mockReset();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "stopStream").mockResolvedValue({ ok: true });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 746, growing: false, mode: "vod",
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not skip while the audio context is still suspended", async () => {
+    const { container } = renderAt("suspended");
+    await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+
+    clickForwardZone(container);
+    // Long enough for the skip timer to have fired, had one been started.
+    await new Promise((r) => setTimeout(r, 700));
+
+    expect(surface.seek).not.toHaveBeenCalled();
+  });
+
+  it("skips normally once the sound is running", async () => {
+    // The guard is for the first tap only; after that it is the ordinary
+    // surface, and a test that never saw it skip would prove nothing.
+    const { container } = renderAt("running");
+    await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+
+    clickForwardZone(container);
+
+    // Skips accumulate behind a short timer before they become one seek.
+    await waitFor(() => expect(surface.seek).toHaveBeenCalled());
   });
 });
