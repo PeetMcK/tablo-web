@@ -562,3 +562,108 @@ That record also carries `guide_path`, an explicit link to the guide series —
 so the join I earlier said recordings did not have does exist, it is just on
 the series record rather than on the airing. Worth knowing for anything else
 that needs to cross from a recording to guide metadata.
+
+---
+
+### Task 11: The card's picture, and scrubbing it
+
+**Files:**
+- Modify: `backend/app/db.py` (schema 6), `backend/app/store.py`,
+  `backend/app/routes/recordings.py`
+- Modify: `frontend/src/api/tablo.ts`, `frontend/src/components/LibraryView.tsx`
+- Test: `backend/tests/test_recordings.py`, `frontend/src/__tests__/`
+
+A Library card leads with a frame from the recording — `snapshot_image`, a
+grab from the middle of the capture. It should lead with the show's own
+artwork, the way the schedule's info box does, and the frame should be
+something the viewer picks deliberately.
+
+### Where the picture comes from
+
+In order, first hit wins:
+
+1. **A frame the viewer chose**, by right-clicking the timeline.
+2. **The airing's own artwork** — `guide_airing.image_url`.
+3. **The series cover** — `guide_series.cover_image_id`.
+4. **The device snapshot**, which is today's default and stays as the floor.
+
+2 and 3 are exactly what `store.airing_detail` already does for the schedule's
+show-info box (`store.py:841`), and this must not invent a second answer:
+
+```python
+cover = (series or {}).get("cover_image_id")
+image_url = air["image_url"] or (f"/api/channels/image/{cover}" if cover else None)
+```
+
+**Never `background_image`.** Measured across seven series: `cover_image` is
+1920x1080 with the title set into the art, `background_image` is the same size
+composed for text to be laid over it — Good Morning America's pushes all three
+presenters to the right of frame and leaves a bare blue field. Dropped into a
+card it reads as a mistake. `thumbnail_image` is the 240x360 portrait poster
+and is the wrong shape for a 16:9 well.
+
+### Why it has to be stored, not looked up
+
+`GUIDE_RETENTION_DAYS` is 31 and `prune_guide` deletes airings older than
+that. A recording outlives its airing row — a kept offline copy by years — so
+resolving live means every card silently reverts to a snapshot frame a month
+after it was recorded. Nothing would report it.
+
+So the answer is resolved once, when a listing indexes the library, and kept.
+
+**New table**, rather than columns on `recording`: that one is the transcode
+cache's index and only holds what has been cached or pinned, while this is
+about every recording in the library.
+
+```sql
+CREATE TABLE IF NOT EXISTS recording_art (
+    object_id      INTEGER PRIMARY KEY,
+    cover_url      TEXT,     -- resolved from the airing, kept past pruning
+    cover_frame_ms INTEGER,  -- the viewer's pick; null means none
+    resolved_at    TEXT NOT NULL
+);
+```
+
+`cover_frame_ms` stores a *position*, not a picture. The frame is already on
+disk in the BIF pack the scrub preview reads, so the override costs no copy
+and clearing it is setting one column to null.
+
+### The strip
+
+The bottom strip is 4px tall and carries three layers already — the capture,
+how much has been watched, and the slot-end tick. It gains an invisible band
+over it, tall enough to hit, and:
+
+- **Hover** — the BIF frame at that point, in a popup above the strip. Free:
+  an indexed seek into a file that is already there, seven days immutable.
+- **Left click** — open the player there.
+- **Right click** — make that frame the card's picture.
+
+The strip is the *coverage* bar, not a timeline: it spans the scheduled slot
+widened to hold any padding, so `t = 0` sits at `span.left`, not at the left
+edge. The mapping is `t = (x% − span.left) / span.width × recorded`, and the
+part of the strip outside the span is slot with no video in it — a click there
+does nothing rather than seeking to zero.
+
+### The undo
+
+**Bottom left of the card image**, shown only while `cover_frame_ms` is set.
+Clears the override and the picture returns to the airing's artwork.
+
+- [ ] **Step 1: Schema 6 and the table.**
+- [ ] **Step 2: Resolve and store the artwork** during a listing, reusing the
+  schedule's own rule rather than a second copy of it.
+- [ ] **Step 3: Project `image_url` and `cover_overridden`** onto a recording.
+- [ ] **Step 4: `POST /{id}/cover` and `DELETE /{id}/cover`.**
+- [ ] **Step 5: Serve the chosen frame** from the thumbnail route.
+- [ ] **Step 6: The card takes the new picture**, with the snapshot as floor.
+- [ ] **Step 7: The scrub band** — hover preview, left click, right click.
+- [ ] **Step 8: The undo, bottom left.**
+- [ ] **Step 9: Run both suites. Commit.**
+
+**Out of scope, deliberately:** touch and keyboard paths for the right-click.
+Raised and declined — this is a pointer affordance on a desktop layout.
+
+**Not a bug:** every recording of one series shows the same picture once this
+lands. That is how every guide, DVR and streaming library has always done it;
+the episode title below the art is what tells two of them apart.
