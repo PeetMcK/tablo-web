@@ -51,13 +51,54 @@ def _decorate(item: dict, meta=None) -> dict:
     return item
 
 
+async def _show_covers(items: list[dict]) -> dict[int, str]:
+    """Each recording's show cover, from the device rather than the guide.
+
+    What the artwork falls back to when the guide has no airing left to describe
+    a recording — which for anything past is most of the time, since the device
+    lists airings forward from roughly now and the mirror holds no old ones at
+    all. `series_path` and `sport_path` are on the recording itself and the
+    device keeps them for as long as it keeps the recording, so this still
+    answers for something recorded years ago.
+
+    One read per distinct show, not per recording: six NFL games share one sport
+    record, and they are exactly the case this exists for. Called only with the
+    recordings that have no picture stored, so a settled library makes no device
+    calls here at all.
+
+    Never raises. A cover that will not load leaves the card on its snapshot
+    frame, which is where it already was.
+    """
+    paths: dict[str, list[int]] = {}
+    for rec in items:
+        path = rec.get("series_path") or rec.get("sport_path")
+        if path and rec.get("object_id") is not None:
+            paths.setdefault(path, []).append(int(rec["object_id"]))
+
+    out: dict[int, str] = {}
+    for path, ids in paths.items():
+        try:
+            data = await state.request_device("GET", path)
+        except Exception:
+            continue
+        # Whichever noun this record uses. Identical shape inside - see
+        # `recording_series` for what the device means by the two.
+        show = data.get("series") or data.get("sport") or {}
+        cover = (show.get("cover_image") or {}).get("image_id")
+        if not cover:
+            continue
+        for object_id in ids:
+            out[object_id] = f"/api/channels/image/{cover}"
+    return out
+
+
 def _with_art(items: list[dict]) -> None:
     """Say what each card leads with, and whether the viewer chose it.
 
-    `image_url` is the show's own artwork, resolved from the airing when the
-    library was last listed. Null is ordinary — sport whose airing has aged out
-    of the guide, or anything recorded before a guide sync — and the card falls
-    back to the snapshot frame it has always used.
+    `image_url` is the show's own artwork, resolved when the library was last
+    listed — from the airing if the guide still has one, else from the show
+    record on the device. Null is ordinary — anything whose show record carries
+    no cover — and the card falls back to the snapshot frame it has always used.
 
     One query for the listing rather than one per recording, and run through
     `_run_sync` like every other store call in this handler: reading it inline
@@ -122,11 +163,15 @@ async def list_recordings():
     except Exception as e:
         print(f"[search] indexing recordings failed: {e}", flush=True)
 
-    # Work out each card's picture once and keep it, because the airing it
-    # comes from is pruned at 31 days and the recording is not. Failing here
-    # costs a card its artwork, never the listing.
+    # Work out each card's picture once and keep it, because the airing it came
+    # from is gone from the guide within days and the recording is not. Failing
+    # here costs a card its artwork, never the listing.
     try:
-        await _run_sync(store.resolve_recording_art, merged)
+        needy = await _run_sync(store.recordings_without_art, merged)
+        await _run_sync(
+            partial(store.resolve_recording_art, fallback=await _show_covers(needy)),
+            merged,
+        )
     except Exception as e:
         print(f"[art] resolving recording artwork failed: {e}", flush=True)
 

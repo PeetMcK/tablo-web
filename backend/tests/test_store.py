@@ -521,3 +521,74 @@ def test_a_deleted_recording_stops_being_found():
     store.forget_recording(86353)
 
     assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") is None
+
+
+# ---------------------------------------------------------------------------
+# What a card leads with, and where it comes from
+# ---------------------------------------------------------------------------
+
+def test_a_card_takes_the_guide_airings_own_picture_first():
+    """It is about this airing, where a show cover is about the whole run - the
+    only thing that tells two NFL games apart."""
+    store.save_guide([{
+        "identifier": "ch1",
+        "airings": [{
+            "start": "2026-09-18T07:00Z", "duration": 3600, "title": "Game",
+            "image_url": "https://cdn.example/this-game.jpg",
+        }],
+    }])
+
+    store.resolve_recording_art([_recorded(channel="ch1")],
+                                fallback={86353: "/api/channels/image/38765"})
+
+    assert store.recording_art(86353)["cover_url"] == "https://cdn.example/this-game.jpg"
+
+
+def test_a_recording_the_guide_has_forgotten_falls_back_to_its_show_cover():
+    """The case this exists for. The device lists airings forward from roughly
+    now, so the mirror holds no past ones at all - measured 2026-09-18, its
+    earliest row was from the 15th while recordings from the 13th were still in
+    the library. Six NFL recordings sat with an empty `cover_url` and were
+    retried, and failed, on every single listing.
+    """
+    store.resolve_recording_art([_recorded(object_id=66220, channel="ch-no-guide")],
+                                fallback={66220: "/api/channels/image/38765"})
+
+    assert store.recording_art(66220)["cover_url"] == "/api/channels/image/38765"
+
+
+def test_with_neither_source_a_card_stays_on_its_snapshot_frame():
+    """Absent rather than wrong, and retried next listing."""
+    store.resolve_recording_art([_recorded(channel="ch-no-guide")], fallback={})
+
+    assert store.recording_art(86353) is None
+
+
+def test_a_picture_already_found_is_never_looked_up_again():
+    """Resolved once: a card that found its picture must not lose it when the
+    airing behind it drops out of the guide."""
+    store.resolve_recording_art([_recorded()], fallback={86353: "/api/channels/image/1"})
+    store.resolve_recording_art([_recorded()], fallback={86353: "/api/channels/image/2"})
+
+    assert store.recording_art(86353)["cover_url"] == "/api/channels/image/1"
+
+
+def test_the_viewers_chosen_frame_survives_art_resolution():
+    """`cover_frame_ms` is the one thing here nobody else may write."""
+    store.set_recording_frame(86353, 70000)
+
+    store.resolve_recording_art([_recorded(channel="ch-no-guide")],
+                                fallback={86353: "/api/channels/image/38765"})
+
+    art = store.recording_art(86353)
+    assert art["cover_frame_ms"] == 70000
+    assert art["cover_url"] == "/api/channels/image/38765"
+
+
+def test_only_recordings_still_without_a_picture_are_reported_as_needing_one():
+    """What keeps a settled library from making any device call at all."""
+    store.resolve_recording_art([_recorded()], fallback={86353: "/api/channels/image/1"})
+
+    needy = store.recordings_without_art([_recorded(), _recorded(object_id=66220)])
+
+    assert [r["object_id"] for r in needy] == [66220]

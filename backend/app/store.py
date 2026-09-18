@@ -920,18 +920,56 @@ def forget_recording(object_id: int) -> None:
                      (str(object_id),))
 
 
-def resolve_recording_art(items: list[dict]) -> None:
+def recordings_without_art(items: list[dict]) -> list[dict]:
+    """The recordings in a listing that still have no picture stored.
+
+    Separated out so the caller can go to the device for those and only those.
+    Most listings return nothing here, which is the point: the device read that
+    answers the rest is worth making only when there is something to answer.
+    """
+    if not items:
+        return []
+    held = recording_art_for([
+        int(r["object_id"]) for r in items if r.get("object_id") is not None
+    ])
+    out = []
+    for rec in items:
+        object_id = rec.get("object_id")
+        if object_id is None:
+            continue
+        known = held.get(int(object_id))
+        if known and known.get("cover_url"):
+            continue
+        out.append(rec)
+    return out
+
+
+def resolve_recording_art(
+    items: list[dict], fallback: dict[int, str] | None = None,
+) -> None:
     """Work out and keep each recording's artwork, once.
 
-    Kept rather than looked up because `prune_guide` drops airings at 31 days
-    and a recording outlives its airing row - a kept offline copy by years. A
-    live lookup would quietly revert every old card to a snapshot frame a month
-    after it was recorded, and nothing would report it.
+    Kept rather than looked up because a recording outlives its airing row - a
+    kept offline copy by years. A live lookup would quietly revert every old
+    card to a snapshot frame, and nothing would report it.
+
+    Two sources, in this order:
+
+    * The guide's, which is about this airing - the cloud's per-event picture is
+      the only thing that tells two NFL games apart. Ephemeral: the device lists
+      airings forward from roughly now, so the mirror holds no past ones at all.
+    * `fallback`, the show's own cover, resolved from the recording's
+      `series_path` or `sport_path` by whoever called this. Durable - the device
+      keeps it for as long as it keeps the recording - and identical across a
+      whole series, which is why it is second rather than first.
+
+    Before the fallback existed, everything the guide had already forgotten
+    resolved to nothing forever: six NFL recordings sat with an empty
+    `cover_url` and were retried, and failed, on every single listing.
 
     Resolved once, so a card that found its picture never loses it and one that
     found none is retried on the next listing: the guide may not have synced
-    when the recording first appeared, and the cloud artwork that tells two NFL
-    games apart arrives with it.
+    when the recording first appeared.
 
     Never overwrites a `cover_frame_ms` - that is the viewer's own choice.
     """
@@ -942,29 +980,21 @@ def resolve_recording_art(items: list[dict]) -> None:
     # something to write.
     #
     # This used to hold one write open across the whole listing while doing two
-    # reads per recording inside it. Most listings change nothing at all —
-    # anything whose airing has aged out of the guide never resolves, so it is
-    # retried and fails again every single time — and a writer held open for
-    # that blocks the guide sync and resume writes against a 5s busy timeout.
-    held = recording_art_for([
-        int(r["object_id"]) for r in items if r.get("object_id") is not None
-    ])
+    # reads per recording inside it. Most listings change nothing at all, and a
+    # writer held open for that blocks the guide sync and resume writes against
+    # a 5s busy timeout.
     pending: list[tuple[int, str]] = []
-    for rec in items:
-        object_id = rec.get("object_id")
-        if object_id is None:
-            continue
-        known = held.get(int(object_id))
-        if known and known.get("cover_url"):
-            continue
+    for rec in recordings_without_art(items):
+        object_id = int(rec["object_id"])
         channel = (rec.get("channel") or {}).get("identifier")
-        url = _airing_artwork_for(db.connection(), channel, rec.get("start"))
+        url = (_airing_artwork_for(db.connection(), channel, rec.get("start"))
+               or (fallback or {}).get(object_id))
         if url is None:
             # Nothing to say. A row that already exists keeps the viewer's
             # frame and its timestamp; one that does not stays absent, so this
             # is retried when the guide next has something.
             continue
-        pending.append((int(object_id), url))
+        pending.append((object_id, url))
 
     if not pending:
         return

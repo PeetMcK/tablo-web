@@ -1857,6 +1857,84 @@ def test_a_show_record_that_will_not_load_still_leaves_a_usable_sheet(monkeypatc
     assert d["genres"] == []
 
 
+def test_a_library_card_falls_back_to_its_show_cover(monkeypatch):
+    """The Library card had the same fault the sheet did, quieter.
+
+    `resolve_recording_art` read the guide and nothing else, so anything whose
+    airing the mirror no longer held resolved to nothing forever - retried and
+    failed on every listing. Measured 2026-09-18: all six NFL recordings sat
+    with an empty `cover_url` while the device had the league's picture the
+    whole time, one read away behind `sport_path`.
+    """
+    from app.routes import recordings as rec
+    asked: list[str] = []
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(dict(
+            DEVICE_GAME, object_id=oid,
+            path=f"/recordings/sports/events/{oid}",
+        )) for oid in (66220, 66221)]
+
+    async def request_device(_method, path):
+        asked.append(path)
+        return DEVICE_SPORT
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+
+    body = client.get("/api/recordings").json()
+
+    assert [r["image_url"] for r in body["recordings"]] == \
+        ["/api/channels/image/38765"] * 2
+    # One read for the sport both games share, not one per game. Six NFL
+    # recordings are exactly the case this exists for.
+    assert asked == ["/recordings/sports/63558"]
+
+
+def test_a_settled_library_asks_the_device_for_no_covers_at_all(monkeypatch):
+    """Resolved once and kept, so the device read happens on the first listing
+    that needs it and on none of the ones after."""
+    from app.routes import recordings as rec
+    asked: list[str] = []
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(DEVICE_GAME)]
+
+    async def request_device(_method, path):
+        asked.append(path)
+        return DEVICE_SPORT
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+
+    client.get("/api/recordings")
+    client.get("/api/recordings")
+
+    assert asked == ["/recordings/sports/63558"]
+
+
+def test_a_show_record_the_device_will_not_serve_costs_a_card_nothing_else(monkeypatch):
+    """Artwork is the only thing at stake here. The listing is not."""
+    from app.routes import recordings as rec
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(DEVICE_GAME)]
+
+    async def request_device(_method, _path):
+        raise RuntimeError("device said no")
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+
+    body = client.get("/api/recordings").json()
+
+    assert len(body["recordings"]) == 1
+    assert body["recordings"][0]["image_url"] is None
+
+
 def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
     from app.routes import recordings as rec
 
