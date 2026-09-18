@@ -856,14 +856,32 @@ describe("reaching a recording's information", () => {
     await waitFor(() => expect(del).toHaveBeenCalledWith(86462));
   });
 
-  it("offers nothing to open when the channel is unknown", async () => {
-    // An offline copy of something the device has since deleted has no airing
-    // left to describe, and a button that opens an error is worse than none.
-    renderWith(withChannel({ channel: { identifier: null, call_sign: "KPAX",
+  it("opens the sheet even when the channel is unknown", async () => {
+    // This used to offer nothing: the sheet was keyed by the airing, and an
+    // offline copy of something the device has since deleted has no airing left
+    // to describe. It asks about the recording now, so there is always
+    // something to open — and with no identifier, no airing to look up.
+    const rec = vi.spyOn(api, "recordingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null,
+      season_number: null, episode_number: null,
+      description: "A game.", start: "2026-09-13T20:25Z", duration: 12915,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: false, scheduled: false, past: true,
+      schedule_state: null, skip_reason: null, recording_id: 86462,
+      series: null,
+      channel: { identifier: null, call_sign: "KPAX", major: 8, minor: 1,
+                 network: "CBS", logo_url: null, kind: null },
+    });
+    const air = vi.spyOn(api, "airingDetail");
+    renderWith(withChannel({ object_id: 86462,
+                             channel: { identifier: null, call_sign: "KPAX",
                                         network: "CBS", number: "8.1" } }));
     await screen.findByText("NFL Football");
 
-    expect(screen.queryByRole("button", { name: /information about/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /information about/i }));
+
+    await waitFor(() => expect(rec).toHaveBeenCalledWith(86462));
+    expect(air).not.toHaveBeenCalled();
   });
 });
 

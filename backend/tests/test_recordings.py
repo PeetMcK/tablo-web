@@ -1935,7 +1935,49 @@ def test_a_show_record_the_device_will_not_serve_costs_a_card_nothing_else(monke
     assert body["recordings"][0]["image_url"] is None
 
 
-def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
+def test_a_copy_kept_after_deletion_still_describes_itself(monkeypatch, tmp_path):
+    """The longest-lived recording there is, and the case that decides the rule.
+
+    The device cannot be asked - that is the point of pinning one - so the sheet
+    answers from the snapshot taken when it was pinned and the artwork already
+    resolved for its card. A recording describes itself, or eventually nothing
+    describes it.
+    """
+    from app import store
+    from app.routes import recordings as rec
+
+    c = _cache(tmp_path)
+    meta = _register(c, oid=66220)
+    meta.pinned = True
+    meta.info = AppState._recording_fields(DEVICE_GAME)
+    c.write_meta(meta)
+    store.resolve_recording_art([meta.info],
+                                fallback={66220: "/api/channels/image/38765"})
+
+    async def resolve(_oid):
+        raise KeyError("recording 66220 not found")
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec, "cache", c)
+
+    r = client.get("/api/recordings/66220/detail")
+
+    assert r.status_code == 200
+    d = r.json()
+    assert d["title"] == "NFL Football"
+    assert d["episode_title"] == "Green Bay Packers at Minnesota Vikings"
+    assert d["description"].startswith("The Minnesota Vikings host")
+    assert d["image_url"] == "/api/channels/image/38765"
+    assert d["duration"] == 12915
+    # The number is stored as one "8.1" string for the card; the eyebrow wants
+    # the parts.
+    assert (d["channel"]["major"], d["channel"]["minor"]) == (8, 1)
+    assert d["past"] is True
+
+
+def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch, tmp_path):
+    """Gone on the device and never kept offline: nothing to describe."""
     from app.routes import recordings as rec
 
     async def resolve(_oid):
@@ -1943,6 +1985,7 @@ def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
 
     monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
     monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec, "cache", _cache(tmp_path))
 
     assert client.get("/api/recordings/999/detail").status_code == 404
 

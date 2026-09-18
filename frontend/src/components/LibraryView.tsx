@@ -446,11 +446,16 @@ export function LibraryView() {
     <>
       <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} />
 
-      {infoFor?.channel?.identifier && (
+      {/* No channel gate any more. The sheet used to be keyed by the airing,
+          so a recording with no channel identifier had nothing to open; it
+          asks the device about the recording now, and answers for an offline
+          copy of something the Tablo has since deleted from its own snapshot.
+          Without an identifier there is simply no airing to look up. */}
+      {infoFor && (
         <ShowInfo
-          channel={infoFor.channel.identifier}
-          start={infoFor.start}
-          channelLabel={infoFor.channel.call_sign ?? undefined}
+          channel={infoFor.channel?.identifier ?? ""}
+          start={infoFor.channel?.identifier ? infoFor.start : null}
+          channelLabel={infoFor.channel?.call_sign ?? undefined}
           // This card's recording, not the airing's newest: a capture stopped
           // and restarted leaves two against one slot, and the sheet must
           // delete the one whose card was opened.
@@ -831,22 +836,19 @@ export function LibraryView() {
                       {rec.title || "Untitled Recording"}
                     </h3>
                     {/* The way into everything the card has no room for —
-                        artwork, synopsis, rating, and the record controls. The
-                        sheet is keyed by the airing, so a recording with no
-                        channel identifier has nothing to open: that is an
-                        offline copy of something the device has since deleted,
-                        and its airing is gone with it. */}
-                    {rec.channel?.identifier && (
-                      <button
-                        onClick={() => setInfoFor(rec)}
-                        className="shrink-0 -mt-0.5 p-1 rounded-lg text-fg-muted
-                                   hover:text-fg hover:bg-fill transition"
-                        title="Show information"
-                        aria-label={`Information about ${rec.title ?? "this recording"}`}
-                      >
-                        <Info className="w-4 h-4" aria-hidden />
-                      </button>
-                    )}
+                        artwork, synopsis, rating, and the record controls. On
+                        every card: the sheet asks the device about the
+                        recording rather than the guide about its airing, so
+                        there is always something to open. */}
+                    <button
+                      onClick={() => setInfoFor(rec)}
+                      className="shrink-0 -mt-0.5 p-1 rounded-lg text-fg-muted
+                                 hover:text-fg hover:bg-fill transition"
+                      title="Show information"
+                      aria-label={`Information about ${rec.title ?? "this recording"}`}
+                    >
+                      <Info className="w-4 h-4" aria-hidden />
+                    </button>
                   </div>
                   {rec.subtitle && (
                     <p className="text-xs font-medium text-accent truncate">{rec.subtitle}</p>

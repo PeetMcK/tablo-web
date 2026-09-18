@@ -424,6 +424,65 @@ async def recording_series(object_id: int):
     }
 
 
+def _offline_detail(object_id: int) -> dict:
+    """The sheet for a copy kept after the Tablo deleted the original.
+
+    The device cannot be asked - that is the whole point of pinning one - so
+    this answers from the snapshot taken when it was pinned and the artwork
+    already resolved for its card. It is the longest-lived recording there is,
+    and the case that decides the rule: a recording describes itself, or
+    eventually nothing describes it.
+
+    Less than the live answer, and honestly less: `_recording_fields` keeps no
+    genres or rating, because the show record they live on is a second device
+    read that pinning never made. Title, episode, description, when and how long
+    are all here, which is what the sheet is mostly for.
+    """
+    meta = cache.read_meta(object_id)
+    info = (meta.info if meta else None) or {}
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+
+    art = store.recording_art(object_id) or {}
+    # `_channel_fields` writes the number as one "8.1" string for the card. The
+    # sheet's eyebrow wants the parts, so it is split back apart here rather
+    # than widening the projection for one caller.
+    ch = info.get("channel") or {}
+    major, _, minor = str(ch.get("number") or "").partition(".")
+
+    return {
+        "title": info.get("title"),
+        "episode_title": info.get("subtitle"),
+        "season_number": info.get("season_number"),
+        "episode_number": info.get("episode_number"),
+        "description": info.get("description"),
+        "start": info.get("start"),
+        "duration": info.get("duration") or 0,
+        "orig_air_date": info.get("orig_air_date"),
+        "genres": [],
+        "rating": None,
+        "image_url": art.get("cover_url"),
+        # Nothing about a copy of something already deleted is live.
+        "airing_now": False,
+        "schedulable": False,
+        "scheduled": False,
+        "past": True,
+        "schedule_state": None,
+        "skip_reason": None,
+        "recording_id": object_id,
+        "series": None,
+        "channel": {
+            "identifier": ch.get("identifier"),
+            "call_sign": ch.get("call_sign"),
+            "major": int(major) if major.isdigit() else None,
+            "minor": int(minor) if minor.isdigit() else None,
+            "network": ch.get("network"),
+            "logo_url": None,
+            "kind": None,
+        },
+    }
+
+
 @router.get("/{object_id}/detail")
 async def recording_detail(object_id: int):
     """What the info sheet shows, built from the recording rather than the guide.
@@ -437,9 +496,10 @@ async def recording_detail(object_id: int):
     well. A recording outlives its own listing within days - and a protected one
     can outlive it by years - so the guide cannot be what describes a recording.
 
-    Everything below comes from two device reads and nothing else. Answers in
-    the same shape `store.airing_detail` does, so the sheet renders it without
-    knowing where it came from.
+    Everything below comes from two device reads and nothing else - or, for a
+    copy kept offline after the Tablo deleted the original, from the snapshot
+    taken when it was pinned. Answers in the same shape `store.airing_detail`
+    does, so the sheet renders it without knowing where it came from.
 
     The scheduling fields are all off, and honestly so: the writes behind those
     controls address an airing by `(channel, start)` through the guide mirror,
@@ -448,13 +508,20 @@ async def recording_detail(object_id: int):
     """
     _require_auth()
 
+    record: dict | None = None
     try:
         path, _duration = await state.resolve_recording(object_id)
         record = await state.request_device("GET", path)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+        # Not on the device. Ordinary for a kept offline copy, which is the
+        # longest-lived thing here and the one with the strongest claim to
+        # describing itself - see below.
+        pass
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    if record is None:
+        return _offline_detail(object_id)
 
     fields = state._recording_fields(record)
 
