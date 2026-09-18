@@ -494,6 +494,24 @@ def test_an_airing_that_produced_nothing_has_no_recording():
     assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") is None
 
 
+def test_one_airing_can_produce_more_than_one_recording():
+    """Stopping and restarting a capture leaves two rows for one slot.
+
+    Measured: a recording cancelled mid-hour and rescheduled came back as a
+    14-minute row and a 40-minute row, both against the same airing. The lookup
+    has to be decided rather than left to insertion order - whichever came
+    first was being offered for deletion from the other one's card.
+    """
+    from app import store
+
+    store.index_recording_airings([
+        _recorded(object_id=86406),
+        _recorded(object_id=86462),
+    ])
+
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") == 86462
+
+
 def test_a_deleted_recording_stops_being_found():
     """Deleting on the device has to clear this, or the sheet keeps offering
     to delete something that is already gone."""

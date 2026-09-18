@@ -451,6 +451,10 @@ export function LibraryView() {
           channel={infoFor.channel.identifier}
           start={infoFor.start}
           channelLabel={infoFor.channel.call_sign ?? undefined}
+          // This card's recording, not the airing's newest: a capture stopped
+          // and restarted leaves two against one slot, and the sheet must
+          // delete the one whose card was opened.
+          recordingId={infoFor.object_id}
           onClose={() => setInfoFor(null)}
           // Re-read rather than splice the row out: the listing carries
           // storage totals and the device's own count alongside the cards, and
