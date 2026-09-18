@@ -24,6 +24,15 @@ interface Props {
   /** How to name the channel when there is no airing to name it. */
   channelLabel?: string;
   onClose: () => void;
+  /**
+   * Called with the recording's id once the Tablo has deleted it.
+   *
+   * The sheet cannot know what is listing it, and the Library must not wait
+   * for its fifteen-second poll to drop a card for something that no longer
+   * exists - so the sheet reports, and whoever opened it decides what to
+   * re-read.
+   */
+  onDeleted?: (objectId: number) => void;
   /** Tune to this airing's channel. Only reachable while it is on air. */
   onTune: () => void;
 }
@@ -105,7 +114,7 @@ function whenLine(start: string, duration: number): string | null {
  * all. The layout omits rather than empties, so a sheet with nothing but a
  * title and a channel still looks deliberate instead of broken.
  */
-export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Props) {
+export function ShowInfo({ channel, start, channelLabel, onClose, onDeleted, onTune }: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
   // rather than freezing at whatever it was when opened.
   const inProgress = useRecordingsInProgress(true);
@@ -239,7 +248,11 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
     setWriteError(null);
     try {
       await api.deleteRecording(objectId);
-      setDetail((d) => (d ? { ...d, recording_id: null } : d));
+      // Gone, so the sheet goes with it: what it describes no longer exists,
+      // and the list behind it is told at once rather than finding out on its
+      // next poll fifteen seconds later.
+      onDeleted?.(objectId);
+      onClose();
     } catch (e) {
       setWriteError(e instanceof Error
         ? e.message
