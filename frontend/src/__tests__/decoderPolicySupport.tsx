@@ -59,6 +59,8 @@ export const REC: Recording = {
   },
   scan: "720p",
   interlaced: false,
+  image_url: null, cover_frame: null,
+  has_preview: false,
 };
 
 /** A surface the player can hold, shaped only as far as the player reads it. */

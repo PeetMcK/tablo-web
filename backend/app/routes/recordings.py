@@ -51,6 +51,21 @@ def _decorate(item: dict, meta=None) -> dict:
     return item
 
 
+def _with_art(item: dict) -> dict:
+    """Say what the card leads with, and whether the viewer chose it.
+
+    `image_url` is the show's own artwork, resolved from the airing when the
+    library was last listed. Null is ordinary — sport whose airing has aged out
+    of the guide, or anything recorded before a guide sync — and the card falls
+    back to the snapshot frame it has always used.
+    """
+    art = store.recording_art(int(item["object_id"])) or {}
+    frame_ms = art.get("cover_frame_ms")
+    item["image_url"] = art.get("cover_url")
+    item["cover_frame"] = None if frame_ms is None else frame_ms / 1000
+    return item
+
+
 @router.get("")
 async def list_recordings():
     """Recordings on the device, plus offline copies the device no longer has.
@@ -101,6 +116,16 @@ async def list_recordings():
         await _run_sync(partial(store.index_recordings, prune=complete), merged)
     except Exception as e:
         print(f"[search] indexing recordings failed: {e}", flush=True)
+
+    # Work out each card's picture once and keep it, because the airing it
+    # comes from is pruned at 31 days and the recording is not. Failing here
+    # costs a card its artwork, never the listing.
+    try:
+        await _run_sync(store.resolve_recording_art, merged)
+    except Exception as e:
+        print(f"[art] resolving recording artwork failed: {e}", flush=True)
+    for item in merged:
+        _with_art(item)
 
     return {
         "recordings": merged,
@@ -233,6 +258,34 @@ async def set_watched(object_id: int, body: WatchedIn):
         raise HTTPException(status_code=502, detail="The Tablo refused the flag")
 
     return {"object_id": object_id, "watched": body.watched}
+
+
+class CoverIn(BaseModel):
+    """Where in the recording the chosen frame is, in seconds."""
+
+    t: float = Field(ge=0)
+
+
+@router.post("/{object_id}/cover")
+async def set_cover(object_id: int, body: CoverIn):
+    """Make the frame at ``t`` the picture this recording's card leads with.
+
+    Stored as a position, not a picture. The frame is already on disk in the
+    BIF pack the scrub preview reads, so this copies nothing — and the same
+    rounding the preview does applies, so the card shows exactly the frame the
+    viewer was looking at when they picked it.
+    """
+    _require_auth()
+    await _run_sync(partial(store.set_recording_frame, object_id, int(body.t * 1000)))
+    return {"object_id": object_id, "cover_frame": body.t}
+
+
+@router.delete("/{object_id}/cover")
+async def clear_cover(object_id: int):
+    """Put the card's picture back to the show's own artwork."""
+    _require_auth()
+    await _run_sync(partial(store.set_recording_frame, object_id, None))
+    return {"object_id": object_id, "cover_frame": None}
 
 
 @router.get("/{object_id}/series")
@@ -741,6 +794,21 @@ async def recording_thumbnail(object_id: int):
     backend, not necessarily from the browser.
     """
     _require_auth()
+
+    # A frame the viewer picked wins over everything, including a saved copy:
+    # it is the one picture here that someone chose on purpose.
+    art = await _run_sync(partial(store.recording_art, object_id)) or {}
+    frame_ms = art.get("cover_frame_ms")
+    if frame_ms is not None:
+        frame = cache.preview_frame(object_id, frame_ms / 1000)
+        if frame is not None:
+            return Response(
+                content=frame,
+                media_type="image/jpeg",
+                # Short, unlike the frames themselves: which frame this is can
+                # change whenever the viewer picks another one.
+                headers={"Cache-Control": "no-cache"},
+            )
 
     # Saved copy first: an offline recording must render without the device.
     saved = cache.thumbnail_path(object_id)

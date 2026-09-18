@@ -143,3 +143,59 @@ export function isIncomplete(rec: Coverage): boolean {
   if (!rec.duration || !rec.recorded_seconds) return false;
   return rec.recorded_seconds / rec.duration < 0.1;
 }
+
+/** Everything the card's picture is chosen from. */
+export interface Art {
+  /** The show's own artwork, as the schedule resolves it. */
+  image_url: string | null;
+  /** A frame from the recording, which the thumbnail route serves. */
+  thumbnail: string | null;
+  /** Seconds into the recording of a frame the viewer chose, or null. */
+  cover_frame: number | null;
+}
+
+/**
+ * The picture a card leads with.
+ *
+ * `thumbnail` first when the viewer has chosen a frame, because that route
+ * serves their choice and a choice outranks the artwork. Otherwise the show's
+ * own artwork, and a frame from the recording only as the floor: the snapshot
+ * is a grab from the middle of a capture, which on plenty of programmes is a
+ * caption card or somebody's back.
+ */
+export function cardArt(rec: Art): string | null {
+  if (rec.cover_frame !== null) return rec.thumbnail;
+  return rec.image_url ?? rec.thumbnail;
+}
+
+/** How long a recording runs, however far along it is. */
+export interface Runtime {
+  recorded_seconds: number | null;
+  duration: number;
+}
+
+/**
+ * Where in the recording a point on the coverage strip falls, in seconds.
+ *
+ * The strip is not a timeline. It spans the scheduled slot widened to hold any
+ * padding, so the recording's first frame sits at `span.left` rather than at
+ * the left edge — on a programme whose tuner started twenty minutes late, the
+ * first third of the strip is slot with no video in it at all.
+ *
+ * Null outside the captured part, which is the signal to do nothing: seeking
+ * there would land at zero and read as a bug. Not an edge case — measured on
+ * one device, three recordings had captured four seconds, eight seconds and
+ * 3.7 minutes of an hour, and on those nearly the whole strip is nothing.
+ */
+export function strippedTime(
+  rec: Runtime,
+  span: Fill,
+  fraction: number,
+): number | null {
+  const pct = fraction * 100;
+  if (span.width <= 0) return null;
+  if (pct < span.left || pct > span.left + span.width) return null;
+  const recorded = rec.recorded_seconds ?? rec.duration;
+  if (!(recorded > 0)) return null;
+  return ((pct - span.left) / span.width) * recorded;
+}

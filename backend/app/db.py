@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -252,6 +252,30 @@ ALTER TABLE guide_channel ADD COLUMN favourite INTEGER;
 """
 
 
+# What a Library card leads with, which is not the recording's own frame.
+#
+# Its own table rather than columns on `recording`: that one is the transcode
+# cache's index and holds only what has been cached or pinned, while every
+# recording in the library has a picture.
+#
+# `cover_url` is resolved once, when a listing indexes the library, and kept -
+# because `prune_guide` drops airings at 31 days and a recording outlives its
+# airing row, a kept copy by years. Resolved live instead, every old card would
+# quietly revert to a snapshot frame with nothing to report it.
+#
+# `cover_frame_ms` is a *position*, not a picture: the frame the viewer picked
+# is already on disk in the BIF pack the scrub preview reads, so an override
+# costs no copy and clearing one is setting a column to null.
+_SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS recording_art (
+    object_id      INTEGER PRIMARY KEY,
+    cover_url      TEXT,
+    cover_frame_ms INTEGER,
+    resolved_at    TEXT NOT NULL
+);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -336,6 +360,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V4)
             if version < 5:
                 conn.executescript(_SCHEMA_V5)
+            if version < 6:
+                conn.executescript(_SCHEMA_V6)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True
