@@ -43,6 +43,16 @@ interface Props {
    */
   onDeleted?: (objectId: number) => void;
   /**
+   * Called once the Tablo has actually deleted it.
+   *
+   * Separate from `onDeleted` because the two moments are not the same, and
+   * treating them as one is a race: re-reading the library alongside the
+   * delete reads it before the delete lands, which puts the row straight back.
+   * Measured that way on a real device - the listing answered 515ms in, the
+   * delete 597ms, and the card returned for the rest of the poll interval.
+   */
+  onDeleteConfirmed?: (objectId: number) => void;
+  /**
    * Called when the Tablo refused, after `onDeleted` already said otherwise.
    *
    * The sheet is gone by then - it closed on the confirmation, along with the
@@ -133,7 +143,7 @@ function whenLine(start: string, duration: number): string | null {
  */
 export function ShowInfo({
   channel, start, channelLabel, recordingId,
-  onClose, onDeleted, onDeleteFailed, onTune,
+  onClose, onDeleted, onDeleteConfirmed, onDeleteFailed, onTune,
 }: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
   // rather than freezing at whatever it was when opened.
@@ -284,11 +294,12 @@ export function ShowInfo({
     onDeleted?.(objectId);
     onClose();
 
-    void api.deleteRecording(objectId).catch((e) => {
-      onDeleteFailed?.(objectId, e instanceof Error
+    void api.deleteRecording(objectId).then(
+      () => onDeleteConfirmed?.(objectId),
+      (e) => onDeleteFailed?.(objectId, e instanceof Error
         ? e.message
-        : "The Tablo would not delete this recording.");
-    });
+        : "The Tablo would not delete this recording."),
+    );
   }
 
   /**

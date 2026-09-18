@@ -819,6 +819,48 @@ describe("reaching a recording's information", () => {
     await waitFor(() => expect(screen.queryByText("NFL Football")).toBeNull());
   });
 
+  it("does not re-read the listing until the delete has actually landed", async () => {
+    // Measured against a real device: the listing fired alongside the DELETE,
+    // read the library before the delete landed, and put the card straight
+    // back - where it sat until the next poll, fifteen to thirty seconds later.
+    // The refetch is the reconciliation, so it has to come second.
+    let landed: (v: { object_id: number; deleted: boolean }) => void = () => {};
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: null, start: REC.start, duration: 10800,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: true, scheduled: true, past: true,
+      schedule_state: "none", skip_reason: null, series: null,
+      recording_id: REC.object_id,
+      channel: { identifier: "S34654_008_01", call_sign: "KPAX", major: 8,
+                 minor: 1, network: "CBS", logo_url: null, kind: "ota" },
+    });
+    vi.spyOn(api, "deleteRecording").mockReturnValue(new Promise((res) => { landed = res; }));
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+    const listing = vi.spyOn(api, "recordings").mockResolvedValue({
+      recordings: [withChannel()], returned: 1, total: 1, offline_only: 0,
+    });
+
+    renderWith(withChannel());
+    fireEvent.click(await screen.findByRole("button", { name: /information about/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    const readsBefore = listing.mock.calls.length;
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    // The card goes at once...
+    await waitFor(() => expect(screen.queryByText("NFL Football")).toBeNull());
+
+    // ...and nothing re-reads the library while the delete is still in flight.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(listing.mock.calls.length).toBe(readsBefore);
+
+    landed({ object_id: REC.object_id, deleted: true });
+    await waitFor(() => expect(listing.mock.calls.length).toBe(readsBefore + 1));
+  });
+
   it("puts the card back and says why when the Tablo refuses", async () => {
     vi.spyOn(api, "airingDetail").mockResolvedValue({
       title: "NFL Football", episode_title: null, season_number: null,

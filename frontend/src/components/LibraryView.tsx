@@ -473,6 +473,13 @@ export function LibraryView() {
                     total: Math.max(0, held.total - 1) }
                 : held
             ));
+          }}
+          // Only once the Tablo has actually done it. Re-reading alongside the
+          // delete reads the library before the delete lands and puts the card
+          // straight back, where it sits until the next poll - measured at 515ms
+          // for the listing against 597ms for the delete, and a card that
+          // returned for the rest of the interval.
+          onDeleteConfirmed={() => {
             qc.invalidateQueries({ queryKey: ["recordings"] });
             qc.invalidateQueries({ queryKey: ["recordings-storage"] });
           }}
