@@ -449,16 +449,36 @@ played to 43% still read `watched: false`, which is why 6c needs a manual
 toggle at all. Reaching the end is the unambiguous case. Flat PATCH,
 `{"watched": true}`; the nested form answers 200 and does nothing.
 
+### What groups an episode with its siblings
+
+`series_path` where there is one, **and the title where there is not**.
+
+This was `series_path` alone, and that loses the one case the ordering rule
+below was written for. Re-measured 2026-09-17 against all 18 recordings: the 6
+with no `series_path` are not movies and one-offs, as recorded here earlier —
+they are six recordings of **NFL Football**, the sport that has no episode
+numbers and is the whole reason clause 2 exists. Grouping on `series_path`
+alone would have given every one of them an empty card and left clause 2
+unreachable.
+
+A recording with neither a `series_path` nor a title has no group. Nothing
+else does.
+
 ### The ordering rule
 
 Decided per series, not per episode, because a series either has usable
 numbering or it does not:
 
-1. **If the episodes carry season and episode numbers**, sort by
-   `(season_number, episode_number)` ascending — **oldest at the top**.
+1. **If every episode in the group carries both a season and an episode
+   number**, sort by `(season_number, episode_number)` ascending — **oldest at
+   the top**.
 2. **Otherwise** — sport, news, anything the guide numbers poorly — sort by
    `orig_air_date`, falling back to the recording's own `start`, again
    **oldest first**.
+
+Every, not any: a group where some episodes are numbered and some are not
+sorts incoherently under rule 1, because the unnumbered ones all collapse
+together at one end regardless of when they aired.
 
 Both were considered and rejected as a global rule. Measured on the live
 library: `Scrambled Up` is S2E7 then S2E8, which episode order gets right and
@@ -467,9 +487,33 @@ decades apart — and `Carl the Collector` holds S1E5 and S1E30. Sorting those
 by number is correct; sorting the NFL by number would not be, because it has
 none.
 
-**Coverage, measured:** 18 recordings, 7 distinct series, 4 of them with more
-than one recording. 12 of 18 carry both numbers; 6 carry no `series_path` at
-all — movies and one-offs, which have no series and so get no card.
+**Ties are real and must be stable.** `First Civilizations` holds three
+recordings that are all S1E3 with the same `orig_air_date` — the duplicate
+stubs — so both rules tie on all three. Break on `start`, then `object_id`, so
+the list does not reshuffle between renders.
+
+**Coverage, measured:** 18 recordings, 8 groups, 4 of them with more than one
+recording. 12 of 18 carry both numbers; the 6 that do not are the NFL, and
+they group by title.
+
+### Where the cover comes from
+
+A recording record does **not** embed its series: `series` is null on the
+episode and only `series_path` is there. So the cover needs the series record,
+which is one device fetch — worth making once, when the card appears, rather
+than 18 times while listing.
+
+`GET /api/recordings/{object_id}/series` → `{ series_path, title, cover_image }`,
+and the card renders `/api/channels/image/{cover_image}`, which already caches
+device images for a week.
+
+Addressed through the recording rather than as `/api/recordings/series/{id}`
+deliberately: that second form is two segments, the same shape as
+`/{object_id}/position`, and FastAPI matches on declaration order and answers
+422 rather than falling through when `series` fails to parse as an int.
+
+A group with no `series_path` — the NFL — has no cover and renders without
+one. The list is the point; the cover is the dressing.
 
 ### What has to be projected
 
@@ -487,19 +531,21 @@ record being fetched, so this costs no extra device traffic:
 guide's. That is the right grouping here: it means "other recordings of this
 show", which is what the card lists.
 
-- [ ] **Step 1: Project the four fields**, with a test that a recording with
+- [x] **Step 1: Project the four fields**, with a test that a recording with
   no episode data still lists.
-- [ ] **Step 2: Group and order**, in a pure helper beside `recordedSpan` so
-  the two rules can be tested without a device. Include the SNL case.
-- [ ] **Step 3: `POST /{id}/watched`**, flat shape, read-shape trap documented
+- [x] **Step 2: Group and order**, in a pure helper beside `recordedSpan` so
+  both rules can be tested without a device. Include the SNL case, the NFL
+  case, and the three-way `First Civilizations` tie.
+- [x] **Step 3: `POST /{id}/watched`**, flat shape, read-shape trap documented
   as `position` has it.
-- [ ] **Step 4: Mark watched on reaching the end**, once per playback.
-- [ ] **Step 5: The card** — cover above, list below, watched marked, the
+- [x] **Step 4: `GET /{id}/series`**, for the cover.
+- [x] **Step 5: Mark watched on reaching the end**, once per playback.
+- [x] **Step 6: The card** — cover above, list below, watched marked, the
   just-finished episode identified as such.
-- [ ] **Step 6: Nothing to show is not an error.** A movie, a one-off, or the
-  only recording of its series gets no list; the card falls back to closing to
+- [x] **Step 7: Nothing to show is not an error.** A movie, a one-off, or the
+  only recording of its group gets no list; the card falls back to closing to
   the Library.
-- [ ] **Step 7: Run both suites. Commit.**
+- [x] **Step 8: Run both suites. Commit.**
 
 **The cover — settled.** `GET /recordings/series/{id}` carries it directly:
 

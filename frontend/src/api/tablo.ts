@@ -214,6 +214,18 @@ export interface Recording {
   subtitle: string | null;
   description: string | null;
   start: string;
+  /**
+   * `/recordings/series/{id}`, the show this is an episode of.
+   *
+   * The *recordings* series rather than the guide's, so it means "other
+   * recordings of this show". Null for anything the device files as sport,
+   * which is why the end card groups by title when this is missing.
+   */
+  series_path: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  /** When it first aired, `YYYY-MM-DD`. Null for sport and for live events. */
+  orig_air_date: string | null;
   /** Seconds actually recorded, including padding — not the scheduled slot.
    *  While `state` is "recording" the device has not settled this yet and it
    *  reads as the scheduled slot; `recorded_seconds` is what exists so far. */
@@ -330,6 +342,14 @@ export interface Storage {
   budget_bytes: number;
   free_bytes: number;
   pinned_count: number;
+}
+
+export interface RecordingSeries {
+  /** Null when the device files this as sport, which has no series record. */
+  series_path: string | null;
+  title: string | null;
+  /** An id for `/api/channels/image/{id}`. Null is ordinary, not a failure. */
+  cover_image: number | null;
 }
 
 export interface RecordingWatch {
@@ -606,6 +626,28 @@ export const api = {
       `/recordings/${objectId}/position`,
       { method: "POST", body: JSON.stringify({ position: Math.max(0, Math.floor(position)) }) },
     ),
+
+  /**
+   * Mark a recording watched, or put it back.
+   *
+   * The device never works this out for itself — one played to its end still
+   * read `watched: false` — so nothing marks it but us.
+   */
+  setRecordingWatched: (objectId: number, watched: boolean) =>
+    req<{ object_id: number; watched: boolean }>(
+      `/recordings/${objectId}/watched`,
+      { method: "POST", body: JSON.stringify({ watched }) },
+    ),
+
+  /**
+   * The show a recording belongs to, for the card shown at its end.
+   *
+   * Only the artwork needs this: everything the card orders by is already on
+   * each recording, but a recording carries no `series` object — just a path to
+   * one — so the cover is a fetch further away.
+   */
+  recordingSeries: (objectId: number) =>
+    req<RecordingSeries>(`/recordings/${objectId}/series`),
 
   inProgressRecordings: () =>
     req<{ recordings: InProgressRecording[] }>("/recordings/in-progress"),

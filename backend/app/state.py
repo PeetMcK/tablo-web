@@ -1015,6 +1015,18 @@ class AppState:
                 or series.get("description")
             ),
             "start": ad.get("datetime"),
+            # What groups this with the rest of its show, and how to order it
+            # against them. Every one of these is already in the record being
+            # projected, so listing them costs no extra device traffic.
+            #
+            # `series_path` is `/recordings/series/{id}` - the *recordings*
+            # series, not the guide's. That is the right grouping here: it means
+            # "other recordings of this show", which is what the end card lists.
+            # It is null for sport, so the card falls back to the title.
+            "series_path": data.get("series_path"),
+            "season_number": episode.get("season_number"),
+            "episode_number": episode.get("number"),
+            "orig_air_date": episode.get("orig_air_date"),
             "duration": vd.get("duration") or ad.get("duration") or 0,
             "recorded_seconds": AppState._recorded_so_far(ad, vd),
             # The scheduled slot, always - which `duration` stops being the

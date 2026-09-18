@@ -195,6 +195,94 @@ async def set_position(object_id: int, body: PositionIn):
     return {"object_id": object_id, "position": body.position}
 
 
+class WatchedIn(BaseModel):
+    """Whether this recording counts as seen."""
+
+    watched: bool
+
+
+@router.post("/{object_id}/watched")
+async def set_watched(object_id: int, body: WatchedIn):
+    """Mark a recording watched, or put it back.
+
+    The device never works this out for itself. Measured: a recording played to
+    43% still read `watched: false`, and one played to its end read the same -
+    its own app writes this flag, so anything that does not write it leaves a
+    library where nothing is ever marked.
+
+    **The write shape is not the read shape**, exactly as `position` has it:
+    `{"watched": true}` flat is what takes, while `{"user_info": {"watched":
+    true}}` - which is the shape the GET hands back - answers 200 and changes
+    nothing. That is how this ships broken without anyone noticing.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        status, _data = await state.patch_device(path, {"watched": body.watched})
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    if status != 200:
+        raise HTTPException(status_code=502, detail="The Tablo refused the flag")
+
+    return {"object_id": object_id, "watched": body.watched}
+
+
+@router.get("/{object_id}/series")
+async def recording_series(object_id: int):
+    """The show this recording belongs to, for the card shown at its end.
+
+    Only the artwork needs a device fetch. Everything the end card orders by -
+    season, episode, air date, the grouping path itself - is already on each
+    recording, but a recording record carries no `series` object at all:
+    measured on /recordings/series/episodes/86128, `series` is null and only
+    `series_path` links the two. The cover lives on the series record.
+
+    Addressed through the recording rather than as `/series/{id}` on purpose.
+    That form is two segments, the same shape as `/{object_id}/position`, and
+    FastAPI matches on declaration order - so "series" would be offered to the
+    `int` converter and answered 422 rather than falling through.
+
+    `cover_image` is an id for `/api/channels/image/{id}`, which caches device
+    images for a week. Null is ordinary: sport has no series record to ask.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+        record = await state.request_device("GET", path)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    series_path = record.get("series_path")
+    if not series_path:
+        return {"series_path": None, "title": None, "cover_image": None}
+
+    try:
+        data = await state.request_device("GET", series_path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    series = data.get("series") or {}
+    return {
+        "series_path": series_path,
+        "title": series.get("title"),
+        # `cover_image` is the poster the card leads with. `thumbnail_image` and
+        # `background_image` sit beside it on the same record if anything ever
+        # wants the other shapes.
+        "cover_image": (series.get("cover_image") or {}).get("image_id"),
+    }
+
+
 @router.post("/{object_id}/watch-vod")
 async def watch_recording_vod(object_id: int):
     """Serve a recording as MPEG-2, straight from the device.
