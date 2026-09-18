@@ -25,6 +25,15 @@ interface Props {
   channelLabel?: string;
   onClose: () => void;
   /**
+   * The recording this sheet is about, when the opener knows which one.
+   *
+   * A Library card does; the guide does not, and falls back to whatever the
+   * airing resolves to. It matters because one airing can hold two recordings
+   * - a capture stopped and restarted leaves both - and the airing's own
+   * answer is then the wrong one from the other card's point of view.
+   */
+  recordingId?: number | null;
+  /**
    * Called with the recording's id once the Tablo has deleted it.
    *
    * The sheet cannot know what is listing it, and the Library must not wait
@@ -114,7 +123,9 @@ function whenLine(start: string, duration: number): string | null {
  * all. The layout omits rather than empties, so a sheet with nothing but a
  * title and a channel still looks deliberate instead of broken.
  */
-export function ShowInfo({ channel, start, channelLabel, onClose, onDeleted, onTune }: Props) {
+export function ShowInfo({
+  channel, start, channelLabel, recordingId, onClose, onDeleted, onTune,
+}: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
   // rather than freezing at whatever it was when opened.
   const inProgress = useRecordingsInProgress(true);
@@ -235,6 +246,15 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onDeleted, onT
   const seriesRecording = detail?.series
     ? recordingForSeries(inProgress, detail.series.path)
     : null;
+
+  /**
+   * Which recording this sheet can delete.
+   *
+   * The opener's answer wins over the airing's. A Library card knows exactly
+   * which recording it is showing; the airing only knows its newest, and those
+   * differ whenever a capture was stopped and restarted.
+   */
+  const deletable = recordingId ?? detail?.recording_id ?? null;
 
   /**
    * Delete the recording on the Tablo, and stop offering to.
@@ -589,16 +609,16 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onDeleted, onT
               button drops the transcoded copy and leaves the recording on the
               device, which is a different promise and was the only one the app
               could keep until now. */}
-          {detail?.recording_id != null && (
+          {deletable != null && (
             <button
               disabled={pending}
               onClick={() => setConfirming({
                 label: "Delete this recording?",
-                detail: `“${detail.title ?? "This recording"}” is removed from the `
+                detail: `“${detail?.title ?? "This recording"}” is removed from the `
                   + "Tablo, freeing its space. This cannot be undone.",
                 action: "Delete",
                 destructive: true,
-                run: () => void deleteRecording(detail.recording_id!),
+                run: () => void deleteRecording(deletable),
               })}
               className="mt-6 w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
                          text-sm font-semibold bg-fill-soft text-danger

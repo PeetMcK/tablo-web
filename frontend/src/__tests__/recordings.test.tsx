@@ -825,6 +825,37 @@ describe("reaching a recording's information", () => {
     await waitFor(() => expect(screen.queryByText("NFL Football")).toBeNull());
   });
 
+  it("deletes the recording whose card was opened, not the airing's other one", async () => {
+    // One airing can hold two recordings - a capture stopped and restarted
+    // leaves both - and the airing lookup can only name one of them. The card
+    // knows which one it is, so it says.
+    const del = vi.spyOn(api, "deleteRecording").mockResolvedValue({
+      object_id: 86462, deleted: true,
+    });
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: null, start: REC.start, duration: 10800,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: true, scheduled: true, past: true,
+      schedule_state: "none", skip_reason: null, series: null,
+      // The other recording of the same slot.
+      recording_id: 86406,
+      channel: { identifier: "S34654_008_01", call_sign: "KPAX", major: 8,
+                 minor: 1, network: "CBS", logo_url: null, kind: "ota" },
+    });
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+
+    renderWith(withChannel({ object_id: 86462 }));
+    fireEvent.click(await screen.findByRole("button", { name: /information about/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith(86462));
+  });
+
   it("offers nothing to open when the channel is unknown", async () => {
     // An offline copy of something the device has since deleted has no airing
     // left to describe, and a button that opens an error is worse than none.

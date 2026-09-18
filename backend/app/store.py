@@ -878,17 +878,28 @@ def index_recording_airings(items: list[dict]) -> None:
 
 
 def recording_for_airing(channel: str, start: str) -> int | None:
-    """The recording this airing produced, or None.
+    """The newest recording this airing produced, or None.
 
     Matched on the instant rather than its spelling: the device writes `07:00Z`
     on a recording where the guide may hold `07:00:00Z` for the same moment.
+
+    One airing can hold more than one recording - a capture stopped and
+    restarted leaves both, measured as a 14-minute row and a 40-minute row
+    against the same slot - so this is ordered rather than left to whichever
+    row SQLite reached first. Newest wins, being the one still being written or
+    most recently finished.
+
+    Callers that know exactly which recording they mean must not use this: a
+    Library card carries its own id and passes it, because "the airing's
+    recording" is the wrong answer when the viewer is looking at the other one.
     """
     epoch = _start_epoch(start)
     if not epoch:
         return None
     row = db.query_one(
         "SELECT object_id FROM recording_airing "
-        "WHERE channel_id = ? AND start_epoch = ?",
+        "WHERE channel_id = ? AND start_epoch = ? "
+        "ORDER BY object_id DESC LIMIT 1",
         (str(channel), epoch),
     )
     return int(row["object_id"]) if row else None
