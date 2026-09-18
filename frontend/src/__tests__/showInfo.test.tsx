@@ -343,35 +343,33 @@ describe("turning a series off while one of its episodes records", () => {
     expect(airing).not.toHaveBeenCalled();
   });
 
-  it("keeps the episode on air when asked to, by rescheduling it alone", async () => {
-    // The rule write cancels it; scheduling that one airing again puts it back
-    // — addressed by the recording's own channel and start, which is not the
-    // airing the sheet is showing.
-    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    const airing = vi.spyOn(api, "scheduleAiring").mockResolvedValue(upcoming());
+  it("does not offer to keep the episode, because keeping splits it in two", async () => {
+    // Measured: rescheduling the airing after the rule write does not resume
+    // the capture, it starts a second one - leaving a stub of what was caught
+    // before the rule change and a separate recording of the rest. Two
+    // recordings of one episode is worse than an honest stop.
+    vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
     vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
     render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
                      onClose={() => {}} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /keep this one/i }));
+    await screen.findByRole("alertdialog");
 
-    await waitFor(() => expect(rule).toHaveBeenCalledWith("ch1", "2026-09-19T06:30Z", "none"));
-    await waitFor(() =>
-      expect(airing).toHaveBeenCalledWith("ch2", "2026-09-18T06:30Z", true));
+    expect(screen.queryByRole("button", { name: /keep this one/i })).toBeNull();
   });
 
-  it("says so when the episode could not be saved", async () => {
+  it("says plainly that the recording stops", async () => {
     vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    vi.spyOn(api, "scheduleAiring").mockRejectedValue(new Error("The Tablo refused."));
     vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
     render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
                      onClose={() => {}} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /keep this one/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/not kept recording/i);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/stops it at once/i);
+    expect(dialog).toHaveTextContent(/stays in your library/i);
   });
 
   it("leaves another series' recording out of it", async () => {
@@ -438,11 +436,11 @@ describe("the confirmation sits over the card", () => {
   });
 
   it("puts the safe way out under the cursor, not the destructive one", async () => {
-    // Both buttons act. Only one of them ends a recording, so the default is
-    // the one that keeps it.
+    // A confirmation that opens with the destructive button focused is one
+    // stray Return away from ending a recording.
     await raise();
 
-    expect(screen.getByRole("button", { name: /keep this one/i })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
   });
 
   it("cancels the question on Escape without closing the sheet", async () => {
