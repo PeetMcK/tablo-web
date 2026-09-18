@@ -89,6 +89,14 @@ function harness(overrides: Partial<SessionDeps> = {}) {
 
   return {
     session, worker, posted, fetched, audio, presenter,
+    /**
+     * Segments that reached the worker.
+     *
+     * Not the same as `fetched` any more: the supply runs ahead of the
+     * decoder on purpose, so counting requests measures the supply's depth
+     * and says nothing about pacing. Pacing is about what is handed over.
+     */
+    fed: () => posted.filter((m) => m.type === "segment"),
     slide: () => { playlist = PLAYLIST_NEXT; },
     setClock: (t: number | null) => { clockSeconds = t; },
     setBuffered: (s: number) => { bufferedSeconds = s; },
@@ -210,7 +218,24 @@ describe("pacing", () => {
     h.presenter.queued = MAX_QUEUED_FRAMES;
     await h.session.start();
 
-    expect(h.fetched.filter((u) => u.endsWith(".ts"))).toEqual([]);
+    expect(h.fed()).toEqual([]);
+  });
+
+  it("fetches further ahead than it feeds", async () => {
+    // The point of the supply. Pacing stops the decoder at two seconds
+    // because raw fields cost 1.5MB each; the network has no such limit, and
+    // a transport that only fetches what it is about to decode makes every
+    // slow device round trip land on the audio buffer.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(5);
+    h.presenter.queued = MAX_QUEUED_FRAMES;
+    await h.session.start();
+    // Let the supply's own fetches settle; they do not block the poll.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    expect(h.fed()).toEqual([]);
+    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
   });
 
   it("feeds a starving decoder even so, because silence stops the clock", async () => {
@@ -220,7 +245,7 @@ describe("pacing", () => {
     h.presenter.queued = MAX_QUEUED_FRAMES;
     await h.session.start();
 
-    expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
+    expect(h.fed().length).toBeGreaterThan(0);
   });
 
   it("does not hold the audio buffer down on the starvation threshold", async () => {
@@ -259,10 +284,10 @@ describe("pacing", () => {
     h.setBuffered(0);
     await h.session.start();
 
-    const fetched = h.fetched.filter((u) => u.endsWith(".ts")).length;
+    const fed = h.fed().length;
     // DEEP_PLAYLIST is far longer than the starved lookahead of 2s allows.
-    expect(fetched).toBeLessThanOrEqual(3);
-    expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(fetched);
+    expect(fed).toBeLessThanOrEqual(3);
+    expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(fed);
   });
 });
 
@@ -866,9 +891,9 @@ describe("a finished recording", () => {
     h.setBuffered(0);
     await h.session.start();
 
-    const taken = h.fetched.filter((u) => u.endsWith(".ts")).length;
-    expect(taken).toBeLessThanOrEqual(3);
-    expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(taken);
+    const fed = h.fed().length;
+    expect(fed).toBeLessThanOrEqual(3);
+    expect(DEEP_PLAYLIST.match(/\.ts/g)!.length).toBeGreaterThan(fed);
   });
 });
 

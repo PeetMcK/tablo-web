@@ -12,6 +12,7 @@ import { log } from "../debug";
 import { initialFallbackState, reduceFallback } from "./fallback";
 import type { FallbackState } from "./fallback";
 import { MAX_QUEUED_FRAMES } from "./frameQueue";
+import { createSegmentSupply } from "./supply";
 import { parseMediaPlaylist, playlistWindow, segmentAt, startNearEdge } from "./playlist";
 import type { MediaPlaylist } from "./playlist";
 import type { AudioSink } from "./audioSink";
@@ -248,6 +249,17 @@ export function createSession(deps: SessionDeps): LiveSession {
   const post = (message: ToWorker, transfer: Transferable[] = []) =>
     deps.worker.postMessage(message, transfer);
 
+  /**
+   * Segments on their way, ahead of the decoder.
+   *
+   * The transport takes from here rather than from the network, so a slow
+   * device round trip no longer lands on the audio buffer. Pacing below is
+   * unchanged and still governs how far *decode* runs ahead; this governs how
+   * far *fetching* does, which is bounded by bytes rather than raw planes and
+   * can therefore be much further.
+   */
+  const supply = createSegmentSupply({ fetchBytes: deps.fetchBytes });
+
   let playlist: MediaPlaylist | null = null;
   /** When `playlist` was last read, for the growing case's staleness check. */
   let playlistReadAtMs = 0;
@@ -459,6 +471,9 @@ export function createSession(deps: SessionDeps): LiveSession {
         ?? startNearEdge(playlist, START_BEHIND_EDGE_SECONDS);
       takenThrough = at ? at.sequence - 1 : -1;
       seekTarget = null;
+      // Bytes fetched for where the viewer used to be are worthless, and
+      // harmful if they arrive afterwards and are treated as current.
+      supply.reset();
     } else if (takenThrough < 0 && deps.vod) {
       // A recording has a beginning, and that is where it starts. Joining near
       // the edge is a live behaviour: it exists so a viewer is not a minute
@@ -475,6 +490,25 @@ export function createSession(deps: SessionDeps): LiveSession {
       const at = startNearEdge(playlist, START_BEHIND_EDGE_SECONDS);
       if (at) takenThrough = at.sequence - 1;
     }
+
+    // What is coming, so bytes can be on their way while the decoder is still
+    // chewing the last segment. This is a plan, not a command: the supply
+    // decides how far ahead to run and stops at its own ceilings.
+    // Bound to a const: `playlist` is a `let` the closure below cannot be
+    // shown to keep non-null.
+    const current = playlist;
+    supply.advise(
+      current.segments.flatMap((segment, index) => {
+        const sequence = current.mediaSequence + index;
+        return sequence > takenThrough
+          ? [{
+              sequence,
+              url: segmentUrl(segment.uri),
+              durationSeconds: segment.duration,
+            }]
+          : [];
+      }),
+    );
 
     // Where the decoder has already been fed up to, in media seconds.
     let at = windowStart;
@@ -523,7 +557,9 @@ export function createSession(deps: SessionDeps): LiveSession {
         // The timeline has a place again, so the seek's own answer is no
         // longer needed.
         if (anchorMedia === null) { anchorMedia = at; seekedTo = null; }
-        const bytes = await deps.fetchBytes(segmentUrl(playlist.segments[index].uri));
+        const bytes = await supply.take(
+          sequence, segmentUrl(playlist.segments[index].uri),
+        );
         // The seek race, in the one place it actually bites: this fetch was
         // outstanding when the viewer pressed Back 10s, so the worker would
         // receive `reset` and *then* this segment from before it. Its audio
@@ -796,6 +832,12 @@ export function createSession(deps: SessionDeps): LiveSession {
       anchorMedia,
       fedThroughMedia,
       takenThrough,
+      // Whether the transport is waiting on the network or on its own pacing.
+      // Answering that took a temporary instrumented build on 2026-09-17; it
+      // should not need one again.
+      supplyHeldSeconds: supply.heldSeconds,
+      supplyHeldBytes: supply.heldBytes,
+      supplyInFlight: supply.inFlight,
       failure: fallback.failed,
       failureDetail,
       workerBooted,
