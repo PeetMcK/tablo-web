@@ -711,6 +711,20 @@ export const api = {
     req<RecordingSeries>(`/recordings/${objectId}/series`),
 
   /**
+   * What the info sheet shows, built from the recording rather than the guide.
+   *
+   * The sheet is keyed on `(channel, start)` in the guide mirror, which is
+   * right for something upcoming and unreliable for something already
+   * recorded: the device lists airings forward from roughly now, so a
+   * recording outlives its own listing within days rather than within the
+   * month the retention policy suggests. Measured 2026-09-18 — the mirror's
+   * earliest row was from the 15th, while recordings from the 13th were still
+   * in the library and their sheets said "Information unavailable".
+   */
+  recordingDetail: (objectId: number) =>
+    req<AiringDetail>(`/recordings/${objectId}/detail`),
+
+  /**
    * Make the frame at `t` seconds the picture this recording's card leads with.
    *
    * A position rather than a picture: the frame is already on disk in the BIF

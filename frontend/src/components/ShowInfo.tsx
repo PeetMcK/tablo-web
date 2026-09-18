@@ -94,6 +94,40 @@ function recordScope(d: AiringDetail): string {
     : "Record: This Episode Only";
 }
 
+/**
+ * A recording's own description, with a live airing's answers laid over it.
+ *
+ * Which half supplies what is the whole point. The device keeps a recording's
+ * title, description, artwork, genres and rating for as long as it keeps the
+ * recording — years, for a protected one. The guide keeps listings for days and
+ * holds no past ones at all, so anything read from it about a recording is
+ * borrowed time.
+ *
+ * Only the fields behind controls cross over, and only because those controls
+ * write through `(channel, start)` against the guide: without a listing there
+ * is nothing for them to address, and with one they must reflect it. A
+ * recording still on a tuner is the case that needs this — its Stop Recording
+ * button is a write against the airing.
+ */
+function withAiringActions(
+  rec: AiringDetail, air: AiringDetail | null,
+): AiringDetail {
+  if (air === null) return rec;
+  return {
+    ...rec,
+    // The guide means "on air now" where the recording means "still on a
+    // tuner". The button this gates offers to watch the channel live, so the
+    // guide's is the one that answers it.
+    airing_now: air.airing_now,
+    schedulable: air.schedulable,
+    scheduled: air.scheduled,
+    past: air.past,
+    schedule_state: air.schedule_state,
+    skip_reason: air.skip_reason,
+    series: air.series,
+  };
+}
+
 /** `8.1`, or just the network when the device gave no channel number. */
 function channelNumber(ch: AiringDetail["channel"]): string | null {
   return ch.major ? `${ch.major}.${ch.minor ?? 0}` : null;
@@ -164,15 +198,31 @@ export function ShowInfo({
   }, []);
 
   useEffect(() => {
-    // Nothing to ask for without an airing to ask about — and asking with an
-    // empty start would 404 and dress the sheet as a failure, which it is not.
-    if (start === null) return;
+    // Nothing to ask about at all — no recording, and no airing to look up.
+    // Asking with an empty start would 404 and dress the sheet as a failure,
+    // which it is not: the channel simply has no listings.
+    if (recordingId == null && start === null) return;
     let live = true;
-    api.airingDetail(channel, start)
-      .then((d) => { if (live) setDetail(d); })
-      .catch(() => { if (live) setFailed(true); });
+
+    void (async () => {
+      // Both, in parallel, because they answer different questions and either
+      // can be absent. Neither rejection is exceptional, so both are caught
+      // into null and the two nulls together are what counts as failure.
+      const [rec, air] = await Promise.all([
+        recordingId != null
+          ? api.recordingDetail(recordingId).catch(() => null)
+          : Promise.resolve(null),
+        start !== null
+          ? api.airingDetail(channel, start).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (!live) return;
+      if (rec === null && air === null) { setFailed(true); return; }
+      setDetail(rec === null ? air : withAiringActions(rec, air));
+    })();
+
     return () => { live = false; };
-  }, [channel, start]);
+  }, [channel, start, recordingId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -215,8 +265,14 @@ export function ShowInfo({
     }
   }
 
-  /** A channel the guide has no listing for, rather than one still loading. */
-  const noListing = start === null;
+  /**
+   * A channel the guide has no listing for, rather than one still loading.
+   *
+   * A named recording is not that case even with no airing to go with it: the
+   * device can describe it in full, and heading the sheet "No programme
+   * information" over a programme it is about to name would be a lie.
+   */
+  const noListing = start === null && recordingId == null;
 
   /**
    * Ask before a write that starts or stops a recording.
@@ -459,8 +515,13 @@ export function ShowInfo({
           )}
 
           {/* Omitted rather than disabled: a dead button with no explanation
-              reads as broken, and the reason is worth a line. */}
-          {detail && !detail.schedulable && (
+              reads as broken, and the reason is worth a line.
+
+              Never on a sheet opened from the Library. `schedulable` is false
+              there whenever the guide has no listing left, which says nothing
+              about the channel - and a recording is standing proof that the
+              channel records. Scheduling is not what that sheet is about. */}
+          {detail && !detail.schedulable && recordingId == null && (
             <p className="mt-6 text-xs text-fg-muted">
               Recording isn't available on this channel.
             </p>

@@ -1591,6 +1591,285 @@ def test_a_recording_with_no_series_asks_the_device_only_once(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# The info sheet for a recording, owing the guide nothing
+# ---------------------------------------------------------------------------
+
+# Trimmed from a real game record, read off the device 2026-09-18. The shape of
+# what is *absent* is the point: no artwork, no genres, no rating anywhere on
+# the recording itself. An earlier draft of the route read `genres` off `event`
+# and would have returned [] forever without ever failing a test.
+DEVICE_GAME = {
+    "object_id": 66220,
+    "path": "/recordings/sports/events/66220",
+    "sport_path": "/recordings/sports/63558",
+    "snapshot_image": {"image_id": 80894, "has_title": True},
+    "airing_details": {
+        "datetime": "2026-09-13T20:25Z",
+        "duration": 11100,
+        "show_title": "NFL Football",
+        "channel": {
+            "object_id": 5663,
+            "path": "/recordings/channels/5663",
+            "channel": {
+                "call_sign": "KPAX", "network": "CBS",
+                "major": 8, "minor": 1,
+                "channel_identifier": "S34654_008_01",
+                "source": "ota",
+                "logos": [
+                    {"kind": "darkLarge", "url": "https://cdn.example/CBS_black.png"},
+                    {"kind": "originalLarge", "url": "https://cdn.example/CBS_mod.png"},
+                ],
+            },
+        },
+    },
+    "video_details": {
+        "state": "finished", "duration": 12915,
+        "width": 1920, "height": 1080, "error": None,
+        "recorded_offsets": {"start": -15, "end": 1800},
+    },
+    "user_info": {"position": 3, "watched": False, "protected": False},
+    "event": {
+        "title": "Green Bay Packers at Minnesota Vikings",
+        "description": "The Minnesota Vikings host the Green Bay Packers.",
+        "teams": [{"name": "Green Bay Packers", "team_id": 42}],
+        "venue": "U.S. Bank Stadium",
+        "tms_id": "EP000031285690",
+    },
+}
+
+DEVICE_SPORT = {
+    "object_id": 63558,
+    "path": "/recordings/sports/63558",
+    "guide_path": "/guide/sports/38763",
+    "sport": {
+        "title": "NFL Football",
+        "description": "Football action from around the National Football League.",
+        "genres": ["Football"],
+        "cover_image": {"image_id": 38765, "has_title": True},
+        "thumbnail_image": {"image_id": 38764},
+        "background_image": {"image_id": 38766},
+    },
+}
+
+
+def _device_serving(monkeypatch, records: dict, path: str):
+    from app.routes import recordings as rec
+    asked: list[str] = []
+
+    async def request_device(_method, p):
+        asked.append(p)
+        return records[p]
+
+    async def resolve(_oid):
+        return path, 12915
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    return asked
+
+
+def test_a_recording_describes_itself_without_the_guide(monkeypatch):
+    """The whole sheet, from two device reads and nothing else.
+
+    Measured 2026-09-18: the guide mirror held no airing older than the 15th
+    while these games, from the 13th, were still in the library - so every one
+    of their sheets read "Information unavailable". The device had all of this
+    the entire time.
+    """
+    asked = _device_serving(
+        monkeypatch,
+        {"/recordings/sports/events/66220": DEVICE_GAME,
+         "/recordings/sports/63558": DEVICE_SPORT},
+        "/recordings/sports/events/66220",
+    )
+
+    r = client.get("/api/recordings/66220/detail")
+
+    assert r.status_code == 200
+    d = r.json()
+    assert d["title"] == "NFL Football"
+    assert d["episode_title"] == "Green Bay Packers at Minnesota Vikings"
+    assert d["description"].startswith("The Minnesota Vikings host")
+    assert d["start"] == "2026-09-13T20:25Z"
+    assert d["duration"] == 12915
+    assert d["recording_id"] == 66220
+    assert asked == ["/recordings/sports/events/66220", "/recordings/sports/63558"]
+
+
+def test_the_picture_genres_and_rating_come_from_the_show_record(monkeypatch):
+    """None of the three is on the recording. Verified against every recording
+    on a real device: an episode record carries only `episode`, a game record
+    only `event`, and neither holds artwork, genres or a rating."""
+    _device_serving(
+        monkeypatch,
+        {"/recordings/sports/events/66220": DEVICE_GAME,
+         "/recordings/sports/63558": DEVICE_SPORT},
+        "/recordings/sports/events/66220",
+    )
+
+    d = client.get("/api/recordings/66220/detail").json()
+
+    assert d["image_url"] == "/api/channels/image/38765"
+    assert d["genres"] == ["Football"]
+    # A sport has no `series_rating`. Absent, not guessed at.
+    assert d["rating"] is None
+
+
+def test_a_series_recording_takes_its_rating_from_the_series(monkeypatch):
+    """The other noun, and the one key that is not on both."""
+    episode = {
+        "object_id": 86040,
+        "path": "/recordings/series/episodes/86040",
+        "series_path": "/recordings/series/86041",
+        "airing_details": {
+            "datetime": "2026-09-16T22:00Z", "duration": 3600,
+            "show_title": "First Civilizations",
+            "channel": {"channel": {
+                "call_sign": "KUFM", "network": "PBS", "major": 11, "minor": 1,
+                "channel_identifier": "S34654_011_01", "source": "ota",
+            }},
+        },
+        "video_details": {"state": "finished", "duration": 3615, "height": 1080},
+        "episode": {
+            "title": "Ritual", "number": 2, "season_number": 1,
+            "description": "How ritual built the first towns.",
+            "orig_air_date": "2018-05-01",
+        },
+        "user_info": {},
+    }
+    series = {
+        "object_id": 86041,
+        "path": "/recordings/series/86041",
+        "series": {
+            "title": "First Civilizations",
+            "description": "The history of the first civilizations.",
+            "genres": ["Documentary", "History"],
+            "series_rating": "tvpg",
+            "orig_air_date": "2018-04-24",
+            "cover_image": {"image_id": 53983, "has_title": True},
+        },
+    }
+    _device_serving(
+        monkeypatch,
+        {"/recordings/series/episodes/86040": episode,
+         "/recordings/series/86041": series},
+        "/recordings/series/episodes/86040",
+    )
+
+    d = client.get("/api/recordings/86040/detail").json()
+
+    assert d["rating"] == "tvpg"
+    assert d["genres"] == ["Documentary", "History"]
+    assert (d["season_number"], d["episode_number"]) == (1, 2)
+    # The episode's own air date, not the series premiere sitting beside it.
+    assert d["orig_air_date"] == "2018-05-01"
+    assert d["image_url"] == "/api/channels/image/53983"
+
+
+def test_the_channel_eyebrow_reads_the_nested_channel(monkeypatch):
+    """`_recording_fields` narrows this to four keys for the Library card and
+    drops the number parts and the logos the sheet wants, so the route reads
+    the raw block instead."""
+    _device_serving(
+        monkeypatch,
+        {"/recordings/sports/events/66220": DEVICE_GAME,
+         "/recordings/sports/63558": DEVICE_SPORT},
+        "/recordings/sports/events/66220",
+    )
+
+    ch = client.get("/api/recordings/66220/detail").json()["channel"]
+
+    assert ch == {
+        "identifier": "S34654_008_01",
+        "call_sign": "KPAX",
+        "major": 8,
+        "minor": 1,
+        "network": "CBS",
+        "logo_url": "https://cdn.example/CBS_mod.png",
+        # The device says `source` where the guide mirror says `kind`.
+        "kind": "ota",
+    }
+
+
+def test_nothing_on_a_recording_sheet_is_offered_as_schedulable(monkeypatch):
+    """Every one of those controls writes through `(channel, start)` against the
+    guide. With no listing there is nothing to address, and an Edit Series
+    Recording box that cannot write is worse than none."""
+    _device_serving(
+        monkeypatch,
+        {"/recordings/sports/events/66220": DEVICE_GAME,
+         "/recordings/sports/63558": DEVICE_SPORT},
+        "/recordings/sports/events/66220",
+    )
+
+    d = client.get("/api/recordings/66220/detail").json()
+
+    assert d["schedulable"] is False
+    assert d["scheduled"] is False
+    assert d["series"] is None
+    assert d["past"] is True
+    assert d["airing_now"] is False
+
+
+def test_a_recording_still_on_a_tuner_says_so(monkeypatch):
+    """`airing_now` off the recording means "still capturing". The sheet takes
+    the guide's answer over this one whenever it has a listing."""
+    live = {**DEVICE_GAME,
+            "video_details": {**DEVICE_GAME["video_details"], "state": "recording"}}
+    _device_serving(
+        monkeypatch,
+        {"/recordings/sports/events/66220": live,
+         "/recordings/sports/63558": DEVICE_SPORT},
+        "/recordings/sports/events/66220",
+    )
+
+    d = client.get("/api/recordings/66220/detail").json()
+
+    assert d["airing_now"] is True
+    assert d["past"] is False
+
+
+def test_a_show_record_that_will_not_load_still_leaves_a_usable_sheet(monkeypatch):
+    """The title and the blurb are what someone opened it for. Losing the
+    picture is not worth losing those."""
+    from app.routes import recordings as rec
+
+    async def request_device(_method, p):
+        if p == "/recordings/sports/events/66220":
+            return DEVICE_GAME
+        raise RuntimeError("device said no")
+
+    async def resolve(_oid):
+        return "/recordings/sports/events/66220", 12915
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+
+    r = client.get("/api/recordings/66220/detail")
+
+    assert r.status_code == 200
+    d = r.json()
+    assert d["title"] == "NFL Football"
+    assert d["description"].startswith("The Minnesota Vikings host")
+    assert d["image_url"] is None
+    assert d["genres"] == []
+
+
+def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
+    from app.routes import recordings as rec
+
+    async def resolve(_oid):
+        raise KeyError("recording 999 not found")
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+
+    assert client.get("/api/recordings/999/detail").status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # What a Library card leads with
 # ---------------------------------------------------------------------------
 

@@ -379,6 +379,120 @@ async def recording_series(object_id: int):
     }
 
 
+@router.get("/{object_id}/detail")
+async def recording_detail(object_id: int):
+    """What the info sheet shows, built from the recording rather than the guide.
+
+    The sheet was keyed on `(channel, start)` in `guide_airing`, which is right
+    for something upcoming and wrong for something already recorded. The device
+    lists airings forward from roughly now, so the mirror holds no past ones at
+    all: measured 2026-09-18, its earliest row was from the 15th while
+    recordings from the 13th were still in the library, their sheets reading
+    "Information unavailable" over programmes the device describes perfectly
+    well. A recording outlives its own listing within days - and a protected one
+    can outlive it by years - so the guide cannot be what describes a recording.
+
+    Everything below comes from two device reads and nothing else. Answers in
+    the same shape `store.airing_detail` does, so the sheet renders it without
+    knowing where it came from.
+
+    The scheduling fields are all off, and honestly so: the writes behind those
+    controls address an airing by `(channel, start)` through the guide mirror,
+    and when there is no listing there is nothing for them to address. The sheet
+    lays a live airing's answers over these when one exists - see ShowInfo.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+        record = await state.request_device("GET", path)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    fields = state._recording_fields(record)
+
+    # The show record, under whichever noun this recording uses. It is where
+    # everything about the programme as a whole lives - the picture, the genres,
+    # the rating - none of which is on the recording itself. Verified against
+    # every recording on a real device 2026-09-18: an episode record carries
+    # only `episode` (description, number, orig_air_date, season_number, title,
+    # tms_id) and a game record only `event` (description, teams, venue, season,
+    # tms_id). Neither has artwork, genres or a rating. The earlier draft of
+    # this route read `genres` off those two and would have returned [] forever.
+    show: dict = {}
+    show_path = record.get("series_path") or record.get("sport_path")
+    if show_path:
+        try:
+            data = await state.request_device("GET", show_path)
+            show = data.get("series") or data.get("sport") or {}
+        except Exception:
+            # One read failing should not cost the sheet the other one's title
+            # and description, which is the part someone opened it for.
+            pass
+
+    # `cover_image` for the same reason the schedule sheet and the Library card
+    # use it - see store.airing_artwork. For a game this is the league's
+    # picture: the event record has teams, a venue and a blurb but no image, so
+    # every NFL game leads with the NFL cover, which is what the Tablo app shows
+    # too.
+    cover = (show.get("cover_image") or {}).get("image_id")
+
+    # The raw nested channel, not `_recording_fields`' projection of it: that
+    # one narrows to four keys for the Library card and drops the number parts
+    # and the logos this sheet's eyebrow wants.
+    ch = ((record.get("airing_details") or {}).get("channel") or {}).get("channel") or {}
+    logos = {logo.get("kind"): logo.get("url") for logo in ch.get("logos") or []}
+
+    return {
+        "title": fields.get("title"),
+        "episode_title": fields.get("subtitle"),
+        "season_number": fields.get("season_number"),
+        "episode_number": fields.get("episode_number"),
+        # `_recording_fields` already prefers the event's blurb, then the
+        # episode's. The show's is the last resort and describes the run rather
+        # than this instalment, which is still better than an empty sheet.
+        "description": fields.get("description") or show.get("description"),
+        "start": fields.get("start"),
+        # What was captured, not the slot that was booked - the same number the
+        # Library card shows for this recording, so the two cannot disagree.
+        "duration": fields.get("duration") or 0,
+        "orig_air_date": fields.get("orig_air_date") or show.get("orig_air_date"),
+        "genres": show.get("genres") or [],
+        # Only a series carries one; `sport` has no equivalent key.
+        "rating": show.get("series_rating"),
+        "image_url": f"/api/channels/image/{cover}" if cover else None,
+        # Still on a tuner. The guide means something else by this - "on air
+        # now" - and the sheet takes the guide's answer whenever it has one.
+        "airing_now": fields.get("state") == "recording",
+        # Nothing here can be scheduled: this is the recording, not the airing
+        # that made it, and the path a write would need belongs to the listing.
+        "schedulable": False,
+        "scheduled": False,
+        "past": fields.get("state") != "recording",
+        "schedule_state": None,
+        "skip_reason": None,
+        "recording_id": object_id,
+        # Deliberately null even though `show_path` is in hand. The series
+        # controls write through `(channel, start)` against the guide mirror,
+        # and this path is `/recordings/series/{id}` - a different namespace. An
+        # Edit Series Recording box that cannot write is worse than none.
+        "series": None,
+        "channel": {
+            "identifier": ch.get("channel_identifier"),
+            "call_sign": ch.get("call_sign"),
+            "major": ch.get("major"),
+            "minor": ch.get("minor"),
+            "network": ch.get("network"),
+            "logo_url": logos.get("originalLarge") or logos.get("darkLarge"),
+            # The device says `source` here where the guide mirror says `kind`;
+            # both hold "ota" for anything that can have been recorded.
+            "kind": ch.get("source"),
+        },
+    }
+
+
 @router.post("/{object_id}/watch-vod")
 async def watch_recording_vod(object_id: int):
     """Serve a recording as MPEG-2, straight from the device.

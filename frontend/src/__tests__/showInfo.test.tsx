@@ -665,3 +665,114 @@ describe("starting a recording is confirmed", () => {
   });
 });
 
+/**
+ * A recording describes itself. The guide only says what can still be done.
+ *
+ * The device keeps a recording's title, description and artwork for as long as
+ * it keeps the recording; the guide holds no past airings at all. Measured
+ * 2026-09-18: the mirror's earliest row was from the 15th while recordings from
+ * the 13th were still in the library, and every one of their sheets read
+ * "Information unavailable".
+ */
+describe("ShowInfo on a recording", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** What `/recordings/{id}/detail` answers: description, no schedule. */
+  function recorded(over: Partial<AiringDetail> = {}): AiringDetail {
+    return detail({
+      title: "NFL Football",
+      episode_title: "Green Bay Packers at Minnesota Vikings",
+      season_number: null, episode_number: null,
+      description: "The Minnesota Vikings host the Green Bay Packers.",
+      genres: ["Football"], rating: null,
+      image_url: "/api/channels/image/38765",
+      airing_now: false, schedulable: false, scheduled: false, past: true,
+      schedule_state: null, skip_reason: null,
+      recording_id: 66220, series: null,
+      ...over,
+    });
+  }
+
+  it("describes a recording the guide has forgotten", async () => {
+    const air = vi.spyOn(api, "airingDetail")
+      .mockRejectedValue(new Error("404 airing not found"));
+    vi.spyOn(api, "recordingDetail").mockResolvedValue(recorded());
+
+    render(<ShowInfo channel="ch1" start="2026-09-13T20:25Z" recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
+    expect(screen.getByText(/Minnesota Vikings host/)).toBeInTheDocument();
+    expect(screen.getByText("Football")).toBeInTheDocument();
+    expect(screen.queryByText(/information unavailable/i)).toBeNull();
+    expect(air).toHaveBeenCalled();
+  });
+
+  it("asks the device even when the opener has no airing to offer", async () => {
+    const air = vi.spyOn(api, "airingDetail");
+    vi.spyOn(api, "recordingDetail").mockResolvedValue(recorded());
+
+    render(<ShowInfo channel="ch1" start={null} recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
+    expect(air).not.toHaveBeenCalled();
+  });
+
+  it("never says recording is unavailable on a channel that recorded", async () => {
+    // `schedulable` is false because there is no listing to write against,
+    // which says nothing about the channel - and the recording is proof.
+    vi.spyOn(api, "airingDetail").mockRejectedValue(new Error("404"));
+    vi.spyOn(api, "recordingDetail").mockResolvedValue(recorded());
+
+    render(<ShowInfo channel="ch1" start="2026-09-13T20:25Z" recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    await screen.findByText("NFL Football");
+    expect(screen.queryByText(/isn't available on this channel/i)).toBeNull();
+  });
+
+  it("takes the guide's schedule answers when there is still a listing", async () => {
+    // The case the merge exists for: something recording right now. Its Stop
+    // Recording button is a write against the airing, so the airing's answers
+    // have to win - while the title and artwork stay the device's.
+    vi.spyOn(api, "recordingDetail").mockResolvedValue(recorded());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      title: "Stale guide title",
+      image_url: "/api/channels/image/111",
+      schedulable: true, scheduled: true, past: false, airing_now: true,
+      series: { path: "/guide/sports/38763", schedule_rule: "all" },
+    }));
+
+    render(<ShowInfo channel="ch1" start="2026-09-13T20:25Z" recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    // The device's description of the programme.
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
+    expect(screen.queryByText("Stale guide title")).toBeNull();
+    // The guide's answers about what can be done to it.
+    expect(screen.getByRole("button", { name: /^all$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /watch live/i })).toBeInTheDocument();
+  });
+
+  it("fails only when neither source has anything", async () => {
+    vi.spyOn(api, "airingDetail").mockRejectedValue(new Error("404"));
+    vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("502"));
+
+    render(<ShowInfo channel="ch1" start="2026-09-13T20:25Z" recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText(/information unavailable/i)).toBeInTheDocument();
+  });
+
+  it("still renders from the guide alone when the opener names no recording", async () => {
+    const rec = vi.spyOn(api, "recordingDetail");
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail());
+
+    render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText("Finding Your Roots")).toBeInTheDocument();
+    expect(rec).not.toHaveBeenCalled();
+  });
+});
+
