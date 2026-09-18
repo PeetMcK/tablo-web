@@ -1523,6 +1523,58 @@ def test_the_series_cover_comes_from_the_series_record(monkeypatch):
     assert asked == ["/recordings/series/episodes/86128", "/recordings/series/86119"]
 
 
+def test_a_game_follows_its_sport_for_a_cover(monkeypatch):
+    """A sport is a series under a different noun.
+
+    `/recordings/sports/{id}` carries a title, a description, the same three
+    images and its own airing count, and the Tablo app heads its sheet "Series
+    Recording Scheduled" over the league's picture. Asking only for
+    `series_path` is why every NFL recording had nothing to lead with.
+    """
+    from app.routes import recordings as rec
+    asked: list[str] = []
+
+    async def request_device(_method, path):
+        asked.append(path)
+        if path.endswith("/events/80888"):
+            return {"object_id": 80888, "sport_path": "/recordings/sports/63558"}
+        return {
+            "object_id": 63558,
+            "sport": {
+                "title": "NFL Football",
+                "cover_image": {"image_id": 38765, "has_title": True},
+                "thumbnail_image": {"image_id": 38764},
+                "background_image": {"image_id": 38766},
+            },
+        }
+
+    async def resolve(_oid):
+        return "/recordings/sports/events/80888", 12615
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+
+    r = client.get("/api/recordings/80888/series")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "series_path": "/recordings/sports/63558",
+        "title": "NFL Football",
+        "cover_image": 38765,
+    }
+    assert asked == ["/recordings/sports/events/80888", "/recordings/sports/63558"]
+
+
+def test_a_game_carries_the_path_that_groups_it():
+    """Projected so the card can file six games together without matching on a
+    title, which two different shows could share."""
+    data = dict(DEVICE_RECORDING, sport_path="/recordings/sports/63558")
+    out = AppState._recording_fields(data)
+    assert out["sport_path"] == "/recordings/sports/63558"
+    assert out["series_path"] is None
+
+
 def test_a_recording_with_no_series_asks_the_device_only_once(monkeypatch):
     """Sport has no series record. That is ordinary, not an error.
 

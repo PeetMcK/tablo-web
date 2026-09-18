@@ -1042,8 +1042,16 @@ class AppState:
             # `series_path` is `/recordings/series/{id}` - the *recordings*
             # series, not the guide's. That is the right grouping here: it means
             # "other recordings of this show", which is what the end card lists.
-            # It is null for sport, so the card falls back to the title.
+            #
+            # A game carries `sport_path` in its place, and the device means the
+            # same thing by it: `/recordings/sports/{id}` holds a title, a
+            # description, the same three images and its own `airing_count`, and
+            # the Tablo app's own sheet for one says "Series Recording
+            # Scheduled" over the league's picture. So the sport *is* the
+            # series, under a different noun, and anything grouping recordings
+            # should read whichever the record has.
             "series_path": data.get("series_path"),
+            "sport_path": data.get("sport_path"),
             "season_number": episode.get("season_number"),
             "episode_number": episode.get("number"),
             "orig_air_date": episode.get("orig_air_date"),

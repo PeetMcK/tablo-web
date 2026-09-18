@@ -12,6 +12,8 @@ export interface Episode {
   title: string | null;
   /** `/recordings/series/{id}`, or null for anything the device files as sport. */
   series_path: string | null;
+  /** `/recordings/sports/{id}` — what a game has instead of a series. */
+  sport_path: string | null;
   season_number: number | null;
   episode_number: number | null;
   /** When it first aired, `YYYY-MM-DD`, or null. */
@@ -23,18 +25,25 @@ export interface Episode {
 /**
  * What files a recording with the rest of its show.
  *
- * `series_path` where there is one, and the title where there is not.
+ * `series_path` where there is one, `sport_path` where the show is a sport, and
+ * the title only when the device offers neither.
  *
- * The fallback is not a nicety. Measured on the live library: of eighteen
- * recordings, the six with no `series_path` are all NFL Football — the sport
- * that has no episode numbers either, and so the single case the date ordering
- * below exists to serve. Grouping on `series_path` alone gave every one of
- * them an empty card and left that rule unreachable.
+ * The sport path is not a special case, it is the same thing named differently:
+ * `/recordings/sports/{id}` carries a title, a description, the same three
+ * images and its own airing count, and the Tablo app heads its sheet "Series
+ * Recording Scheduled" over the league's picture. Every NFL game on this
+ * device hangs off one such record.
  *
- * Null when there is neither, which is the signal to show no list at all.
+ * The title remains as a floor. It was carrying sport on its own before the
+ * path was projected, which worked — six games do share a title — but only by
+ * accident: two different shows can share one, and a device that files them
+ * properly should be believed over a string match.
+ *
+ * Null when there is none of the three, which is the signal to show no list.
  */
 export function seriesKey(rec: Episode): string | null {
   if (rec.series_path) return rec.series_path;
+  if (rec.sport_path) return rec.sport_path;
   return rec.title ? `title:${rec.title}` : null;
 }
 

@@ -9,7 +9,7 @@ function rec(over: Partial<Recording> = {}): Recording {
     object_id: 1, identifier: 1, path: "/recordings/series/episodes/1",
     title: "Carl the Collector", subtitle: null, description: null,
     start: "2026-09-17T17:00:00Z",
-    series_path: null, season_number: null, episode_number: null,
+    series_path: null, sport_path: null, season_number: null, episode_number: null,
     orig_air_date: null,
     duration: 1800, recorded_seconds: null, expected_seconds: null,
     recording_started: null, slot_seconds: 1800,
