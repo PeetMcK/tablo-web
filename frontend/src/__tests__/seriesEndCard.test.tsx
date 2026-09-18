@@ -133,15 +133,18 @@ describe("the card at the end of a recording", () => {
     });
   });
 
-  it("shows sport with no cover at all, which is ordinary", async () => {
-    // Sport has no series record to ask, so there is nothing to lead with. The
-    // list is the point; the poster is the dressing.
+  it("leads sport with its own frame, having no series to ask", async () => {
+    // A game has no series record to carry a cover, and these have no airing
+    // row left either — so asking only the series route left six NFL
+    // recordings with a bare title over a list. The Library card shows them
+    // perfectly well from their own frame, and so can this.
     vi.spyOn(api, "recordingSeries").mockResolvedValue({
       series_path: null, title: null, cover_image: null,
     });
     const game = (object_id: number, start: string) => rec({
       object_id, title: "NFL Football", subtitle: null,
       series_path: null, start,
+      thumbnail: `/api/recordings/${object_id}/thumbnail`,
     });
     const first = game(1, "2026-09-13T17:00:00Z");
     const second = game(2, "2026-09-15T00:15:00Z");
@@ -149,6 +152,26 @@ describe("the card at the end of a recording", () => {
 
     const rows = await screen.findAllByRole("listitem");
     expect(rows).toHaveLength(2);
+    await waitFor(() => {
+      expect(document.querySelector("img")?.getAttribute("src"))
+        .toBe("/api/recordings/1/thumbnail");
+    });
+  });
+
+  it("shows no picture only when there is genuinely none", async () => {
+    // A recording the device has no snapshot of, whose airing is gone and
+    // whose show has no series record. Nothing to lead with is still ordinary
+    // — the list is the point.
+    vi.spyOn(api, "recordingSeries").mockResolvedValue({
+      series_path: null, title: null, cover_image: null,
+    });
+    const bare = (object_id: number, start: string) => rec({
+      object_id, title: "NFL Football", subtitle: null, series_path: null, start,
+    });
+    show(bare(1, "2026-09-13T17:00:00Z"),
+         [bare(2, "2026-09-15T00:15:00Z"), bare(1, "2026-09-13T17:00:00Z")]);
+
+    await screen.findAllByRole("listitem");
     expect(document.querySelector("img")).toBeNull();
   });
 

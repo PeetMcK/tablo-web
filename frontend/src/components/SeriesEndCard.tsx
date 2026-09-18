@@ -16,6 +16,7 @@ import { Check, Play, X } from "lucide-react";
 import { api } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { formatAired } from "../lib/format";
+import { cardArt } from "../lib/recording";
 import { siblingEpisodes } from "../lib/series";
 
 /**
@@ -72,7 +73,22 @@ export function SeriesEndCard({ current, reason, onPlay, onClose }: Props) {
   });
 
   const episodes = siblingEpisodes(current, data?.recordings ?? []);
-  const cover = series?.cover_image;
+
+  /**
+   * The picture this card leads with.
+   *
+   * The series cover first, which is the one made to be looked at large. Then
+   * whatever the card in the Library is leading with, which is the same
+   * question answered once already — the airing's own artwork, else a frame.
+   *
+   * Asking only the series record left sport with nothing at all: a game has
+   * no series to carry a cover, and the six NFL recordings here have no airing
+   * row left either, so this was a bare title over a list. The Library card
+   * shows them perfectly well from their own frame, and so can this.
+   */
+  const cover = series?.cover_image != null
+    ? `/api/channels/image/${series.cover_image}`
+    : cardArt(current);
 
   return (
     <div
@@ -102,14 +118,18 @@ export function SeriesEndCard({ current, reason, onPlay, onClose }: Props) {
       </div>
 
       <div className="w-full max-w-2xl flex flex-col items-center gap-5 px-5 pb-10 pt-4">
-        {cover != null && (
+        {cover !== null && (
           // Capped in viewport height, not just in pixels: on a laptop in
           // fullscreen a poster at its natural size fills the screen and pushes
           // the list — the part that can actually be acted on — off the bottom.
+          //
+          // Held to 16:9 and filled rather than shown at its own size: a frame
+          // from an SD recording is 4:3, and left to itself it would set the
+          // hero's shape the way it once set the Library card's.
           <img
-            src={`/api/channels/image/${cover}`}
+            src={cover}
             alt=""
-            className="max-h-[34vh] w-auto rounded-xl shadow-lg"
+            className="max-h-[34vh] w-full aspect-video object-fill rounded-xl shadow-lg"
           />
         )}
 
