@@ -42,6 +42,14 @@ interface Props {
    * re-read.
    */
   onDeleted?: (objectId: number) => void;
+  /**
+   * Called when the Tablo refused, after `onDeleted` already said otherwise.
+   *
+   * The sheet is gone by then - it closed on the confirmation, along with the
+   * card - so the only place left that can put things back and explain is
+   * whoever opened it.
+   */
+  onDeleteFailed?: (objectId: number, message: string) => void;
   /** Tune to this airing's channel. Only reachable while it is on air. */
   onTune: () => void;
 }
@@ -124,7 +132,8 @@ function whenLine(start: string, duration: number): string | null {
  * title and a channel still looks deliberate instead of broken.
  */
 export function ShowInfo({
-  channel, start, channelLabel, recordingId, onClose, onDeleted, onTune,
+  channel, start, channelLabel, recordingId,
+  onClose, onDeleted, onDeleteFailed, onTune,
 }: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
   // rather than freezing at whatever it was when opened.
@@ -263,23 +272,23 @@ export function ShowInfo({
    * writing the opposite, and this cannot be put back at all. The button stays
    * until the device has confirmed the recording is gone.
    */
-  async function deleteRecording(objectId: number) {
-    setPending(true);
-    setWriteError(null);
-    try {
-      await api.deleteRecording(objectId);
-      // Gone, so the sheet goes with it: what it describes no longer exists,
-      // and the list behind it is told at once rather than finding out on its
-      // next poll fifteen seconds later.
-      onDeleted?.(objectId);
-      onClose();
-    } catch (e) {
-      setWriteError(e instanceof Error
+  function deleteRecording(objectId: number) {
+    // Everything that describes this recording goes on the same beat: the
+    // question, the sheet, and the card behind them. Waiting on the device
+    // first left the answer dismissed and the sheet sitting there for a beat -
+    // which reads as a click that did not land, and invites a second one.
+    //
+    // The optimism is answerable rather than blind: a refusal is handed to
+    // whoever opened the sheet, which is the only thing still on screen and
+    // the only thing able to put the card back.
+    onDeleted?.(objectId);
+    onClose();
+
+    void api.deleteRecording(objectId).catch((e) => {
+      onDeleteFailed?.(objectId, e instanceof Error
         ? e.message
         : "The Tablo would not delete this recording.");
-    } finally {
-      setPending(false);
-    }
+    });
   }
 
   /**

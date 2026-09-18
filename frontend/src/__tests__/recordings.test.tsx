@@ -790,6 +790,62 @@ describe("reaching a recording's information", () => {
     expect(airing).toHaveBeenCalledWith("S34654_008_01", REC.start);
   });
 
+  it("drops the card the moment delete is confirmed, not when the Tablo answers", async () => {
+    // Same beat as the sheet closing. The listing takes a device round trip to
+    // re-read, and leaving the card sitting there in the meantime reads as a
+    // delete that did not work.
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: null, start: REC.start, duration: 10800,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: true, scheduled: true, past: true,
+      schedule_state: "none", skip_reason: null, series: null,
+      recording_id: REC.object_id,
+      channel: { identifier: "S34654_008_01", call_sign: "KPAX", major: 8,
+                 minor: 1, network: "CBS", logo_url: null, kind: "ota" },
+    });
+    // Never answers, so anything that happens is the app's own doing.
+    vi.spyOn(api, "deleteRecording").mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+
+    renderWith(withChannel());
+    fireEvent.click(await screen.findByRole("button", { name: /information about/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(screen.queryByText("NFL Football")).toBeNull());
+  });
+
+  it("puts the card back and says why when the Tablo refuses", async () => {
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: null, start: REC.start, duration: 10800,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: true, scheduled: true, past: true,
+      schedule_state: "none", skip_reason: null, series: null,
+      recording_id: REC.object_id,
+      channel: { identifier: "S34654_008_01", call_sign: "KPAX", major: 8,
+                 minor: 1, network: "CBS", logo_url: null, kind: "ota" },
+    });
+    vi.spyOn(api, "deleteRecording")
+      .mockRejectedValue(new Error("The Tablo would not delete this recording."));
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+
+    renderWith(withChannel());
+    fireEvent.click(await screen.findByRole("button", { name: /information about/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    expect(await screen.findByText(/would not delete this recording/i)).toBeInTheDocument();
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
+  });
+
   it("drops the card as soon as its recording is deleted from the sheet", async () => {
     // The listing polls every fifteen seconds, and a card for something that
     // no longer exists is a card that fails when pressed. The sheet says what
