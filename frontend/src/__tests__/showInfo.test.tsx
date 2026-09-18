@@ -402,6 +402,97 @@ describe("turning a series off while one of its episodes records", () => {
   });
 });
 
+describe("the confirmation sits over the card", () => {
+  const SERIES = "/guide/series/6137";
+  const LIVE = {
+    object_id: 86323, channel_identifier: "ch2", start: "2026-09-18T06:30Z",
+    duration: 1800, recording_started: "2026-09-18T06:40:18Z",
+    recorded_seconds: 600, expected_seconds: 1182, title: "NHK Newsline",
+    series_path: SERIES,
+  };
+  const upcoming = () => detail({
+    title: "NHK Newsline", start: "2026-09-19T06:30Z", duration: 1800,
+    airing_now: false, scheduled: true, past: false,
+    series: { path: SERIES, schedule_rule: "all" },
+  });
+
+  async function raise() {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+    return await screen.findByRole("alertdialog");
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks in a dialog of its own, not a banner that shifts the card", async () => {
+    // As a banner it pushed the artwork and everything under it down the sheet,
+    // so the card jumped at the moment attention was needed on the question.
+    const dialog = await raise();
+
+    expect(dialog).toHaveTextContent(/an episode is recording now/i);
+    // The card is still there underneath, unmoved.
+    expect(screen.getByText("NHK Newsline")).toBeInTheDocument();
+  });
+
+  it("puts the safe way out under the cursor, not the destructive one", async () => {
+    // Both buttons act. Only one of them ends a recording, so the default is
+    // the one that keeps it.
+    await raise();
+
+    expect(screen.getByRole("button", { name: /keep this one/i })).toHaveFocus();
+  });
+
+  it("cancels the question on Escape without closing the sheet", async () => {
+    const onClose = vi.fn();
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={onClose} onTune={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+    await screen.findByRole("alertdialog");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("NHK Newsline")).toBeInTheDocument();
+  });
+
+  it("still closes the sheet on Escape when nothing is being asked", async () => {
+    const onClose = vi.fn();
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={onClose} onTune={() => {}} />);
+    await screen.findByText("NHK Newsline");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("does not close the sheet when the question's own backdrop is clicked", async () => {
+    // The click lands inside the sheet's bounds; closing the whole sheet would
+    // throw away the decision rather than dismissing the question.
+    const onClose = vi.fn();
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    const { container } = render(
+      <ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                onClose={onClose} onTune={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
+    await screen.findByRole("alertdialog");
+
+    fireEvent.click(container.querySelector(".confirm-backdrop")!);
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
 describe("starting a recording is confirmed", () => {
   const SLOT = "2026-09-17T16:00:00Z";
   const onNow = (over = {}) => detail({
