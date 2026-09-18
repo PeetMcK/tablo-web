@@ -661,6 +661,18 @@ async def download_recording(object_id: int):
     )
 
 
+# One BIF fetch at a time per recording.
+#
+# A pointer crossing the coverage strip asks for a frame every few pixels, and
+# on a recording whose pack is missing every one of those would otherwise start
+# its own multi-megabyte download of the same thing.
+_bif_locks: dict[int, asyncio.Lock] = {}
+
+
+def _preview_fetch_lock(object_id: int) -> asyncio.Lock:
+    return _bif_locks.setdefault(int(object_id), asyncio.Lock())
+
+
 @router.get("/{object_id}/preview")
 async def recording_preview(object_id: int, t: float = 0.0):
     """One scrub-preview thumbnail, at or just before ``t`` seconds.
@@ -671,6 +683,30 @@ async def recording_preview(object_id: int, t: float = 0.0):
     """
     _require_auth()
     frame = cache.preview_frame(object_id, t)
+
+    # Nothing here yet, so fetch the pack and answer from it.
+    #
+    # It used to be fetched only when a recording was played, so scrubbing the
+    # Library card of something never opened showed nothing at all - the
+    # previews arrived only after a watch, which is the one time they are least
+    # needed. Fetched here instead, on the first frame anybody actually asks
+    # for, so the cost falls on recordings that get scrubbed rather than on
+    # every recording in the library: the packs run 3-14 MB each, and pulling
+    # the lot on a listing would be well over a hundred megabytes off the device
+    # for pictures mostly nobody looks at.
+    #
+    # One fetch at a time per recording, so a pointer sweeping the strip cannot
+    # start a dozen of them.
+    if frame is None and not cache.preview_available(object_id):
+        async with _preview_fetch_lock(object_id):
+            if not cache.preview_available(object_id):
+                try:
+                    path, _duration = await state.resolve_recording(object_id)
+                    await cache.fetch_bif(object_id, path)
+                except Exception as e:
+                    print(f"[preview] {object_id}: {e}", flush=True)
+        frame = cache.preview_frame(object_id, t)
+
     if frame is None:
         raise HTTPException(status_code=404, detail="No preview available")
     return Response(
@@ -804,11 +840,26 @@ async def evict_recording(object_id: int):
 
 
 @router.get("/{object_id}/thumbnail")
-async def recording_thumbnail(object_id: int):
-    """Proxy the device snapshot image.
+async def recording_thumbnail(object_id: int, frame: int | None = None):
+    """Proxy the device snapshot image, or a frame the viewer chose instead.
 
     Proxied rather than linked directly because the device is reachable from the
     backend, not necessarily from the browser.
+
+    ``frame`` is the chosen position in milliseconds, and it is in the URL
+    rather than merely in the database because **a different picture has to be
+    a different address**. It was not, and the consequence was the whole feature
+    appearing to work once: this route served the snapshot as
+    `public, max-age=86400`, so any browser that fetched it before a frame was
+    picked - which is every card with no artwork behind it - held that snapshot
+    as fresh for a day and never asked again. Picking a frame then changed
+    nothing on screen, and no amount of restarting the stack helped, because the
+    staleness was in the browser.
+
+    Unvalidated on purpose. The parameter only selects among frames of this
+    recording, `preview_frame` clamps to the pack it has, and a stale or absent
+    one simply falls through to the snapshot below - so a wrong value costs an
+    old picture, never an error.
     """
     _require_auth()
 
@@ -817,14 +868,22 @@ async def recording_thumbnail(object_id: int):
     art = await _run_sync(partial(store.recording_art, object_id)) or {}
     frame_ms = art.get("cover_frame_ms")
     if frame_ms is not None:
-        frame = cache.preview_frame(object_id, frame_ms / 1000)
-        if frame is not None:
+        picture = cache.preview_frame(object_id, frame_ms / 1000)
+        if picture is not None:
             return Response(
-                content=frame,
+                content=picture,
                 media_type="image/jpeg",
-                # Short, unlike the frames themselves: which frame this is can
-                # change whenever the viewer picks another one.
-                headers={"Cache-Control": "no-cache"},
+                # Cacheable hard, now that the address says which frame this is:
+                # a different choice arrives at a different URL. Only a request
+                # that named the current frame may be kept, though - one sent
+                # before the choice was made, or after it changed, is answering
+                # a question nobody is asking any more.
+                headers={
+                    "Cache-Control": (
+                        "public, max-age=604800, immutable"
+                        if frame == int(frame_ms) else "no-cache"
+                    ),
+                },
             )
 
     # Saved copy first: an offline recording must render without the device.

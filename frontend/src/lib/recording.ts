@@ -164,7 +164,15 @@ export interface Art {
  * caption card or somebody's back.
  */
 export function cardArt(rec: Art): string | null {
-  if (rec.cover_frame !== null) return rec.thumbnail;
+  if (rec.cover_frame !== null && rec.thumbnail) {
+    // The frame goes in the address, because a different picture has to be a
+    // different URL. Without it every choice arrived at the same place, the
+    // browser served whatever it had cached there - for a recording with no
+    // artwork, a day-old snapshot - and picking a frame appeared to do nothing
+    // at all from the second time onwards.
+    const sep = rec.thumbnail.includes("?") ? "&" : "?";
+    return `${rec.thumbnail}${sep}frame=${Math.round(rec.cover_frame * 1000)}`;
+  }
   return rec.image_url ?? rec.thumbnail;
 }
 
