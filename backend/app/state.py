@@ -98,6 +98,26 @@ def _unescape(text: str | None) -> str | None:
     """
     return html.unescape(text) if isinstance(text, str) else text
 
+
+def _start_key(start: str | None) -> int | None:
+    """An airing's start as an epoch, or None when it cannot be read.
+
+    The two sources spell the same instant differently - the device sends
+    `2026-09-20T17:00Z` and the cloud `2026-09-20T17:00:00Z` - so matching one
+    against the other on the string matches nothing at all.
+
+    None rather than `store._start_epoch`'s 0, because this value is a
+    dictionary key: every unreadable start would collide on 0 and match every
+    other unreadable start, which is exactly the wrong picture on the wrong
+    sheet.
+    """
+    if not start:
+        return None
+    try:
+        return int(datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
 _lock = Lock()
 
 
@@ -1558,6 +1578,42 @@ class AppState:
                 "every row would fall back to its current programme"
             )
 
+    @staticmethod
+    def _merge_cloud_artwork(airings: list[dict], cloud: list[dict] | None) -> int:
+        """Fill each device airing's empty artwork slot from the cloud. Returns
+        how many were filled.
+
+        The device hangs artwork on the *sport*, not the event: every NFL game
+        it knows about shares one league-wide picture, because a sports airing
+        has no image field of its own and only a `sport_path` to follow. The
+        cloud carries the two teams. Same story one level down for episodes,
+        where a per-episode still beats the series cover.
+
+        Only an empty slot is filled, and only the slot: the device row keeps
+        its title, its schedule state and its `airing_path`, which are the
+        recording handles the cloud has no equivalent for and the reason the
+        device wins the row in the first place.
+        """
+        if not cloud:
+            return 0
+        by_start = {}
+        for row in cloud:
+            key = _start_key(row.get("start"))
+            if key is not None and row.get("image_url"):
+                by_start[key] = row["image_url"]
+        if not by_start:
+            return 0
+
+        filled = 0
+        for air in airings:
+            if air.get("image_url"):
+                continue
+            url = by_start.get(_start_key(air.get("start")))
+            if url:
+                air["image_url"] = url
+                filled += 1
+        return filled
+
     def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_schedule: dict, details: dict | None = None) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
         airings = channel_to_airings.get(c_path, []) if c_path else []
@@ -1569,6 +1625,8 @@ class AppState:
         # carry the recording handles the cloud has no equivalent for.
         if not airings:
             airings = list(cloud_schedule.get(c.identifier) or [])
+        else:
+            AppState._merge_cloud_artwork(airings, cloud_schedule.get(c.identifier))
         airings.sort(key=lambda x: x.get("start") or "")
         return {
             "identifier": c.identifier,
