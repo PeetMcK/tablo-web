@@ -60,9 +60,17 @@ describe("what a card leads with", () => {
       .toBe("/api/recordings/1/thumbnail?frame=612500");
   });
 
-  it("has no frame to name when there is no picture to name it on", () => {
+  it("serves a chosen frame even where the device offered no snapshot", () => {
+    // `thumbnail` is null when the device has no snapshot_image, but the route
+    // serves a chosen frame from the preview pack regardless. Leaning on the
+    // snapshot's existence dropped the card to its empty placeholder, with an
+    // undo button floating over it offering to remove a picture never shown.
     expect(cardArt(rec({ cover_frame: 300, thumbnail: null, image_url: null })))
-      .toBeNull();
+      .toBe("/api/recordings/1/thumbnail?frame=300000");
+  });
+
+  it("still has nothing to show when no frame was chosen and nothing exists", () => {
+    expect(cardArt(rec({ thumbnail: null, image_url: null }))).toBeNull();
   });
 
   it("has nothing to show when there is neither", () => {

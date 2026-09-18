@@ -146,9 +146,16 @@ export function isIncomplete(rec: Coverage): boolean {
 
 /** Everything the card's picture is chosen from. */
 export interface Art {
+  object_id: number;
   /** The show's own artwork, as the schedule resolves it. */
   image_url: string | null;
-  /** A frame from the recording, which the thumbnail route serves. */
+  /**
+   * A frame from the recording, or null where the device offered no snapshot.
+   *
+   * Null says nothing about whether a *chosen* frame can be served: that comes
+   * from the preview pack by way of the same route, which is why a cover falls
+   * back to the route's own address rather than to this.
+   */
   thumbnail: string | null;
   /** Seconds into the recording of a frame the viewer chose, or null. */
   cover_frame: number | null;
@@ -164,14 +171,20 @@ export interface Art {
  * caption card or somebody's back.
  */
 export function cardArt(rec: Art): string | null {
-  if (rec.cover_frame !== null && rec.thumbnail) {
+  if (rec.cover_frame !== null) {
+    // Built from the id rather than taken from `thumbnail`, which is null
+    // whenever the device offered no snapshot of its own. The route serves a
+    // chosen frame from the preview pack either way, so leaning on the
+    // snapshot's existence dropped the card to its empty placeholder — with an
+    // undo button floating over it, offering to remove a picture never shown.
+    const base = rec.thumbnail ?? `/api/recordings/${rec.object_id}/thumbnail`;
     // The frame goes in the address, because a different picture has to be a
     // different URL. Without it every choice arrived at the same place, the
-    // browser served whatever it had cached there - for a recording with no
-    // artwork, a day-old snapshot - and picking a frame appeared to do nothing
+    // browser served whatever it had cached there — for a recording with no
+    // artwork, a day-old snapshot — and picking a frame appeared to do nothing
     // at all from the second time onwards.
-    const sep = rec.thumbnail.includes("?") ? "&" : "?";
-    return `${rec.thumbnail}${sep}frame=${Math.round(rec.cover_frame * 1000)}`;
+    const sep = base.includes("?") ? "&" : "?";
+    return `${base}${sep}frame=${Math.round(rec.cover_frame * 1000)}`;
   }
   return rec.image_url ?? rec.thumbnail;
 }

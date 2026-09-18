@@ -824,6 +824,26 @@ def recording_art(object_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def recording_art_for(object_ids: list[int]) -> dict[int, dict]:
+    """The stored pictures for a whole listing, in one query.
+
+    The listing used to ask per recording, on the event loop, which is both a
+    query each and a SQLite connection opened on a thread that should not be
+    holding one. Everything else in that handler goes through `_run_sync`; this
+    exists so this can too.
+    """
+    ids = [int(i) for i in object_ids]
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = db.query(
+        "SELECT object_id, cover_url, cover_frame_ms FROM recording_art "
+        f"WHERE object_id IN ({marks})",
+        tuple(ids),
+    )
+    return {int(r["object_id"]): dict(r) for r in rows}
+
+
 def resolve_recording_art(items: list[dict]) -> None:
     """Work out and keep each recording's artwork, once.
 
@@ -841,30 +861,47 @@ def resolve_recording_art(items: list[dict]) -> None:
     """
     if not items:
         return
+
+    # Worked out first, outside any transaction, and written only if there is
+    # something to write.
+    #
+    # This used to hold one write open across the whole listing while doing two
+    # reads per recording inside it. Most listings change nothing at all —
+    # anything whose airing has aged out of the guide never resolves, so it is
+    # retried and fails again every single time — and a writer held open for
+    # that blocks the guide sync and resume writes against a 5s busy timeout.
+    held = recording_art_for([
+        int(r["object_id"]) for r in items if r.get("object_id") is not None
+    ])
+    pending: list[tuple[int, str]] = []
+    for rec in items:
+        object_id = rec.get("object_id")
+        if object_id is None:
+            continue
+        known = held.get(int(object_id))
+        if known and known.get("cover_url"):
+            continue
+        channel = (rec.get("channel") or {}).get("identifier")
+        url = _airing_artwork_for(db.connection(), channel, rec.get("start"))
+        if url is None:
+            # Nothing to say. A row that already exists keeps the viewer's
+            # frame and its timestamp; one that does not stays absent, so this
+            # is retried when the guide next has something.
+            continue
+        pending.append((int(object_id), url))
+
+    if not pending:
+        return
+
     stamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with db.write() as conn:
-        for rec in items:
-            object_id = rec.get("object_id")
-            if object_id is None:
-                continue
-            held = conn.execute(
-                "SELECT cover_url FROM recording_art WHERE object_id = ?",
-                (int(object_id),),
-            ).fetchone()
-            if held and held["cover_url"]:
-                continue
-            channel = (rec.get("channel") or {}).get("identifier")
-            url = _airing_artwork_for(conn, channel, rec.get("start"))
-            if url is None and held is not None:
-                # Nothing new to say, and the row already exists. Leave the
-                # viewer's frame and the timestamp alone.
-                continue
+        for object_id, url in pending:
             conn.execute(
                 "INSERT INTO recording_art(object_id, cover_url, resolved_at) "
                 "VALUES (?, ?, ?) "
                 "ON CONFLICT(object_id) DO UPDATE SET "
                 "  cover_url=excluded.cover_url, resolved_at=excluded.resolved_at",
-                (int(object_id), url, stamp),
+                (object_id, url, stamp),
             )
 
 
