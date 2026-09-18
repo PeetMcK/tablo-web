@@ -81,7 +81,7 @@ def test_patch_device_returns_the_status_and_the_body():
                                      "description": "Invalid value for 'rule' parameter",
                                      "details": {"rule": "ZZZ"}}})
 
-    state._http.request = fake_request
+    state._device_http.request = fake_request
 
     status, data = asyncio.run(state.patch_device("/guide/series/6472",
                                                   {"schedule": {"rule": "ZZZ"}}))
@@ -102,7 +102,7 @@ def test_patch_device_tolerates_a_body_that_is_not_json():
     async def fake_request(*a, **kw):
         return _Resp(502, None, text="<html>gateway</html>")
 
-    state._http.request = fake_request
+    state._device_http.request = fake_request
 
     status, data = asyncio.run(state.patch_device("/guide/series/1", {"a": 1}))
     assert (status, data) == (502, {})

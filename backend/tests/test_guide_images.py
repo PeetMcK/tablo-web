@@ -108,7 +108,7 @@ def test_the_image_fetch_follows_the_device_off_its_api_port():
 
     st = AppState()
     st.active_device = type("D", (), {"local_url": "http://10.0.0.5:8887"})()
-    st._http = FakeHttp()
+    st._device_http = FakeHttp()
 
     data, ctype = asyncio.run(st.fetch_device_image(6410))
 
@@ -145,7 +145,7 @@ def test_other_device_requests_still_do_not_follow_redirects():
 
     st = AppState()
     st.active_device = type("D", (), {"local_url": "http://10.0.0.5:8887"})()
-    st._http = FakeHttp()
+    st._device_http = FakeHttp()
 
     asyncio.run(st.request_device("GET", "/guide/channels"))
 
