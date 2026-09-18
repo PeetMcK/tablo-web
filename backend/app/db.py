@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -276,6 +276,28 @@ CREATE TABLE IF NOT EXISTS recording_art (
 """
 
 
+# Which airing a recording came from, so an airing can find its recording.
+#
+# The join has to exist somewhere and nowhere else has it: `search_doc` carries
+# only a display label like "8.1 CBS", which two channels can share, and
+# `recording` is the transcode cache's index - it holds what has been cached,
+# not what exists. The info sheet is addressed by (channel, start) and a
+# recording carries both, so this is the one table that lets the sheet say
+# anything about the recording it is describing.
+#
+# `start_epoch` rather than the text: the device writes `07:00Z` where the
+# guide may hold `07:00:00Z` for the same instant, and SQLite compares text.
+_SCHEMA_V7 = """
+CREATE TABLE IF NOT EXISTS recording_airing (
+    object_id   INTEGER PRIMARY KEY,
+    channel_id  TEXT NOT NULL,
+    start_epoch INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS recording_airing_slot
+    ON recording_airing(channel_id, start_epoch);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -362,6 +384,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V5)
             if version < 6:
                 conn.executescript(_SCHEMA_V6)
+            if version < 7:
+                conn.executescript(_SCHEMA_V7)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

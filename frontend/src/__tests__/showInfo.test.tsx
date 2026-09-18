@@ -15,6 +15,7 @@ function detail(over: Partial<AiringDetail> = {}): AiringDetail {
     image_url: "/api/channels/image/999", airing_now: true,
     schedulable: true, scheduled: false, past: false,
     schedule_state: "none", skip_reason: null,
+    recording_id: null,
     series: { path: "/guide/series/6472", schedule_rule: "none" },
     channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
                network: "PBS", logo_url: null, kind: "ota" },
@@ -488,6 +489,95 @@ describe("the confirmation sits over the card", () => {
 
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleting the recording an airing produced", () => {
+  const SLOT = "2026-09-18T07:00Z";
+  const recorded = (over = {}) => detail({
+    title: "Saturday Night Live", start: SLOT, duration: 3600,
+    airing_now: false, scheduled: true, past: true,
+    recording_id: 86353,
+    series: { path: "/guide/series/6291", schedule_rule: "none" },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers to delete what this airing recorded", async () => {
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: /delete recording/i }))
+      .toBeInTheDocument();
+  });
+
+  it("offers nothing to delete when the airing recorded nothing", async () => {
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded({ recording_id: null }));
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    await screen.findByText("Saturday Night Live");
+    expect(screen.queryByRole("button", { name: /delete recording/i })).toBeNull();
+  });
+
+  it("asks before deleting, because the Tablo cannot undo it", async () => {
+    const del = vi.spyOn(api, "deleteRecording").mockResolvedValue({
+      object_id: 86353, deleted: true,
+    });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+
+    expect(del).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/cannot be undone/i);
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
+  });
+
+  it("deletes it on the device once confirmed", async () => {
+    const del = vi.spyOn(api, "deleteRecording").mockResolvedValue({
+      object_id: 86353, deleted: true,
+    });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith(86353));
+  });
+
+  it("stops offering to delete once it is gone", async () => {
+    vi.spyOn(api, "deleteRecording").mockResolvedValue({
+      object_id: 86353, deleted: true,
+    });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /delete recording/i })).toBeNull());
+  });
+
+  it("says so when the device would not delete it", async () => {
+    vi.spyOn(api, "deleteRecording")
+      .mockRejectedValue(new Error("The Tablo would not delete this recording."));
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent(/would not delete this recording/i);
+    // Still there, because it still exists.
+    expect(screen.getByRole("button", { name: /delete recording/i })).toBeInTheDocument();
   });
 });
 

@@ -844,6 +844,71 @@ def recording_art_for(object_ids: list[int]) -> dict[int, dict]:
     return {int(r["object_id"]): dict(r) for r in rows}
 
 
+def index_recording_airings(items: list[dict]) -> None:
+    """Remember which airing each recording came from.
+
+    Fed from a listing, like the search index and the artwork, because the
+    device owns the library and a listing is the only moment we see all of it.
+
+    Deliberately not pruned here. A listing that came back short would drop
+    rows for recordings that still exist, and the cost of a stale row is one
+    lookup returning an id the delete then 404s on - where the cost of a
+    missing row is a sheet that cannot offer to delete anything.
+    """
+    rows = []
+    for rec in items:
+        object_id = rec.get("object_id")
+        channel = (rec.get("channel") or {}).get("identifier")
+        epoch = _start_epoch(rec.get("start"))
+        if object_id is None or not channel or not epoch:
+            continue
+        rows.append((int(object_id), str(channel), epoch))
+    if not rows:
+        return
+
+    with db.write() as conn:
+        for row in rows:
+            conn.execute(
+                "INSERT INTO recording_airing(object_id, channel_id, start_epoch) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(object_id) DO UPDATE SET "
+                "  channel_id=excluded.channel_id, start_epoch=excluded.start_epoch",
+                row,
+            )
+
+
+def recording_for_airing(channel: str, start: str) -> int | None:
+    """The recording this airing produced, or None.
+
+    Matched on the instant rather than its spelling: the device writes `07:00Z`
+    on a recording where the guide may hold `07:00:00Z` for the same moment.
+    """
+    epoch = _start_epoch(start)
+    if not epoch:
+        return None
+    row = db.query_one(
+        "SELECT object_id FROM recording_airing "
+        "WHERE channel_id = ? AND start_epoch = ?",
+        (str(channel), epoch),
+    )
+    return int(row["object_id"]) if row else None
+
+
+def forget_recording(object_id: int) -> None:
+    """Drop every local trace of a recording deleted on the device.
+
+    The search index included: a deleted recording that stays indexed is a
+    result that fails when clicked, which is how this was found the first time
+    (see `index_recordings`).
+    """
+    object_id = int(object_id)
+    with db.write() as conn:
+        conn.execute("DELETE FROM recording_airing WHERE object_id = ?", (object_id,))
+        conn.execute("DELETE FROM recording_art WHERE object_id = ?", (object_id,))
+        conn.execute("DELETE FROM search_doc WHERE kind = 'recording' AND ref = ?",
+                     (str(object_id),))
+
+
 def resolve_recording_art(items: list[dict]) -> None:
     """Work out and keep each recording's artwork, once.
 
@@ -1019,6 +1084,10 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
              "schedule_rule": (series or {}).get("schedule_rule")}
             if air["series_path"] else None
         ),
+        # What this airing produced, if anything, so the sheet can offer to
+        # delete it. Null until a listing has indexed the library - the device
+        # owns it, and nothing here learns about a recording before then.
+        "recording_id": recording_for_airing(channel, air["start"]),
         "channel": {
             "identifier": channel,
             "call_sign": ch["call_sign"] if ch else None,

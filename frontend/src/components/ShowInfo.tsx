@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Circle, CircleSlash, Play, SlidersHorizontal, Square, X } from "lucide-react";
+import {
+  AlertTriangle, Circle, CircleSlash, Play, SlidersHorizontal, Square, Trash2, X,
+} from "lucide-react";
 import { recordedSpan } from "../lib/recording";
 import {
   recordingFor, recordingForSeries, useRecordingsInProgress,
@@ -224,6 +226,28 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
   const seriesRecording = detail?.series
     ? recordingForSeries(inProgress, detail.series.path)
     : null;
+
+  /**
+   * Delete the recording on the Tablo, and stop offering to.
+   *
+   * Not optimistic, unlike the schedule writes: those can be put back by
+   * writing the opposite, and this cannot be put back at all. The button stays
+   * until the device has confirmed the recording is gone.
+   */
+  async function deleteRecording(objectId: number) {
+    setPending(true);
+    setWriteError(null);
+    try {
+      await api.deleteRecording(objectId);
+      setDetail((d) => (d ? { ...d, recording_id: null } : d));
+    } catch (e) {
+      setWriteError(e instanceof Error
+        ? e.message
+        : "The Tablo would not delete this recording.");
+    } finally {
+      setPending(false);
+    }
+  }
 
   /**
    * Apply a series rule, asking first when the answer would cost a recording.
@@ -538,10 +562,43 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
                 </div>
               )}
 
-              {writeError && (
-                <p role="alert" className="text-xs text-danger">{writeError}</p>
-              )}
             </div>
+          )}
+
+          {/* What this airing left behind, and the way to be rid of it.
+
+              Outside the `schedulable` block on purpose: a recording outlives
+              the schedule handles of the airing that made it, and something
+              already on the drive is still deletable when scheduling it again
+              is not.
+
+              Deletion is on the Tablo, not here - the Library's own trash
+              button drops the transcoded copy and leaves the recording on the
+              device, which is a different promise and was the only one the app
+              could keep until now. */}
+          {detail?.recording_id != null && (
+            <button
+              disabled={pending}
+              onClick={() => setConfirming({
+                label: "Delete this recording?",
+                detail: `“${detail.title ?? "This recording"}” is removed from the `
+                  + "Tablo, freeing its space. This cannot be undone.",
+                action: "Delete",
+                destructive: true,
+                run: () => void deleteRecording(detail.recording_id!),
+              })}
+              className="mt-6 w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                         text-sm font-semibold bg-fill-soft text-danger
+                         hover:bg-fill transition disabled:opacity-60
+                         focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              <Trash2 className="w-4 h-4 shrink-0" aria-hidden />
+              Delete Recording
+            </button>
+          )}
+
+          {writeError && (
+            <p role="alert" className="mt-3 text-xs text-danger">{writeError}</p>
           )}
         </div>
       </div>

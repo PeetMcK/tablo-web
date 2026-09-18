@@ -1226,6 +1226,22 @@ class AppState:
             raise KeyError(f"recording {object_id} not found")
         return self._recording_fields(await self.request_device("GET", path))
 
+    async def delete_recording(self, path: str) -> None:
+        """Delete a recording on the device. Irreversible.
+
+        Mapped by probing a real device on 2026-09-18, because nothing
+        described it: `DELETE` on the recording's own path answers 204, and a
+        GET afterwards answers 404 `object_not_found`. `OPTIONS` says nothing -
+        204 with no `Allow` header - so the verb had to be tried.
+
+        Guarded on the path's shape for the same reason `start_recording_session`
+        is: a caller that passed the wrong path here would delete whatever is
+        at the other end of it.
+        """
+        if not path.startswith("/recordings/"):
+            raise ValueError(f"not a recording path: {path}")
+        await self._request_device_raw("DELETE", path)
+
     async def resolve_recording(self, object_id: int) -> tuple[str, int]:
         """Return (device_path, duration) for a recording id.
 
