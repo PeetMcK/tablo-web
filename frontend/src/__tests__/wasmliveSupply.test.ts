@@ -216,8 +216,63 @@ describe("createSegmentSupply", () => {
     net.fail("/s0.ts");
     await settleMicrotasks();
 
-    expect(supply.inFlight).toBeLessThanOrEqual(1);
-    expect(net.asked).toContain("/s1.ts");
+    // Not latched: the next poll's advise picks it straight back up. It asks
+    // for s0 again rather than moving on, which is right — the transport's
+    // `takenThrough` has not advanced past it either, so this segment is still
+    // the next thing playback needs.
+    expect(net.asked).toEqual(["/s0.ts"]);
+    supply.advise(plan(3));
+    await settleMicrotasks();
+    expect(net.asked).toEqual(["/s0.ts", "/s0.ts"]);
+  });
+
+  it("does not walk the plan when the endpoint is refusing", async () => {
+    // Where the 404 storms came from. Every ceiling here is measured on media
+    // *held*, and a failed fetch holds nothing — so a failure could never
+    // reach the target, and pumping on one walked the whole remaining plan at
+    // full concurrency as fast as the endpoint could refuse.
+    //
+    // Measured before the fix: one advise over a 1,260-segment plan issued
+    // 1,260 requests in under 200ms. `takenThrough` only advances on success,
+    // so the next poll re-planned the lot and swept again — two sweeps being
+    // the 2,316 messages in the console screenshot, four the 4,716.
+    const net = fakeFetch();
+    const supply = createSegmentSupply({
+      fetchBytes: (u) => net.fetchBytes(u), targetSeconds: 3, concurrency: 3,
+    });
+
+    supply.advise(plan(1260));
+    await settleMicrotasks();
+    // Every one of them refuses, exactly as a dead session does.
+    for (const url of [...net.asked]) net.fail(url, "404");
+    await settleMicrotasks();
+
+    // One round of concurrency, not the plan. The transport's own `take` is
+    // what fetches for playback; this queue is only ever speculative.
+    expect(net.asked.length).toBeLessThanOrEqual(3);
+    expect(supply.inFlight).toBe(0);
+  });
+
+  it("resumes prefetching once the endpoint answers again", async () => {
+    // The other half of the same promise: refusing to sweep must not mean
+    // refusing to recover.
+    const net = fakeFetch();
+    const supply = createSegmentSupply({
+      fetchBytes: (u) => net.fetchBytes(u), targetSeconds: 3, concurrency: 1,
+    });
+
+    supply.advise(plan(4));
+    await settleMicrotasks();
+    net.fail("/s0.ts");
+    await settleMicrotasks();
+
+    supply.advise(plan(3, 1));
+    await settleMicrotasks();
+    net.settle("/s1.ts");
+    await settleMicrotasks();
+
+    expect(supply.heldSeconds).toBe(1);
+    expect(net.asked).toContain("/s2.ts");
   });
 
   it("surfaces the failure to whoever was waiting for that segment", async () => {

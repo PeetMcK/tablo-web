@@ -582,6 +582,35 @@ describe("createSession", () => {
     expect(session.failure).toBe("decode error");
   });
 
+  it("gives up at once when the backend has forgotten the session", async () => {
+    // Sessions live in the backend's memory, so a restart or the 120s idle
+    // reaper takes one out from under a player still holding its playlist.
+    // Every request after that answers 404 for ever, and retrying it quietly
+    // is what left thousands of `/api/vod/{session}/NNNNN.ts` in the console.
+    const { session } = harness({
+      fetchText: async () => { throw new Error("playlist 404"); },
+    });
+
+    await session.start();
+    await session.poll();
+
+    expect(session.failure).toBe("session gone");
+  });
+
+  it("keeps polling when the device merely blinked", async () => {
+    // The other half. A 502 is the device failing a request, not the session
+    // ceasing to exist, and giving up on one costs a rebuffer and a tuner
+    // change for something the next poll would have fixed.
+    const { session } = harness({
+      fetchText: async () => { throw new Error("playlist 502"); },
+    });
+
+    await session.start();
+    await session.poll();
+
+    expect(session.failure).toBeNull();
+  });
+
   it("fails when no frame is presented before the deadline", async () => {
     let nowMs = 0;
     const { session } = harness({ nowMs: () => nowMs });

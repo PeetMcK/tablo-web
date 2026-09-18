@@ -42,6 +42,16 @@ export type FallbackEvent =
   | { kind: "first-frame"; atMs: number }
   | { kind: "init-failed" }
   | { kind: "decode-error" }
+  /**
+   * Our own backend says the session no longer exists.
+   *
+   * The one failure here that is known rather than inferred. Sessions live in
+   * memory, so a backend restart or the 120s idle reaper takes one out from
+   * under a player that is still holding its playlist, and every request after
+   * that answers 404 for ever. Waiting for the frozen-picture watchdog to
+   * notice costs six seconds of requests that cannot succeed.
+   */
+  | { kind: "session-gone" }
   | { kind: "tick"; atMs: number };
 
 export interface FallbackState {
@@ -62,6 +72,8 @@ export function reduceFallback(state: FallbackState, event: FallbackEvent): Fall
       return { ...state, failed: "init failed" };
     case "decode-error":
       return { ...state, failed: "decode error" };
+    case "session-gone":
+      return { ...state, failed: "session gone" };
     case "first-frame":
       return { ...state, sawFirstFrame: true };
     case "tick":
