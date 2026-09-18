@@ -31,6 +31,15 @@ import type { FromWorker, ToWorker } from "./workerProtocol";
 const FROZEN_MS = 6000;
 
 /**
+ * How long the picture may hold with fields still in hand before it is worth a
+ * line in the log. Three field periods at 59.94, so ordinary jitter is quiet.
+ */
+const HELD_MS = 100;
+
+/** How often to report where the fields went. */
+const ROLLUP_MS = 5000;
+
+/**
  * How much decoded media to keep ahead of the clock.
  *
  * Decode runs at about 8x realtime, so without a limit the session swallows
@@ -310,6 +319,17 @@ export function createSession(deps: SessionDeps): LiveSession {
   let lastProgressAtMs = 0;
   /** Whether the presenter currently has nothing to draw. */
   let wasStalled = false;
+  /** Whether the picture is currently holding with fields still queued. */
+  let wasHeld = false;
+  /**
+   * Where the last rollup was taken from, so the next one reports a rate.
+   *
+   * Null rather than zero: `nowMs` is `performance.now()` in the app but zero
+   * in a test harness, and a zero sentinel there means the mark is re-taken on
+   * every tick and no interval ever elapses.
+   */
+  let rollupAtMs: number | null = null;
+  let rollupMark = { presented: 0, skipped: 0, dropped: 0, ticks: 0 };
   /** The worker's last word on what the decoder is doing. */
   let decoderStats: Record<string, unknown> | null = null;
   /**
@@ -801,6 +821,11 @@ export function createSession(deps: SessionDeps): LiveSession {
           msSinceTick: Math.round(deps.presenter.msSinceTick),
           visibility: typeof document === "undefined" ? null : document.visibilityState,
           droppedFields: deps.presenter.droppedCount,
+          // Fields passed over, and chances to draw. Together with `presented`
+          // these say whether the picture was behind because nothing arrived or
+          // because nobody was asking.
+          skippedFields: deps.presenter.skippedCount,
+          ticks: deps.presenter.tickCount,
           // How far the clock has run past the newest field. Useful here, as a
           // description of a stall that has already been detected some other
           // way; useless as the detector, which is what it used to be.
@@ -811,6 +836,36 @@ export function createSession(deps: SessionDeps): LiveSession {
         });
       }
       emit(stalled ? "waiting" : "playing");
+    }
+
+    // The stall above fires on an empty queue, and a hole in the middle of a
+    // segment does not empty the queue: it leaves it full of fields whose
+    // moment has not come. The clock runs, nothing is due, the picture holds,
+    // and until now the only thing that ever noticed was the six-second
+    // watchdog — by which point the session had already been failed over.
+    //
+    // No `emit()`. This is not a stall as far as the viewer is concerned, and
+    // raising the overlay for a quarter-second hole would be worse than the
+    // hole.
+    const held = !paused && sawAudio && deps.presenter.nothingDueMs > HELD_MS;
+    if (held !== wasHeld) {
+      wasHeld = held;
+      if (held) {
+        log.warn("picture held", {
+          heldMs: Math.round(deps.presenter.nothingDueMs),
+          queued: deps.presenter.queued,
+          oldestPts: deps.presenter.oldestPts,
+          newestPts: deps.presenter.newestPts,
+          // Raw sink clock and media time, both named, because they are what
+          // the queued timestamps and the rest of the log respectively speak.
+          rawClock: deps.audio.clockSeconds,
+          clock: mediaClock(),
+          ptsOffset,
+          msSinceTick: Math.round(deps.presenter.msSinceTick),
+          buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
+          fedThroughMedia,
+        });
+      }
     }
 
     // A stopped clock is the one failure starvation cannot see: it measures how
@@ -915,6 +970,41 @@ export function createSession(deps: SessionDeps): LiveSession {
       });
       emit("error");
     }
+
+    // Where the fields went, as rates rather than as totals.
+    //
+    // Every real finding in this area came from a number pasted into the
+    // conversation; every wrong one came from reasoning about a log that
+    // lacked it. `presented` on its own counts ticks that drew, not fields
+    // consumed, and reading it as a field rate is how "the presenter is
+    // drawing a thirtieth of what it should" survived a whole evening on the
+    // strength of a number that had never measured that.
+    //
+    // `ticks` against `drawn + skipped` is the question the rest cannot
+    // answer: animation frames stop entirely in a hidden or fully occluded
+    // window — an undocked DevTools window over the player is enough, which is
+    // how these logs get read in the first place.
+    if (rollupAtMs === null) {
+      rollupAtMs = nowMs;
+    } else if (nowMs - rollupAtMs >= ROLLUP_MS) {
+      const span = (nowMs - rollupAtMs) / 1000;
+      const per = (n: number) => Math.round(n / span);
+      log.wasm("fields", {
+        drawn: per(deps.presenter.presentedCount - rollupMark.presented),
+        skipped: per(deps.presenter.skippedCount - rollupMark.skipped),
+        refused: per(deps.presenter.droppedCount - rollupMark.dropped),
+        ticks: per(deps.presenter.tickCount - rollupMark.ticks),
+        queued: deps.presenter.queued,
+        buffered: Number(deps.audio.bufferedSeconds.toFixed(2)),
+      });
+      rollupAtMs = nowMs;
+      rollupMark = {
+        presented: deps.presenter.presentedCount,
+        skipped: deps.presenter.skippedCount,
+        dropped: deps.presenter.droppedCount,
+        ticks: deps.presenter.tickCount,
+      };
+    }
   };
 
   return {
@@ -1008,7 +1098,10 @@ export function createSession(deps: SessionDeps): LiveSession {
       ...deps.audio.diagnostics(),
       presented: deps.presenter.presentedCount,
       droppedFields: deps.presenter.droppedCount,
+      skippedFields: deps.presenter.skippedCount,
+      ticks: deps.presenter.tickCount,
       msSinceTick: Math.round(deps.presenter.msSinceTick),
+      heldMs: Math.round(deps.presenter.nothingDueMs),
       queuedFields: deps.presenter.queued,
       newestPts: deps.presenter.newestPts,
       oldestPts: deps.presenter.oldestPts,

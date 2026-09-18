@@ -4,6 +4,7 @@ import {
   createSession, CLOSE_GRACE_MS, ENDED_STILL_MS, GROWING_MAX_AGE_MS,
   LOOKAHEAD_SECONDS, POLL_INTERVAL_MS, STARVED_LOOKAHEAD_SECONDS,
 } from "../lib/wasmlive/session";
+import { log } from "../lib/debug";
 import { MAX_QUEUED_FRAMES } from "../lib/wasmlive/frameQueue";
 import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
 import type { SessionDeps } from "../lib/wasmlive/session";
@@ -70,7 +71,10 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     oldestPts: null as number | null,
     presentedCount: 0,
     droppedCount: 0,
+    skippedCount: 0,
+    tickCount: 0,
     msSinceTick: 0,
+    nothingDueMs: 0,
     queued: 0,
     destroy: vi.fn(),
   };
@@ -752,6 +756,99 @@ describe("createSession", () => {
     session.tick();
 
     expect(events).toEqual(["waiting", "playing"]);
+  });
+
+  it("warns once when the picture holds with fields still queued", async () => {
+    // A hole in the middle of a segment leaves the queue full of fields whose
+    // moment has not come, so the stall edge above never fires and nothing was
+    // recorded until the six-second watchdog.
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const { session, worker, presenter } = harness();
+    await session.start();
+    worker.onmessage?.({
+      data: {
+        type: "audio", epoch: 0,
+        chunks: [{ ptsSeconds: 36, samples: new Float32Array(2), sampleRate: 48000 }],
+      },
+    } as MessageEvent);
+
+    const held = () => warn.mock.calls.filter(([m]) => m === "picture held");
+
+    presenter.queued = 40;
+    presenter.nothingDueMs = 0;
+    session.tick();
+    expect(held()).toHaveLength(0);
+
+    presenter.nothingDueMs = 250;
+    session.tick();
+    expect(held()).toHaveLength(1);
+    expect(held()[0][1]).toMatchObject({ heldMs: 250, queued: 40 });
+
+    // Still held on the next tick: one event, not one per animation frame.
+    presenter.nothingDueMs = 280;
+    session.tick();
+    expect(held()).toHaveLength(1);
+
+    // Recovered, then held again: a second event.
+    presenter.nothingDueMs = 0;
+    session.tick();
+    presenter.nothingDueMs = 300;
+    session.tick();
+    expect(held()).toHaveLength(2);
+
+    warn.mockRestore();
+  });
+
+  it("reports field exits as rates over the interval, not as running totals", async () => {
+    // The point of the whole rollup. A total divided by nothing is the number
+    // that started this: `presented` read as a field rate when it was a count
+    // of ticks that drew.
+    const wasm = vi.spyOn(log, "wasm").mockImplementation(() => {});
+    let nowMs = 0;
+    const { session, presenter } = harness({ nowMs: () => nowMs });
+    await session.start();
+
+    session.tick();                         // takes the first mark
+
+    // Five seconds on, at a steady sixty ticks a second: 300 ticks, 290 fields
+    // drawn, 10 passed over.
+    nowMs = 5000;
+    presenter.tickCount = 300;
+    presenter.presentedCount = 290;
+    presenter.skippedCount = 10;
+    session.tick();
+
+    const rollups = wasm.mock.calls.filter(([m]) => m === "fields");
+    expect(rollups).toHaveLength(1);
+    expect(rollups[0][1]).toMatchObject({ drawn: 58, skipped: 2, ticks: 60 });
+
+    // The next interval reports its own traffic, not everything since the
+    // session opened.
+    nowMs = 10000;
+    presenter.tickCount = 600;
+    presenter.presentedCount = 580;
+    presenter.skippedCount = 20;
+    session.tick();
+
+    const second = wasm.mock.calls.filter(([m]) => m === "fields")[1];
+    expect(second[1]).toMatchObject({ drawn: 58, skipped: 2, ticks: 60 });
+
+    wasm.mockRestore();
+  });
+
+  it("does not call a held picture a problem before any audio has arrived", async () => {
+    // Startup draws nothing for a while by definition, and the still frame on a
+    // refreshed page holds indefinitely waiting on a tap.
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const { session, presenter } = harness();
+    await session.start();
+
+    presenter.queued = 40;
+    presenter.nothingDueMs = 5000;
+    session.tick();
+
+    expect(warn.mock.calls.filter(([m]) => m === "picture held")).toHaveLength(0);
+    warn.mockRestore();
   });
 
   it("does not call an empty queue a stall before any audio has arrived", async () => {
