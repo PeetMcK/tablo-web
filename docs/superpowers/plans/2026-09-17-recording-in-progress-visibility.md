@@ -604,10 +604,24 @@ and is the wrong shape for a 16:9 well.
 
 ### Why it has to be stored, not looked up
 
-`GUIDE_RETENTION_DAYS` is 31 and `prune_guide` deletes airings older than
-that. A recording outlives its airing row — a kept offline copy by years — so
-resolving live means every card silently reverts to a snapshot frame a month
-after it was recorded. Nothing would report it.
+A recording outlives its airing row — a kept offline copy by years — so
+resolving live means every card silently reverts to a snapshot frame. Nothing
+would report it.
+
+**Corrected 2026-09-18.** This section originally gave the reason as
+`GUIDE_RETENTION_DAYS` being 31, with `prune_guide` deleting anything older.
+That is wrong, and the window is days rather than a month. Retention governs
+when rows that exist are deleted and guarantees nothing about presence: the
+device lists airings forward from roughly now, so past ones are never in the
+mirror to be pruned. Measured — `min(start)` in `guide_airing` was
+`2026-09-15T23:10:00Z` while recordings from the 13th were still in the library,
+their info sheets reading "Information unavailable".
+
+The conclusion stands and is stronger than it was. The follow-on is that the
+airing cannot be the *only* source either: see the commits of 2026-09-18, which
+resolve a card's picture from the show record behind `series_path` /
+`sport_path` when the guide has nothing, and answer the info sheet from the
+recording rather than the listing.
 
 So the answer is resolved once, when a listing indexes the library, and kept.
 

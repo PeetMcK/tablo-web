@@ -259,9 +259,16 @@ ALTER TABLE guide_channel ADD COLUMN favourite INTEGER;
 # recording in the library has a picture.
 #
 # `cover_url` is resolved once, when a listing indexes the library, and kept -
-# because `prune_guide` drops airings at 31 days and a recording outlives its
-# airing row, a kept copy by years. Resolved live instead, every old card would
-# quietly revert to a snapshot frame with nothing to report it.
+# because a recording outlives its airing row, and a kept copy by years.
+# Resolved live instead, every old card would quietly revert to a snapshot frame
+# with nothing to report it.
+#
+# The window is days, not the month `GUIDE_RETENTION_DAYS` suggests. That
+# setting governs when `prune_guide` deletes rows that exist; it guarantees
+# nothing about presence, and the device lists airings forward from roughly now,
+# so past ones are never mirrored at all. Measured 2026-09-18: the earliest row
+# in `guide_airing` was from the 15th while recordings from the 13th were still
+# in the library.
 #
 # `cover_frame_ms` is a *position*, not a picture: the frame the viewer picked
 # is already on disk in the BIF pack the scrub preview reads, so an override
