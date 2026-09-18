@@ -289,6 +289,8 @@ interface PlayerView {
   subtitle: string | null;
   program: Program | null | undefined;
   programRemaining: number;
+  /** Where the picture is coming from, when that is worth saying. */
+  sourceNote: string | null;
   barStart: number;
   barEnd: number;
   span: number;
@@ -479,6 +481,8 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [rangeEnd, setRangeEnd] = useState(0);
   const [cacheState, setCacheState] = useState<CacheState | null>(null);
   const [cachedRanges, setCachedRanges] = useState<[number, number][]>([]);
+  /** Seconds of the local copy that exist, for the partial-copy notice. */
+  const [cachedSeconds, setCachedSeconds] = useState(0);
   /** Progress of the window playback is waiting on, when one is being encoded. */
   const [encodingAt, setEncodingAt] = useState<EncodingProgress | null>(null);
   /**
@@ -551,6 +555,22 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const subtitle = isLive
     ? source.channel.display_name
     : (source.recording.subtitle ?? "");
+
+  /**
+   * What is playing, when it is not the device's own MPEG-2.
+   *
+   * Silent on the ordinary path, because saying "this is the good one" on
+   * every recording is noise. It speaks for the local copy: a complete one is
+   * worth knowing about, since it plays when the device is off and explains
+   * why the picture is softer than usual — and a partial one is worth knowing
+   * about urgently, because it simply stops early, which without this reads
+   * as the player breaking.
+   */
+  const sourceNote = isLive || usingWasm || source.kind !== "recording" ? null
+    : cacheState === "complete" ? "Offline copy"
+    : source.recording.offline_only
+      ? `Offline copy · only ${fmt(cachedSeconds)} of ${fmt(source.recording.duration)}`
+      : null;
 
   const atLiveEdge = isLive && rangeEnd - position < LIVE_EDGE_THRESHOLD;
 
@@ -1027,6 +1047,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
             autoplay: openPlaying,
           });
           setCacheState(r.state);
+          setCachedSeconds(r.cached_seconds ?? 0);
           setCachedRanges(r.cached_ranges ?? []);
           openSurface(r.stream_url);
         }
@@ -1120,6 +1141,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
           error: s.error,
         });
         setCachedRanges(s.cached_ranges ?? []);
+        setCachedSeconds(secs);
         setEncodingAt(s.encoding ?? null);
         if (s.state === "complete") clearInterval(id);
       } catch {
@@ -1920,7 +1942,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
-    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
+    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
     onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
@@ -1988,7 +2010,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     poppedOut, togglePictureInPicture, enterFullscreen,
     paused, togglePlay, skip, muted, toggleMute,
     volume, changeVolume, volumeSettable,
-    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining,
+    isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
     onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
@@ -2491,6 +2513,11 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
               {program && (
                 <p className="text-[10px] text-player-fg-muted tabular-nums mt-0.5">
                   {clockTime(program.start)} · {programRemaining}m left
+                </p>
+              )}
+              {sourceNote && (
+                <p className="text-[10px] text-player-fg-muted tabular-nums mt-0.5">
+                  {sourceNote}
                 </p>
               )}
             </div>

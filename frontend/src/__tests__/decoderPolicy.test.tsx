@@ -148,3 +148,73 @@ describe("the transcode is not a rescue", () => {
     await waitFor(() => expect(watch).toHaveBeenCalledWith(REC.object_id));
   });
 });
+
+/**
+ * Saying which copy is playing.
+ *
+ * The local copy is a worse picture than the device's own MPEG-2, and a
+ * partial one stops early. Both of those read as the player breaking unless
+ * the player says what it is doing.
+ */
+describe("the player says when it is playing a local copy", () => {
+  beforeEach(() => {
+    wasm.eligible = true;
+    wasm.opens = [];
+    wasm.open.mockReset();
+    wasm.open.mockImplementation((options: OpenOptions) => {
+      wasm.opens.push(options);
+      return Promise.resolve(stubSurface());
+    });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(api, "stopStream").mockResolvedValue({ ok: true });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  function renderRecording(recording: Recording) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <VideoPlayer source={{ kind: "recording", recording }} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+  }
+
+  const watch = (state: "complete" | "partial", cached: number) =>
+    vi.spyOn(api, "watchRecording").mockResolvedValue({
+      object_id: REC.object_id, stream_url: "/t.m3u8", duration: REC.duration,
+      state, progress: cached / REC.duration, cached_seconds: cached,
+      cached_ranges: [[0, cached]],
+    });
+
+  it("names the complete copy it is playing", async () => {
+    watch("complete", REC.duration);
+    renderRecording({ ...REC, pinned: true, cache_state: "complete" });
+
+    expect(await screen.findByText("Offline copy")).toBeInTheDocument();
+  });
+
+  it("says how much of a partial copy exists, because it ends there", async () => {
+    // The device no longer holds this recording, so a partial copy is all
+    // there is — and it stops at 1:00 with no explanation otherwise.
+    watch("partial", 60);
+    renderRecording({ ...REC, offline_only: true, cache_state: "partial" });
+
+    expect(await screen.findByText(/only 1:00 of/)).toBeInTheDocument();
+  });
+
+  it("says nothing when the device's own MPEG-2 is playing", async () => {
+    // The good path is the ordinary one. Announcing it on every recording is
+    // noise.
+    vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 746, growing: false, mode: "vod",
+    });
+    const { container } = renderRecording(REC);
+
+    await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+    expect(container.textContent).not.toContain("Offline copy");
+  });
+});
