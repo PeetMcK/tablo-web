@@ -553,7 +553,18 @@ export function LibraryView() {
                     invalid and unreachable by keyboard. The ordinary case
                     keeps its full-bleed button below, so nothing changes for
                     it — the whole picture is still the target. */}
-                <div className="group/art aspect-video bg-surface-sunken relative block w-full">
+                {/* `overflow-hidden` is not decoration here, and neither is the
+                    absolute positioning on the picture inside.
+
+                    `aspect-video` states a *preferred* ratio, and a block's
+                    automatic minimum size lets content override it - so a 4:3
+                    picture grew the well to 4:3 and pushed the title down with
+                    it. Only frames from SD recordings did, the pack being
+                    320x240 for those and 320x180 for everything else, which is
+                    what made it look arbitrary: the same card was 16:9 with its
+                    artwork and 4:3 the moment a frame was chosen for it. */}
+                <div className="group/art aspect-video bg-surface-sunken relative block w-full
+                                overflow-hidden">
                   {/* The show's own artwork, the way the schedule's info box
                       resolves it — the airing's picture, else the series
                       cover. A frame from the recording is the floor rather
@@ -573,7 +584,11 @@ export function LibraryView() {
                       // with non-square pixels, and cropping one to fit takes
                       // an eighth off the top and bottom instead of
                       // un-squeezing it.
-                      className="w-full h-full object-fill"
+                      // Absolute, so the picture cannot size the well it sits
+                      // in — an out-of-flow box contributes nothing to its
+                      // parent's height, which is what makes `aspect-video`
+                      // above hold whatever shape the frame happens to be.
+                      className="absolute inset-0 w-full h-full object-fill"
                       loading="lazy"
                       // A card whose artwork link is dead falls back to the
                       // frame it still has, rather than showing the empty box.
