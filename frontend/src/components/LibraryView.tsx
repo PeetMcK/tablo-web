@@ -452,6 +452,13 @@ export function LibraryView() {
           start={infoFor.start}
           channelLabel={infoFor.channel.call_sign ?? undefined}
           onClose={() => setInfoFor(null)}
+          // Re-read rather than splice the row out: the listing carries
+          // storage totals and the device's own count alongside the cards, and
+          // guessing at those from here would make them disagree.
+          onDeleted={() => {
+            qc.invalidateQueries({ queryKey: ["recordings"] });
+            qc.invalidateQueries({ queryKey: ["recordings-storage"] });
+          }}
           // "Watch Live" only renders while the airing is actually on, which
           // for the Library means a recording still being written. Its live
           // edge is the same pictures, and we already hold them — so this

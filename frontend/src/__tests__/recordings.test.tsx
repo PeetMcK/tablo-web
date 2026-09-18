@@ -790,6 +790,41 @@ describe("reaching a recording's information", () => {
     expect(airing).toHaveBeenCalledWith("S34654_008_01", REC.start);
   });
 
+  it("drops the card as soon as its recording is deleted from the sheet", async () => {
+    // The listing polls every fifteen seconds, and a card for something that
+    // no longer exists is a card that fails when pressed. The sheet says what
+    // it deleted, so the list can re-read at once rather than waiting.
+    vi.spyOn(api, "airingDetail").mockResolvedValue({
+      title: "NFL Football", episode_title: null, season_number: null,
+      episode_number: null, description: null, start: REC.start, duration: 10800,
+      orig_air_date: null, genres: [], rating: null, image_url: null,
+      airing_now: false, schedulable: true, scheduled: true, past: true,
+      schedule_state: "none", skip_reason: null, series: null,
+      recording_id: REC.object_id,
+      channel: { identifier: "S34654_008_01", call_sign: "KPAX", major: 8,
+                 minor: 1, network: "CBS", logo_url: null, kind: "ota" },
+    });
+    vi.spyOn(api, "deleteRecording").mockResolvedValue({
+      object_id: REC.object_id, deleted: true,
+    });
+    const listing = vi.spyOn(api, "recordings")
+      .mockResolvedValueOnce({ recordings: [withChannel()], returned: 1, total: 1,
+                               offline_only: 0 })
+      .mockResolvedValue({ recordings: [], returned: 0, total: 0, offline_only: 0 });
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: /information about/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(listing).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("NFL Football")).toBeNull());
+  });
+
   it("offers nothing to open when the channel is unknown", async () => {
     // An offline copy of something the device has since deleted has no airing
     // left to describe, and a button that opens an error is worse than none.

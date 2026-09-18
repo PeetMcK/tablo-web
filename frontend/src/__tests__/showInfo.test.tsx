@@ -551,18 +551,50 @@ describe("deleting the recording an airing produced", () => {
     await waitFor(() => expect(del).toHaveBeenCalledWith(86353));
   });
 
-  it("stops offering to delete once it is gone", async () => {
+  it("closes the sheet once the recording is gone", async () => {
+    // Nothing on it is true any more: the card behind it has gone too, and a
+    // sheet describing a deleted recording is a sheet about nothing.
+    const onClose = vi.fn();
     vi.spyOn(api, "deleteRecording").mockResolvedValue({
       object_id: 86353, deleted: true,
     });
     vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
-    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={onClose} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
 
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /delete recording/i })).toBeNull());
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("tells whoever opened it what was deleted", async () => {
+    // So the list behind it can drop the row without waiting for a poll.
+    const onDeleted = vi.fn();
+    vi.spyOn(api, "deleteRecording").mockResolvedValue({
+      object_id: 86353, deleted: true,
+    });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}}
+                     onDeleted={onDeleted} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(86353));
+  });
+
+  it("stays open when the delete failed, because nothing has changed", async () => {
+    const onClose = vi.fn();
+    vi.spyOn(api, "deleteRecording")
+      .mockRejectedValue(new Error("The Tablo would not delete this recording."));
+    vi.spyOn(api, "airingDetail").mockResolvedValue(recorded());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={onClose} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await screen.findByRole("alert");
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("says so when the device would not delete it", async () => {
