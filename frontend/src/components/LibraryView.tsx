@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
-import type { Recording } from "../api/tablo";
+import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
 import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Info, Loader2, Pause, Radio, Trash2, Undo2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
@@ -461,12 +461,43 @@ export function LibraryView() {
           // delete the one whose card was opened.
           recordingId={infoFor.object_id}
           onClose={() => setInfoFor(null)}
-          // Re-read rather than splice the row out: the listing carries
-          // storage totals and the device's own count alongside the cards, and
-          // guessing at those from here would make them disagree.
-          onDeleted={() => {
+          // The row goes on the same beat as the sheet, before the device has
+          // answered: re-reading the listing costs a round trip of its own, and
+          // a card still sitting there afterwards reads as a delete that did
+          // not work.
+          //
+          // Spliced out of the cached listing rather than refetched, then
+          // reconciled by the invalidation that follows - which also corrects
+          // the totals this cannot honestly guess at.
+          onDeleted={(objectId) => {
+            qc.setQueryData(["recordings"], (held?: RecordingList) => (
+              held
+                ? { ...held,
+                    recordings: held.recordings.filter((r) => r.object_id !== objectId),
+                    returned: Math.max(0, held.returned - 1),
+                    total: Math.max(0, held.total - 1) }
+                : held
+            ));
+          }}
+          // Only once the Tablo has actually done it. Re-reading alongside the
+          // delete reads the library before the delete lands and puts the card
+          // straight back, where it sits until the next poll - measured at 515ms
+          // for the listing against 597ms for the delete, and a card that
+          // returned for the rest of the interval.
+          onDeleteConfirmed={() => {
             qc.invalidateQueries({ queryKey: ["recordings"] });
             qc.invalidateQueries({ queryKey: ["recordings-storage"] });
+          }}
+          // It is still there after all, so put it back and say why. The sheet
+          // that asked has gone, so this is the only place left to say it.
+          onDeleteFailed={(_objectId, message) => {
+            qc.invalidateQueries({ queryKey: ["recordings"] });
+            setConfirmation({
+              title: "The recording was not deleted.",
+              body: message,
+              confirmLabel: "OK",
+              onConfirm: () => {},
+            });
           }}
           // "Watch Live" only renders while the airing is actually on, which
           // for the Library means a recording still being written. Its live
