@@ -336,3 +336,107 @@ def test_the_row_is_left_empty_when_neither_source_has_anything():
     st = AppState()
     row = st._assemble_grid_row(_channel("nest"), {}, {}, {}, {})
     assert row["airings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Artwork merge
+#
+# The device hangs artwork on the sport, not the event: every NFL game on the
+# device shares one league-wide picture, where the cloud carries the two teams.
+# See docs/superpowers/specs/2026-09-18-cloud-artwork-for-ota-airings-design.md.
+# ---------------------------------------------------------------------------
+
+def _sport_event(when="2026-09-20T17:00:00Z", url="https://cdn/vikings-at-bears.jpg"):
+    a = _cloud_airing(ident="ota1", when=when,
+                      title="Minnesota Vikings at Chicago Bears")
+    a["kind"] = "sportEvent"
+    a["show"] = {"identifier": "C191277_SPORTS", "title": "NFL Football"}
+    a["images"] = [{"kind": "coverLarge", "url": url}] if url else []
+    return a
+
+
+def _ota_row(st, device_airings, cloud_airings):
+    return st._assemble_grid_row(
+        _channel("ota1"), {}, {"/guide/channels/1": "ota1"},
+        {"/guide/channels/1": device_airings},
+        {"ota1": [AppState._cloud_airing_row(a) for a in cloud_airings]},
+    )
+
+
+def test_an_ota_airing_with_no_artwork_takes_the_clouds():
+    st = AppState()
+    device = [{"title": "NFL Football", "start": "2026-09-20T17:00Z",
+               "duration": 12300, "image_url": None}]
+
+    row = _ota_row(st, device, [_sport_event()])
+
+    assert row["airings"][0]["image_url"] == "https://cdn/vikings-at-bears.jpg"
+
+
+def test_the_device_airing_keeps_everything_else_it_came_with():
+    """Only the empty artwork slot is filled - the recording handles the cloud
+    has no equivalent for are why the device wins the row."""
+    st = AppState()
+    device = [{"title": "NFL Football", "start": "2026-09-20T17:00Z",
+               "duration": 12300, "image_url": None,
+               "airing_path": "/guide/sports/events/77800",
+               "schedule_state": "scheduled"}]
+
+    got = _ota_row(st, device, [_sport_event()])["airings"][0]
+
+    assert got["title"] == "NFL Football"
+    assert got["airing_path"] == "/guide/sports/events/77800"
+    assert got["schedule_state"] == "scheduled"
+
+
+def test_artwork_the_device_already_has_is_not_overwritten():
+    st = AppState()
+    device = [{"title": "Nature", "start": "2026-09-20T17:00Z", "duration": 3600,
+               "image_url": "/api/channels/image/4242"}]
+
+    row = _ota_row(st, device, [_sport_event()])
+
+    assert row["airings"][0]["image_url"] == "/api/channels/image/4242"
+
+
+def test_the_two_sources_spell_the_same_instant_differently():
+    """The device omits the seconds the cloud writes, so a string compare
+    matches nothing at all."""
+    st = AppState()
+    device = [{"title": "NFL Football", "start": "2026-09-20T17:00Z",
+               "duration": 12300, "image_url": None}]
+
+    row = _ota_row(st, device, [_sport_event(when="2026-09-20T17:00:00Z")])
+
+    assert row["airings"][0]["image_url"] == "https://cdn/vikings-at-bears.jpg"
+
+
+def test_a_cloud_row_at_another_start_is_not_borrowed():
+    """A near match would put one programme's picture on another's sheet."""
+    st = AppState()
+    device = [{"title": "NFL Football", "start": "2026-09-20T17:00Z",
+               "duration": 12300, "image_url": None}]
+
+    row = _ota_row(st, device, [_sport_event(when="2026-09-20T20:25:00Z")])
+
+    assert row["airings"][0]["image_url"] is None
+
+
+def test_a_cloud_row_with_no_artwork_leaves_the_airing_alone():
+    st = AppState()
+    device = [{"title": "NFL Football", "start": "2026-09-20T17:00Z",
+               "duration": 12300, "image_url": None}]
+
+    row = _ota_row(st, device, [_sport_event(url=None)])
+
+    assert row["airings"][0]["image_url"] is None
+
+
+def test_an_unreadable_start_is_skipped_rather_than_guessed_at():
+    st = AppState()
+    device = [{"title": "NFL Football", "start": "whenever", "duration": 12300,
+               "image_url": None}]
+
+    row = _ota_row(st, device, [_sport_event()])
+
+    assert row["airings"][0]["image_url"] is None
