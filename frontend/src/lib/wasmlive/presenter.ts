@@ -25,7 +25,15 @@ export interface FieldPresentation {
 
 export interface PresenterDeps {
   /** The audio clock, in media seconds. */
-  now(): number;
+  /**
+   * The audio clock, in media seconds, or null before it has started.
+   *
+   * Null is not zero. A suspended AudioContext renders no samples, so on a
+   * page opened without a user gesture the clock has no value at all — and
+   * collapsing that to zero made every decoded field look like the distant
+   * future, so nothing was ever due and the viewer got a black frame.
+   */
+  now(): number | null;
   /** Put a frame's planes on the GPU. Called once per frame, not per field. */
   upload(frame: DecodedVideoFrame): void;
   /** Draw one field from whatever was last uploaded. */
@@ -55,6 +63,8 @@ export function createPresenter(deps: PresenterDeps): Presenter {
   let dropped = 0;
   let lastTickMs: number | null = null;
   let sinceTick = 0;
+  /** The field drawn as a still while the clock is stopped, so it is drawn once. */
+  let stillShown: FieldPresentation | null = null;
   /** What is currently on the GPU, so two fields of one frame upload once. */
   let uploaded: DecodedVideoFrame | null = null;
 
@@ -100,7 +110,29 @@ export function createPresenter(deps: PresenterDeps): Presenter {
       sinceTick = lastTickMs === null ? 0 : at - lastTickMs;
       lastTickMs = at;
 
-      const { present, keep } = selectFrame(queue, deps.now());
+      const clock = deps.now();
+
+      // No clock yet: show the picture rather than nothing.
+      //
+      // Chrome will not start an AudioContext without user activation, so a
+      // refreshed page waits with a stopped clock. The fields are decoded and
+      // queued — they simply have timestamps the clock has not reached. Drawing
+      // the oldest of them puts the frame at the resume point on screen, so the
+      // player looks paused rather than broken, and leaves it queued so that
+      // ordinary presentation still begins there once the sound starts.
+      if (clock === null) {
+        const first = queue[0];
+        if (!first || stillShown === first) return;
+        if (uploaded !== first.source) {
+          deps.upload(first.source);
+          uploaded = first.source;
+        }
+        deps.draw(first);
+        stillShown = first;
+        return;
+      }
+
+      const { present, keep } = selectFrame(queue, clock);
       queue = keep;
       if (!present) return;
 

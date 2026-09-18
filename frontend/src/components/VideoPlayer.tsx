@@ -289,6 +289,8 @@ interface PlayerView {
   subtitle: string | null;
   program: Program | null | undefined;
   programRemaining: number;
+  /** The sound is waiting on a tap, and nothing on screen would say so. */
+  needsGesture: boolean;
   /** Where the picture is coming from, when that is worth saying. */
   sourceNote: string | null;
   barStart: number;
@@ -479,6 +481,15 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rangeStart, setRangeStart] = useState(0);
   const [rangeEnd, setRangeEnd] = useState(0);
+  /**
+   * The sound is waiting for a gesture, and the viewer cannot know that.
+   *
+   * Chrome will not start an AudioContext without user activation, so a page
+   * opened or refreshed into a recording sits silent with a still frame until
+   * something is touched. Saying so is the whole fix — the policy is the
+   * browser's and the page cannot bypass it.
+   */
+  const [needsGesture, setNeedsGesture] = useState(false);
   const [cacheState, setCacheState] = useState<CacheState | null>(null);
   const [cachedRanges, setCachedRanges] = useState<[number, number][]>([]);
   /** Seconds of the local copy that exist, for the partial-copy notice. */
@@ -626,6 +637,19 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   useEffect(() => { sourceRef.current = source; });
   useEffect(() => { onPositionRef.current = onPosition; }, [onPosition]);
   useEffect(() => { cachedRangesRef.current = cachedRanges; }, [cachedRanges]);
+
+  // Watched rather than assumed: the context can be resumed by a touch
+  // anywhere on the page, including one this player never sees.
+  useEffect(() => {
+    setNeedsGesture(false);
+    const id = setInterval(() => {
+      const state = surfaceRef.current?.diagnostics?.().audioContext;
+      if (state === undefined) return;
+      setNeedsGesture(state === "suspended");
+      if (state !== "suspended") clearInterval(id);
+    }, 250);
+    return () => clearInterval(id);
+  }, [sourceKey]);
 
   // A new source means a new encoder, so the previous one's numbers must not
   // carry over — they showed the incoming channel as fully transcoded before it
@@ -1978,6 +2002,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     paused, togglePlay, skip, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
+    needsGesture,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
     onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
@@ -2046,6 +2071,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     paused, togglePlay, skip, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
+    needsGesture,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
     onBarPointerDown, onBarPointerMove, onBarPointerUp, onBarKeyDown, setHoverAt,
@@ -2171,6 +2197,21 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     return (
       <div className="dark fixed inset-0 z-50 bg-media flex items-center justify-center">
         <div ref={videoHostRef} className="w-full h-full" />
+
+      {/* Waiting on a tap. `pointer-events-none` deliberately: the tap that
+          dismisses this has to reach the surface beneath, which swallows it
+          rather than treating it as a skip. */}
+      {needsGesture && !loading && !combinedError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2
+                        pointer-events-none">
+          <div className="rounded-2xl glass px-5 py-4 flex flex-col items-center gap-1">
+            <p className="text-player-fg text-sm font-bold">Tap to play</p>
+            <p className="text-player-fg-muted text-[11px]">
+              Your browser starts sound only after a tap
+            </p>
+          </div>
+        </div>
+      )}
       </div>
     );
   }

@@ -133,7 +133,9 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
   let lastField: FieldPresentation | null = null;
 
   const presenter = createPresenter({
-    now: () => audio.clockSeconds ?? 0,
+    // Null while the context is suspended, and the presenter needs to know:
+    // see its `now`.
+    now: () => audio.clockSeconds,
     nowMs: () => performance.now(),
     upload: (frame) => renderer.upload(frame),
     draw: (field) => {

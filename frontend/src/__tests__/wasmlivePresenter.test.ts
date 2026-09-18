@@ -26,7 +26,10 @@ function harness(startClock = 0) {
       pts: entry.ptsSeconds, parity: entry.parity, interlaced: entry.interlaced,
     }),
   });
-  return { presenter, drawn, uploaded, setClock: (t: number) => { clock = t; } };
+  return {
+    presenter, drawn, uploaded,
+    setClock: (t: number | null) => { clock = t as number; },
+  };
 }
 
 describe("createPresenter", () => {
@@ -152,5 +155,61 @@ describe("createPresenter", () => {
     presenter.offer(decoded(8));
     presenter.destroy();
     expect(presenter.queued).toBe(0);
+  });
+});
+
+describe("before the clock has started", () => {
+  it("draws the oldest field so the viewer sees a picture, not black", () => {
+    // Chrome will not start an AudioContext without user activation, so a
+    // refreshed page waits with no clock at all. The fields are decoded and
+    // queued — they simply carry timestamps nothing has reached yet. Zero is
+    // not a valid answer for "what time is it": every field then looks like
+    // the distant future and none is ever due.
+    const h = harness();
+    h.setClock(null);
+    h.presenter.offer(decoded(100));
+
+    h.presenter.tick();
+
+    expect(h.drawn).toHaveLength(1);
+    expect(h.drawn[0].pts).toBe(100);
+  });
+
+  it("draws that still once, not on every frame", () => {
+    const h = harness();
+    h.setClock(null);
+    h.presenter.offer(decoded(100));
+
+    h.presenter.tick();
+    h.presenter.tick();
+    h.presenter.tick();
+
+    expect(h.drawn).toHaveLength(1);
+  });
+
+  it("keeps the field queued, so playback still begins there", () => {
+    // The still is a look at what is waiting, not a consumption of it.
+    const h = harness();
+    h.setClock(null);
+    h.presenter.offer(decoded(100));
+    h.presenter.tick();
+    h.drawn.length = 0;
+
+    // Just past the first field and short of the second, so exactly the field
+    // that was shown as a still is the one now due.
+    h.setClock(100.005);
+    h.presenter.tick();
+
+    expect(h.drawn.length).toBeGreaterThan(0);
+    expect(h.drawn[0].pts).toBe(100);
+  });
+
+  it("draws nothing when there is nothing decoded yet", () => {
+    const h = harness();
+    h.setClock(null);
+
+    h.presenter.tick();
+
+    expect(h.drawn).toEqual([]);
   });
 });
