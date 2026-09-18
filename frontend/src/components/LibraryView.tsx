@@ -575,14 +575,20 @@ export function LibraryView() {
                       // un-squeezing it.
                       className="w-full h-full object-fill"
                       loading="lazy"
-                      // A card that has artwork and a dead image link would
-                      // otherwise show the alt box rather than the frame it
-                      // still has.
+                      // A card whose artwork link is dead falls back to the
+                      // frame it still has, rather than showing the empty box.
+                      //
+                      // Compared as resolved URLs. `img.src` reads back
+                      // absolute and `rec.thumbnail` is a path, so comparing
+                      // them directly never matched - the fallback reassigned
+                      // the same address forever, an error loop that also
+                      // fetched the un-keyed thumbnail URL and cached a
+                      // snapshot there for a day.
                       onError={(e) => {
                         const img = e.currentTarget;
-                        if (rec.thumbnail && img.src !== rec.thumbnail) {
-                          img.src = rec.thumbnail;
-                        }
+                        if (!rec.thumbnail) return;
+                        const fallback = new URL(rec.thumbnail, location.href).href;
+                        if (img.src !== fallback) img.src = fallback;
                       }}
                     />
                   ) : (

@@ -40,7 +40,29 @@ describe("what a card leads with", () => {
   it("lets a frame the viewer chose outrank the artwork", () => {
     // Served through the thumbnail route, which knows about the override.
     expect(cardArt(rec({ image_url: "/api/channels/image/9345", cover_frame: 612 })))
-      .toBe("/api/recordings/1/thumbnail");
+      .toBe("/api/recordings/1/thumbnail?frame=612000");
+  });
+
+  it("puts the frame in the address, so a new choice is a new picture", () => {
+    // The whole feature appeared to work once without this. Every choice
+    // arrived at the same URL, the browser served what it had cached there -
+    // for a card with no artwork behind it, a day-old snapshot - and nothing
+    // changed on screen from the second pick onwards.
+    const first = cardArt(rec({ cover_frame: 300 }));
+    const second = cardArt(rec({ cover_frame: 900 }));
+    expect(first).not.toBe(second);
+  });
+
+  it("rounds the frame to whole milliseconds", () => {
+    // It is a cache key as much as a position; a float would spell the same
+    // frame two ways.
+    expect(cardArt(rec({ cover_frame: 612.5 })))
+      .toBe("/api/recordings/1/thumbnail?frame=612500");
+  });
+
+  it("has no frame to name when there is no picture to name it on", () => {
+    expect(cardArt(rec({ cover_frame: 300, thumbnail: null, image_url: null })))
+      .toBeNull();
   });
 
   it("has nothing to show when there is neither", () => {
