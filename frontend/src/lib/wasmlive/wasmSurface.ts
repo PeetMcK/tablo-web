@@ -47,9 +47,13 @@ export function createWasmSurface(session: LiveSession): PlaybackSurface {
         handlers.get(event)!.add(handler);
         return () => handlers.get(event)?.delete(handler);
       }
-      // A live stream has no "ended", and pausing is a local state change that
-      // the player already knows it made.
-      if (event === "paused" || event === "ended") return () => {};
+      // Pausing is a local state change the player already knows it made.
+      //
+      // "ended" used to be refused here too, on the grounds that a live stream
+      // has none — true, and beside the point, because this surface also plays
+      // recordings. The session decides: it emits an end only for an index that
+      // carries EXT-X-ENDLIST, so a live channel still never sees one.
+      if (event === "paused") return () => {};
       return session.on(event, handler);
     },
 

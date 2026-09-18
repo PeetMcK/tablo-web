@@ -718,6 +718,27 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       setWaiting(false);
     };
 
+    /**
+     * The recording ran out, which is not the same as the decoder stopping.
+     *
+     * Nothing listened for this on any surface until now, so the end of a
+     * recording was whatever each path happened to do when it got there: the
+     * `<video>` element simply stopped, and the WASM session's picture went
+     * still, was mistaken for a wedged decoder six seconds later, and the whole
+     * session was failed as a decode error.
+     *
+     * Holding on the last frame, paused, is the least it can do — and it is
+     * what the overlay of the rest of the series will sit on top of.
+     */
+    const onEnded = () => {
+      log.player(`reached the end at ${fmt(surface.currentTime)}`);
+      clearTimeout(grace);
+      grace = undefined;
+      setWaiting(false);
+      surface.pause();
+      sync();
+    };
+
     const offs = [
       surface.on("timeupdate", sync),
       surface.on("ready", sync),
@@ -725,6 +746,7 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       surface.on("volumechange", onVolume),
       surface.on("waiting", onWait),
       surface.on("playing", onPlaying),
+      surface.on("ended", onEnded),
     ];
     sync(true);
     return () => offs.forEach((off) => off());

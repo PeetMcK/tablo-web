@@ -17,6 +17,17 @@ export interface MediaPlaylist {
   mediaSequence: number;
   programDateTimeMs: number | null;
   segments: PlaylistSegment[];
+  /**
+   * The index is complete: this is the whole recording and it will not grow.
+   *
+   * Read rather than ignored because it is the only thing that separates an
+   * ending from a wait. A session that has been handed every segment the index
+   * names has stopped for one of two reasons - the media ran out, or the device
+   * has not written the next piece yet - and from the decoder's side those look
+   * the same. This tag is the difference, and a recording still being written
+   * gains it the moment the device finishes.
+   */
+  endList: boolean;
 }
 
 export interface SegmentLocation {
@@ -32,6 +43,7 @@ export function parseMediaPlaylist(text: string): MediaPlaylist {
   let mediaSequence = 0;
   let programDateTimeMs: number | null = null;
   let duration: number | null = null;
+  let endList = false;
 
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -44,6 +56,8 @@ export function parseMediaPlaylist(text: string): MediaPlaylist {
     } else if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:")) {
       const parsed = Date.parse(line.slice("#EXT-X-PROGRAM-DATE-TIME:".length));
       if (Number.isFinite(parsed) && programDateTimeMs === null) programDateTimeMs = parsed;
+    } else if (line === "#EXT-X-ENDLIST") {
+      endList = true;
     } else if (line.startsWith("#EXTINF:")) {
       duration = parseFloat(line.slice("#EXTINF:".length));
     } else if (line.startsWith("#")) {
@@ -56,7 +70,7 @@ export function parseMediaPlaylist(text: string): MediaPlaylist {
     }
   }
 
-  return { targetDuration, mediaSequence, programDateTimeMs, segments };
+  return { targetDuration, mediaSequence, programDateTimeMs, segments, endList };
 }
 
 export function playlistWindow(

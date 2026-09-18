@@ -32,6 +32,14 @@ describe("parseMediaPlaylist", () => {
     ]);
   });
 
+  it("reads whether the index is finished", () => {
+    // The only thing that separates an ending from a wait. A recording still
+    // being written runs out of segments constantly — that is what catching up
+    // to the device looks like — and gains this tag once it is done.
+    expect(parseMediaPlaylist(PLAYLIST).endList).toBe(false);
+    expect(parseMediaPlaylist(PLAYLIST + "#EXT-X-ENDLIST\n").endList).toBe(true);
+  });
+
   it("reads the date of the first segment it holds", () => {
     expect(parseMediaPlaylist(PLAYLIST).programDateTimeMs).toBe(
       Date.parse("2026-09-16T20:00:30Z"),
@@ -132,6 +140,7 @@ describe("startNearEdge", () => {
     mediaSequence,
     programDateTimeMs: null,
     segments: durations.map((duration, i) => ({ uri: `${i}.ts`, duration })),
+    endList: false,
   });
 
   it("counts back from the newest segment, not from the window's start", () => {

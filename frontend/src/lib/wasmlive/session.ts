@@ -218,7 +218,8 @@ export interface SessionDeps {
   };
 }
 
-export type SessionEvent = "ready" | "timeupdate" | "waiting" | "playing" | "error";
+export type SessionEvent =
+  | "ready" | "timeupdate" | "waiting" | "playing" | "ended" | "error";
 
 export interface LiveSession {
   start(): Promise<void>;
@@ -329,6 +330,35 @@ export function createSession(deps: SessionDeps): LiveSession {
    * few hundred milliseconds.
    */
   let seekedTo: number | null = null;
+  /** So the end is announced once rather than on every animation frame. */
+  let announcedEnd = false;
+
+  /**
+   * Every segment the index names has been handed to the decoder.
+   *
+   * The state nothing could see, and the reason every recording died at its
+   * end. The watchdog below measures presentations, so a decoder that has run
+   * out of media and a decoder that has wedged produce the identical
+   * observation — and six seconds later the session was failed as a decode
+   * error, reported as one, and handed to a rebuild that fed the lone short
+   * final fragment to a fresh demuxer, which cannot probe on it.
+   */
+  function fedToTheEnd(): boolean {
+    if (playlist === null || playlist.segments.length === 0) return false;
+    return takenThrough >= playlist.mediaSequence + playlist.segments.length - 1;
+  }
+
+  /**
+   * And the index is final, so there will never be another segment.
+   *
+   * `EXT-X-ENDLIST` is the whole of the difference between an ending and a
+   * wait. A recording still being written reaches the end of its index all the
+   * time — that is what catching up to the device looks like — and gains the
+   * tag only once the device has finished.
+   */
+  function atTheEnd(): boolean {
+    return fedToTheEnd() && (playlist!.endList || (!!deps.vod && !deps.vod.growing));
+  }
 
   deps.worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const message = event.data;
@@ -448,9 +478,16 @@ export function createSession(deps: SessionDeps): LiveSession {
     // already held, because `seekable` is derived from it, so nothing about a
     // fresh read can change where the seek lands — it would only add latency to
     // the one operation that must feel instant.
+    // Except when it has been fed to the end of what it holds, which is the
+    // one moment the age is the wrong question. A viewer who catches up to the
+    // frontier is waiting on a segment that only a re-read can reveal, and the
+    // staleness window is 8s against a watchdog that gives up after 6 — so
+    // watching a programme as it records, which is the point of this path, was
+    // a guaranteed death two seconds before the index would next be read.
     const growingIsStale = deps.vod?.growing === true
       && seekTarget === null
-      && deps.nowMs() - playlistReadAtMs >= GROWING_MAX_AGE_MS;
+      && (fedToTheEnd()
+        || deps.nowMs() - playlistReadAtMs >= GROWING_MAX_AGE_MS);
 
     if (!deps.vod || playlist === null || growingIsStale) {
       const text = await deps.fetchText(deps.playlistUrl);
@@ -710,6 +747,22 @@ export function createSession(deps: SessionDeps): LiveSession {
       // the viewer sat paused and calls it a stall, which fell the session
       // back to the transcode on every resume more than six seconds later.
       lastProgressAtMs = nowMs;
+    } else if (deps.vod && fedToTheEnd()) {
+      // Nor is running out of media, and for the same reason: the watchdog
+      // asks whether the decoder is still drawing, and a decoder with nothing
+      // left to draw answers no. Held rather than skipped, so that a viewer who
+      // seeks back out of the end is not immediately judged on however long
+      // they sat at it.
+      //
+      // Only for a recording. A live ring is re-read every poll and playback
+      // trails its edge by ten seconds, so reaching the end of the index there
+      // means the device has genuinely stopped producing — which is the failure
+      // this watchdog is live's only detector for.
+      //
+      // The cost is that a decoder wedging inside the final segment goes
+      // unnoticed. One segment, against failing every recording that plays to
+      // its end.
+      lastProgressAtMs = nowMs;
     } else if (deps.presenter.presentedCount > 0) {
       if (deps.presenter.presentedCount !== lastPresentedCount) {
         lastPresentedCount = deps.presenter.presentedCount;
@@ -721,6 +774,31 @@ export function createSession(deps: SessionDeps): LiveSession {
         fallback = reduceFallback(fallback, { kind: "decode-error" });
       }
     }
+    // The recording is over: nothing left to feed, nothing left to draw, and
+    // nothing left to hear.
+    //
+    // All three, because the first on its own is a lie. The last segment is
+    // handed over a second or two before the viewer sees it, and announcing the
+    // end there would cut the ending off — which is precisely the part someone
+    // watched the whole programme for.
+    // Drawing rather than sound is what says playback happened at all: a
+    // recording with no audio track buffers nothing from its first frame to its
+    // last, and would otherwise never be allowed to end. A decoder that drew
+    // nothing is a different thing entirely, and the first-frame deadline above
+    // already has it.
+    if (!paused && !announcedEnd && atTheEnd()
+        && deps.presenter.presentedCount > 0
+        && deps.presenter.queued === 0
+        && deps.audio.bufferedSeconds <= 0) {
+      announcedEnd = true;
+      log.player("recording ended", {
+        at: Number((mediaClock() ?? 0).toFixed(2)),
+        takenThrough,
+        presented: deps.presenter.presentedCount,
+      });
+      emit("ended");
+    }
+
     // Once, not sixty times a second. `emit("error")` used to fire on every
     // animation frame for the rest of the session, and the same flag that
     // already keeps the log line to one occurrence serves for both.
@@ -761,6 +839,9 @@ export function createSession(deps: SessionDeps): LiveSession {
       // presenter's fields go with it.
       seekTarget = mediaSeconds;
       seekedTo = mediaSeconds;
+      // Seeking back out of the end un-ends it, so playing to the end a second
+      // time says so a second time.
+      announcedEnd = false;
       // The decoder restarts, so the timeline it emits does too: both the
       // anchor and the offset have to be re-derived from the next segment.
       ptsOffset = null;
