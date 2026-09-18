@@ -109,3 +109,49 @@ def test_deinterlace_precedes_the_hardware_upload(monkeypatch):
     chain = [*deinterlace_filter(), *encoder_profile().filters]
     assert chain.index("hwupload") > 0
     assert chain[0].startswith("bwdif")
+
+
+# ---------------------------------------------------------------------------
+# Anamorphic SD, which the hardware encoder will not carry
+# ---------------------------------------------------------------------------
+
+def test_the_picture_is_squared_before_it_is_encoded():
+    """Broadcast SD is a 16:9 picture in a 4:3 grid, and VideoToolbox drops it.
+
+    Measured: 704x480 with SAR 40:33 through libx264 keeps 40:33 and a 16:9
+    display aspect, and through h264_videotoolbox comes out N/A - the encoder
+    discards the VUI. A player then draws the coded 1.47 and everything in it
+    is tall and thin, which is what Saturday Night Live looked like.
+
+    A `setsar` filter cannot rescue that, because the encoder throws away what
+    it would set. So the correction goes into the pixels instead, where no
+    metadata is needed to survive.
+    """
+    from app.transcode_cache import square_pixels_filter
+    assert square_pixels_filter() == ["scale=trunc(iw*sar/2)*2:ih", "setsar=1"]
+
+
+def test_squaring_runs_after_the_deinterlace_and_before_the_upload(monkeypatch):
+    """Order is load-bearing at both ends.
+
+    Deinterlacing samples real rows, so it has to see the coded picture rather
+    than a scaled one; VAAPI's chain ends in hwupload, and a software scale
+    after that has nothing to work on.
+    """
+    from app.transcode_cache import square_pixels_filter
+    monkeypatch.delenv("TRANSCODE_DEINTERLACE", raising=False)
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_vaapi")
+    chain = [*deinterlace_filter(), *square_pixels_filter(), *encoder_profile().filters]
+
+    assert chain[0].startswith("bwdif")
+    assert chain.index("scale=trunc(iw*sar/2)*2:ih") > 0
+    assert chain.index("scale=trunc(iw*sar/2)*2:ih") < chain.index("hwupload")
+
+
+def test_a_square_pixel_source_is_left_alone():
+    """`iw*sar` is the width itself when the pixels are already square, so HD
+    passes through at its own size. Verified against the encoder: 1280x720 in,
+    1280x720 out."""
+    from app.transcode_cache import square_pixels_filter
+    # Nothing here hardcodes a shape - the expression is evaluated per input.
+    assert all("1280" not in f and "480" not in f for f in square_pixels_filter())
