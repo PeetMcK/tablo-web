@@ -1148,6 +1148,267 @@ describe("seeking at or past the end of a recording", () => {
   });
 });
 
+describe("a recording that plays to its end", () => {
+  const VOD = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:6.000,
+00000.ts
+#EXTINF:6.000,
+00001.ts
+#EXTINF:6.000,
+00002.ts
+#EXT-X-ENDLIST
+`;
+
+  /** Play it through, feeding as the clock advances the way the timer does. */
+  async function playOut(h: ReturnType<typeof harness>) {
+    h.setBuffered(1);
+    for (let t = 0; t <= 18; t += 1) {
+      h.setClock(t);
+      await h.session.poll();
+      h.presenter.presentedCount += 120;
+    }
+  }
+
+  it("does not call the media running out a decode error", async () => {
+    // The failure every recording hit at its end. The watchdog only ever
+    // watched `presentedCount`, so a decoder handed the last segment and a
+    // decoder wedged mid-stream produced the identical observation - and six
+    // seconds after the last field was drawn the session was failed, reported
+    // as "decode error", and handed to a rebuild that cannot work on one short
+    // final fragment.
+    let nowMs = 0;
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
+    h.setClock(null);
+    await h.session.start();
+    await playOut(h);
+    expect(h.session.diagnostics().takenThrough).toBe(2);
+
+    h.presenter.presentedCount = 600;      // it played
+    h.session.tick();
+    nowMs = 60000;                          // and then there was no more
+    h.session.tick();
+
+    expect(h.session.failure).toBeNull();
+  });
+
+  it("still gives up on a decoder that wedges before the end", async () => {
+    // The cost of the rule above, and the bound on it: standing down covers
+    // only a session that has been fed everything the index names. One with
+    // segments left to feed is still watched exactly as before.
+    let nowMs = 0;
+    const h = harness({
+      nowMs: () => nowMs,
+      vod: { durationSeconds: 18 },
+      fetchText: async () => VOD,
+    });
+    h.setClock(0);
+    h.setBuffered(1);
+    await h.session.start();
+    expect(h.session.diagnostics().takenThrough).toBeLessThan(2);
+
+    h.presenter.presentedCount = 60;
+    h.session.tick();
+    nowMs = 60000;
+    h.session.tick();
+
+    expect(h.session.failure).toBe("decode error");
+  });
+
+  it("says so once, when the last of it has been drawn and heard", async () => {
+    // Not merely when the last segment was handed over: the decoder is still
+    // holding a second of it, and the viewer has not seen the ending yet.
+    const events: string[] = [];
+    const h = harness({ vod: { durationSeconds: 18 }, fetchText: async () => VOD });
+    h.setClock(null);
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    await playOut(h);
+
+    // Fed to the end, but the presenter still holds fields and the sink still
+    // holds sound.
+    h.presenter.queued = 40;
+    h.session.tick();
+    expect(events).toEqual([]);
+
+    h.presenter.queued = 0;
+    h.setBuffered(0);
+    h.session.tick();
+    h.session.tick();
+
+    expect(events).toEqual(["ended"]);
+  });
+
+  it("un-ends when the viewer seeks back into it", async () => {
+    const events: string[] = [];
+    const h = harness({ vod: { durationSeconds: 18 }, fetchText: async () => VOD });
+    h.setClock(null);
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    await playOut(h);
+    h.setBuffered(0);
+    h.session.tick();
+    expect(events).toEqual(["ended"]);
+
+    h.setClock(2);
+    h.session.seek(2);
+    await h.session.poll();
+    h.session.tick();
+    expect(events).toEqual(["ended"]);
+
+    // And says so again when it reaches the end a second time.
+    await playOut(h);
+    h.setBuffered(0);
+    h.session.tick();
+    expect(events).toEqual(["ended", "ended"]);
+  });
+
+  it("carries the end through the surface the player talks to", async () => {
+    // Emitting it into the session alone changes nothing: `createWasmSurface`
+    // returned a no-op for `ended` on the grounds that live has no end, and a
+    // recording is not live.
+    const events: string[] = [];
+    const h = harness({ vod: { durationSeconds: 18 }, fetchText: async () => VOD });
+    h.setClock(null);
+    await h.session.start();
+    const surface = createWasmSurface(h.session);
+    surface.on("ended", () => events.push("ended"));
+    await playOut(h);
+    h.setBuffered(0);
+    h.session.tick();
+
+    expect(events).toEqual(["ended"]);
+  });
+
+  it("does not end a live channel, which has no end", async () => {
+    const events: string[] = [];
+    const h = harness();                    // no vod, no ENDLIST
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    h.setBuffered(0);
+    h.session.tick();
+    h.session.tick();
+
+    expect(events).toEqual([]);
+  });
+});
+
+describe("catching up to a recording still being written", () => {
+  it("re-reads the index at once rather than waiting out the staleness window", async () => {
+    // `GROWING_MAX_AGE_MS` is 8s and `FROZEN_MS` is 6s, so a viewer who reaches
+    // the frontier of an in-progress recording waits two seconds longer for the
+    // next segment than the watchdog waits before calling the session broken.
+    // Watching something as it records - the point of the whole feature - was a
+    // guaranteed failure.
+    let playlistFetches = 0;
+    let clockMs = 0;
+    const h = harness({
+      vod: { durationSeconds: 6, growing: true },
+      nowMs: () => clockMs,
+      fetchText: async () => { playlistFetches += 1; return vodPlaylist(4); },
+    });
+    h.setClock(null);
+    await h.session.start();
+
+    // Play out the four segments it has, which is everything the device has
+    // written so far.
+    h.setBuffered(1);
+    for (let t = 0; t <= 6; t += 1) {
+      h.setClock(t);
+      await h.session.poll();
+    }
+    expect(h.session.diagnostics().takenThrough).toBe(3);
+    const before = playlistFetches;
+
+    // Well inside the staleness window, which is where the death happened.
+    clockMs = 1000;
+    await h.session.poll();
+
+    expect(playlistFetches).toBeGreaterThan(before);
+  });
+
+  it("does not call the frontier a frozen picture", async () => {
+    let clockMs = 0;
+    const h = harness({
+      vod: { durationSeconds: 6, growing: true },
+      nowMs: () => clockMs,
+      fetchText: async () => vodPlaylist(4),
+    });
+    h.setClock(null);
+    await h.session.start();
+    h.setBuffered(1);
+    for (let t = 0; t <= 6; t += 1) {
+      h.setClock(t);
+      await h.session.poll();
+    }
+
+    h.presenter.presentedCount = 240;
+    h.session.tick();
+    clockMs = 60000;
+    h.session.tick();
+
+    expect(h.session.failure).toBeNull();
+  });
+
+  it("does not announce an end while the device is still writing", async () => {
+    // Waiting at the frontier is a rebuffer, not an ending. The index says so:
+    // it carries no EXT-X-ENDLIST until the recording finishes.
+    const events: string[] = [];
+    const h = harness({
+      vod: { durationSeconds: 6, growing: true },
+      fetchText: async () => vodPlaylist(4),
+    });
+    h.setClock(null);
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    h.setBuffered(1);
+    for (let t = 0; t <= 6; t += 1) {
+      h.setClock(t);
+      await h.session.poll();
+      h.presenter.presentedCount += 120;
+    }
+    h.setBuffered(0);
+    h.session.tick();
+
+    expect(events).toEqual([]);
+  });
+
+  it("ends when the device finishes writing and the index says so", async () => {
+    // The recording completes under a viewer who caught up to it. The re-read
+    // brings back EXT-X-ENDLIST, and from there it is an ending like any other.
+    const events: string[] = [];
+    let clockMs = 0;
+    let finished = false;
+    const h = harness({
+      vod: { durationSeconds: 6, growing: true },
+      nowMs: () => clockMs,
+      fetchText: async () => vodPlaylist(4) + (finished ? "#EXT-X-ENDLIST\n" : ""),
+    });
+    h.setClock(null);
+    await h.session.start();
+    h.session.on("ended", () => events.push("ended"));
+    h.setBuffered(1);
+    for (let t = 0; t <= 6; t += 1) {
+      h.setClock(t);
+      await h.session.poll();
+      h.presenter.presentedCount += 120;
+    }
+
+    finished = true;
+    clockMs = 1000;
+    await h.session.poll();
+    h.setBuffered(0);
+    h.session.tick();
+
+    expect(events).toEqual(["ended"]);
+  });
+});
+
 describe("a seek whose decoder never opens", () => {
   const VOD = `#EXTM3U
 #EXT-X-TARGETDURATION:6
