@@ -51,6 +51,18 @@ export interface Presenter {
   readonly presentedCount: number;
   /** Fields refused because the queue was full. Each one is a hole. */
   readonly droppedCount: number;
+  /**
+   * Fields passed over because a newer one was also due.
+   *
+   * Not a hole: the picture stayed on the clock, which is the whole point of
+   * showing the newest due field rather than the oldest. But it is the
+   * difference between `presentedCount` and the rate fields were offered at,
+   * and without it `presentedCount` — which counts ticks that drew, not fields
+   * consumed — reads as a field rate it was never measuring.
+   */
+  readonly skippedCount: number;
+  /** Calls to `tick()`: how often there was a chance to draw at all. */
+  readonly tickCount: number;
   /** Milliseconds between the last two ticks — the gap since a chance to draw. */
   readonly msSinceTick: number;
   readonly queued: number;
@@ -61,6 +73,8 @@ export function createPresenter(deps: PresenterDeps): Presenter {
   let queue: FieldPresentation[] = [];
   let presented = 0;
   let dropped = 0;
+  let skipped = 0;
+  let ticks = 0;
   let lastTickMs: number | null = null;
   let sinceTick = 0;
   /** The field drawn as a still while the clock is stopped, so it is drawn once. */
@@ -101,6 +115,8 @@ export function createPresenter(deps: PresenterDeps): Presenter {
     },
 
     tick() {
+      ticks++;
+
       // The gap since the last tick, which is the gap since the last chance to
       // draw. Animation frames stop entirely in a hidden or fully occluded
       // window, and while they are stopped the queue fills and every further
@@ -132,8 +148,13 @@ export function createPresenter(deps: PresenterDeps): Presenter {
         return;
       }
 
-      const { present, keep } = selectFrame(queue, clock);
+      const { present, drop, keep } = selectFrame(queue, clock);
       queue = keep;
+      // The third way a field leaves the queue, and the one nothing counted.
+      // Drawn and refused each had a number; passed over did not, so the three
+      // exits never added up to what was offered and no amount of arguing about
+      // `presentedCount` could have settled what it meant.
+      skipped += drop.length;
       if (!present) return;
 
       if (uploaded !== present.source) {
@@ -159,6 +180,16 @@ export function createPresenter(deps: PresenterDeps): Presenter {
     /** Fields refused because the queue was full. Each one is a hole. */
     get droppedCount() {
       return dropped;
+    },
+
+    /** Fields passed over because a newer one was also due. */
+    get skippedCount() {
+      return skipped;
+    },
+
+    /** Calls to `tick()`: how often there was a chance to draw at all. */
+    get tickCount() {
+      return ticks;
     },
 
     /** Milliseconds between the last two ticks: how long since a chance to draw. */

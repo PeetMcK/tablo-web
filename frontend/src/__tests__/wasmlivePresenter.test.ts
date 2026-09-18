@@ -212,4 +212,59 @@ describe("before the clock has started", () => {
 
     expect(h.drawn).toEqual([]);
   });
+
+  it("counts the fields it skipped past, so no field leaves the queue uncounted", () => {
+    const h = harness();
+    // Three frames, six fields, spanning about a tenth of a second.
+    h.presenter.offer(decoded(1));
+    h.presenter.offer(decoded(1 + FRAME));
+    h.presenter.offer(decoded(1 + FRAME * 2));
+    expect(h.presenter.queued).toBe(6);
+
+    // One tick, arriving after every one of them is due: the newest is drawn
+    // and the other five are passed over. Those five used to vanish without a
+    // number attached to them, which is why `presentedCount` could never be
+    // compared against the field rate.
+    h.setClock(1 + FRAME * 3);
+    h.presenter.tick();
+
+    expect(h.drawn).toHaveLength(1);
+    expect(h.presenter.presentedCount).toBe(1);
+    expect(h.presenter.skippedCount).toBe(5);
+    expect(h.presenter.queued).toBe(0);
+  });
+
+  it("accounts for every field offered: drawn, skipped, refused, or still queued", () => {
+    const h = harness();
+    // Twice the cap offered, so admission refuses as well, and all three exits
+    // are exercised at once.
+    const frames = MAX_QUEUED_FRAMES;
+    for (let i = 0; i < frames; i++) h.presenter.offer(decoded(1 + FRAME * i));
+    const offered = frames * 2;
+
+    h.setClock(1 + FRAME * 10);
+    h.presenter.tick();
+    h.setClock(1 + FRAME * 20);
+    h.presenter.tick();
+
+    expect(
+      h.presenter.presentedCount + h.presenter.skippedCount
+        + h.presenter.droppedCount + h.presenter.queued,
+    ).toBe(offered);
+  });
+
+  it("counts every tick, including the ones with nothing due", () => {
+    const h = harness();
+    h.presenter.offer(decoded(1));
+    // The clock is behind the fields, so nothing is due and nothing is drawn —
+    // but the animation frame still happened, and that is the quantity being
+    // measured. A tick rate below the field rate is the difference between
+    // "the decoder produced nothing" and "nobody asked to draw".
+    h.setClock(0.5);
+    h.presenter.tick();
+    h.presenter.tick();
+
+    expect(h.presenter.presentedCount).toBe(0);
+    expect(h.presenter.tickCount).toBe(2);
+  });
 });
