@@ -124,6 +124,7 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
 
   const presenter = createPresenter({
     now: () => audio.clockSeconds ?? 0,
+    nowMs: () => performance.now(),
     upload: (frame) => renderer.upload(frame),
     draw: (field) => {
       lastField = field;

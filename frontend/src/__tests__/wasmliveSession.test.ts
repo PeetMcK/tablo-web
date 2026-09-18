@@ -69,6 +69,8 @@ function harness(overrides: Partial<SessionDeps> = {}) {
     newestPts: null as number | null,
     oldestPts: null as number | null,
     presentedCount: 0,
+    droppedCount: 0,
+    msSinceTick: 0,
     queued: 0,
     destroy: vi.fn(),
   };
@@ -236,6 +238,42 @@ describe("pacing", () => {
 
     expect(h.fed()).toEqual([]);
     expect(h.fetched.filter((u) => u.endsWith(".ts")).length).toBeGreaterThan(0);
+  });
+
+  it("holds back from a full queue before the buffer is comfortable", async () => {
+    // The gate used to require 1.5s of audio before it would hold anything
+    // back, so between the starvation floor and comfortable it was unarmed —
+    // and since segments started arriving from the supply rather than from
+    // the network, that band is where the buffer sits most of the time. A
+    // full queue refuses what it is offered, and a refused field is a hole.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(1.0);
+    h.presenter.queued = MAX_QUEUED_FRAMES;
+    await h.session.start();
+
+    expect(h.fed()).toEqual([]);
+  });
+
+  it("refills an empty field queue without waiting out the lookahead", async () => {
+    // An empty queue is starvation as surely as an empty audio buffer, and
+    // only the audio had an escape: with no fields at all the transport still
+    // waited for `fedAhead` to fall under the lookahead, which is why a video
+    // stall lasted 0.86s and 1.26s in the traces from 2026-09-17 rather than
+    // ending when more media arrived. Feeding is what refills the queue.
+    const h = harness({ fetchText: async () => DEEP_PLAYLIST });
+    h.setClock(null);
+    h.setBuffered(5);
+    await h.session.start();
+    const before = h.fed().length;
+
+    // Playing, comfortable on sound, fed well past the lookahead — and no
+    // fields. Only the escape can feed here.
+    h.presenter.presentedCount = 10;
+    h.presenter.queued = 0;
+    await h.session.poll();
+
+    expect(h.fed().length).toBeGreaterThan(before);
   });
 
   it("feeds a starving decoder even so, because silence stops the clock", async () => {

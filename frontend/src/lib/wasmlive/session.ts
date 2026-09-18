@@ -61,20 +61,6 @@ export const LOOKAHEAD_SECONDS = 2;
 const MIN_BUFFER_SECONDS = 0.5;
 
 /**
- * Buffered audio at which the field queue is allowed to hold feeding back.
- *
- * Well clear of `MIN_BUFFER_SECONDS`, and that gap is the point. The queue
- * gate below stops the transport when the presenter already has all the fields
- * it can hold; gating it on merely being above the starvation floor makes the
- * floor a set point, and a session sitting on its floor has no margin for a
- * slow device poll. Measured: a soak that held the buffer at exactly 0.5s for
- * eighty-four seconds while drifting from ten seconds behind the live edge to
- * twenty, and then gave up. (The rule it gave up under has since been removed
- * — see `fallback.ts` — but riding the floor is still the wrong place to sit.)
- */
-const COMFORTABLE_BUFFER_SECONDS = 1.5;
-
-/**
  * Segments a poll may feed while the clock is stopped for want of sound.
  *
  * Enough to restart it, few enough that startup - where the buffer is empty
@@ -608,13 +594,40 @@ export function createSession(deps: SessionDeps): LiveSession {
         // Feeding a bounded amount per poll breaks the cycle without letting
         // startup, where the buffer is also empty, swallow the window.
         const wedged = sawAudio && deps.audio.bufferedSeconds <= 0;
-        if (wedged) {
+        // An empty field queue is starvation as surely as an empty audio
+        // buffer, and until now only the audio had an escape: with no fields
+        // at all the transport still waited for `fedAhead` to fall under the
+        // lookahead, which is why a video stall lasted the better part of a
+        // second — 0.86s and 1.26s measured on 2026-09-17 — rather than
+        // ending the moment more media arrived. Feeding is what refills the
+        // queue, so refusing to feed while it is empty is the one case the
+        // lookahead must not govern.
+        // Guarded on having drawn something: at startup the queue is empty by
+        // definition, and bypassing pacing there is how the whole primed
+        // window used to be swallowed in one pass.
+        const videoDry = deps.presenter.presentedCount > 0 && deps.presenter.queued === 0;
+        if (wedged || videoDry) {
           if (fedThisPoll >= WEDGED_SEGMENTS_PER_POLL) break;
         } else if (fedAhead > limit) break;
-        // And whatever the media says, do not decode into a full queue - but
-        // only once there is enough sound to keep the clock moving while we
-        // wait, because the clock is what drains the queue in the first place.
-        if (deps.audio.bufferedSeconds > COMFORTABLE_BUFFER_SECONDS
+        // And whatever the media says, do not decode into a full queue: the
+        // queue refuses what it cannot hold, and a refused field is a hole in
+        // the timeline rather than merely a short queue.
+        //
+        // This used to require a comfortable audio buffer before it would
+        // hold anything back, so that relieving audio starvation could not be
+        // blocked by a full queue. But the gate was then unarmed exactly when
+        // the buffer sits between the floor and comfortable — which, since
+        // segments started arriving from the supply rather than from the
+        // network, is where it now sits most of the time. The floor is the
+        // right threshold: below it the clock is at risk of stopping and
+        // sound wins; at or above it, destroying fields to decode more is a
+        // straight loss.
+        //
+        // (The old threshold was a `COMFORTABLE_BUFFER_SECONDS` of 1.5,
+        // chosen so a session could not sit on its starvation floor as a set
+        // point. That concern belongs to the audio escape above, which is
+        // where it now lives; it never had anything to do with the queue.)
+        if (deps.audio.bufferedSeconds >= MIN_BUFFER_SECONDS
             && deps.presenter.queued > QUEUE_HIGH_WATER) break;
 
         // The timeline has a place again, so the seek's own answer is no
@@ -748,7 +761,20 @@ export function createSession(deps: SessionDeps): LiveSession {
       wasStalled = stalled;
       if (stalled) {
         log.warn("waiting for fields", {
-          clock: deps.audio.clockSeconds,
+          // The raw sink clock. Media time is this plus `ptsOffset`, which is
+          // what every other line logs — comparing the two as though they were
+          // the same quantity reads as a three-second clock jump that is not
+          // happening.
+          rawClock: deps.audio.clockSeconds,
+          clock: mediaClock(),
+          ptsOffset,
+          // Animation frames stop in a hidden or fully occluded window, and
+          // while they are stopped the queue fills and every further field is
+          // refused. A long gap here says nobody was asking to draw; a short
+          // one says the decoder produced nothing.
+          msSinceTick: Math.round(deps.presenter.msSinceTick),
+          visibility: typeof document === "undefined" ? null : document.visibilityState,
+          droppedFields: deps.presenter.droppedCount,
           // How far the clock has run past the newest field. Useful here, as a
           // description of a stall that has already been detected some other
           // way; useless as the detector, which is what it used to be.
@@ -955,6 +981,8 @@ export function createSession(deps: SessionDeps): LiveSession {
       kind: "wasm",
       ...deps.audio.diagnostics(),
       presented: deps.presenter.presentedCount,
+      droppedFields: deps.presenter.droppedCount,
+      msSinceTick: Math.round(deps.presenter.msSinceTick),
       queuedFields: deps.presenter.queued,
       newestPts: deps.presenter.newestPts,
       oldestPts: deps.presenter.oldestPts,

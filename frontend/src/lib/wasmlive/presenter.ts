@@ -30,6 +30,8 @@ export interface PresenterDeps {
   upload(frame: DecodedVideoFrame): void;
   /** Draw one field from whatever was last uploaded. */
   draw(entry: FieldPresentation): void;
+  /** Wall clock, for measuring the gap between ticks. */
+  nowMs?(): number;
 }
 
 export interface Presenter {
@@ -39,6 +41,10 @@ export interface Presenter {
   /** The oldest field still queued, which is the next one due. */
   readonly oldestPts: number | null;
   readonly presentedCount: number;
+  /** Fields refused because the queue was full. Each one is a hole. */
+  readonly droppedCount: number;
+  /** Milliseconds between the last two ticks — the gap since a chance to draw. */
+  readonly msSinceTick: number;
   readonly queued: number;
   destroy(): void;
 }
@@ -46,6 +52,9 @@ export interface Presenter {
 export function createPresenter(deps: PresenterDeps): Presenter {
   let queue: FieldPresentation[] = [];
   let presented = 0;
+  let dropped = 0;
+  let lastTickMs: number | null = null;
+  let sinceTick = 0;
   /** What is currently on the GPU, so two fields of one frame upload once. */
   let uploaded: DecodedVideoFrame | null = null;
 
@@ -70,11 +79,27 @@ export function createPresenter(deps: PresenterDeps): Presenter {
   return {
     offer(frame: DecodedVideoFrame) {
       for (const field of fieldsOf(frame)) {
-        queue = admit(queue, field).queue;
+        const { queue: next, dropped: lost } = admit(queue, field);
+        queue = next;
+        // Counted rather than discarded silently. A full queue refuses the
+        // field being offered, and a refused field is a hole in the timeline
+        // rather than merely a short queue — but nothing has ever counted
+        // them, so a session that dropped thousands looked identical to one
+        // that dropped none.
+        dropped += lost.length;
       }
     },
 
     tick() {
+      // The gap since the last tick, which is the gap since the last chance to
+      // draw. Animation frames stop entirely in a hidden or fully occluded
+      // window, and while they are stopped the queue fills and every further
+      // field is refused — so the size of this gap is the difference between
+      // "the decoder produced nothing" and "nobody was asking for anything".
+      const at = deps.nowMs?.() ?? 0;
+      sinceTick = lastTickMs === null ? 0 : at - lastTickMs;
+      lastTickMs = at;
+
       const { present, keep } = selectFrame(queue, deps.now());
       queue = keep;
       if (!present) return;
@@ -97,6 +122,16 @@ export function createPresenter(deps: PresenterDeps): Presenter {
 
     get presentedCount() {
       return presented;
+    },
+
+    /** Fields refused because the queue was full. Each one is a hole. */
+    get droppedCount() {
+      return dropped;
+    },
+
+    /** Milliseconds between the last two ticks: how long since a chance to draw. */
+    get msSinceTick() {
+      return sinceTick;
     },
 
     get queued() {
