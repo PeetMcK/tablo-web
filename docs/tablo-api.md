@@ -193,8 +193,25 @@ returned URL; never assume `local_url`.
 
 ## Writes
 
-**`PATCH` only.** `POST` and `PUT` against these paths return `404 none_found`
-— they are not routed at all.
+**`PATCH` only** for the schedule. `POST` and `PUT` against these paths return
+`404 none_found` — they are not routed at all. Deleting a *recording* is the
+one exception, and uses `DELETE` — see below.
+
+### Delete a recording
+
+```
+DELETE /recordings/series/episodes/{id}     ->  204
+GET    /recordings/series/episodes/{id}     ->  404 object_not_found
+```
+
+Measured 2026-09-18 against a real device. The recording is gone from the
+library immediately and its space is freed; there is no undo and no trash.
+
+`OPTIONS` on the same path answers `204` with **no `Allow` header**, so the
+device will not tell you the verb is supported — it had to be tried on a
+recording that could be lost. The category segment is whatever the recording's
+own `path` carries (`series/episodes`, `sports/events`, `movies`), which is why
+the id alone is not enough to build the request.
 
 ### Record a single episode
 

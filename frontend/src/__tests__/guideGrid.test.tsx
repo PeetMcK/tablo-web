@@ -418,7 +418,7 @@ describe("revealing an airing the search found", () => {
       description: "filler", start: "2026-09-16T08:00Z", duration: 3600,
       orig_air_date: null, genres: [], rating: null, image_url: null,
       airing_now: false, schedulable: false, scheduled: false, past: true,
-      schedule_state: null, skip_reason: null, series: null,
+      schedule_state: null, skip_reason: null, series: null, recording_id: null,
       channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });
@@ -647,7 +647,7 @@ describe("dragging the guide", () => {
       episode_number: null, description: "filler", start: "2026-09-16T08:00Z",
       duration: 3600, orig_air_date: null, genres: [], rating: null,
       image_url: null, airing_now: false, schedulable: false, scheduled: false,
-      past: true, schedule_state: null, skip_reason: null, series: null,
+      past: true, schedule_state: null, skip_reason: null, series: null, recording_id: null,
       channel: { identifier: "ch1", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });

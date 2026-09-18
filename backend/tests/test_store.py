@@ -443,3 +443,63 @@ def test_a_later_sync_without_device_facts_does_not_erase_them():
     store.save_guide([base])          # a stub pass, carrying no device facts
 
     assert store.load_guide()[0]["scan"] == "720p"
+
+
+# ---------------------------------------------------------------------------
+# Which recording an airing produced
+#
+# The sheet is addressed by (channel, start) and a recording carries both, but
+# nothing joined them: `search_doc` holds only a display label like "8.1 CBS",
+# which two channels can share. Without the join the sheet cannot offer to
+# delete the recording it is describing.
+# ---------------------------------------------------------------------------
+
+def _recorded(object_id=86353, channel="S34654_008_01", start="2026-09-18T07:00Z"):
+    return {
+        "object_id": object_id,
+        "start": start,
+        "channel": {"identifier": channel, "call_sign": "KPAX", "number": "8.1"},
+    }
+
+
+def test_the_recording_an_airing_produced_is_findable_by_the_airing():
+    from app import store
+
+    store.index_recording_airings([_recorded()])
+
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") == 86353
+
+
+def test_both_spellings_of_the_instant_find_it():
+    """The device writes `07:00Z` on a recording where the guide may hold
+    `07:00:00Z`, and the sheet asks with whichever the guide gave it."""
+    from app import store
+
+    store.index_recording_airings([_recorded(start="2026-09-18T07:00:00Z")])
+
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") == 86353
+
+
+def test_another_channel_at_the_same_moment_is_not_it():
+    from app import store
+
+    store.index_recording_airings([_recorded()])
+
+    assert store.recording_for_airing("S99999_013_04", "2026-09-18T07:00Z") is None
+
+
+def test_an_airing_that_produced_nothing_has_no_recording():
+    from app import store
+
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") is None
+
+
+def test_a_deleted_recording_stops_being_found():
+    """Deleting on the device has to clear this, or the sheet keeps offering
+    to delete something that is already gone."""
+    from app import store
+
+    store.index_recording_airings([_recorded()])
+    store.forget_recording(86353)
+
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") is None

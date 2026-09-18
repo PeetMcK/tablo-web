@@ -129,6 +129,14 @@ async def list_recordings():
         await _run_sync(store.resolve_recording_art, merged)
     except Exception as e:
         print(f"[art] resolving recording artwork failed: {e}", flush=True)
+
+    # Which airing each recording came from, so the info sheet can find the
+    # recording it is describing. Same reasoning as the two above: a listing is
+    # the only moment the whole library is in hand.
+    try:
+        await _run_sync(store.index_recording_airings, merged)
+    except Exception as e:
+        print(f"[recordings] indexing airings failed: {e}", flush=True)
     await _run_sync(_with_art, merged)
 
     return {
@@ -846,6 +854,38 @@ async def evict_recording(object_id: int):
     # force: this route *is* the deliberate user action, the one thing allowed
     # to remove an offline copy.
     return {"ok": cache.evict(object_id, force=True)}
+
+
+@router.delete("/{object_id}")
+async def delete_recording(object_id: int):
+    """Delete a recording on the Tablo, and every local trace of it.
+
+    Distinct from `/{object_id}/cache`, which only drops the transcoded copy
+    and leaves the recording on the device - a difference the Library's own
+    button blurred until this existed.
+
+    Ordered device-first on purpose: if the device refuses, the recording still
+    exists and the local record has to keep saying so. The local clean-up is
+    what stops a deleted recording from lingering as a search result that fails
+    when clicked, or as an info sheet still offering to delete it.
+    """
+    _require_auth()
+    try:
+        path, _ = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Recording not found") from None
+
+    try:
+        await state.delete_recording(path)
+    except Exception:
+        raise HTTPException(
+            status_code=502, detail="The Tablo would not delete this recording."
+        ) from None
+
+    await cache.stop(object_id)
+    cache.evict(object_id, force=True)
+    await _run_sync(store.forget_recording, object_id)
+    return {"object_id": object_id, "deleted": True}
 
 
 @router.get("/{object_id}/thumbnail")

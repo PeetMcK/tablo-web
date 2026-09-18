@@ -1301,6 +1301,103 @@ def test_in_progress_says_nothing_about_a_series_the_mirror_never_saw(monkeypatc
     assert row["series_path"] is None
 
 
+# ---------------------------------------------------------------------------
+# Deleting on the device
+#
+# Mapped by probing a real Tablo on 2026-09-18: DELETE on the recording's own
+# path answers 204, and a GET afterwards answers 404 object_not_found. Nothing
+# in docs/tablo-api.md described it before that.
+# ---------------------------------------------------------------------------
+
+def test_deleting_a_recording_asks_the_device_to_delete_it(monkeypatch):
+    from app import store
+    from app.routes import recordings as rec
+
+    called = {}
+
+    async def resolve(object_id):
+        return f"/recordings/series/episodes/{object_id}", 3600
+
+    async def delete_device(path):
+        called["path"] = path
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec.state, "delete_recording", delete_device)
+    store.index_recording_airings([{
+        "object_id": 86353, "start": "2026-09-18T07:00Z",
+        "channel": {"identifier": "S34654_008_01"},
+    }])
+
+    r = client.delete("/api/recordings/86353")
+
+    assert r.status_code == 200
+    assert called["path"] == "/recordings/series/episodes/86353"
+
+
+def test_a_deleted_recording_leaves_nothing_behind_locally(monkeypatch):
+    """The local traces outlive the device record otherwise: a search result
+    that fails when clicked, and an info sheet still offering to delete it."""
+    from app import store
+    from app.routes import recordings as rec
+
+    async def resolve(object_id):
+        return "/recordings/series/episodes/86353", 3600
+
+    async def delete_device(path):
+        return None
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec.state, "delete_recording", delete_device)
+    store.index_recording_airings([{
+        "object_id": 86353, "start": "2026-09-18T07:00Z",
+        "channel": {"identifier": "S34654_008_01"},
+    }])
+
+    client.delete("/api/recordings/86353")
+
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") is None
+
+
+def test_deleting_something_the_device_does_not_have_is_a_404(monkeypatch):
+    from app.routes import recordings as rec
+
+    async def resolve(object_id):
+        raise KeyError(object_id)
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+
+    assert client.delete("/api/recordings/999999").status_code == 404
+
+
+def test_a_refused_delete_keeps_the_local_record(monkeypatch):
+    """If the device would not delete it, it still exists - and the sheet has
+    to keep saying so."""
+    from app import store
+    from app.routes import recordings as rec
+
+    async def resolve(object_id):
+        return "/recordings/series/episodes/86353", 3600
+
+    async def delete_device(path):
+        raise RuntimeError("device refused")
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec.state, "delete_recording", delete_device)
+    store.index_recording_airings([{
+        "object_id": 86353, "start": "2026-09-18T07:00Z",
+        "channel": {"identifier": "S34654_008_01"},
+    }])
+
+    r = client.delete("/api/recordings/86353")
+
+    assert r.status_code == 502
+    assert store.recording_for_airing("S34654_008_01", "2026-09-18T07:00Z") == 86353
+
+
 def test_in_progress_is_empty_rather_than_absent(monkeypatch):
     """Nothing recording is the ordinary case, and not an error."""
     _serving_recordings(monkeypatch, [DEVICE_RECORDING])

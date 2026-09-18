@@ -203,6 +203,13 @@ export interface AiringDetail {
   /** The device's own state string, passed through. */
   schedule_state: string | null;
   skip_reason: string | null;
+  /**
+   * The recording this airing produced, or null if it produced none.
+   *
+   * Null also until a library listing has run: the device owns the library and
+   * nothing here learns of a recording before it is listed.
+   */
+  recording_id: number | null;
   /** Null for a one-off, a movie, or an airing whose series is unknown. */
   series: { path: string; schedule_rule: string | null } | null;
   channel: {
@@ -741,6 +748,14 @@ export const api = {
 
   deleteRecordingCache: (objectId: number) =>
     req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),
+
+  /**
+   * Delete the recording on the Tablo. Irreversible, and not the same thing as
+   * `deleteRecordingCache`, which only drops the transcoded copy.
+   */
+  deleteRecording: (objectId: number) =>
+    req<{ object_id: number; deleted: boolean }>(`/recordings/${objectId}`,
+      { method: "DELETE" }),
 
   storage: () => req<Storage>("/recordings/storage"),
 

@@ -580,6 +580,7 @@ describe("ChannelGrid guide search handoff", () => {
       duration: 12300, orig_air_date: null, genres: ["Sports"], rating: null,
       image_url: null, airing_now: false, schedulable: false, scheduled: false,
       past: true, schedule_state: null, skip_reason: null, series: null,
+      recording_id: null,
       channel: { identifier: "chA", call_sign: "KPAX", major: 8, minor: 1,
                  network: "CBS", logo_url: null, kind: "ota" },
     });
