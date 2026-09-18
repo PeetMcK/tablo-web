@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { isIncomplete, recordedSpan } from "../lib/recording";
+import { isIncomplete, recordedSpan, watchedSpan } from "../lib/recording";
 
 /**
  * Every number here was measured against a real device on 2026-09-17, because
@@ -97,6 +97,69 @@ describe("recordedSpan", () => {
     expect(recordedSpan({ ...base, start: "" })).toBeNull();
     expect(recordedSpan({ ...base, start: "not a date" })).toBeNull();
     expect(recordedSpan({ ...base, recording_started: "not a date" })).toBeNull();
+  });
+});
+
+describe("watchedSpan", () => {
+  /** An hour, captured punctually and in full. */
+  const anHour = {
+    start: SLOT_START, duration: 3600,
+    recording_started: began(0), recorded_seconds: 3600,
+  };
+
+  it("fills a quarter of the bar at the fifteen minute mark", () => {
+    const w = watchedSpan(anHour, 900)!;
+
+    expect(w.left).toBeCloseTo(0, 1);
+    expect(w.width).toBeCloseTo(25, 1);
+  });
+
+  it("measures against what was captured, not the booked slot", () => {
+    // Let's Make a Deal again: 2106s captured of a 3600s slot, from 1259s in.
+    // Half of the recording is half of the grey fill, not half of the strip.
+    const late = {
+      start: SLOT_START, duration: 3600,
+      recording_started: began(1259), recorded_seconds: 2106,
+    };
+
+    const grey = recordedSpan(late)!;
+    const w = watchedSpan(late, 1053)!;
+
+    expect(w.left).toBeCloseTo(grey.left, 1);
+    expect(w.width).toBeCloseTo(grey.width / 2, 1);
+  });
+
+  it("draws nothing before anything has been watched", () => {
+    expect(watchedSpan(anHour, 0)).toBeNull();
+    expect(watchedSpan(anHour, -5)).toBeNull();
+  });
+
+  it("does not overhang when the position outran the media", () => {
+    // A position saved while the programme was still recording can outlive the
+    // finished file, which is cut short.
+    const cutShort = {
+      start: SLOT_START, duration: 3600,
+      recording_started: began(0), recorded_seconds: 1200,
+    };
+
+    const grey = recordedSpan(cutShort)!;
+    const w = watchedSpan(cutShort, 3000)!;
+
+    expect(w.width).toBeCloseTo(grey.width, 1);
+  });
+
+  it("reads as finished within a breath of the end", () => {
+    const grey = recordedSpan(anHour)!;
+    // Credits rolling: 12 seconds left of an hour is watched, not 99% watched.
+    const w = watchedSpan(anHour, 3588)!;
+
+    expect(w.width).toBeCloseTo(grey.width, 1);
+  });
+
+  it("draws nothing when there is no recording to measure against", () => {
+    expect(watchedSpan({ ...anHour, recorded_seconds: 0 }, 900)).toBeNull();
+    expect(watchedSpan({ ...anHour, recorded_seconds: null }, 900)).toBeNull();
+    expect(watchedSpan({ ...anHour, duration: 0 }, 900)).toBeNull();
   });
 });
 

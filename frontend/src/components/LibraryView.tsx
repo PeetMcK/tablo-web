@@ -9,7 +9,7 @@ import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { ShowInfo } from "./ShowInfo";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
-import { isIncomplete, recordedSpan } from "../lib/recording";
+import { isIncomplete, recordedSpan, watchedSpan } from "../lib/recording";
 import type { Coverage } from "../lib/recording";
 
 /**
@@ -512,6 +512,10 @@ export function LibraryView() {
             // the device called none of them an error.
             const span = recordedSpan(coverageOf(rec));
             const broken = !isRecording(rec) && isIncomplete(coverageOf(rec));
+            // How far in the viewer is, over the top of what exists. Read here
+            // rather than inside the strip so the title can name the position.
+            const watchedAt = resumeFor(rec);
+            const watched = watchedSpan(coverageOf(rec), watchedAt);
             return (
               <div
                 key={rec.object_id}
@@ -697,6 +701,18 @@ export function LibraryView() {
                                     ${isRecording(rec) ? "bg-danger" : broken ? "bg-warning" : "bg-media-fg/40"}`}
                         style={{ left: `${span.left}%`, width: `${span.width}%` }}
                       />
+                      {/* How much of what exists has been watched, over the
+                          top of it. Measured against the capture rather than
+                          the slot: the resume position is an offset into the
+                          media, so on a recording that began late a quarter
+                          watched is a quarter of the grey, not of the strip. */}
+                      {watched && (
+                        <div
+                          className="absolute inset-y-0 bg-accent transition-[width] duration-500 ease-linear"
+                          style={{ left: `${watched.left}%`, width: `${watched.width}%` }}
+                          title={`Watched ${formatClock(watchedAt)}`}
+                        />
+                      )}
                       {/* Where the booked slot ended, when something ran past
                           it. Sports pad by half an hour on purpose, and without
                           the mark the bar just looks full. */}
