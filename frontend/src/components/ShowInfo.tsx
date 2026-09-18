@@ -5,7 +5,7 @@ import {
   recordingFor, recordingForSeries, useRecordingsInProgress,
 } from "../lib/useRecordingsInProgress";
 import { api } from "../api/tablo";
-import type { AiringDetail, InProgressRecording, SeriesRule } from "../api/tablo";
+import type { AiringDetail, SeriesRule } from "../api/tablo";
 
 interface Props {
   /** Channel identifier, as the grid holds it. */
@@ -126,8 +126,8 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
       detail: string;
       action: string;
       run: () => void;
-      /** A second way out, when there is a course of action worth offering. */
-      alternative?: { action: string; run: () => void };
+      /** Dressed as what it is, and never the focused default. */
+      destructive?: boolean;
     } | null
   >(null);
   // Whatever had focus when the sheet opened, so closing can hand it back.
@@ -225,38 +225,6 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
     ? recordingForSeries(inProgress, detail.series.path)
     : null;
 
-  /** Set the rule, and immediately put the episode on air back on its own. */
-  async function ruleNoneKeeping(rec: InProgressRecording) {
-    if (!detail || !rec.channel_identifier) return;
-    const before = detail;
-    setDetail({ ...detail, series: { ...detail.series!, schedule_rule: "none" } });
-    setPending(true);
-    setWriteError(null);
-    try {
-      setDetail(await api.scheduleSeries(channel, start!, "none"));
-    } catch (e) {
-      setDetail(before);
-      setWriteError(e instanceof Error ? e.message : "The change did not stick.");
-      setPending(false);
-      return;
-    }
-    // Two writes, and the second is the one that can leave a surprise: the
-    // rule is already off by the time it runs, so a failure here means the
-    // recording the viewer asked to save is gone. Said plainly rather than
-    // rolled back - the rule change was wanted, and undoing it would be a
-    // third write nobody asked for.
-    try {
-      await api.scheduleAiring(rec.channel_identifier, rec.start, true);
-    } catch (e) {
-      const why = e instanceof Error ? e.message : "The Tablo refused the change.";
-      setWriteError(
-        `The series is set to None, but the episode on air was not kept recording. ${why}`,
-      );
-    } finally {
-      setPending(false);
-    }
-  }
-
   /**
    * Apply a series rule, asking first when the answer would cost a recording.
    *
@@ -274,17 +242,19 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
     if (value === "none" && seriesRecording?.channel_identifier) {
       const what = seriesRecording.title ?? "An episode";
       const so_far = formatDuration(seriesRecording.recorded_seconds ?? 0);
+      // No offer to save the episode. Rescheduling the airing afterwards does
+      // not resume the capture - it starts a second one, leaving a stub of
+      // what was caught before the rule change and a separate recording of the
+      // rest. Measured on a real device: a cancelled hour came back as 5m and
+      // 55m, two rows in the library. An honest stop beats that.
       setConfirming({
         label: "An episode is recording now.",
         detail: `“${what}” — ${so_far} of ${formatDuration(seriesRecording.duration)} `
           + "captured. Setting the rule to None stops it at once. What was "
-          + "captured stays in your library.",
+          + "captured stays in your library; the rest is not recorded.",
         action: "Stop it",
+        destructive: true,
         run: setIt,
-        alternative: {
-          action: "Keep this one",
-          run: () => void ruleNoneKeeping(seriesRecording),
-        },
       });
       return;
     }
@@ -604,38 +574,26 @@ export function ShowInfo({ channel, start, channelLabel, onClose, onTune }: Prop
             <p id="confirm-detail" className="mt-2 text-xs leading-relaxed text-fg-muted">
               {confirming.detail}
             </p>
-            {/* Stacked, not a row: three side-by-side pills of equal weight
-                made the destructive one just another button. Down the column
-                the safe answer is first and focused, and the one that ends a
-                recording is dressed as what it is. */}
+            {/* Stacked, not a row: side-by-side pills of equal weight made the
+                destructive answer look like just another button.
+
+                Focus starts on Cancel whenever the answer ends a recording. A
+                confirmation that opens with the destructive button focused is
+                one stray Return away from doing the thing it asked about. */}
             <div className="mt-4 flex flex-col gap-2">
-              {confirming.alternative && (
-                <button
-                  autoFocus
-                  onClick={() => {
-                    const { run } = confirming.alternative!;
-                    setConfirming(null);
-                    run();
-                  }}
-                  className="w-full px-4 py-2.5 rounded-xl text-sm font-semibold
-                             bg-accent text-accent-fg hover:opacity-90 transition
-                             focus:outline-none focus:ring-2 focus:ring-accent"
-                >
-                  {confirming.alternative.action}
-                </button>
-              )}
               <button
-                autoFocus={!confirming.alternative}
+                autoFocus={!confirming.destructive}
                 onClick={() => { const { run } = confirming; setConfirming(null); run(); }}
                 className={`w-full px-4 py-2.5 rounded-xl text-sm font-semibold
                             transition focus:outline-none focus:ring-2 focus:ring-accent ${
-                  confirming.alternative
+                  confirming.destructive
                     ? "bg-danger-solid text-danger-fg hover:opacity-90"
                     : "bg-accent text-accent-fg hover:opacity-90"}`}
               >
                 {confirming.action}
               </button>
               <button
+                autoFocus={confirming.destructive}
                 onClick={() => setConfirming(null)}
                 className="w-full px-4 py-2.5 rounded-xl text-sm font-semibold
                            bg-fill text-fg-secondary hover:text-fg transition
