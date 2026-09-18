@@ -839,6 +839,31 @@ describe("what the artwork offers", () => {
     expect(screen.getByRole("button", { name: /^live$/i })).toBeInTheDocument();
   });
 
+  it("fills a quarter of the strip for a recording watched to the quarter mark", async () => {
+    // The bar is the only place on the card that says how far in you are
+    // without opening the recording.
+    resumed("recording:90101", 900);
+    renderWith({
+      ...REC, object_id: 90101, state: "finished",
+      start: "2026-09-17T17:00:00Z", duration: 3600, slot_seconds: 3600,
+      recording_started: "2026-09-17T17:00:00Z", recorded_seconds: 3600,
+    });
+
+    const watched = await screen.findByTitle(/watched 15:00/i);
+    expect(watched.style.width).toBe("25%");
+  });
+
+  it("marks nothing watched on a recording nobody has opened", async () => {
+    renderWith({
+      ...REC, object_id: 90102, state: "finished",
+      start: "2026-09-17T17:00:00Z", duration: 3600, slot_seconds: 3600,
+      recording_started: "2026-09-17T17:00:00Z", recorded_seconds: 3600,
+    });
+    await screen.findByText("NFL Football");
+
+    expect(screen.queryByTitle(/watched/i)).toBeNull();
+  });
+
   it("drops Resume when there is nothing to resume", async () => {
     renderWith({ ...IN_FLIGHT, object_id: 90002 });
 

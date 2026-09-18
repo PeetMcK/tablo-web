@@ -25,9 +25,13 @@ export interface Coverage {
  * it. `slotEnd` marks where the booked slot finished when a recording overran
  * it by enough to be worth seeing, and is null otherwise.
  */
-export interface Span {
+/** A stretch of the strip, as percentages of it. */
+export interface Fill {
   left: number;
   width: number;
+}
+
+export interface Span extends Fill {
   slotEnd: number | null;
 }
 
@@ -84,6 +88,45 @@ export function recordedSpan(rec: Coverage): Span | null {
     // to say what it is.
     width: Math.max(0.5, pct(to) - pct(from)),
     slotEnd: overran ? pct(slot) : null,
+  };
+}
+
+/**
+ * Close enough to the end that the viewer has watched the thing.
+ *
+ * Twelve seconds of credits left on an hour is a finished programme, and a bar
+ * a hair short of full reads as "something is left" - which sends someone back
+ * to a recording they have already seen.
+ */
+const FINISHED = 0.99;
+
+/**
+ * How much of what was captured has been watched, on the same strip.
+ *
+ * Measured against `recorded_seconds` rather than the slot, because the resume
+ * position is an offset into the media and nothing else. A recording that began
+ * twenty minutes late and is a quarter watched fills a quarter of the grey, not
+ * a quarter of the strip - drawn against the slot it would claim the viewer is
+ * further behind than they are.
+ *
+ * Null when nothing has been watched, so an untouched recording carries no mark
+ * at all.
+ */
+export function watchedSpan(rec: Coverage, position: number): Fill | null {
+  const captured = rec.recorded_seconds ?? 0;
+  if (!(position > 0) || captured <= 0) return null;
+
+  const span = recordedSpan(rec);
+  if (!span) return null;
+
+  // Clamped: a position saved while the programme was still recording outlives
+  // the finished file when the capture is cut short, and an unclamped fraction
+  // would hang the bar off the end of what exists.
+  const through = Math.min(1, position / captured);
+
+  return {
+    left: span.left,
+    width: span.width * (through >= FINISHED ? 1 : through),
   };
 }
 
