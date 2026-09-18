@@ -1252,7 +1252,7 @@ describe("the guide marks what is being recorded", () => {
         recording_started: new Date(topOfHour().getTime() + 720_000).toISOString(),
         recorded_seconds: 600,
         expected_seconds: 2880,
-        title: "Survivor",
+        title: "Survivor", series_path: null,
       }],
     });
   });

@@ -215,7 +215,7 @@ describe("a live card whose programme is being recorded", () => {
     start: "2026-09-17T17:30:00Z", duration: 1800,
     recording_started: "2026-09-17T17:29:45Z",
     recorded_seconds: 600, expected_seconds: 1815,
-    title: "Scrambled Up",
+    title: "Scrambled Up", series_path: null,
   };
 
   it("says so, so you are not left wondering whether to record it again", () => {

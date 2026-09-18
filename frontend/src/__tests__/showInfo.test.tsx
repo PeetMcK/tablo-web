@@ -232,7 +232,7 @@ describe("a recording in progress, from the sheet", () => {
   const LIVE = {
     object_id: 86113, channel_identifier: "ch1", start: SLOT, duration: 3600,
     recording_started: "2026-09-17T16:20:59Z",
-    recorded_seconds: 1020, expected_seconds: 2341, title: "Let's Make a Deal",
+    recorded_seconds: 1020, expected_seconds: 2341, title: "Let's Make a Deal", series_path: null,
   };
 
   const airing = (over = {}) => detail({
