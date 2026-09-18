@@ -25,7 +25,7 @@ import {
 } from "../lib/playbackSurface";
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
-import { SeriesEndCard } from "./SeriesEndCard";
+import { SeriesEndCard, type CardReason } from "./SeriesEndCard";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -301,6 +301,14 @@ interface PlayerView {
   subtitle: string | null;
   program: Program | null | undefined;
   programRemaining: number;
+  /**
+   * Show the rest of this programme's series. Null when there is none to show.
+   *
+   * A live channel has no series, and the popped-out window cannot host the
+   * card at all — see where it is rendered — so in both the name is text and
+   * nothing more.
+   */
+  openSeriesCard: (() => void) | null;
   /** The sound is waiting on a tap, and nothing on screen would say so. */
   needsGesture: boolean;
   /** Where the picture is coming from, when that is worth saying. */
@@ -469,12 +477,16 @@ export function VideoPlayer({
   const [paused, setPaused] = useState(!openPlaying);
   const [waiting, setWaiting] = useState(false);
   /**
-   * The recording has played out, and the card offering the rest of it is up.
+   * The card listing the rest of the show, and why it is up.
    *
-   * Only ever true for a recording: `ended` reaches a live channel from
-   * nowhere, because a live stream has no end to reach.
+   * Null most of the time. "ended" when the programme ran out and the card
+   * came up by itself; "browsing" when it was summoned from the show's name
+   * mid-programme, which is the quick way to the rest of the same thing.
+   *
+   * Only ever set for a recording: a live channel has no series to list, and
+   * `ended` reaches one from nowhere anyway.
    */
-  const [ended, setEnded] = useState(false);
+  const [card, setCard] = useState<CardReason | null>(null);
   const [position, setPosition] = useState(0);
   // Where the user is dragging, independent of where playback actually is.
   // Rendering the real position during a drag made the thumb fight the pointer.
@@ -790,7 +802,7 @@ export function VideoPlayer({
       sync();
       const current = sourceRef.current;
       if (current.kind !== "recording") return;
-      setEnded(true);
+      setCard("ended");
       // Reaching the end is the one unambiguous case, and the device never
       // works it out for itself: one played to 43% read `watched: false`, and
       // so did one played right through. Written once per playback — a viewer
@@ -1284,9 +1296,36 @@ export function VideoPlayer({
     if (!s) return;
     // Pressing play at the end is a decision about the card as much as about
     // the picture: someone who wants the last few seconds again should get
-    // them, not a list sitting on top of them.
-    if (s.paused) { setEnded(false); s.play().catch(() => {}); }
-    else s.pause();
+    // them, not a list sitting on top of them. A card summoned on purpose is
+    // left alone — pausing and resuming behind it is not a request to dismiss
+    // it.
+    if (s.paused) {
+      setCard((why) => (why === "ended" ? null : why));
+      s.play().catch(() => {});
+    } else {
+      s.pause();
+    }
+  }, []);
+
+  /**
+   * Show the rest of this programme's series, without waiting for it to end.
+   *
+   * The picture is paused behind it. A list of other episodes is something to
+   * read and decide from, and a programme playing on underneath — heard but
+   * not seen — is a few seconds of it missed by whoever comes back.
+   *
+   * Only for a recording. A live channel has no series to list.
+   */
+  const openSeriesCard = useCallback(() => {
+    if (sourceRef.current.kind !== "recording") return;
+    surfaceRef.current?.pause();
+    setCard("browsing");
+  }, []);
+
+  /** Put it away and carry on from where the picture stopped. */
+  const closeCard = useCallback(() => {
+    setCard(null);
+    surfaceRef.current?.play().catch(() => {});
   }, []);
 
   /** Drop a queued burst of skips — something else has taken the playhead. */
@@ -1309,7 +1348,7 @@ export function VideoPlayer({
     // session saying it is playing again: pausing at the end flips the stall
     // state, which emits `playing` without anything having moved, and the card
     // would vanish the instant it arrived.
-    setEnded(false);
+    setCard(null);
     const target = Math.max(rangeStart, Math.min(t, rangeEnd));
     setPendingSeek(target);
     s.seek(target);
@@ -1942,7 +1981,11 @@ export function VideoPlayer({
       // the player from here would take away a pop-out the viewer was
       // watching and the programme with it.
       if (e.key === "Escape" || e.key === "q") {
-        if (poppedOut) togglePictureInPicture();
+        // The card is the nearest thing when it is up, and only when it was
+        // asked for: one the end of a programme put there has nothing behind
+        // it, so dismissing it would leave a still frame and no way on.
+        if (card === "browsing") closeCard();
+        else if (poppedOut) togglePictureInPicture();
         else onClose();
       }
       if (e.key === "f") enterFullscreen();
@@ -1971,7 +2014,7 @@ export function VideoPlayer({
       if (keyHandler.current === handler) keyHandler.current = null;
     };
   }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer,
-      poppedOut, togglePictureInPicture, nudgeVolume]);
+      poppedOut, togglePictureInPicture, nudgeVolume, card, closeCard]);
 
   const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
@@ -2052,6 +2095,7 @@ export function VideoPlayer({
     paused, togglePlay, skip, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
+    openSeriesCard: source.kind === "recording" && !poppedOut ? openSeriesCard : null,
     needsGesture,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
@@ -2100,8 +2144,9 @@ export function VideoPlayer({
       )}
       <Stage view={view} pip={false} />
 
-      {/* The programme is over. Offer the rest of the show rather than leaving
-          a still frame and a transport that does nothing.
+      {/* The rest of the show: put up by itself when the programme is over,
+          rather than leaving a still frame and a transport that does nothing,
+          and summoned from the show's name the rest of the time.
 
           Outside `Stage`, and so outside the view that carries everything else
           across, because it reads the recordings list: the popped-out window
@@ -2110,16 +2155,112 @@ export function VideoPlayer({
           wanted there — the pop-out is a picture, and the tab behind it is
           where this belongs. Hence its own `dark`, since it no longer inherits
           the one on the stage. */}
-      {ended && !poppedOut && source.kind === "recording" && !combinedError && (
+      {card && !poppedOut && source.kind === "recording" && !combinedError && (
         <div className="dark fixed inset-0 z-[55]">
           <SeriesEndCard
-            finished={source.recording}
+            current={source.recording}
+            reason={card}
             onPlay={(rec) => onPlayRecording?.(rec)}
-            onClose={onClose}
+            // At the end there is nothing behind the card to go back to, so
+            // the way out is the way out of the player. Mid-programme the
+            // picture is still there, waiting.
+            onClose={card === "ended" ? onClose : closeCard}
           />
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * What is playing, in the corner of the transport row.
+ *
+ * A button where there is a series behind it, plain text where there is not —
+ * and its own element either way, because the two need different markup and a
+ * ternary around eighty lines of it is worse than a component.
+ *
+ * It takes its own clicks now. It used to be `pointer-events-none` throughout,
+ * so every click on the programme's name fell through to the picture — and the
+ * left two fifths of the picture is Back 10s, so reaching for the title rewound
+ * the programme. A click that lands on words is never a click on the frame
+ * behind them.
+ */
+function NowPlaying({
+  title, subtitle, program, programRemaining, sourceNote, clockTime,
+  openSeriesCard, hidden,
+}: {
+  title: string;
+  subtitle: string | null;
+  program: Program | null | undefined;
+  programRemaining: number;
+  sourceNote: string | null;
+  clockTime: (iso: string) => string;
+  openSeriesCard: (() => void) | null;
+  hidden: boolean;
+}) {
+  // Nothing to gain from it in a pop-out: the window is named after the
+  // programme, and at that width the name and the controls are fighting over
+  // the same strip of picture. Hidden rather than dropped, so the row keeps
+  // three cells and the transport stays centred.
+  //
+  // The padding is the hit area, and the negative margins take it back out of
+  // the layout: the target grows without the text moving from where it was
+  // drawn.
+  const className = `max-w-[30%] text-left select-none rounded-lg
+    -mx-2 -my-1 px-2 py-1 transition
+    ${openSeriesCard ? "hover:bg-fill" : "pointer-events-none"}
+    ${hidden ? "invisible" : ""}`;
+
+  // A crisp outline rather than a blurred shadow: over flat white content a
+  // soft shadow reads as a smudge. `paint-order: stroke` draws the stroke
+  // beneath the fill, so the glyphs keep their weight instead of bulking the
+  // way a plain text-stroke would.
+  //
+  // The halo is the scrim colour, so it always contrasts the text it
+  // surrounds: black behind white glyphs in dark, near-white behind ink ones
+  // in light. Its alpha is a per-theme knob rather than a shared constant —
+  // see `--c-player-scrim-halo-a`; the two directions need very different
+  // strengths to read the same.
+  const style = {
+    WebkitTextStroke: "3px rgb(var(--c-player-scrim) / var(--c-player-scrim-halo-a))",
+    paintOrder: "stroke fill",
+  } as const;
+
+  const inside = (
+    <>
+      {subtitle && (
+        <p className="text-[10px] font-semibold tracking-widest text-player-fg-muted uppercase truncate">
+          {subtitle}
+        </p>
+      )}
+      <p className="text-sm font-bold truncate leading-tight text-player-fg">{title}</p>
+      {program && (
+        <p className="text-[10px] text-player-fg-muted tabular-nums mt-0.5">
+          {clockTime(program.start)} · {programRemaining}m left
+        </p>
+      )}
+      {sourceNote && (
+        <p className="text-[10px] text-player-fg-muted tabular-nums mt-0.5">
+          {sourceNote}
+        </p>
+      )}
+    </>
+  );
+
+  if (!openSeriesCard) {
+    return <div className={className} style={style}>{inside}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); openSeriesCard(); }}
+      className={className}
+      style={style}
+      title="The rest of this show"
+      aria-label={`The rest of ${title}`}
+    >
+      {inside}
+    </button>
   );
 }
 
@@ -2141,6 +2282,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     paused, togglePlay, skip, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
+    openSeriesCard,
     needsGesture,
     barStart, barEnd, span, pct, shownPos, rangeEnd,
     readyBands, hoverAt, scrubbing, shownPreview, fineFactor,
@@ -2626,47 +2768,16 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           <div className="relative flex items-center justify-between">
             {/* What is playing, on the left. The transport is centered over it
                 absolutely, so a long title cannot push the controls off centre. */}
-            <div
-              // Nothing to gain from it in a pop-out: the window is named
-              // after the programme, and at that width the name and the
-              // controls are fighting over the same strip of picture. The
-              // element stays in place rather than being dropped, so the row
-              // keeps three cells and the transport stays centred.
-              className={`max-w-[30%] text-left pointer-events-none select-none
-                ${poppedOut ? "invisible" : ""}`}
-              // A crisp outline rather than a blurred shadow: over flat white
-              // content a soft shadow reads as a smudge. `paint-order: stroke`
-              // draws the stroke beneath the fill, so the glyphs keep their
-              // weight instead of bulking the way a plain text-stroke would.
-              //
-              // The halo is the scrim colour, so it always contrasts the text
-              // it surrounds: black behind white glyphs in dark, near-white
-              // behind ink ones in light. Its alpha is a per-theme knob rather
-              // than a shared constant — see `--c-player-scrim-halo-a`; the two
-              // directions need very different strengths to read the same.
-              style={{
-                WebkitTextStroke:
-                  "3px rgb(var(--c-player-scrim) / var(--c-player-scrim-halo-a))",
-                paintOrder: "stroke fill",
-              }}
-            >
-              {subtitle && (
-                <p className="text-[10px] font-semibold tracking-widest text-player-fg-muted uppercase truncate">
-                  {subtitle}
-                </p>
-              )}
-              <p className="text-sm font-bold truncate leading-tight text-player-fg">{title}</p>
-              {program && (
-                <p className="text-[10px] text-player-fg-muted tabular-nums mt-0.5">
-                  {clockTime(program.start)} · {programRemaining}m left
-                </p>
-              )}
-              {sourceNote && (
-                <p className="text-[10px] text-player-fg-muted tabular-nums mt-0.5">
-                  {sourceNote}
-                </p>
-              )}
-            </div>
+            <NowPlaying
+              title={title}
+              subtitle={subtitle}
+              program={program}
+              programRemaining={programRemaining}
+              sourceNote={sourceNote}
+              clockTime={clockTime}
+              openSeriesCard={openSeriesCard}
+              hidden={poppedOut}
+            />
 
             {/* Transport, centered on the frame. Play sits between the two jumps
                 so the hand travels the same distance either way. */}

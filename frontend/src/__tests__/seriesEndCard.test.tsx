@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { SeriesEndCard } from "../components/SeriesEndCard";
+import { SeriesEndCard, type CardReason } from "../components/SeriesEndCard";
 import { api } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 
@@ -45,7 +45,13 @@ function rec(over: Partial<Recording> & { object_id: number }): Recording {
   };
 }
 
-function show(finished: Recording, all: Recording[], onPlay = vi.fn(), onClose = vi.fn()) {
+function show(
+  current: Recording,
+  all: Recording[],
+  reason: CardReason = "ended",
+  onPlay = vi.fn(),
+  onClose = vi.fn(),
+) {
   vi.spyOn(api, "recordings").mockResolvedValue({
     recordings: all, returned: all.length, total: all.length, offline_only: 0,
   });
@@ -54,7 +60,7 @@ function show(finished: Recording, all: Recording[], onPlay = vi.fn(), onClose =
   });
   render(
     <QueryClientProvider client={client}>
-      <SeriesEndCard finished={finished} onPlay={onPlay} onClose={onClose} />
+      <SeriesEndCard current={current} reason={reason} onPlay={onPlay} onClose={onClose} />
     </QueryClientProvider>,
   );
   return { onPlay, onClose };
@@ -157,6 +163,45 @@ describe("the card at the end of a recording", () => {
   it("closes from the corner", async () => {
     const { onClose } = show(EP5, [EP30, EP5]);
     fireEvent.click(await screen.findByLabelText("Back to Library"));
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("the same card, asked for mid-programme", () => {
+  it("says the current one is playing rather than watched", async () => {
+    // The quick way to the rest of the same show. Nothing has finished, so
+    // saying "Just watched" of the thing still running would be a lie.
+    show(EP5, [EP30, EP5], "browsing");
+    expect(await screen.findByText("Now playing")).toBeTruthy();
+    expect(screen.queryByText("Just watched")).toBeNull();
+  });
+
+  it("offers the way back to the picture, not out of the player", async () => {
+    // At the end there is nothing behind the card. Here there is, paused and
+    // waiting, and leaving for the Library would throw it away.
+    show(EP5, [EP30, EP5], "browsing");
+    expect(await screen.findByLabelText("Keep watching")).toBeTruthy();
+    expect(screen.queryByLabelText("Back to Library")).toBeNull();
+  });
+
+  it("does not call the programme finished", async () => {
+    show(EP5, [EP30, EP5], "browsing");
+    await screen.findByText("Now playing");
+    expect(screen.queryByText("Finished")).toBeNull();
+    expect(screen.getByText("Recorded")).toBeTruthy();
+  });
+
+  it("still lists and still plays what is picked", async () => {
+    const { onPlay } = show(EP5, [EP30, EP5], "browsing");
+    const rows = await screen.findAllByRole("listitem");
+    fireEvent.click(rows[1].querySelector("button")!);
+    expect(onPlay).toHaveBeenCalledWith(expect.objectContaining({ object_id: 2 }));
+  });
+
+  it("offers a way back to the picture for a one-off too", async () => {
+    const only = rec({ object_id: 1, series_path: null, title: "Some Film" });
+    const { onClose } = show(only, [only], "browsing");
+    fireEvent.click(await screen.findByText("Keep watching"));
     expect(onClose).toHaveBeenCalled();
   });
 });
