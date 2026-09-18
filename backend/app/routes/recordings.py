@@ -350,7 +350,15 @@ async def recording_series(object_id: int):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Device error: {e}")
 
-    series_path = record.get("series_path")
+    # A game has `sport_path` where an episode has `series_path`, and the device
+    # means the same thing by both: `/recordings/sports/{id}` carries a title, a
+    # description, the same three images and its own `airing_count`. The Tablo
+    # app's own sheet for one is headed "Series Recording Scheduled" over the
+    # league's picture - the sport *is* the series, under a different noun.
+    #
+    # Asking only for `series_path` is why every NFL recording came back with
+    # nothing to lead with.
+    series_path = record.get("series_path") or record.get("sport_path")
     if not series_path:
         return {"series_path": None, "title": None, "cover_image": None}
 
@@ -359,14 +367,15 @@ async def recording_series(object_id: int):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Device error: {e}")
 
-    series = data.get("series") or {}
+    # Whichever noun this record uses. Identical shape inside.
+    show = data.get("series") or data.get("sport") or {}
     return {
         "series_path": series_path,
-        "title": series.get("title"),
+        "title": show.get("title"),
         # `cover_image` is the poster the card leads with. `thumbnail_image` and
         # `background_image` sit beside it on the same record if anything ever
         # wants the other shapes.
-        "cover_image": (series.get("cover_image") or {}).get("image_id"),
+        "cover_image": (show.get("cover_image") or {}).get("image_id"),
     }
 
 

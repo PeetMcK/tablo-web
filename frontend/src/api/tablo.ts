@@ -245,6 +245,15 @@ export interface Recording {
    * which is why the end card groups by title when this is missing.
    */
   series_path: string | null;
+  /**
+   * `/recordings/sports/{id}`, where a game keeps what an episode keeps in
+   * `series_path`.
+   *
+   * The device means the same thing by both: that record carries a title, a
+   * description, the same three images and its own airing count, and the Tablo
+   * app heads its sheet "Series Recording Scheduled". The sport is the series.
+   */
+  sport_path: string | null;
   season_number: number | null;
   episode_number: number | null;
   /** When it first aired, `YYYY-MM-DD`. Null for sport and for live events. */

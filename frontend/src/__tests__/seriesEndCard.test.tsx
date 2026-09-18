@@ -16,6 +16,7 @@ function rec(over: Partial<Recording> & { object_id: number }): Recording {
     description: null,
     start: "2026-09-17T17:00:00Z",
     series_path: "/recordings/series/86119",
+    sport_path: null,
     season_number: null,
     episode_number: null,
     orig_air_date: null,

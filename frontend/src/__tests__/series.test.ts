@@ -8,6 +8,7 @@ function ep(over: Partial<Episode> & { object_id: number }): Episode {
   return {
     title: null,
     series_path: null,
+    sport_path: null,
     season_number: null,
     episode_number: null,
     orig_air_date: null,
@@ -31,6 +32,38 @@ describe("seriesKey", () => {
     const b = ep({ object_id: 2, title: "NFL Football" });
     expect(seriesKey(a)).toBe(seriesKey(b));
     expect(seriesKey(a)).not.toBeNull();
+  });
+
+  it("files a game under its sport, which is its series by another name", () => {
+    // `/recordings/sports/{id}` carries a title, a description, the same three
+    // images and its own airing count, and the Tablo app heads its sheet
+    // "Series Recording Scheduled" over the league's picture. Every NFL game on
+    // this device hangs off one such record.
+    const a = ep({ object_id: 1, title: "NFL Football",
+                   sport_path: "/recordings/sports/63558" });
+    const b = ep({ object_id: 2, title: "NFL Football",
+                   sport_path: "/recordings/sports/63558" });
+    expect(seriesKey(a)).toBe("/recordings/sports/63558");
+    expect(seriesKey(a)).toBe(seriesKey(b));
+  });
+
+  it("believes the device over a matching title", () => {
+    // The title carried sport on its own before the path was projected, and it
+    // worked - six games do share one - but only by accident. Two different
+    // shows can share a title; two the device files apart belong apart.
+    const a = ep({ object_id: 1, title: "NFL Football",
+                   sport_path: "/recordings/sports/63558" });
+    const b = ep({ object_id: 2, title: "NFL Football",
+                   sport_path: "/recordings/sports/99999" });
+    expect(seriesKey(a)).not.toBe(seriesKey(b));
+  });
+
+  it("prefers a series path to a sport path where a record has both", () => {
+    expect(seriesKey(ep({
+      object_id: 1,
+      series_path: "/recordings/series/10",
+      sport_path: "/recordings/sports/20",
+    }))).toBe("/recordings/series/10");
   });
 
   it("does not file two different shows together", () => {
