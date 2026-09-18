@@ -43,6 +43,10 @@ const REC: Recording = {
   subtitle: "Denver Broncos at Kansas City Chiefs",
   description: "AFC West matchup at Arrowhead Stadium.",
   start: "2026-09-15T00:15:00Z",
+  // Sport: no series record and no episode numbers, which is what makes
+  // the end card group by title and order by date.
+  series_path: null, season_number: null, episode_number: null,
+  orig_air_date: null,
   duration: 12615,
   recorded_seconds: null,
   expected_seconds: null,

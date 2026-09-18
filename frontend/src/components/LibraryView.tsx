@@ -446,6 +446,11 @@ export function LibraryView() {
           autoPlay={Boolean(playing)}
           onPosition={handlePosition}
           onClose={closePlayer}
+          // Picked from the card at the end of the last one. From its
+          // beginning, not from a resume point: an episode reached this way is
+          // being started, and offering it where someone once abandoned it is
+          // a different thing entirely.
+          onPlayRecording={(rec) => { setStartMode("beginning"); setPlaying(rec); }}
         />
       )}
 

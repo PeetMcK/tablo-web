@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Play, Pause, RotateCcw, RotateCw, Volume1, Volume2, VolumeX, Maximize,
   PictureInPicture2,
@@ -25,6 +25,7 @@ import {
 } from "../lib/playbackSurface";
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
+import { SeriesEndCard } from "./SeriesEndCard";
 
 /**
  * What the player is showing. Live and recordings share the whole transport —
@@ -53,6 +54,17 @@ interface Props {
   autoPlay?: boolean;
   /** Playhead updates, so the caller can keep it in the URL. */
   onPosition?: (seconds: number) => void;
+  /**
+   * Play something else, chosen from the card shown at the end of a recording.
+   *
+   * Handed up rather than done here: which recording is open is the caller's
+   * state — it is what keys this component — so switching from inside would
+   * leave the two disagreeing.
+   *
+   * Without it the end card still appears and still closes; it just offers no
+   * next episode.
+   */
+  onPlayRecording?: (recording: Recording) => void;
 }
 
 /**
@@ -385,7 +397,9 @@ function createStageCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
-export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onPosition }: Props) {
+export function VideoPlayer({
+  source, onClose, startAt = 0, autoPlay = true, onPosition, onPlayRecording,
+}: Props) {
   const isLive = source.kind === "live";
   /** The stage's video element, built once on the first render. */
   /**
@@ -454,6 +468,13 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const [poppedOut, setPoppedOut] = useState(false);
   const [paused, setPaused] = useState(!openPlaying);
   const [waiting, setWaiting] = useState(false);
+  /**
+   * The recording has played out, and the card offering the rest of it is up.
+   *
+   * Only ever true for a recording: `ended` reaches a live channel from
+   * nowhere, because a live stream has no end to reach.
+   */
+  const [ended, setEnded] = useState(false);
   const [position, setPosition] = useState(0);
   // Where the user is dragging, independent of where playback actually is.
   // Rendering the real position during a drag made the thumb fight the pointer.
@@ -514,6 +535,12 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const resetHideTimerRef = useRef<(() => void) | null>(null);
   const onPositionRef = useRef(onPosition);
+  /** So reaching the end twice in one playback writes the flag once. */
+  const markedWatchedRef = useRef(false);
+  // Through a ref for the same reason the position callback is: the transport
+  // is wired once, on mount, so anything it reaches for has to be read live
+  // rather than captured in that first closure.
+  const queryClientRef = useRef(useQueryClient());
 
   const combinedError = apiError || playerError;
 
@@ -761,6 +788,21 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
       setWaiting(false);
       surface.pause();
       sync();
+      const current = sourceRef.current;
+      if (current.kind !== "recording") return;
+      setEnded(true);
+      // Reaching the end is the one unambiguous case, and the device never
+      // works it out for itself: one played to 43% read `watched: false`, and
+      // so did one played right through. Written once per playback — a viewer
+      // who rewinds and watches the ending again has not unwatched it.
+      if (!markedWatchedRef.current) {
+        markedWatchedRef.current = true;
+        api.setRecordingWatched(current.recording.object_id, true)
+          // The list the card draws carries `watched` for every row, so it has
+          // to be re-read for the flag just written to show up on it.
+          .then(() => queryClientRef.current.invalidateQueries({ queryKey: ["recordings"] }))
+          .catch((e) => log.warn("could not mark it watched", String(e)));
+      }
     };
 
     const offs = [
@@ -1240,7 +1282,10 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
   const togglePlay = useCallback(() => {
     const s = surfaceRef.current;
     if (!s) return;
-    if (s.paused) s.play().catch(() => {});
+    // Pressing play at the end is a decision about the card as much as about
+    // the picture: someone who wants the last few seconds again should get
+    // them, not a list sitting on top of them.
+    if (s.paused) { setEnded(false); s.play().catch(() => {}); }
     else s.pause();
   }, []);
 
@@ -1260,6 +1305,11 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
     // buttons had queued, rather than letting it land a moment later and drag
     // the playhead back.
     cancelSkip();
+    // Going anywhere puts the card away. Cleared here rather than on the
+    // session saying it is playing again: pausing at the end flips the stall
+    // state, which emits `playing` without anything having moved, and the card
+    // would vanish the instant it arrived.
+    setEnded(false);
     const target = Math.max(rangeStart, Math.min(t, rangeEnd));
     setPendingSeek(target);
     s.seek(target);
@@ -2049,6 +2099,26 @@ export function VideoPlayer({ source, onClose, startAt = 0, autoPlay = true, onP
         </div>
       )}
       <Stage view={view} pip={false} />
+
+      {/* The programme is over. Offer the rest of the show rather than leaving
+          a still frame and a transport that does nothing.
+
+          Outside `Stage`, and so outside the view that carries everything else
+          across, because it reads the recordings list: the popped-out window
+          renders `Stage` on a React root of its own, which has no query client
+          above it, and anything using one would throw there. It is also not
+          wanted there — the pop-out is a picture, and the tab behind it is
+          where this belongs. Hence its own `dark`, since it no longer inherits
+          the one on the stage. */}
+      {ended && !poppedOut && source.kind === "recording" && !combinedError && (
+        <div className="dark fixed inset-0 z-[55]">
+          <SeriesEndCard
+            finished={source.recording}
+            onPlay={(rec) => onPlayRecording?.(rec)}
+            onClose={onClose}
+          />
+        </div>
+      )}
     </>
   );
 }

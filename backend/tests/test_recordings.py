@@ -255,6 +255,57 @@ def test_resume_position_surfaced():
     assert AppState._recording_fields(DEVICE_RECORDING)["position"] == 42
 
 
+# A series episode, as the device returns one. Measured against
+# /recordings/series/episodes/86128: `series` is null on an episode record and
+# only `series_path` links it to its show, which is why the end card fetches
+# the series separately for artwork.
+EPISODE_RECORDING = {
+    "object_id": 86128,
+    "path": "/recordings/series/episodes/86128",
+    "series_path": "/recordings/series/86119",
+    "airing_details": {
+        "datetime": "2026-09-17T17:30Z",
+        "duration": 1800,
+        "show_title": "Carl the Collector",
+    },
+    "video_details": {"state": "finished", "duration": 1875, "height": 480},
+    "user_info": {"position": 0, "watched": False},
+    "episode": {
+        "title": "The Tool Collection",
+        "description": "Carl gets a universal screwdriver.",
+        "number": 5,
+        "season_number": 1,
+        "orig_air_date": "2024-11-20",
+    },
+}
+
+
+def test_an_episode_carries_what_orders_it_against_its_siblings():
+    """All four are already in the record, so listing them costs no fetch."""
+    out = AppState._recording_fields(EPISODE_RECORDING)
+    assert out["series_path"] == "/recordings/series/86119"
+    assert out["season_number"] == 1
+    assert out["episode_number"] == 5
+    assert out["orig_air_date"] == "2024-11-20"
+
+
+def test_a_recording_with_no_episode_data_still_lists():
+    """Sport has none of it.
+
+    Measured on the live library: six of eighteen recordings carry no
+    `series_path` and no episode numbers at all, and every one of them is NFL
+    Football - which is exactly the case the end card's date ordering exists
+    for. They must project cleanly rather than raising.
+    """
+    out = AppState._recording_fields(DEVICE_RECORDING)
+    assert out["series_path"] is None
+    assert out["season_number"] is None
+    assert out["episode_number"] is None
+    assert out["orig_air_date"] is None
+    # And the title is still there, which is what groups them instead.
+    assert out["title"] == "NFL Football"
+
+
 # ---------------------------------------------------------------------------
 # Window arithmetic
 # ---------------------------------------------------------------------------
@@ -1262,3 +1313,89 @@ def test_a_negative_position_is_refused(monkeypatch):
     assert client.post("/api/recordings/86113/position",
                        json={"position": -5}).status_code == 422
     assert sent == []
+
+
+def test_watched_is_written_to_the_device_in_the_flat_shape(monkeypatch):
+    """Same trap as `position`, and the device never sets this itself.
+
+    Measured: a recording played to 43% still read `watched: false`, and so did
+    one played to its end. Nothing marks it but us.
+    """
+    sent = _device_accepting_patch(monkeypatch)
+
+    r = client.post("/api/recordings/86113/watched", json={"watched": True})
+
+    assert r.status_code == 200
+    assert sent == [("/recordings/series/episodes/86113", {"watched": True})]
+
+
+def test_watched_can_be_taken_back(monkeypatch):
+    sent = _device_accepting_patch(monkeypatch)
+    assert client.post("/api/recordings/86113/watched",
+                       json={"watched": False}).status_code == 200
+    assert sent == [("/recordings/series/episodes/86113", {"watched": False})]
+
+
+# ---------------------------------------------------------------------------
+# The series behind a recording, for the card shown at its end
+# ---------------------------------------------------------------------------
+
+def _device_serving_series(monkeypatch, *, series_path="/recordings/series/86119"):
+    from app.routes import recordings as rec
+    asked: list[str] = []
+
+    async def request_device(_method, path):
+        asked.append(path)
+        if path.endswith("/episodes/86128"):
+            return {"object_id": 86128, "series_path": series_path}
+        return {
+            "object_id": 86119,
+            "series": {
+                "title": "Carl the Collector",
+                "cover_image": {"image_id": 9345, "has_title": True},
+                "thumbnail_image": {"image_id": 9344},
+                "background_image": {"image_id": 9346},
+            },
+        }
+
+    async def resolve(_oid):
+        return "/recordings/series/episodes/86128", 1875
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    return asked
+
+
+def test_the_series_cover_comes_from_the_series_record(monkeypatch):
+    """A recording carries no `series` object, only a path to one.
+
+    Measured on the device: `series` is null on an episode record, so the cover
+    is one fetch further away and cannot be had while listing.
+    """
+    asked = _device_serving_series(monkeypatch)
+
+    r = client.get("/api/recordings/86128/series")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "series_path": "/recordings/series/86119",
+        "title": "Carl the Collector",
+        "cover_image": 9345,
+    }
+    assert asked == ["/recordings/series/episodes/86128", "/recordings/series/86119"]
+
+
+def test_a_recording_with_no_series_asks_the_device_only_once(monkeypatch):
+    """Sport has no series record. That is ordinary, not an error.
+
+    The card still lists the other recordings - they group by title - it simply
+    has no poster to lead with.
+    """
+    asked = _device_serving_series(monkeypatch, series_path=None)
+
+    r = client.get("/api/recordings/86128/series")
+
+    assert r.status_code == 200
+    assert r.json()["cover_image"] is None
+    assert asked == ["/recordings/series/episodes/86128"]
