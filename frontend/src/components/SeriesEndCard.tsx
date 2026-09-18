@@ -1,11 +1,13 @@
 /**
- * What comes up when a recording reaches its end.
+ * The show a recording belongs to: its cover, and every episode of it that was
+ * recorded, in the best order the data supports.
  *
- * No autoplay and no countdown, deliberately. The show is offered — its cover,
- * and every episode of it that was recorded, in the best order the data
- * supports — and the viewer picks one or leaves. A countdown decides for
- * someone who has stopped paying attention, which is the opposite of what the
- * end of a programme is for.
+ * Reached two ways, and the difference is only in what it says. At the end of
+ * a programme it comes up by itself — no autoplay and no countdown, because a
+ * countdown decides for someone who has stopped paying attention, which is the
+ * opposite of what the end of a programme is for. The rest of the time it is
+ * summoned from the show's name in the player, as the quick way to the rest of
+ * the same thing without watching to the end or going back to the Library.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -16,9 +18,19 @@ import type { Recording } from "../api/tablo";
 import { formatAired } from "../lib/format";
 import { siblingEpisodes } from "../lib/series";
 
+/**
+ * Why the card is up, which is the whole of what differs between the two.
+ *
+ * "ended" — the programme ran out. "browsing" — someone asked for it while it
+ * is still playing, which means the picture underneath is paused behind the
+ * card and waiting to be come back to.
+ */
+export type CardReason = "ended" | "browsing";
+
 interface Props {
-  /** The one that just finished. Shown in place, marked, never hidden. */
-  finished: Recording;
+  /** The one being watched. Shown in place, marked, never hidden. */
+  current: Recording;
+  reason: CardReason;
   onPlay: (rec: Recording) => void;
   onClose: () => void;
 }
@@ -38,7 +50,8 @@ function episodeLabel(rec: Recording): string {
   return formatAired(rec.orig_air_date ?? rec.start);
 }
 
-export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
+export function SeriesEndCard({ current, reason, onPlay, onClose }: Props) {
+  const ended = reason === "ended";
   // The same key the Library holds, so this is usually already in hand: the
   // list is what carries `watched` for every row, and re-fetching it here is
   // also how the flag just written for the finished episode arrives.
@@ -52,13 +65,13 @@ export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
   // recording carries no series object, just a path to one. Its absence is
   // ordinary rather than an error, so nothing waits on it.
   const { data: series } = useQuery({
-    queryKey: ["recording-series", finished.object_id],
-    queryFn: () => api.recordingSeries(finished.object_id),
+    queryKey: ["recording-series", current.object_id],
+    queryFn: () => api.recordingSeries(current.object_id),
     staleTime: 60 * 60_000,
     retry: false,
   });
 
-  const episodes = siblingEpisodes(finished, data?.recordings ?? []);
+  const episodes = siblingEpisodes(current, data?.recordings ?? []);
   const cover = series?.cover_image;
 
   return (
@@ -66,18 +79,21 @@ export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
       className="absolute inset-0 z-10 flex flex-col items-center
                  overflow-y-auto bg-player-panel-strong backdrop-blur-sm"
       role="dialog"
-      aria-label="This recording has ended"
+      aria-label={ended ? "This recording has ended" : "The rest of this show"}
     >
       {/* Its own row rather than floating over the cover: the poster is the
           thing worth looking at, and a control sitting on it is the one piece
           of interface guaranteed to cover someone's face. */}
       <div className="w-full max-w-2xl flex items-center justify-between px-5 pt-5">
         <span className="text-player-fg-muted text-[11px] uppercase tracking-widest">
-          Finished
+          {ended ? "Finished" : "Recorded"}
         </span>
+        {/* The same corner in both, and a different way out of each: at the end
+            there is nothing behind this to go back to, and mid-programme there
+            is — the picture, where it was left. */}
         <button
           onClick={onClose}
-          aria-label="Back to Library"
+          aria-label={ended ? "Back to Library" : "Keep watching"}
           className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center
                      text-player-fg-muted hover:bg-fill hover:text-player-fg transition"
         >
@@ -99,7 +115,7 @@ export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
 
         <div className="text-center">
           <h2 className="text-player-fg text-xl font-semibold text-balance">
-            {series?.title ?? finished.title ?? "This recording"}
+            {series?.title ?? current.title ?? "This recording"}
           </h2>
           {episodes.length > 0 && (
             <p className="text-player-fg-muted text-xs mt-1">
@@ -116,25 +132,25 @@ export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
             onClick={onClose}
             className="px-4 py-2 rounded-lg glass text-sm text-player-fg hover:bg-fill transition"
           >
-            Back to Library
+            {ended ? "Back to Library" : "Keep watching"}
           </button>
         ) : (
           <ul className="w-full flex flex-col gap-1.5">
             {episodes.map((rec) => {
-              const isFinished = rec.object_id === finished.object_id;
-              // The one just watched is marked as such rather than as watched:
-              // "Watched" is a state the library has always shown, and saying
-              // it here would leave the viewer hunting for which row they were
-              // on among several that all say the same thing.
-              const watched = rec.watched && !isFinished;
+              const isCurrent = rec.object_id === current.object_id;
+              // The one being watched is marked as itself rather than as
+              // watched: "Watched" is a state the library has always shown, and
+              // saying it here would leave the viewer hunting for which row
+              // they were on among several that all say the same thing.
+              const watched = rec.watched && !isCurrent;
               return (
                 <li key={rec.object_id}>
                   <button
-                    onClick={() => !isFinished && onPlay(rec)}
-                    disabled={isFinished}
+                    onClick={() => !isCurrent && onPlay(rec)}
+                    disabled={isCurrent}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left
                       transition disabled:cursor-default
-                      ${isFinished
+                      ${isCurrent
                         ? "bg-fill-soft"
                         : "bg-player-panel-soft hover:bg-fill"}`}
                   >
@@ -146,9 +162,9 @@ export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
                       <span className="block text-player-fg text-sm truncate">
                         {rec.subtitle ?? rec.title ?? "Untitled"}
                       </span>
-                      {isFinished && (
+                      {isCurrent && (
                         <span className="block text-player-fg-muted text-[11px]">
-                          Just watched
+                          {ended ? "Just watched" : "Now playing"}
                         </span>
                       )}
                     </span>
@@ -161,7 +177,7 @@ export function SeriesEndCard({ finished, onPlay, onClose }: Props) {
                         Watched
                       </span>
                     )}
-                    {!isFinished && (
+                    {!isCurrent && (
                       <Play className="w-4 h-4 shrink-0 text-player-fg-muted" aria-hidden />
                     )}
                   </button>
