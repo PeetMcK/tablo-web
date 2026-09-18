@@ -72,3 +72,27 @@ export function recordingFor(
   if (Number.isNaN(Date.parse(start))) return null;
   return inProgress.get(`${channel}|${new Date(start).toISOString()}`) ?? null;
 }
+
+/**
+ * A recording of this series, whichever episode it is.
+ *
+ * Not the same question as `recordingFor`: turning a series off stops whatever
+ * it has on a tuner right now, and that is routinely a different episode on a
+ * different channel from the one being looked at.
+ *
+ * The map holds each recording under two keys, so the values are deduplicated
+ * by `object_id` before the first match is taken.
+ */
+export function recordingForSeries(
+  inProgress: Map<string, InProgressRecording>,
+  seriesPath: string | null | undefined,
+): InProgressRecording | null {
+  if (!seriesPath) return null;
+  const seen = new Set<number>();
+  for (const recording of inProgress.values()) {
+    if (seen.has(recording.object_id)) continue;
+    seen.add(recording.object_id);
+    if (recording.series_path === seriesPath) return recording;
+  }
+  return null;
+}

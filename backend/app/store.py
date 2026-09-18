@@ -897,6 +897,38 @@ def airing_handles(channel: str, start: str) -> dict | None:
     return {"airing_path": row["airing_path"], "series_path": row["series_path"]}
 
 
+def airing_series_path(channel: str, start: str) -> str | None:
+    """Which guide series an airing belongs to, or None if the mirror has no row.
+
+    Exists because a recording cannot answer this about itself: its own
+    `series_path` is `/recordings/series/{id}`, a different namespace from the
+    guide's `/guide/series/{id}`. The guide is the only place the two meet, and
+    `(channel, start)` is what a recording carries.
+
+    Both spellings of the instant are tried. The device writes `06:30Z` on a
+    recording where the guide may hold `06:30:00Z` for the same moment, and
+    SQLite compares text.
+    """
+    spellings = [start]
+    try:
+        ts = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ"):
+            spelling = ts.astimezone(timezone.utc).strftime(fmt)
+            if spelling not in spellings:
+                spellings.append(spelling)
+    except ValueError:
+        pass
+
+    for spelling in spellings:
+        row = db.query_one(
+            "SELECT series_path FROM guide_airing WHERE channel_id = ? AND start = ?",
+            (str(channel), spelling),
+        )
+        if row is not None:
+            return row["series_path"]
+    return None
+
+
 def update_airing_schedule(channel: str, start: str, air: dict) -> None:
     """Write one airing's schedule fields back from a device response.
 

@@ -135,6 +135,21 @@ async def recordings_in_progress():
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Library error: {e}")
 
+    live = [item for item in items if item.get("state") == "recording"]
+
+    # The guide's series, not the recording's. A recording carries
+    # `/recordings/series/{id}` and the sheet holds `/guide/series/{id}`; the
+    # mirror is where the two meet. Bounded by the tuner count, and indexed on
+    # the primary key, so this is a handful of lookups at most.
+    series_paths: list[str | None] = []
+    for item in live:
+        identifier = (item.get("channel") or {}).get("identifier")
+        start = item.get("start")
+        series_paths.append(
+            await _run_sync(store.airing_series_path, identifier, start)
+            if identifier and start else None
+        )
+
     return {
         "recordings": [
             {
@@ -148,9 +163,11 @@ async def recordings_in_progress():
                 "recorded_seconds": item.get("recorded_seconds"),
                 "expected_seconds": item.get("expected_seconds"),
                 "title": item.get("title"),
+                # What the series rule would be turned off for. Null when the
+                # mirror has never seen the airing, which is not an error.
+                "series_path": series_path,
             }
-            for item in items
-            if item.get("state") == "recording"
+            for item, series_path in zip(live, series_paths, strict=True)
         ],
     }
 
