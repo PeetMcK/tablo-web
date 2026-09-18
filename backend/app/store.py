@@ -811,6 +811,125 @@ def _is_scheduled(state: str | None) -> bool:
     return state not in _NOT_RECORDING
 
 
+# ---------------------------------------------------------------------------
+# What a Library card leads with
+# ---------------------------------------------------------------------------
+
+def recording_art(object_id: int) -> dict | None:
+    """The stored picture for one recording, or None if never resolved."""
+    row = db.query_one(
+        "SELECT cover_url, cover_frame_ms FROM recording_art WHERE object_id = ?",
+        (int(object_id),),
+    )
+    return dict(row) if row else None
+
+
+def resolve_recording_art(items: list[dict]) -> None:
+    """Work out and keep each recording's artwork, once.
+
+    Kept rather than looked up because `prune_guide` drops airings at 31 days
+    and a recording outlives its airing row - a kept offline copy by years. A
+    live lookup would quietly revert every old card to a snapshot frame a month
+    after it was recorded, and nothing would report it.
+
+    Resolved once, so a card that found its picture never loses it and one that
+    found none is retried on the next listing: the guide may not have synced
+    when the recording first appeared, and the cloud artwork that tells two NFL
+    games apart arrives with it.
+
+    Never overwrites a `cover_frame_ms` - that is the viewer's own choice.
+    """
+    if not items:
+        return
+    stamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with db.write() as conn:
+        for rec in items:
+            object_id = rec.get("object_id")
+            if object_id is None:
+                continue
+            held = conn.execute(
+                "SELECT cover_url FROM recording_art WHERE object_id = ?",
+                (int(object_id),),
+            ).fetchone()
+            if held and held["cover_url"]:
+                continue
+            channel = (rec.get("channel") or {}).get("identifier")
+            url = _airing_artwork_for(conn, channel, rec.get("start"))
+            if url is None and held is not None:
+                # Nothing new to say, and the row already exists. Leave the
+                # viewer's frame and the timestamp alone.
+                continue
+            conn.execute(
+                "INSERT INTO recording_art(object_id, cover_url, resolved_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(object_id) DO UPDATE SET "
+                "  cover_url=excluded.cover_url, resolved_at=excluded.resolved_at",
+                (int(object_id), url, stamp),
+            )
+
+
+def _airing_artwork_for(conn, channel: str | None, start: str | None) -> str | None:
+    """The artwork for the airing a recording came from, if the guide has it."""
+    if not channel or not start:
+        return None
+    air = conn.execute(
+        "SELECT image_url, series_path FROM guide_airing "
+        "WHERE channel_id = ? AND start = ?",
+        (channel, start),
+    ).fetchone()
+    if air is None:
+        return None
+    cover = None
+    if air["series_path"]:
+        row = conn.execute(
+            "SELECT cover_image_id FROM guide_series WHERE path = ?",
+            (air["series_path"],),
+        ).fetchone()
+        cover = row["cover_image_id"] if row else None
+    return airing_artwork(air["image_url"], cover)
+
+
+def set_recording_frame(object_id: int, frame_ms: int | None) -> None:
+    """Pick the frame a card leads with, or put it back to the artwork.
+
+    A position rather than a picture: the frame is already on disk in the BIF
+    pack the scrub preview reads, so this costs no copy and clearing it is one
+    column going null.
+    """
+    stamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    db.execute(
+        "INSERT INTO recording_art(object_id, cover_frame_ms, resolved_at) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT(object_id) DO UPDATE SET cover_frame_ms=excluded.cover_frame_ms",
+        (int(object_id), frame_ms, stamp),
+    )
+
+
+def airing_artwork(own_url: str | None, series_cover_id: int | None) -> str | None:
+    """What a programme leads with: its own artwork, else its series cover.
+
+    The airing's own wins: it is about this episode, where a series cover is
+    about the whole run. It is also the only artwork an OTT airing has - those
+    carry no series record at all, so without this every FAST sheet renders
+    hero-less - and, since the cloud's per-event pictures started filling the
+    gap for OTA sport, the only thing that tells two NFL games apart.
+
+    Never `background_image`, and never the poster. Measured across seven
+    series: `cover_image` is 1920x1080 with the title set into the art, while
+    `background_image` is the same size composed for text to be laid over it -
+    Good Morning America's pushes all three presenters to the right and leaves
+    a bare blue field, which reads as a mistake anywhere that is not a hero
+    with a gradient. `thumbnail_image` is a 240x360 portrait poster, the wrong
+    shape for a 16:9 well.
+
+    Extracted so the schedule's info box and the Library card cannot drift into
+    two different answers to the same question.
+    """
+    if own_url:
+        return own_url
+    return f"/api/channels/image/{series_cover_id}" if series_cover_id else None
+
+
 def airing_detail(channel: str, start: str, now: float | None = None) -> dict | None:
     """Everything the show sheet renders, from the mirror alone.
 
@@ -834,12 +953,7 @@ def airing_detail(channel: str, start: str, now: float | None = None) -> dict | 
     start_epoch = _start_epoch(air["start"])
     end_epoch = air["end_epoch"]
 
-    # The airing's own artwork wins: it is about this episode, where a series
-    # cover is about the whole run. It is also the only artwork an OTT airing
-    # has - those carry no series record at all, so without this every FAST
-    # sheet renders hero-less.
-    cover = (series or {}).get("cover_image_id")
-    image_url = air["image_url"] or (f"/api/channels/image/{cover}" if cover else None)
+    image_url = airing_artwork(air["image_url"], (series or {}).get("cover_image_id"))
     return {
         "title": air["title"],
         "episode_title": air["episode_title"],

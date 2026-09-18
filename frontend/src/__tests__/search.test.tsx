@@ -382,6 +382,8 @@ const LIBRARY_RECORDING: Recording = {
   expected_seconds: null,
   recording_started: null,
   slot_seconds: 10800, thumbnail: null,
+  image_url: null, cover_frame: null,
+  has_preview: false,
   width: null, height: null, state: "finished", error: null,
   watched: false, position: 0, cache_state: "absent", cache_progress: 0,
   pinned: false, offline_only: false, paused: false, cached_seconds: 0,

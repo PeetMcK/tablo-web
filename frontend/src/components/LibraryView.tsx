@@ -3,13 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Info, Loader2, Pause, Radio, Trash2 } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Info, Loader2, Pause, Radio, Trash2, Undo2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { ShowInfo } from "./ShowInfo";
+import { CoverageStrip } from "./CoverageStrip";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
-import { isIncomplete, recordedSpan, watchedSpan } from "../lib/recording";
+import { cardArt, isIncomplete, recordedSpan, strippedTime, watchedSpan } from "../lib/recording";
 import type { Coverage } from "../lib/recording";
 
 /**
@@ -82,7 +83,13 @@ function isRecording(rec: Recording): boolean {
  * start" and "what is happening now" are genuinely different places and the
  * card offers both rather than guessing.
  */
-type StartMode = "resume" | "beginning" | "live";
+/**
+ * Where a recording opens.
+ *
+ * "at" is a point the viewer pointed to on the coverage strip — neither where
+ * they left off nor the beginning, but the frame they were looking at.
+ */
+type StartMode = "resume" | "beginning" | "live" | "at";
 
 /**
  * Why the card can say how far along something still recording is.
@@ -187,6 +194,8 @@ export function LibraryView() {
   const [playing, setPlaying] = useState<Recording | null>(null);
   /** Which entry point the card asked for; only in-progress recordings ask. */
   const [startMode, setStartMode] = useState<StartMode>("resume");
+  /** Seconds the strip was clicked at, for `startMode === "at"`. */
+  const [startAt, setStartAt] = useState(0);
   /** The recording whose information sheet is open, if any. */
   const [infoFor, setInfoFor] = useState<Recording | null>(null);
   const [initialRoute] = useState(parseRoute);
@@ -223,6 +232,23 @@ export function LibraryView() {
       qc.invalidateQueries({ queryKey: ["recordings"] });
       qc.invalidateQueries({ queryKey: ["recordings-storage"] });
     },
+  });
+
+  /**
+   * Which frame a card leads with, chosen from its strip.
+   *
+   * The picture is served by the thumbnail route, so nothing here needs the
+   * image itself — only the position, and a re-read so every card that shows
+   * this recording picks the new one up.
+   */
+  const pickCover = useMutation({
+    mutationFn: ({ id, t }: { id: number; t: number }) => api.setRecordingCover(id, t),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
+  });
+
+  const clearCover = useMutation({
+    mutationFn: (id: number) => api.clearRecordingCover(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
   });
 
   const { data, isLoading, isError, refetch } = useQuery({
@@ -304,6 +330,7 @@ export function LibraryView() {
    */
   const openAt = startMode === "live" ? LIVE_EDGE
     : startMode === "beginning" ? 0
+    : startMode === "at" ? startAt
     : resumeAt;
 
   useEffect(() => {
@@ -527,8 +554,31 @@ export function LibraryView() {
                     keeps its full-bleed button below, so nothing changes for
                     it — the whole picture is still the target. */}
                 <div className="group/art aspect-video bg-surface-sunken relative block w-full">
-                  {rec.thumbnail ? (
-                    <img src={rec.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+                  {/* The show's own artwork, the way the schedule's info box
+                      resolves it — the airing's picture, else the series
+                      cover. A frame from the recording is the floor rather
+                      than the default: it is a grab from the middle of a
+                      capture, and on plenty of programmes that is a caption
+                      card or somebody's back.
+
+                      A frame the viewer picked comes through `thumbnail`,
+                      which serves it: their choice outranks the artwork. */}
+                  {cardArt(rec) ? (
+                    <img
+                      src={cardArt(rec)!}
+                      alt=""
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      // A card that has artwork and a dead image link would
+                      // otherwise show the alt box rather than the frame it
+                      // still has.
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        if (rec.thumbnail && img.src !== rec.thumbnail) {
+                          img.src = rec.thumbnail;
+                        }
+                      }}
+                    />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-tint/10 uppercase font-black text-xl italic">
                       Tablo
@@ -694,36 +744,46 @@ export function LibraryView() {
                       recordings had captured four seconds, eight seconds and
                       3.7 minutes of an hour, and the device reported no error
                       for any of them: this bar is the only thing that says so. */}
+                  {/* Only while the picture is one the viewer picked. Bottom
+                      left, clear of the badges in the opposite corner and of
+                      the strip's reach along the bottom edge — and it appears
+                      on hover like the play controls, because a card at rest
+                      should be its picture and nothing else.
+
+                      Above the strip's band in z-order, or the band would take
+                      the click and start playing instead. */}
+                  {rec.cover_frame !== null && (
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        clearCover.mutate(rec.object_id);
+                      }}
+                      disabled={clearCover.isPending}
+                      title="Use the show's own picture again"
+                      aria-label="Use the show's own picture again"
+                      className="absolute bottom-3 left-3 z-20 w-7 h-7 rounded-full glass
+                                 flex items-center justify-center text-media-fg
+                                 opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100
+                                 hover:bg-fill transition disabled:opacity-40"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" aria-hidden />
+                    </button>
+                  )}
+
                   {span && (
-                    <div className="absolute inset-x-0 bottom-0 h-1 bg-ink/60" title={progressTitle(rec)}>
-                      <div
-                        className={`h-full absolute inset-y-0 transition-[width,left] duration-1000 ease-linear
-                                    ${isRecording(rec) ? "bg-danger" : broken ? "bg-warning" : "bg-media-fg/40"}`}
-                        style={{ left: `${span.left}%`, width: `${span.width}%` }}
-                      />
-                      {/* How much of what exists has been watched, over the
-                          top of it. Measured against the capture rather than
-                          the slot: the resume position is an offset into the
-                          media, so on a recording that began late a quarter
-                          watched is a quarter of the grey, not of the strip. */}
-                      {watched && (
-                        <div
-                          className="absolute inset-y-0 bg-accent transition-[width] duration-500 ease-linear"
-                          style={{ left: `${watched.left}%`, width: `${watched.width}%` }}
-                          title={`Watched ${formatClock(watchedAt)}`}
-                        />
-                      )}
-                      {/* Where the booked slot ended, when something ran past
-                          it. Sports pad by half an hour on purpose, and without
-                          the mark the bar just looks full. */}
-                      {span.slotEnd !== null && (
-                        <div
-                          className="absolute inset-y-0 w-px bg-media-fg/70"
-                          style={{ left: `${span.slotEnd}%` }}
-                          aria-hidden
-                        />
-                      )}
-                    </div>
+                    <CoverageStrip
+                      recording={rec}
+                      span={span}
+                      watched={watched}
+                      watchedAt={watchedAt}
+                      recording_now={isRecording(rec)}
+                      broken={broken}
+                      title={progressTitle(rec)}
+                      timeAt={(f) => strippedTime(rec, span, f)}
+                      onPlayAt={(t) => { setStartMode("at"); setStartAt(t); setPlaying(rec); }}
+                      onPickCover={(t) => pickCover.mutate({ id: rec.object_id, t })}
+                    />
                   )}
                 </div>
 

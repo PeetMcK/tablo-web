@@ -1439,3 +1439,68 @@ def test_a_recording_with_no_series_asks_the_device_only_once(monkeypatch):
     assert r.status_code == 200
     assert r.json()["cover_image"] is None
     assert asked == ["/recordings/series/episodes/86128"]
+
+
+# ---------------------------------------------------------------------------
+# What a Library card leads with
+# ---------------------------------------------------------------------------
+
+def test_an_airing_leads_with_its_own_artwork():
+    """The episode's picture beats the series cover, which is about the run.
+
+    It is also the only artwork an OTT airing has, and - since the cloud's
+    per-event pictures started filling the gap for OTA sport - the only thing
+    that tells two NFL games apart.
+    """
+    from app.store import airing_artwork
+    assert airing_artwork("https://cdn/bengals-steelers.jpg", 2706) == \
+        "https://cdn/bengals-steelers.jpg"
+
+
+def test_an_airing_with_no_picture_falls_to_the_series_cover():
+    from app.store import airing_artwork
+    assert airing_artwork(None, 2706) == "/api/channels/image/2706"
+
+
+def test_an_airing_with_neither_has_no_artwork():
+    """Ordinary for sport, whose airing has aged out of the guide. The card
+    falls back to the snapshot frame it has always used."""
+    from app.store import airing_artwork
+    assert airing_artwork(None, None) is None
+
+
+def test_the_cover_frame_is_written_as_milliseconds(monkeypatch):
+    """A position, not a picture: the frame is already on disk in the BIF pack
+    the scrub preview reads, so an override copies nothing."""
+    from app.routes import recordings as rec
+    written: list[tuple] = []
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.store, "set_recording_frame",
+                        lambda oid, ms: written.append((oid, ms)))
+
+    r = client.post("/api/recordings/86113/cover", json={"t": 612.5})
+
+    assert r.status_code == 200
+    assert written == [(86113, 612500)]
+
+
+def test_clearing_the_cover_puts_the_artwork_back(monkeypatch):
+    from app.routes import recordings as rec
+    written: list[tuple] = []
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.store, "set_recording_frame",
+                        lambda oid, ms: written.append((oid, ms)))
+
+    r = client.delete("/api/recordings/86113/cover")
+
+    assert r.status_code == 200
+    assert written == [(86113, None)]
+
+
+def test_a_negative_cover_position_is_refused(monkeypatch):
+    from app.routes import recordings as rec
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    assert client.post("/api/recordings/86113/cover",
+                       json={"t": -1}).status_code == 422

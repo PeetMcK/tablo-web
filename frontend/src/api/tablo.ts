@@ -261,6 +261,20 @@ export interface Recording {
    */
   slot_seconds: number;
   thumbnail: string | null;
+  /**
+   * The show's own artwork, as the schedule's info box resolves it.
+   *
+   * The airing's own picture where there is one, else the series cover. Null
+   * is ordinary — sport whose airing has aged out of the guide, or anything
+   * recorded before a guide sync — and the card falls back to `thumbnail`.
+   */
+  image_url: string | null;
+  /**
+   * Seconds into the recording of the frame the viewer chose to lead with,
+   * or null for none. The card's picture is `thumbnail` when this is set,
+   * because that route serves the chosen frame.
+   */
+  cover_frame: number | null;
   width: number | null;
   height: number | null;
   /** Device-side recording state, e.g. "finished" or "recording". */
@@ -284,6 +298,13 @@ export interface Recording {
   rate: TranscodeRate;
   /** Station this was recorded from. */
   channel: RecordingChannel | null;
+  /**
+   * Whether the device's pack of scrub-preview frames is stored locally.
+   *
+   * False until something has been played: the pack is fetched alongside the
+   * first stream. The card's strip offers a preview only where there is one.
+   */
+  has_preview: boolean;
   /** Scan type and height, e.g. "1080i" or "720p". */
   scan: string | null;
   /** 1080i sources need deinterlacing; 720p60 ones pass through untouched. */
@@ -656,6 +677,24 @@ export const api = {
    */
   recordingSeries: (objectId: number) =>
     req<RecordingSeries>(`/recordings/${objectId}/series`),
+
+  /**
+   * Make the frame at `t` seconds the picture this recording's card leads with.
+   *
+   * A position rather than a picture: the frame is already on disk in the BIF
+   * pack the scrub preview reads, so nothing is copied.
+   */
+  setRecordingCover: (objectId: number, t: number) =>
+    req<{ object_id: number; cover_frame: number }>(
+      `/recordings/${objectId}/cover`,
+      { method: "POST", body: JSON.stringify({ t: Math.max(0, t) }) },
+    ),
+
+  /** Put the card's picture back to the show's own artwork. */
+  clearRecordingCover: (objectId: number) =>
+    req<{ object_id: number; cover_frame: null }>(
+      `/recordings/${objectId}/cover`, { method: "DELETE" },
+    ),
 
   inProgressRecordings: () =>
     req<{ recordings: InProgressRecording[] }>("/recordings/in-progress"),

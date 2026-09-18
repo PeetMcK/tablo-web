@@ -70,6 +70,8 @@ const REC: Recording = {
   channel: { identifier: "S34654_008_01", call_sign: "KTMFABC", network: "ABC", number: "23.1" },
   scan: "720p",
   interlaced: false,
+  image_url: null, cover_frame: null,
+  has_preview: false,
 };
 
 function list(overrides: Partial<RecordingList> = {}): RecordingList {
