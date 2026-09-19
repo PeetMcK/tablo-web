@@ -247,6 +247,25 @@ async def list_recordings():
     except Exception as e:
         print(f"[search] indexing recordings failed: {e}", flush=True)
 
+    # And the assets, under the same guard and for the same reason. The artwork
+    # and preview stores sit outside the transcode cache precisely so that
+    # nothing reclaims them, which leaves this as the only thing that ever
+    # removes one - and `forget_recording` alone does not reach a recording
+    # deleted in the Tablo's own app rather than in ours.
+    #
+    # `complete` is what makes this safe: a truncated listing looks identical to
+    # a shrunken library from inside the store, and sweeping on one would delete
+    # nearly everything. Same reasoning as the search index above, and the same
+    # count check behind it.
+    if complete:
+        try:
+            gone = await _run_sync(store.prune_recording_assets, merged)
+            if gone:
+                print(f"[art] forgot assets for {len(gone)} deleted "
+                      f"recording(s): {gone}", flush=True)
+        except Exception as e:
+            print(f"[art] pruning recording assets failed: {e}", flush=True)
+
     # Work out each card's picture once and keep it, because the airing it came
     # from is gone from the guide within days and the recording is not. Failing
     # here costs a card its artwork, never the listing.

@@ -2299,3 +2299,118 @@ def test_forgetting_the_recording_drops_its_preview_pack(tmp_path):
     store.forget_recording(66220)
 
     assert not store.preview_path(66220).exists()
+
+
+# ---------------------------------------------------------------------------
+# Forgetting the assets of recordings the device no longer has
+# ---------------------------------------------------------------------------
+
+def _asset(object_id: int) -> None:
+    """A recording with both durable assets on disk."""
+    store.store_cover(object_id, JPEG, CDN)
+    store.preview_path(object_id).write_bytes(b"\x89BIF\r\n\x1a\n" + b"\x00" * 56)
+
+
+def test_a_recording_deleted_in_the_tablo_app_stops_costing_disk():
+    """`forget_recording` is called from exactly one place - deleting through
+    our own UI - so anything deleted on the device itself leaked for ever.
+
+    Measured on a real library 2026-09-19: 22 `recording_art` rows against 20
+    recordings, and an orphaned preview pack. This leaks in ordinary use.
+    """
+    _asset(66220)
+    _asset(86323)
+
+    gone = store.prune_recording_assets([{"object_id": 66220}])
+
+    assert gone == [86323]
+    assert store.cover_bytes(66220) == JPEG
+    assert not store.preview_path(86323).exists()
+    assert store.recording_art(86323) is None
+
+
+def test_a_truncated_listing_never_sweeps_the_store(monkeypatch):
+    """The guard that matters. A short listing is indistinguishable from a
+    shrunken library in here, and sweeping on one would delete nearly
+    everything - so the caller decides, and only once it has checked what it
+    fetched against the device's own count."""
+    from app.routes import recordings as rec
+
+    _asset(66220)
+    _asset(86323)
+    _listing(monkeypatch, [DEVICE_GAME])
+    # The device says it holds twenty; we fetched one. That is a truncated
+    # read, not a library of one.
+    monkeypatch.setattr(rec.state, "recordings_total", 20)
+
+    body = client.get("/api/recordings").json()
+
+    assert body["returned"] == 1
+    assert store.cover_bytes(86323) == JPEG, "a truncated listing swept the store"
+    assert store.preview_path(86323).exists()
+
+
+def test_a_complete_listing_does_sweep(monkeypatch):
+    """The other half: with the device's own count matched, absence is real."""
+    from app.routes import recordings as rec
+
+    _asset(66220)
+    _asset(86323)
+    _listing(monkeypatch, [DEVICE_GAME])
+    monkeypatch.setattr(rec.state, "recordings_total", 1)
+
+    client.get("/api/recordings")
+
+    assert store.cover_bytes(66220) is not None, "the live recording lost its art"
+    assert not store.preview_path(86323).exists()
+
+
+def test_an_offline_copy_keeps_its_assets_even_though_the_tablo_deleted_it():
+    """A kept recording is the longest-lived thing here and the whole reason
+    these stores exist. It is in the listing because `/recordings` merges
+    orphans in, and it is checked against the pinned index as well - "safe by
+    construction" should not be the only thing between a viewer and the
+    artwork of something they deliberately kept."""
+    _asset(66220)
+    store.write_recording({"object_id": 66220, "path": "/recordings/x/66220",
+                           "source_duration": 100, "pinned": True})
+
+    gone = store.prune_recording_assets([{"object_id": 999}])
+
+    assert 66220 not in gone
+    assert store.cover_bytes(66220) == JPEG
+
+
+def test_an_empty_library_is_a_real_state():
+    """Everything deleted is a thing that happens, and the sweep has to act on
+    it rather than treat it as a truncated read."""
+    _asset(66220)
+
+    assert store.prune_recording_assets([]) == [66220]
+    assert store.cover_bytes(66220) is None
+
+
+def test_a_stranger_in_the_artwork_directory_is_left_alone():
+    """Anything not named after an object id is not ours to delete."""
+    store.artwork_dir().joinpath("notes.txt").write_text("hello")
+    _asset(66220)
+
+    store.prune_recording_assets([])
+
+    assert store.artwork_dir().joinpath("notes.txt").exists()
+
+
+def test_storage_reports_what_the_app_actually_occupies(tmp_path):
+    """Both durable stores live outside the cache root, so `total_bytes` cannot
+    see them and the figure under-reported real disk."""
+    async def never(_path):  # pragma: no cover - guard
+        raise AssertionError("no session should start")
+
+    c = TranscodeCache(session_starter=never, root=tmp_path, budget_bytes=10**9)
+    _asset(66220)
+
+    s = c.storage()
+
+    assert s["artwork_bytes"] == len(JPEG)
+    assert s["preview_bytes"] == 64
+    assert s["disk_bytes"] == s["total_bytes"] + len(JPEG) + 64

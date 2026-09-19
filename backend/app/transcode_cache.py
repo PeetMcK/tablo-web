@@ -970,6 +970,13 @@ class TranscodeCache:
         Pinned recordings are exempt from the budget by design - they are the
         user's offline copies - so they have to be reported separately or the
         numbers look wrong.
+
+        Artwork and preview packs are a third kind again, and reported as one.
+        They live outside the cache root so that reclaiming disk cannot touch
+        them, which also means `total_bytes` cannot see them: counting only the
+        cache under-reported what the app occupies, which is the sort of lie
+        that gets discovered on a full disk. They are not reclaimable and not
+        part of the budget, so they are named rather than folded in.
         """
         probe = self.root
         while not probe.exists() and probe != probe.parent:
@@ -977,6 +984,7 @@ class TranscodeCache:
         usage = shutil.disk_usage(probe)
         total = self.total_bytes()
         pinned = self.pinned_bytes()
+        artwork, previews = store.durable_asset_bytes()
         return {
             "pinned_bytes": pinned,
             "cache_bytes": max(0, total - pinned),
@@ -984,6 +992,13 @@ class TranscodeCache:
             "budget_bytes": self.budget,
             "free_bytes": usage.free,
             "pinned_count": len(self.pinned_ids()),
+            # Durable, per-recording, and never reclaimed: the picture each
+            # card leads with and the frames its scrub strip reads.
+            "artwork_bytes": artwork,
+            "preview_bytes": previews,
+            # What the app actually occupies, which is the question anyone
+            # reading this screen is really asking.
+            "disk_bytes": total + artwork + previews,
         }
 
     def _busy(self, object_id: int) -> bool:

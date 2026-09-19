@@ -1448,3 +1448,69 @@ def forget_preview(object_id: int) -> None:
         preview_path(object_id).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def durable_asset_bytes() -> tuple[int, int]:
+    """(artwork, previews) on disk, in bytes.
+
+    Reported separately from the transcode cache because they are a different
+    kind of disk. The cache is a budget: it fills, and the least recently used
+    is reclaimed. These two are the recording's own - its picture and its
+    frames - and nothing reclaims them, which is the entire reason they live
+    out here. A `/storage` figure that counted only the cache under-reported
+    what the app actually occupies, which is the sort of lie that is discovered
+    on a full disk.
+    """
+    def total(d: Path) -> int:
+        try:
+            return sum(f.stat().st_size for f in d.glob("*") if f.is_file())
+        except OSError:
+            return 0
+    return total(artwork_dir()), total(preview_dir())
+
+
+def prune_recording_assets(items: list[dict]) -> list[int]:
+    """Forget the assets of recordings the device no longer has.
+
+    The counterpart to `index_recordings(prune=True)`, and it carries the same
+    warning: the caller must be holding the *whole* library. A truncated
+    listing is indistinguishable from a shrunken one in here, and acting on one
+    would destroy most of the store. `/recordings` checks what it fetched
+    against the device's own count before asking for this.
+
+    Why it has to exist at all: `forget_recording` is called from exactly one
+    place, deleting a recording through our own UI. Delete it in the Tablo app
+    instead and the row, the artwork and the preview pack stay for ever.
+    Measured on a real library 2026-09-19 - 22 `recording_art` rows against 20
+    recordings, and an orphaned preview pack - so this leaks in ordinary use
+    rather than in theory.
+
+    Offline copies are safe by construction: a kept recording the Tablo has
+    deleted is still in the listing this is given, because `/recordings` merges
+    them in. Pinned ids are checked as well, because "safe by construction"
+    should not be the only thing standing between a viewer and the artwork of
+    something they deliberately kept.
+
+    Returns the ids dropped, for the caller to log.
+    """
+    live = {int(r["object_id"]) for r in items if r.get("object_id") is not None}
+    if not live and items:
+        return []
+
+    keep = live | set(pinned_recording_ids())
+
+    known = {
+        int(r["object_id"])
+        for r in db.query("SELECT object_id FROM recording_art")
+    }
+    for d, suffix in ((artwork_dir(), ".jpg"), (preview_dir(), ".bif")):
+        for f in d.glob(f"*{suffix}"):
+            try:
+                known.add(int(f.stem))
+            except ValueError:
+                continue          # not ours; leave it alone
+
+    gone = sorted(known - keep)
+    for object_id in gone:
+        forget_recording(object_id)
+    return gone
