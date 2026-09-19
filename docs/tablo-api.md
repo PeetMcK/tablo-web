@@ -726,7 +726,7 @@ lineup you are asking about. It appears in the path.
 | `/account/{context_token}/` | same shape |
 | `/account/devices/` | devices on the account |
 | `/account/devices/{server_id}/resolve/` | one device, plus `reachability` and `url` |
-| `/account/select/` | selects a device context (POST — not exercised here) |
+| `/account/select/` | **POST** `{pid, sid}` (profile id, server id) → `{token}` — this mints the per-device **context token** used in every `/account/{context_token}/…` path. The cloud auth flow is `POST /api/v2/login/` → `GET /account/` (profiles+devices) → `POST /account/select/` → context token |
 | `/account/{context_token}/devices/` | `serverId`, `type`, `product`, `registrationStatus`, `lastSeen`, `name`, `reachability` |
 | `/account/{context_token}/profiles/` | `identifier`, `name`, `date_joined`, `preferences` |
 | `/devices/` , `/devices/virtual/` | 200 with an empty list from off-network; presumably LAN discovery |
@@ -904,7 +904,11 @@ by cloud identifier"), each written and echoed back with a 200:
 **Cloud `schedule/`, `shows/`, `search/`, `live/`, `genres/`** return data but
 their parameters and full record shapes are unmapped.
 
-**`/account/select/`** is a POST in gibme's client; we have not exercised it.
+**`/account/select/`** — resolved (via `evilgenius79/Tablo4U`): `POST` with
+`{pid: <profile identifier>, sid: <server id>}` returns `{token}`, and that token
+is the per-device context token (`lighthouse_token`) the rest of the cloud API
+takes in its path. So the full cloud handshake is login → account (list profiles
+and devices) → select (mint the context token for the chosen profile+device).
 
 ## How to extend this safely
 
