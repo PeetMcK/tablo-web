@@ -219,3 +219,27 @@ def test_live_ffmpeg_carries_the_marker_the_sweep_looks_for():
                                  "http://device/stream/pl.m3u8?token")
     assert any(stream.SWEEP_MARKER in arg for arg in cmd), (
         f"nothing in {cmd} matches pgrep -f {stream.SWEEP_MARKER}")
+
+
+def test_live_uses_the_selected_hardware_encoder(monkeypatch):
+    """Live transcode must honour TRANSCODE_VIDEO_ENCODER, the same knob the
+    recordings cache reads, so the native macOS build uses h264_videotoolbox
+    instead of burning software x264."""
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
+    cmd = stream.live_ffmpeg_cmd(stream.TRANSCODE_DIR / "deadbeef",
+                                 "http://device/stream/pl.m3u8?token")
+    # -c:v is followed by the chosen encoder, and libx264 is nowhere on the line.
+    assert "h264_videotoolbox" in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "h264_videotoolbox"
+    assert "libx264" not in cmd
+    # The a53cc guard is mandatory for VideoToolbox on caption-carrying OTA
+    # streams; without it the encoder fails and produces nothing.
+    assert "-a53cc" in cmd
+
+
+def test_live_defaults_to_libx264(monkeypatch):
+    """With no encoder configured (the container case) live stays on x264."""
+    monkeypatch.delenv("TRANSCODE_VIDEO_ENCODER", raising=False)
+    cmd = stream.live_ffmpeg_cmd(stream.TRANSCODE_DIR / "deadbeef",
+                                 "http://device/stream/pl.m3u8?token")
+    assert cmd[cmd.index("-c:v") + 1] == "libx264"
