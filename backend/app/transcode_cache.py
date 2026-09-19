@@ -607,7 +607,30 @@ class TranscodeCache:
     # ------------------------------------------------------------------
 
     def bif_path(self, object_id: int) -> Path:
-        return self.dir_for(object_id) / "preview.bif"
+        """The preview pack, in the durable store rather than the cache.
+
+        It used to live at `dir_for(object_id)/preview.bif`, inside the
+        directory `evict` rmtree's to reclaim disk - so the pack went with the
+        media. That is wrong twice over. The scrub preview is the smaller half:
+        the viewer's chosen card picture is stored as a *position* into this
+        pack (`recording_art.cover_frame_ms`) rather than as a copy of the
+        frame, and a position is only as durable as the thing it indexes. A
+        card whose picture had been deliberately chosen went blank the first
+        time the cache came under pressure.
+
+        Packs already written to the old location are moved on first use, so
+        nothing has to be pulled from the device again.
+        """
+        dest = store.preview_path(object_id)
+        if not dest.exists():
+            legacy = self.dir_for(object_id) / "preview.bif"
+            if legacy.is_file():
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    legacy.replace(dest)
+                except OSError:
+                    return legacy
+        return dest
 
     async def fetch_bif(self, object_id: int, path: str) -> bool:
         """Pull the device's thumbnail pack and keep it beside the recording.

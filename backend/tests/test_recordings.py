@@ -2,6 +2,7 @@
 
 import asyncio
 import signal
+import struct
 import time
 from datetime import datetime, timedelta, timezone
 from collections import deque
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app import store
 from app.main import app
+from app.transcode_cache import _BIF_MAGIC
 from app.state import AppState
 from app.transcode_cache import (
     MAX_ONDEMAND_WINDOWS,
@@ -2229,3 +2231,71 @@ def test_a_source_that_blinks_is_tried_again_next_listing(monkeypatch):
     _listing(monkeypatch, [DEVICE_GAME])
     card = client.get("/api/recordings").json()["recordings"][0]
     assert card["image_url"] == "/api/recordings/66220/art"
+
+
+# ---------------------------------------------------------------------------
+# The preview pack, which a chosen cover frame points into
+# ---------------------------------------------------------------------------
+
+def _bif(frames: list[tuple[int, bytes]]) -> bytes:
+    """A minimal BIF: magic, version, count, interval, index, then payloads."""
+    head = _BIF_MAGIC + struct.pack("<II", 0, len(frames)) + struct.pack("<I", 10000)
+    head += b"\x00" * (64 - len(head))
+    offset = 64 + (len(frames) + 1) * 8
+    index, payload = b"", b""
+    for ts, body in frames:
+        index += struct.pack("<II", ts, offset + len(payload))
+        payload += body
+    index += struct.pack("<II", 0xFFFFFFFF, offset + len(payload))
+    return head + index + payload
+
+
+def test_reclaiming_disk_never_takes_the_preview_pack(tmp_path):
+    """A chosen cover picture is stored as a *position* into this pack, not as
+    a copy of the frame. A position is only as durable as what it indexes, and
+    this used to live in the directory `evict` rmtree's - so a card whose
+    picture the viewer had deliberately picked went blank the first time the
+    cache came under pressure.
+    """
+    async def never(_path):  # pragma: no cover - guard
+        raise AssertionError("no session should start")
+
+    c = TranscodeCache(session_starter=never, root=tmp_path, budget_bytes=10**9)
+    c.write_meta(CacheMeta(object_id=66220, path="/recordings/x/66220",
+                           source_duration=100))
+    c.bif_path(66220).write_bytes(_bif([(0, b"\xff\xd8frame-zero")]))
+    assert c.preview_available(66220)
+
+    assert c.evict(66220) is True
+
+    assert c.preview_available(66220), "eviction took the preview pack with it"
+    assert c.preview_frame(66220, 0) == b"\xff\xd8frame-zero"
+
+
+def test_a_pack_written_to_the_old_place_is_moved_rather_than_refetched(tmp_path):
+    """Packs run 3-14 MB and come off the device. Anything already on disk is
+    moved into the durable store on first use."""
+    async def never(_path):  # pragma: no cover - guard
+        raise AssertionError("no session should start")
+
+    c = TranscodeCache(session_starter=never, root=tmp_path, budget_bytes=10**9)
+    legacy = c.dir_for(66220) / "preview.bif"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(_bif([(0, b"\xff\xd8old-frame")]))
+
+    assert c.preview_frame(66220, 0) == b"\xff\xd8old-frame"
+    assert not legacy.exists(), "the pack was copied rather than moved"
+    assert store.preview_path(66220).is_file()
+
+
+def test_forgetting_the_recording_drops_its_preview_pack(tmp_path):
+    """The one thing that may remove it."""
+    async def never(_path):  # pragma: no cover - guard
+        raise AssertionError("no session should start")
+
+    c = TranscodeCache(session_starter=never, root=tmp_path, budget_bytes=10**9)
+    c.bif_path(66220).write_bytes(_bif([(0, b"\xff\xd8frame")]))
+
+    store.forget_recording(66220)
+
+    assert not store.preview_path(66220).exists()

@@ -914,11 +914,12 @@ def forget_recording(object_id: int) -> None:
     (see `index_recordings`).
     """
     object_id = int(object_id)
-    # The picture goes with it. This is the one moment it should: the artwork
-    # store is deliberately outside the transcode cache so that reclaiming disk
-    # cannot touch it, which leaves forgetting the recording entirely as the
-    # only thing that may.
+    # The picture and the preview pack go with it. This is the one moment they
+    # should: both stores are deliberately outside the transcode cache so that
+    # reclaiming disk cannot touch them, which leaves forgetting the recording
+    # entirely as the only thing that may.
     forget_cover(object_id)
+    forget_preview(object_id)
     with db.write() as conn:
         conn.execute("DELETE FROM recording_airing WHERE object_id = ?", (object_id,))
         conn.execute("DELETE FROM recording_art WHERE object_id = ?", (object_id,))
@@ -1412,5 +1413,38 @@ def forget_cover(object_id: int) -> None:
     """Drop the stored picture. Only for a recording being forgotten entirely."""
     try:
         cover_path(object_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def preview_dir() -> Path:
+    """Where scrub-preview packs live: beside the database, never evicted.
+
+    The BIF pack is the recording's own frames, and two things point into it
+    that must not break. The scrub preview is one; the viewer's chosen card
+    picture is the other, and that one is stored as a *position*
+    (`recording_art.cover_frame_ms`) rather than as a copy of the frame -
+    deliberately, because the frame is already here.
+
+    A position is only as durable as what it indexes, and this used to sit in
+    the transcode cache at `<root>/<id>/preview.bif`, which `evict` rmtree's to
+    reclaim disk. So a card whose picture the viewer had picked went blank the
+    first time the cache came under pressure. Keeping the pack is what makes
+    the pointer safe, and 13 MB against the 6.9 GB of video it indexes is not a
+    trade worth thinking about twice.
+    """
+    d = db.DB_PATH.parent / "previews"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def preview_path(object_id: int) -> Path:
+    return preview_dir() / f"{int(object_id)}.bif"
+
+
+def forget_preview(object_id: int) -> None:
+    """Drop the stored preview pack. Only when forgetting the recording."""
+    try:
+        preview_path(object_id).unlink(missing_ok=True)
     except OSError:
         pass
