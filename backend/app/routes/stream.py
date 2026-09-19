@@ -1230,7 +1230,19 @@ def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
     # Deinterlace first (it samples the coded rows), then square the pixels,
     # then any encoder-specific filter (VAAPI's hwupload). Same order as the
     # recordings path, which is load-bearing for hardware pipelines.
-    filters = [*deinterlace_filter(), *square_pixels_filter(), *prof.filters]
+    #
+    # Frame mode (30p), not the recordings default of field (60p): live must
+    # encode at or above realtime or it falls behind, the playlist stops
+    # keeping ahead of the player, and playback stalls at the live edge. Field
+    # doubles the frame rate and roughly halves encoder throughput — measured
+    # 0.9x realtime (below 1.0, fatal for live) against ~1.8x in frame mode on
+    # the same load. Its own env knob so it can be tuned without touching
+    # recordings.
+    filters = [
+        *deinterlace_filter(env_var="TRANSCODE_LIVE_DEINTERLACE", default="frame"),
+        *square_pixels_filter(),
+        *prof.filters,
+    ]
     return [
         "ffmpeg",
         "-y",

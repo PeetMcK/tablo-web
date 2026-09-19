@@ -175,8 +175,14 @@ def fill_limit(first: int, total: int) -> int:
     return total
 
 
-def deinterlace_filter() -> list[str]:
+def deinterlace_filter(env_var: str = "TRANSCODE_DEINTERLACE",
+                       default: str = "field") -> list[str]:
     """Deinterlacing, applied before any encoder-specific filtering.
+
+    ``env_var``/``default`` let callers pick their own default and override
+    knob. Recordings default to ``field`` (60p, throughput can absorb it); live
+    passes ``default="frame"`` (30p) because it must stay above realtime — see
+    the note on why field halves encoder throughput and starved live playback.
 
     ATSC is split down the middle: ABC and FOX broadcast 720p60 progressive,
     CBS and NBC broadcast 1080i. Measured across six recordings off this
@@ -203,7 +209,7 @@ def deinterlace_filter() -> list[str]:
     bwdif over yadif: same cost here, visibly better on the diagonal edges that
     interlacing damages most.
     """
-    mode = os.environ.get("TRANSCODE_DEINTERLACE", "field").lower()
+    mode = os.environ.get(env_var, default).lower()
     if mode in ("off", "none", "0", ""):
         return []
     if mode == "frame":
