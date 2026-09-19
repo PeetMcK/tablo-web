@@ -907,13 +907,16 @@ advertises these; none of the obvious paths resolve:
   cloud airing identifier of what was on. Record-series is the same on the show
   identifier. There is no separate live-record verb; the player just issues the
   schedule write in place.
-- `snap_grid` — **not a guide grid at all** (earlier guess corrected). Every
-  recording's `video_details` carries `has_snap_grid: true`, so `snap_grid` is
-  the *recording's* seek-thumbnail grid (the scrub-preview filmstrip, the role
-  `bif_url_*` plays elsewhere). The endpoint that serves it is unmapped —
-  seeking inside a recording in the app would reveal it. Separately, the guide
-  has no single-request grid: the app builds it from
-  `/views/guide/channels/{id}/airings?date=…` per channel plus
+- `snap_grid` — **resolved: it is the recording's BIF (scrub-preview
+  filmstrip), not a guide grid.** `video_details.has_snap_grid` says whether the
+  device has built it (`false` while `state:"recording"`, `true` once finished),
+  and it is served through the **watch** response: a finished recording's
+  `POST {path}/watch` returns `bif_url_sd` and `bif_url_hd` pointing at
+  `http://<device>:80/stream/bif?<token>[&hd]`. Fetched: `application/octet-stream`,
+  ~1 MB (SD) / ~1.5 MB (HD) of BIF. In-progress recordings have
+  `has_snap_grid:false` and null bif urls, and every `{path}/snap_grid`-style
+  endpoint 404s. Separately, the guide has no single-request grid: the app
+  builds it from `/views/guide/channels/{id}/airings?date=…` per channel plus
   `/views/guide/upcoming`.
 - `scan_stop` — **resolved.** `POST /channels/scans/{id}/stop` -> `204`,
   captured by starting a scan and cancelling it mid-run. So the full scan verb
