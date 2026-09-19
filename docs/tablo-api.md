@@ -161,6 +161,34 @@ protocol with its own key, not a second door into this one. Ports 22 (OpenSSH
 8.2) and 443 (a static Apache serving only `<h1>Nuvyyo Tablo Server</h1>`, a
 2014 self-signed cert, 404 on everything else) are open and equally not an API.
 
+### Physical access: the serial console
+
+If the network surface is not enough — e.g. to disable the on-box `sshd`, read
+the real firmware, or recover a device whose account you do not control — the
+board has a **UART header**. On the board inspected it is a **4-pin inline
+header near the barrel jack, with `GND` silkscreened beside it**; four pads in a
+row next to power is the standard debug UART: **GND, VCC, TX, RX**.
+
+Identifying and connecting it (own-device, defensive use):
+
+- With GND known from the silkscreen, find the rest with a multimeter while the
+  board boots: **VCC** is a steady ~3.3 V (leave it unconnected), **TX** idles
+  ~3.3 V and jitters with boot data, **RX** sits near 0 / floating.
+- Use a **3.3 V** USB-TTL adapter (never 5 V): adapter GND→board GND, adapter
+  RX←board TX, adapter TX→board RX; VCC unconnected. Try **115200 8N1** first,
+  then 1500000 / 921600.
+- At boot: `Hit any key to stop autoboot` = U-Boot access — check whether it is
+  locked or lets you edit `bootargs` (`init=/bin/sh` / `single`) for a root
+  shell. A Linux **login prompt** means it is locked (creds needed); a **root
+  prompt** means it is open (as the older Pixelworks Dual Lite was —
+  `snt.sh/2022/12/rooting-the-tablo-dual-lite-ota-dvr/`).
+
+Whether the 4th-gen bootloader enforces signed boot or drops to root is
+**unverified** — no public teardown exists, and it is a newer, more locked class
+of board than the Dual Lite (modern ARM userland, OpenSSH 8.2 with password auth
+on). Serial is the only way to answer it, and the way to turn off the SSH the
+network cannot.
+
 ### Endpoints and writes confirmed by capturing the official app
 
 The GET sweep finds reads; it cannot find writes, and it cannot find the
