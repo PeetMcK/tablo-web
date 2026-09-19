@@ -349,9 +349,25 @@ The `/channels/scans/` namespace behind it, all read-only GETs on 8887:
 | `/channels/scans/{id}/expected_ota` | channels expected at that postal code (`[]` here) |
 | `/channels/scans/{id}/ott` | OTT/FAST channels offered — `{identifier, name, discovered:false, selected, recommended, source:"network", logos}` |
 
-This capture reused an existing completed scan (`#65`); it did not *start* one,
-so the scan-start verb (and how `scan_stop`, an advertised capability, is
-invoked) is still unmapped — a rescan in the app would show it.
+**Running a scan** (fourth capture, a full OTA rescan and save) is a three-step
+lifecycle:
+
+```
+POST /channels/scans                 -> 200 {object_id, postal_code, datetime,
+                                             completed:false, progress:0.001}
+GET  /channels/scans/{id}   (poll)   -> progress 0.001 → 0.23 → 0.93 → 1.0,
+                                             completed flips true
+POST /channels/scans/{id}/commit     -> 204   (the keep-array, as above)
+```
+
+`POST /channels/scans` takes **no body** — it just starts a scan and returns the
+new scan object. The client then polls `GET /channels/scans/{id}` for
+`progress`/`completed`, reading `/discovered` as it fills, and finally commits
+the set to keep. A scan you do not want is simply never committed — the capture
+started scan `#67`, let it finish, abandoned it, then started `#68` and
+committed that. **No cancel/stop was sent**, so `scan_stop` (an advertised
+capability) is still unmapped; abandoning a scan is not the same as stopping one
+mid-run, which this never exercised.
 
 ### Guide
 
@@ -770,9 +786,10 @@ advertises these; none of the obvious paths resolve:
   which would be the single most valuable thing left to find. (Note the app has
   no local grid either — it composes upcoming from `/views/guide/upcoming` and
   per-channel/`?state=` reads — so `snap_grid` may simply be unused.)
-- `scan_stop` / starting a scan — the channel-lineup capture reused an existing
-  completed scan, so the scan-start and scan-stop verbs are still unmapped. A
-  rescan in the app would reveal them.
+- `scan_stop` — starting a scan is now known (`POST /channels/scans`, then poll,
+  then commit — see "Editing the channel lineup"). Stopping one **mid-run** is
+  not: a rescan capture let scans finish and abandoned the unwanted one without
+  ever sending a cancel, so `scan_stop`'s verb is still unmapped.
 
 **Write enumerations.** The validator rejects bad values but does not list good
 ones, so these need a deliberate write to confirm:
