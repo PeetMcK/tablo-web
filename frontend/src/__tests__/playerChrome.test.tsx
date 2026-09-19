@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { VideoPlayer } from "../components/VideoPlayer";
 import { SKIP_DEBOUNCE_MS } from "../lib/playback";
+import * as playback from "../lib/playback";
 import { api } from "../api/tablo";
 import type { Channel, Program, Recording } from "../api/tablo";
 
@@ -460,6 +461,27 @@ describe("skip queuing on a recording", () => {
       expect(seeks.length).toBeLessThanOrEqual(1);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("maps the arrow keys to 30s forward / 10s back", async () => {
+    // The keys map straight into skip(delta) -> planSkip(...,delta,...); assert
+    // the delta rather than the landing spot, which a recording routes through
+    // a rebuild instead of the currentTime setter.
+    const planSkipSpy = vi.spyOn(playback, "planSkip");
+    try {
+      renderRecording(REC);
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+
+      planSkipSpy.mockClear();
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      expect(planSkipSpy.mock.calls.map((c) => c[2])).toContain(30);
+
+      planSkipSpy.mockClear();
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      expect(planSkipSpy.mock.calls.map((c) => c[2])).toContain(-10);
+    } finally {
+      planSkipSpy.mockRestore();
     }
   });
 });

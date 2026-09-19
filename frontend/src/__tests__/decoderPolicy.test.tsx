@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { VideoPlayer } from "../components/VideoPlayer";
@@ -287,5 +287,49 @@ describe("the gesture that unlocks the sound", () => {
 
     // Skips accumulate behind a short timer before they become one seek.
     await waitFor(() => expect(surface.seek).toHaveBeenCalled());
+  });
+
+  it("resumes on a centre tap after a pause suspends the context", async () => {
+    // Pausing the WASM path suspends the AudioContext, so a paused player reads
+    // as "suspended" just like the startup black frame. The guard must not
+    // treat that as the un-started state: once playback has begun, the centre
+    // tap has to resume, not be swallowed. This is the pause/un-pause bug.
+    let audioContext = "running";
+    let onPlaying: (() => void) | undefined;
+    const play = vi.fn().mockResolvedValue(undefined);
+    const s = {
+      play, pause: vi.fn(), seek: vi.fn(), currentTime: 5,
+      seekable: [0, 60] as const, duration: null, paused: false, muted: false,
+      setMuted: vi.fn(), volume: 1, setVolume: vi.fn(), error: null,
+      diagnostics: () => ({ kind: "wasm", audioContext }),
+      on: (ev: string, cb: () => void) => {
+        if (ev === "playing") onPlaying = cb;
+        return () => {};
+      },
+      destroy: vi.fn(),
+    } as unknown as PlaybackSurface;
+    wasm.open.mockResolvedValue(s);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <VideoPlayer source={{ kind: "recording", recording: REC }} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+
+    // Playback begins, then the viewer pauses: the context suspends.
+    act(() => onPlaying?.());
+    audioContext = "suspended";
+    (s as unknown as { paused: boolean }).paused = true;
+
+    // Centre fifth = play/pause zone.
+    const stage = container.querySelector(".fixed.inset-0") as HTMLElement;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, width: 1000, top: 0, height: 500 }) as DOMRect;
+    fireEvent.click(stage, { clientX: 500, clientY: 250 });
+
+    // The tap resumed rather than being swallowed as an unlock gesture.
+    await waitFor(() => expect(play).toHaveBeenCalled());
   });
 });
