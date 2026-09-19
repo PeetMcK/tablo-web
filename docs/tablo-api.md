@@ -161,6 +161,76 @@ protocol with its own key, not a second door into this one. Ports 22 (OpenSSH
 8.2) and 443 (a static Apache serving only `<h1>Nuvyyo Tablo Server</h1>`, a
 2014 self-signed cert, 404 on everything else) are open and equally not an API.
 
+### Endpoints and writes confirmed by capturing the official app
+
+The GET sweep finds reads; it cannot find writes, and it cannot find the
+parameters a read actually honours. Both come from watching the real app. The
+following is from one capture of the iOS app's **settings** screen (Proxyman,
+device HTTP on 8887). One screen; more screens will add more.
+
+**A read filter we had written off works.** §Unknowns says `?day=` on
+`/guide/airings` is silently ignored. A *different* parameter is not:
+
+```
+GET /guide/airings?state=requested   -> only scheduled airings, each as
+  {"identifier": "...", "schedule": {"state","qualifier","skip_reason",
+                                     "skip_detail","offsets"}}
+GET /guide/shows?state=requested     -> only shows with a rule, each as
+  {"identifier","schedule":{"rule","channel_identifier","offsets"},
+   "keep":{"rule","count"},"recordings_path"}
+```
+
+So `/guide/airings` and `/guide/shows` take a **`state`** filter (`requested`
+seen; other values unmapped) and return a *projection* — just the identifier
+and the schedule/keep sub-object, not the full record. This is how the app
+lists "what have I asked to record" without walking everything.
+
+**New read endpoints:**
+
+| Path | Returns |
+|---|---|
+| `/views/recordings/recent?sort=age&order=desc&failed=false` | a server-composed, date-grouped view: `[{"key":"2026-09-19","contents":["/recordings/series/episodes/{id}", …]}, …]` |
+| `/recordings/channels/{id}` | one channel as the *recordings* side sees it — adds `resolution` (`hd_1080`/`hd_720`/`sd`) to the `flags` the guide side carries |
+| `/settings/recording_qualities/live` , `/settings/recording_qualities/recordings` | video quality profiles — `[]` here (see the transcode section) |
+| `/server/harddrives` , `/server/location` , `/server/update/info` | as §Reads; the app reads all three on the settings screen |
+| `/notifications/stream?client_type&client_version&client_build&device_id&device_type` | a long-lived event stream (SSE-style). It never ends; a naïve proxy that buffers it will stall |
+
+`/views/` is a whole namespace the sweep never reached — the server composes
+views (grouped, sorted, filtered) so the client does not have to. `recent` is
+one; others are unmapped and worth capturing.
+
+**`server/info` carries more than §Reads lists** — also `timezone`,
+`availability` (`"ready"`), `cache_key`, `product` (`"tablo"`), and a
+`deprecated` field naming a key on its way out (`"timezone"`).
+
+**The write surface, observed rather than guessed.** Every write the settings
+screen makes is a flat `PATCH`, one key per request, and the response is the
+full updated object (so a write doubles as a read, same as the schedule writes):
+
+| Write | Body | Notes |
+|---|---|---|
+| `PATCH /settings/info` | `{"led": "on"｜"dim"｜"off"}` | LED brightness — all three values observed |
+| `PATCH /settings/info` | `{"auto_delete_recordings": bool}` | |
+| `PATCH /settings/info` | `{"extend_live_recordings": bool}` | |
+| `PATCH /settings/info` | `{"exclude_duplicates": bool}` | |
+| `PATCH /settings/info` | `{"enable_amplifier": bool}` | tuner amplifier |
+| `PATCH /settings/info` | `{"audio": "ac3"｜"aac"}` | the audio-transcode toggle (see transcode section) |
+| `PATCH /server/info` | `{"name": "…"}` | renames the device |
+| `POST  /server/update/check` | — | triggers a firmware update check |
+
+`/settings/info` PATCH is flat (`{"led": …}`), unlike the *schedule* writes
+which are nested — the write shape is per-endpoint, not global.
+
+**The `lh` query flag.** Nearly every app request carries a bare `?lh` (no
+value), often alongside real parameters (`?state=requested&lh`,
+`?allowAudioTranscode=true&lh`). It is valueless and its effect is unmapped —
+possibly "this request originates on the LAN / include lighthouse-derived
+fields." Harmless to send; unclear what it changes. Worth a with/without diff.
+
+**Cloud (`ewscloud`) capture** showed only `CONNECT` — the app pins, or the
+capture had no CA for that host, so the HTTPS bodies were not decrypted. The
+cloud surface in this doc still comes from our own signed calls, not the app.
+
 ### Guide
 
 | Path | Returns |
@@ -279,9 +349,42 @@ fetched: `video_details.container_format` (`mpeg2`), `flags` (`interlaced`),
 `audio_details.container_format` (`ac3`), and a master playlist advertising
 `BANDWIDTH=10000000`. `bif_url_sd` / `bif_url_hd` are null for live.
 
-So client-side transcoding is not a workaround for a feature we have not found;
-it is the only option this hardware leaves. Anything wanting H.264 — a browser,
-a phone, a remote viewer on a slow link — has to re-encode off the device.
+So client-side transcoding is the only option for **video**. But the picture
+is not quite "the device cannot transcode at all" — see the audio note directly
+below, found by capturing the official app.
+
+### The device *does* transcode audio — `settings/info.audio`
+
+Captured from the official iOS app (Proxyman, settings screen). `GET
+/settings/info` normally returns what §Reads lists. Add **`?allowAudioTranscode=true`**
+and the response gains one field:
+
+```json
+{"led":"dim","extend_live_recordings":true,"auto_delete_recordings":true,
+ "exclude_duplicates":true,"audio":"ac3","preferred_audio_track":"default",
+ "enable_amplifier":true}
+```
+
+`PATCH /settings/info {"audio":"aac"}` is accepted and the field flips to
+`"aac"`; `{"audio":"ac3"}` flips it back — both observed, `200`, the full
+settings object returned each time. So the box **can** re-encode its AC-3 audio
+to AAC on the way out; it is a persistent device setting, not a per-stream
+parameter. Video has no equivalent (below), so this does not remove the need to
+transcode the MPEG-2 *video* — but a client that only needed AAC audio could
+stop transcoding audio by flipping this once.
+
+### Video quality profiles: the endpoint exists, and is empty
+
+```
+GET /settings/recording_qualities/live         -> []
+GET /settings/recording_qualities/recordings   -> []
+```
+
+Both exist (not 404) and both return an empty array on this `t4g4`. So there
+*is* a video-quality-profile surface — the app asks for it — but this hardware
+offers none, which is consistent with everything above: no video transcode
+here. Another model, or a firmware that populated these, would be the place a
+video profile could appear.
 
 **Probing live playback can wedge the API.** During the `fmt` sweep (repeated
 whole-playlist and segment fetches on port 80, ~25 minutes, plus ~20 `watch`
