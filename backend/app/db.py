@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -305,6 +305,30 @@ CREATE INDEX IF NOT EXISTS recording_airing_slot
 """
 
 
+# The recording's picture, kept as bytes on disk rather than as a URL.
+#
+# `cover_url` was the whole answer and it was the wrong kind of answer: for a
+# game it is a `lighthousetv-cdn.ewscloud.com` asset and for a series it is
+# `/api/channels/image/{id}`, a proxy to the Tablo. One is someone else's
+# server and the other is the device - and a recording is kept precisely
+# because the viewer does not trust either to still be there. A protected
+# recording can outlive both by years.
+#
+# So the bytes are fetched once, while the URL still resolves, and written
+# beside the database. `cover_stored_at` is when that happened; the file itself
+# is the picture. `cover_url` stays as provenance - where it came from, and
+# what to re-fetch from if the file is ever lost - and nothing reads it to
+# render a card any more.
+#
+# Deliberately not in the transcode cache: `evict()` rmtree's a recording's
+# directory to reclaim space, which would take the artwork with the media. The
+# media is gigabytes and replaceable from the device; the picture is tens of
+# kilobytes and, once the guide has moved on, replaceable from nowhere.
+_SCHEMA_V8 = """
+ALTER TABLE recording_art ADD COLUMN cover_stored_at TEXT;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -393,6 +417,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V6)
             if version < 7:
                 conn.executescript(_SCHEMA_V7)
+            if version < 8:
+                conn.executescript(_SCHEMA_V8)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

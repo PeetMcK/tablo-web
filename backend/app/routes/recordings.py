@@ -28,6 +28,15 @@ router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 
 cache = TranscodeCache(session_starter=state.start_recording_session)
 
+#: Cover fetches in flight at once. Small pictures, and the device is the
+#: slower of the two sources, so this keeps a first listing brisk without
+#: taking lanes from playback.
+ART_FETCH_CONCURRENCY = 4
+#: A picture nobody is waiting on. Give up quickly and try next listing.
+ART_FETCH_TIMEOUT = 20
+#: A resolved cover that lives on the device, as `/api/channels/image/{id}`.
+_DEVICE_IMAGE_RE = re.compile(r"^/api/channels/image/(\d+)$")
+
 _SEGMENT_RE = re.compile(r"^w(\d{5})/seg_(\d{2})\.ts$")
 
 
@@ -92,13 +101,83 @@ async def _show_covers(items: list[dict]) -> dict[int, str]:
     return out
 
 
+async def _store_covers(needy: list[dict]) -> int:
+    """Pull each resolved picture down and keep it, permanently.
+
+    The step that makes artwork survive. Everything up to here only worked out
+    a *URL*, and a URL is the wrong kind of answer for a recording: for a game
+    it points at `lighthousetv-cdn.ewscloud.com`, for a series at
+    `/api/channels/image/{id}` - someone else's CDN, and a proxy to the Tablo.
+    A recording is kept because the viewer does not trust either to still be
+    there, and a protected one can outlive both by years.
+
+    So the bytes are fetched once, while the URL still resolves, and written
+    beside the database where nothing reclaims them. After that the card is
+    served from disk and the URL is never used again.
+
+    Two shapes, because that is what resolution produces. A device image id goes
+    through the signed device request; an absolute CDN URL is a plain GET.
+
+    Bounded concurrency, and never raises. A picture that will not download is
+    left for the next listing to try - the row keeps its `cover_url`, so nothing
+    is forgotten - and the card meanwhile shows the URL it came from.
+    """
+    if not needy:
+        return 0
+
+    gate = asyncio.Semaphore(ART_FETCH_CONCURRENCY)
+
+    async def one(entry: dict) -> bool:
+        object_id, url = entry["object_id"], entry["cover_url"]
+        async with gate:
+            try:
+                body = await _fetch_cover_bytes(url)
+            except Exception as e:
+                print(f"[art] {object_id} cover not stored: {e}", flush=True)
+                return False
+        if not body:
+            return False
+        await _run_sync(partial(store.store_cover, object_id, body, url))
+        return True
+
+    done = await asyncio.gather(*[one(e) for e in needy], return_exceptions=True)
+    stored = sum(1 for d in done if d is True)
+    if stored:
+        print(f"[art] stored {stored} cover(s) permanently", flush=True)
+    return stored
+
+
+async def _fetch_cover_bytes(url: str) -> bytes | None:
+    """The bytes behind a resolved cover URL, whichever kind it is."""
+    local = _DEVICE_IMAGE_RE.match(url)
+    if local:
+        # Straight to the device rather than back through our own proxy: this
+        # runs inside that proxy's process, and a request to ourselves would
+        # deadlock the single worker under load.
+        body, _content_type = await state.fetch_device_image(int(local.group(1)))
+        return body
+
+    if not url.startswith(("http://", "https://")):
+        return None
+    resp = await state.http.get(url, follow_redirects=True, timeout=ART_FETCH_TIMEOUT)
+    resp.raise_for_status()
+    return resp.content
+
+
 def _with_art(items: list[dict]) -> None:
     """Say what each card leads with, and whether the viewer chose it.
 
-    `image_url` is the show's own artwork, resolved when the library was last
-    listed — from the airing if the guide still has one, else from the show
-    record on the device. Null is ordinary — anything whose show record carries
-    no cover — and the card falls back to the snapshot frame it has always used.
+    Once the bytes are in hand the card is pointed at `/api/recordings/{id}/art`
+    and never at the place they came from again. That is the whole point: the
+    URL artwork resolves *from* is either a `lighthousetv-cdn` asset or a proxy
+    to the Tablo, and a recording is kept precisely because neither can be
+    relied on to still be there. A protected one can outlive both by years.
+
+    The original URL is what a card shows in the gap between resolving a picture
+    and holding it — one listing, usually — and nothing after that.
+
+    Null is ordinary: anything whose airing and show record both carry no
+    artwork. The card falls back to the snapshot frame it has always used.
 
     One query for the listing rather than one per recording, and run through
     `_run_sync` like every other store call in this handler: reading it inline
@@ -106,9 +185,14 @@ def _with_art(items: list[dict]) -> None:
     """
     art = store.recording_art_for([int(i["object_id"]) for i in items])
     for item in items:
-        held = art.get(int(item["object_id"])) or {}
+        object_id = int(item["object_id"])
+        held = art.get(object_id) or {}
         frame_ms = held.get("cover_frame_ms")
-        item["image_url"] = held.get("cover_url")
+        item["image_url"] = (
+            f"/api/recordings/{object_id}/art"
+            if held.get("cover_stored_at") and store.has_stored_cover(object_id)
+            else held.get("cover_url")
+        )
         item["cover_frame"] = None if frame_ms is None else frame_ms / 1000
 
 
@@ -172,6 +256,12 @@ async def list_recordings():
             partial(store.resolve_recording_art, fallback=await _show_covers(needy)),
             merged,
         )
+        # And then actually hold the picture, rather than a URL pointing at
+        # someone else's server. Resolution above only works out *where* the
+        # artwork is; this is what makes it the recording's own, for as long as
+        # the recording exists. Costs nothing on a settled library - everything
+        # already stored is skipped.
+        await _store_covers(await _run_sync(store.recordings_without_stored_cover, merged))
     except Exception as e:
         print(f"[art] resolving recording artwork failed: {e}", flush=True)
 
@@ -343,6 +433,32 @@ class CoverIn(BaseModel):
     """
 
     t: float = Field(ge=0, le=86_400)
+
+
+@router.get("/{object_id}/art")
+async def recording_art_image(object_id: int):
+    """The recording's own picture, from our disk.
+
+    Not a proxy and not a redirect: the bytes were pulled down when the artwork
+    was first resolved and they belong to the recording now. That is the whole
+    point of the artwork store - a card served from `lighthousetv-cdn` or from
+    `/api/channels/image/{id}` is a card that goes blank the day the CDN drops
+    the asset or the Tablo forgets the image, and a protected recording can
+    outlive both by years.
+
+    Immutable: this recording's artwork is fetched once and never rewritten in
+    place. The viewer's own frame choice is a different thing entirely, lives in
+    `cover_frame_ms`, and is served by the thumbnail route.
+    """
+    _require_auth()
+    body = await _run_sync(partial(store.cover_bytes, object_id))
+    if body is None:
+        raise HTTPException(status_code=404, detail="No stored artwork")
+    return Response(
+        content=body,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
 
 
 @router.post("/{object_id}/cover")

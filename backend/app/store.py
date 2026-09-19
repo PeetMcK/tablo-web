@@ -818,7 +818,8 @@ def _is_scheduled(state: str | None) -> bool:
 def recording_art(object_id: int) -> dict | None:
     """The stored picture for one recording, or None if never resolved."""
     row = db.query_one(
-        "SELECT cover_url, cover_frame_ms FROM recording_art WHERE object_id = ?",
+        "SELECT cover_url, cover_frame_ms, cover_stored_at FROM recording_art "
+        "WHERE object_id = ?",
         (int(object_id),),
     )
     return dict(row) if row else None
@@ -837,7 +838,7 @@ def recording_art_for(object_ids: list[int]) -> dict[int, dict]:
         return {}
     marks = ",".join("?" * len(ids))
     rows = db.query(
-        "SELECT object_id, cover_url, cover_frame_ms FROM recording_art "
+        "SELECT object_id, cover_url, cover_frame_ms, cover_stored_at FROM recording_art "
         f"WHERE object_id IN ({marks})",
         tuple(ids),
     )
@@ -913,6 +914,11 @@ def forget_recording(object_id: int) -> None:
     (see `index_recordings`).
     """
     object_id = int(object_id)
+    # The picture goes with it. This is the one moment it should: the artwork
+    # store is deliberately outside the transcode cache so that reclaiming disk
+    # cannot touch it, which leaves forgetting the recording entirely as the
+    # only thing that may.
+    forget_cover(object_id)
     with db.write() as conn:
         conn.execute("DELETE FROM recording_airing WHERE object_id = ?", (object_id,))
         conn.execute("DELETE FROM recording_art WHERE object_id = ?", (object_id,))
@@ -1312,3 +1318,99 @@ def import_resume(entries: dict[str, float]) -> int:
         )
         imported += 1
     return imported
+
+
+# ---------------------------------------------------------------------------
+# A recording's picture, as bytes we hold rather than a URL we hope about
+# ---------------------------------------------------------------------------
+
+def artwork_dir() -> Path:
+    """Where recording artwork lives: beside the database, never evicted.
+
+    Not under the transcode cache. `TranscodeCache.evict` reclaims space by
+    rmtree'ing a recording's directory, and artwork kept there would go with the
+    media - which is exactly backwards. The media is gigabytes and can be pulled
+    from the device again; the picture is tens of kilobytes and, once the guide
+    has moved past the airing, can be pulled from nowhere at all.
+    """
+    d = db.DB_PATH.parent / "artwork"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cover_path(object_id: int) -> Path:
+    return artwork_dir() / f"{int(object_id)}.jpg"
+
+
+def cover_bytes(object_id: int) -> bytes | None:
+    """The stored picture, or None if this recording has none yet."""
+    p = cover_path(object_id)
+    try:
+        return p.read_bytes() if p.is_file() else None
+    except OSError:
+        return None
+
+
+def store_cover(object_id: int, body: bytes, source_url: str) -> None:
+    """Keep this picture for as long as the recording exists.
+
+    Written to a temporary file and renamed, so a crash or a full disk leaves
+    either the old picture or none - never half a JPEG that renders as a broken
+    image for the life of the recording.
+    """
+    object_id = int(object_id)
+    final = cover_path(object_id)
+    tmp = final.with_suffix(".part")
+    tmp.write_bytes(body)
+    tmp.replace(final)
+
+    stamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    db.execute(
+        "INSERT INTO recording_art(object_id, cover_url, cover_stored_at, resolved_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(object_id) DO UPDATE SET "
+        "  cover_url=excluded.cover_url, cover_stored_at=excluded.cover_stored_at",
+        (object_id, source_url, stamp, stamp),
+    )
+
+
+def has_stored_cover(object_id: int) -> bool:
+    return cover_path(object_id).is_file()
+
+
+def recordings_without_stored_cover(items: list[dict]) -> list[dict]:
+    """Which recordings have a picture resolved but not yet in hand.
+
+    The gap between knowing a URL and holding what it points at. Everything in
+    here is one fetch away from being permanent, and every listing is a chance
+    to close it - so a picture missed because the CDN blinked is tried again,
+    and one already held is never fetched twice.
+
+    Each entry carries the `cover_url` to fetch, so the caller needs no second
+    read to find out where the bytes are.
+    """
+    if not items:
+        return []
+    held = recording_art_for([
+        int(r["object_id"]) for r in items if r.get("object_id") is not None
+    ])
+    out = []
+    for rec in items:
+        object_id = rec.get("object_id")
+        if object_id is None:
+            continue
+        known = held.get(int(object_id)) or {}
+        if not known.get("cover_url"):
+            continue          # nothing resolved yet; not this function's job
+        if known.get("cover_stored_at") and cover_path(int(object_id)).is_file():
+            continue          # already permanent
+        out.append({"object_id": int(object_id), "cover_url": known["cover_url"]})
+    return out
+
+
+def forget_cover(object_id: int) -> None:
+    """Drop the stored picture. Only for a recording being forgotten entirely."""
+    try:
+        cover_path(object_id).unlink(missing_ok=True)
+    except OSError:
+        pass

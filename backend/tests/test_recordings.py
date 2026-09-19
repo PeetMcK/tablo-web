@@ -5,10 +5,12 @@ import signal
 import time
 from datetime import datetime, timedelta, timezone
 from collections import deque
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app import store
 from app.main import app
 from app.state import AppState
 from app.transcode_cache import (
@@ -2053,3 +2055,177 @@ def test_a_negative_cover_position_is_refused(monkeypatch):
     monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
     assert client.post("/api/recordings/86113/cover",
                        json={"t": -1}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Artwork the recording actually owns
+# ---------------------------------------------------------------------------
+
+JPEG = b"\xff\xd8\xff\xe0" + b"pretend this is a picture" * 40
+CDN = "https://lighthousetv-cdn.ewscloud.com/assets/GNLZZGG0039L2CP.jpg?w=1280"
+
+
+def _listing(monkeypatch, rows, *, fetched: list | None = None,
+             cdn_body=JPEG, device_body=JPEG):
+    """The library listing, with the device and the CDN both stood in for."""
+    from app.routes import recordings as rec
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(r) for r in rows]
+
+    async def request_device(_method, path):
+        if path == "/recordings/sports/63558":
+            return DEVICE_SPORT
+        raise RuntimeError(f"unexpected device path {path}")
+
+    async def fetch_device_image(image_id):
+        if fetched is not None:
+            fetched.append(f"device:{image_id}")
+        if device_body is None:
+            raise RuntimeError("device image gone")
+        return device_body, "image/jpeg"
+
+    class FakeHttp:
+        async def get(self, url, **_kw):
+            if fetched is not None:
+                fetched.append(url)
+            if cdn_body is None:
+                raise RuntimeError("cdn gone")
+            return SimpleNamespace(
+                content=cdn_body, raise_for_status=lambda: None,
+            )
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+    monkeypatch.setattr(rec.state, "fetch_device_image", fetch_device_image)
+    monkeypatch.setattr(type(rec.state), "http", property(lambda _s: FakeHttp()))
+
+
+def test_a_cards_picture_is_bytes_we_hold_not_a_url_we_hope_about(monkeypatch):
+    """The whole point. A resolved URL is either someone else's CDN or a proxy
+    to the Tablo, and a recording is kept because neither can be relied on."""
+    _listing(monkeypatch, [DEVICE_GAME])
+
+    body = client.get("/api/recordings").json()
+    card = body["recordings"][0]
+
+    assert card["image_url"] == "/api/recordings/66220/art"
+    assert "lighthousetv" not in str(card["image_url"])
+    assert store.cover_bytes(66220) == JPEG
+
+
+def test_the_picture_outlives_the_place_it_came_from(monkeypatch):
+    """A protected recording can outlive a CDN asset by years. Once the bytes
+    are in hand, losing the source must change nothing at all."""
+    _listing(monkeypatch, [DEVICE_GAME])
+    client.get("/api/recordings")
+    assert store.cover_bytes(66220) == JPEG
+
+    # Now both sources fail, exactly as they will one day.
+    _listing(monkeypatch, [DEVICE_GAME], cdn_body=None, device_body=None)
+
+    card = client.get("/api/recordings").json()["recordings"][0]
+    assert card["image_url"] == "/api/recordings/66220/art"
+    assert client.get("/api/recordings/66220/art").content == JPEG
+
+
+def test_a_picture_already_held_is_never_fetched_again(monkeypatch):
+    """A settled library costs nothing: no CDN traffic, no device traffic."""
+    fetched: list[str] = []
+    _listing(monkeypatch, [DEVICE_GAME], fetched=fetched)
+
+    client.get("/api/recordings")
+    first = len(fetched)
+    client.get("/api/recordings")
+
+    assert first == 1, fetched
+    assert len(fetched) == first, "a second listing re-fetched the picture"
+
+
+def test_reclaiming_disk_never_takes_the_artwork(tmp_path):
+    """The reason artwork lives beside the database rather than in the cache.
+
+    `evict` rmtree's a recording's cache directory to reclaim space. The media
+    is gigabytes and can be pulled from the device again; the picture is tens
+    of kilobytes and, once the guide has moved on, can be pulled from nowhere.
+    """
+    from app.transcode_cache import CacheMeta, TranscodeCache
+
+    async def never(_path):  # pragma: no cover - guard
+        raise AssertionError("no session should start")
+
+    c = TranscodeCache(session_starter=never, root=tmp_path, budget_bytes=10**9)
+    c.write_meta(CacheMeta(object_id=66220, path="/recordings/x/66220",
+                           source_duration=100))
+    store.store_cover(66220, JPEG, CDN)
+
+    assert c.evict(66220) is True
+    assert store.cover_bytes(66220) == JPEG, "eviction took the artwork with it"
+
+
+def test_forgetting_the_recording_is_the_one_thing_that_drops_it():
+    store.store_cover(66220, JPEG, CDN)
+    store.forget_recording(66220)
+    assert store.cover_bytes(66220) is None
+
+
+def test_a_half_written_picture_never_replaces_a_good_one():
+    """Written to a temporary file and renamed, so a crash leaves the old
+    picture or none - not half a JPEG that renders broken for ever."""
+    store.store_cover(66220, JPEG, CDN)
+    assert not list(store.artwork_dir().glob("*.part"))
+    assert store.cover_path(66220).read_bytes() == JPEG
+
+
+def test_artwork_with_nothing_stored_is_a_404(monkeypatch):
+    from app.routes import recordings as rec
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    assert client.get("/api/recordings/424242/art").status_code == 404
+
+
+def test_a_guide_cover_is_pulled_from_the_cdn_and_then_never_again(monkeypatch):
+    """The per-game picture, which is the only thing that tells two NFL games
+    apart - and the one most certain to stop resolving one day."""
+    fetched: list[str] = []
+    store.save_guide([{
+        "identifier": "S34654_008_01",
+        "airings": [{
+            "start": AppState._recording_fields(DEVICE_GAME)["start"],
+            "duration": 11100, "title": "NFL Football", "image_url": CDN,
+        }],
+    }])
+    _listing(monkeypatch, [DEVICE_GAME], fetched=fetched)
+
+    card = client.get("/api/recordings").json()["recordings"][0]
+
+    assert fetched == [CDN], "the per-game picture came from somewhere else"
+    assert card["image_url"] == "/api/recordings/66220/art"
+    assert store.cover_bytes(66220) == JPEG
+
+
+def test_a_device_cover_is_pulled_straight_from_the_device(monkeypatch):
+    """A series resolves to `/api/channels/image/{id}`. Fetching that through
+    our own proxy would be this process calling itself."""
+    fetched: list[str] = []
+    episode = dict(DEVICE_GAME)
+    _listing(monkeypatch, [episode], fetched=fetched)
+    client.get("/api/recordings")
+
+    assert fetched == ["device:38765"]
+    assert store.cover_bytes(66220) == JPEG
+
+
+def test_a_source_that_blinks_is_tried_again_next_listing(monkeypatch):
+    """Nothing is forgotten: the row keeps its `cover_url`, and every listing
+    is another chance to make the picture permanent."""
+    _listing(monkeypatch, [DEVICE_GAME], cdn_body=None, device_body=None)
+    body = client.get("/api/recordings").json()
+
+    # Meanwhile the card shows the URL it resolved, rather than nothing.
+    assert body["recordings"][0]["image_url"] == "/api/channels/image/38765"
+    assert store.cover_bytes(66220) is None
+
+    _listing(monkeypatch, [DEVICE_GAME])
+    card = client.get("/api/recordings").json()["recordings"][0]
+    assert card["image_url"] == "/api/recordings/66220/art"
