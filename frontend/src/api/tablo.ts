@@ -539,6 +539,72 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface SettingsOverview {
+  server: {
+    name?: string;
+    version?: string;
+    build_number?: string;
+    local_address?: string;
+    server_id?: string;
+    model?: { name?: string; tuners?: number };
+  } | null;
+  network: { ip?: string; connection?: string; status?: string } | null;
+  harddrives: unknown | null;
+  guide: {
+    last_update?: string;
+    limit?: string;
+    download_progress?: number;
+    guide_seeded?: boolean;
+  } | null;
+  location: {
+    state?: string;
+    location?: Record<string, unknown>;
+    timezone?: string;
+  } | null;
+  settings: {
+    led?: string;
+    enable_amplifier?: boolean;
+    exclude_duplicates?: boolean;
+    extend_live_recordings?: boolean;
+    auto_delete_recordings?: boolean;
+    audio?: string;
+    preferred_audio_track?: string;
+  } | null;
+  update: {
+    available_update?: unknown;
+    state?: string;
+    last_checked?: string;
+  } | null;
+}
+
+export interface LineupChannel {
+  path: string;
+  channel_identifier?: string;
+  call_sign?: string;
+  resolution?: string;
+  selected: boolean;
+  signal_state?: string;
+}
+
+/** A single hard drive as `/server/harddrives` reports it. */
+export interface HardDrive {
+  connected?: boolean;
+  format_state?: string;
+  kind?: string;
+  size?: number;
+  size_mib?: number;
+  free?: number;
+  used?: number;
+  busy_state?: string;
+  error?: string | null;
+}
+
+export interface NoopResult {
+  ok: boolean;
+  noop: boolean;
+  reason: string;
+}
+
 export const api = {
   status: () => req<AuthStatus>("/auth/status"),
 
@@ -814,5 +880,57 @@ export const api = {
     if (opts?.limit) p.set("limit", String(opts.limit));
     if (opts?.kinds?.length) p.set("kinds", opts.kinds.join(","));
     return req<SearchResponse>(`/search?${p}`);
+  },
+
+  settings: {
+    overview: () => req<SettingsOverview>("/settings/overview"),
+
+    patchInfo: (key: string, value: string | boolean) =>
+      req<Record<string, unknown>>("/settings/info", {
+        method: "PATCH",
+        body: JSON.stringify({ [key]: value }),
+      }),
+
+    rename: (name: string) =>
+      req<Record<string, unknown>>("/settings/name", {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }),
+
+    channels: () =>
+      req<{ scan_id: string | null; channels: LineupChannel[] }>(
+        "/settings/channels",
+      ),
+
+    startScan: () =>
+      req<{ scan_id: string; progress: number; completed: boolean }>(
+        "/settings/channels/scan",
+        { method: "POST" },
+      ),
+
+    scanStatus: (id: string) =>
+      req<{ progress: number; completed: boolean }>(
+        `/settings/channels/scan/${id}`,
+      ),
+
+    scanDiscovered: (id: string) =>
+      req<{ channels: LineupChannel[] }>(
+        `/settings/channels/scan/${id}/discovered`,
+      ),
+
+    commit: (scanId: string, paths: string[]) =>
+      req<{ ok: boolean; count: number }>("/settings/channels/commit", {
+        method: "POST",
+        body: JSON.stringify({ scan_id: scanId, paths }),
+      }),
+
+    guideUpdate: () =>
+      req<NoopResult>("/settings/guide/update", { method: "POST" }),
+
+    setLocation: (postal_code: string) =>
+      req<NoopResult>("/settings/location", {
+        method: "PATCH",
+        body: JSON.stringify({ postal_code }),
+      }),
   },
 };
