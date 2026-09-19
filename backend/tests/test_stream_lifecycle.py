@@ -243,3 +243,29 @@ def test_live_defaults_to_libx264(monkeypatch):
     cmd = stream.live_ffmpeg_cmd(stream.TRANSCODE_DIR / "deadbeef",
                                  "http://device/stream/pl.m3u8?token")
     assert cmd[cmd.index("-c:v") + 1] == "libx264"
+
+
+def test_live_deinterlaces_in_frame_mode(monkeypatch):
+    """Live must deinterlace to 30p (send_frame), not 60p (send_field): field
+    mode roughly halves encoder throughput and drops live below realtime, which
+    starves playback at the live edge. Recordings keep field; this is live."""
+    monkeypatch.delenv("TRANSCODE_DEINTERLACE", raising=False)
+    monkeypatch.delenv("TRANSCODE_LIVE_DEINTERLACE", raising=False)
+    cmd = stream.live_ffmpeg_cmd(stream.TRANSCODE_DIR / "deadbeef",
+                                 "http://device/stream/pl.m3u8?token")
+    vf = cmd[cmd.index("-vf") + 1]
+    assert "send_frame" in vf, vf
+    assert "send_field" not in vf, vf
+
+
+def test_live_deinterlace_has_its_own_env(monkeypatch):
+    """Its knob is independent of the recordings one, so tuning live never
+    changes recordings."""
+    monkeypatch.setenv("TRANSCODE_LIVE_DEINTERLACE", "off")
+    monkeypatch.setenv("TRANSCODE_DEINTERLACE", "field")
+    cmd = stream.live_ffmpeg_cmd(stream.TRANSCODE_DIR / "deadbeef",
+                                 "http://device/stream/pl.m3u8?token")
+    # "off" drops the deinterlace filter; -vf may be absent or carry only the
+    # square-pixel step, but never a bwdif stage.
+    joined = " ".join(cmd)
+    assert "bwdif" not in joined, joined
