@@ -231,6 +231,95 @@ fields." Harmless to send; unclear what it changes. Worth a with/without diff.
 capture had no CA for that host, so the HTTPS bodies were not decrypted. The
 cloud surface in this doc still comes from our own signed calls, not the app.
 
+### Series scheduling, addressed by cloud identifier — from a second capture
+
+A second capture (iOS app, every series recording option exercised) rewrote how
+much of §Writes should be read. Two structural surprises:
+
+**The device guide is addressable by cloud identifier.** The app does not PATCH
+`/guide/series/{numeric_id}`. It PATCHes **`/guide/{cloud_identifier}`** — the
+same `C…_SHOW_…` show identifier and `LH-CEP…` airing identifier the *cloud*
+returns. All of these are live device endpoints on 8887:
+
+```
+GET  /guide/C183890_SHOW_SH000037100000            one show's schedule/keep/offsets
+GET  /guide/C183890_SHOW_SH000037100000/airings?state=…   that show's airings
+GET  /guide/LH-CEP013451880184-S35314_011_01-T1789830000  one airing's schedule
+PATCH /guide/C183890_SHOW_SH000037100000           the write target (below)
+```
+
+`GET /guide/{show_identifier}` returns
+`{"identifier","schedule":{"rule","channel_identifier","offsets":{"start","end","source"}},"keep":{"rule","count"},"recordings_path"}`.
+This is the bridge between the two APIs: the cloud gives you the identifier, and
+the *device* accepts it directly — no need to resolve it to a numeric object id
+first.
+
+**`?state=` is the conflicts endpoint we could not find.** §Unknowns lists
+`conflicts` as advertised-but-unrouted. It is not a path — it is a filter:
+
+```
+GET /guide/airings?state=requested     scheduled airings (projection)
+GET /guide/shows?state=requested       shows with a rule (projection)
+GET /guide/{show_identifier}/airings?state=conflicted   the show's conflicts
+```
+
+`state` takes at least `requested` and `conflicted`. So conflict discovery is
+`?state=conflicted`, and `airings_by_day`/`conflicts`/`search` were never
+missing paths — the guide reads take filters we had not sent. (`?day=` genuinely
+is still ignored; `?state=` is the one that works.)
+
+**The series write surface, every option, confirmed by 200 + device echo.**
+`PATCH /guide/{show_identifier}`; the response is the full updated show object.
+Sub-objects combine in one body.
+
+| Field | Values (confirmed) | Meaning |
+|---|---|---|
+| `schedule.rule` | `"all"` ｜ `"new"` ｜ `"none"` | record everything / new only / off |
+| `keep.rule` | `"all"` ｜ `"none"` ｜ `"count"` (+ `"count": N`) | how many to keep — **`count` is new** |
+| `schedule.offsets` | `{"start": ±sec, "end": ±sec, "source": "show"｜"none"}` | recording padding in **seconds**; **`source:"show"` is new** (was thought `none`-only) |
+| `schedule.channel_identifier` | a cloud channel id (`"S35298_013_01"`) ｜ `null` | pin the series to one channel, or unpin |
+
+`keep.rule: "count"` with `count: 10` and `count: 5` both returned 200 with the
+value echoed. `offsets.source` defaults to `"show"` (the show's own padding) and
+was set to `"none"` in a combined write that returned 200. The standalone
+`offsets` and `channel_identifier` writes in the capture show `999` — Proxyman's
+"cancelled, empty body", the app debouncing rapid taps — so their *shape* is
+known but a clean 200 was only seen for them inside the combined write
+`{"keep":{"rule":"none"},"schedule":{"channel_identifier":null,"offsets":{"source":"none"}}}`.
+
+**Two recording writes that are not schedule writes:**
+
+```
+PATCH /recordings/series/episodes/{id}   {"protected": true｜false}   -> 200
+```
+Protect one recording from auto-delete (the per-recording "keep" toggle). The
+response is the full recording object — which also newly exposes
+`guide_identifier` (the `LH-CEP…` airing this recording came from),
+`series_path`, and `season_path`.
+
+```
+POST /recordings/series/{series_id}/delete   {"filter": "watched"}   -> 200, []
+```
+Bulk-delete a series' episodes by filter — `watched` seen. This is a
+`POST …/delete` with a body, distinct from the single-recording `DELETE` in
+§Writes.
+
+**The recordings library has a season tier and server-composed views:**
+
+| Path | Returns |
+|---|---|
+| `/recordings/series/{id}/seasons` | seasons of a recorded series |
+| `/recordings/series/seasons/{id}` | one season |
+| `/recordings/series/seasons/{id}/episodes?failed` | a season's episodes |
+| `/recordings/series/{id}/episodes?sort&order&failed` | a series' episodes, sorted/filtered |
+| `/views/library/counts` | the whole library index — per show `{title, identifier, recording, guide:{show_counts:{airing_count,conflicted_count,scheduled_count}, ota_show_counts, ott_show_counts, …images}}`, grouped |
+| `/views/guide/upcoming` | upcoming airings, date-grouped `[{key:"YYYY-MM-DD", contents:["LH-CEP…", …]}]` |
+| `/views/recordings/recent?sort&order&failed` | recent recordings, date-grouped |
+
+`/views/library/counts` is the single call behind the library screen —
+`conflicted_count` per show is the same conflict data `?state=conflicted`
+exposes per airing.
+
 ### Guide
 
 | Path | Returns |
@@ -638,7 +727,10 @@ advertises these; none of the obvious paths resolve:
   ignored** (same 9,166 paths either way). `/guide/airings/{date}`,
   `/guide/airings/day/{date}`, `/guide/airings_by_day` and `/guide/days` all
   404. The shape is somewhere else.
-- `conflicts` — `/guide/conflicts` and `/recordings/conflicts` 404.
+- `conflicts` — **resolved.** Not a path: `GET /guide/airings?state=conflicted`
+  (and `/guide/{show_identifier}/airings?state=conflicted`) is the conflict
+  filter, and `/views/library/counts` carries a `conflicted_count` per show.
+  See "Series scheduling, addressed by cloud identifier".
 - `search` — `/guide/search` 404 on the device (the *cloud* has
   `guide/search/`).
 - `snap_grid` — untested; possibly the device-side equivalent of the cloud grid,
@@ -647,12 +739,13 @@ advertises these; none of the obvious paths resolve:
 **Write enumerations.** The validator rejects bad values but does not list good
 ones, so these need a deliberate write to confirm:
 
-- `keep.rule` beyond `"none"`
-- `offsets.source` beyond `"none"`
+These are now **resolved** by the app capture (see "Series scheduling, addressed
+by cloud identifier"), each written and echoed back with a 200:
 
-Low risk to discover in place: a wrong value is refused cleanly.
+- `keep.rule` — `"all"`, `"none"`, `"count"` (with `"count": N`).
+- `offsets.source` — `"show"` (the default) and `"none"`.
 
-`schedule.rule` is no longer among them — see below.
+`schedule.rule` (`"all"`/`"new"`/`"none"`) was already resolved.
 
 **Cloud `schedule/`, `shows/`, `search/`, `live/`, `genres/`** return data but
 their parameters and full record shapes are unmapped.
