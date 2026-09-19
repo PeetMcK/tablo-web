@@ -114,6 +114,53 @@ library  netstatus  reclive
 Several of these name features whose endpoint we have not found —
 `airings_by_day`, `conflicts`, `search`, `snap_grid`. See **Unknowns**.
 
+### Endpoints found by sweeping, not documented anywhere
+
+A signed-GET sweep of ~130 candidate paths (`backend/tools/probe_endpoints.py`,
+status-code archaeology: 404 absent, anything else a lead) turned up eight the
+prior art never named. All read-only, all on 8887.
+
+| Path | Returns |
+|---|---|
+| `/guide/channels/{id}` | one channel record — `object_id`, `path`, `channel` |
+| `/guide/shows` | **all show paths in one list — 781 = series + movies + sports** |
+| `/guide/programs` | manual programs — `[]` here (nothing manual scheduled) |
+| `/recordings/shows` | recorded shows, aggregated across kinds |
+| `/recordings/genres` | genre strings for the library (170, same set as `/guide/genres`) |
+| `/recordings/programs` | recorded manual programs — `[]` here |
+| `/server/network` | `server_id`, `ip`, `connection` (`ethernet`), `status` (`online`) |
+| `/ping` | `{"sid": …}` — the cheapest liveness check on the box |
+
+Two are worth acting on:
+
+- **`/guide/channels/{id}` carries `channel.flags`** — `["mpeg2",
+  "interlaced", "canRecord"]` on KSPS-HD. That is the codec and scan type of a
+  channel **before any tuner is opened.** Everywhere else this is only known
+  from the `watch` response, which costs a tuner. `?day=` is ignored; it is a
+  channel record, not a schedule.
+- **`/guide/shows` is one request for every series, movie and sport path** —
+  700 + 69 + 12 = 781 here — where the three `/guide/{series,movies,sports}`
+  collections are three. The recordings side has the same shortcut in
+  `/recordings/shows`.
+
+Still not found, after trying every spelling and `POST` as well as `GET`:
+`snap_grid` (`/guide/grid`, `/guide/snap_grid`, `/guide/snapgrid`,
+`/server/guide/grid`, … all 404), `conflicts`, `airings_by_day`, device-side
+`search`, `params`, `netstatus`, `cp`, `lc`, `rf`, `reclive`. These are
+advertised in `/server/capabilities` but route nowhere on firmware 2.2.58 —
+either unimplemented, internal, or behind a path no analogy has reached. The
+device has no guide grid: you walk airings. See **Unknowns**.
+
+### The legacy port (8885) is alive but sealed
+
+Port 8885 — the pre-4th-gen API port — is open and answers `Hello, World!`
+unauthenticated at `/`. Every real path returns `401 unauthorized` (even
+`/zzz/nonexistent`), so status-code archaeology cannot see through it, and the
+current 4th-gen HMAC signature is rejected there too. It is the old-generation
+protocol with its own key, not a second door into this one. Ports 22 (OpenSSH
+8.2) and 443 (a static Apache serving only `<h1>Nuvyyo Tablo Server</h1>`, a
+2014 self-signed cert, 404 on everything else) are open and equally not an API.
+
 ### Guide
 
 | Path | Returns |
