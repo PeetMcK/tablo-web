@@ -505,6 +505,11 @@ export function VideoPlayer({
   // next, and a render between two fast taps would hand the second a stale one.
   const skipTargetRef = useRef<number | null>(null);
   const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True once playback has actually begun. Lets the surface-click unlock guard
+  // tell a never-started startup (suspended context, swallow the first tap)
+  // from a deliberate pause (also suspends the context, but the resume tap must
+  // get through).
+  const hasStartedRef = useRef(false);
   const [fineFactor, setFineFactor] = useState(1);
   const barRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; base: number } | null>(null);
@@ -772,6 +777,9 @@ export function VideoPlayer({
       grace = setTimeout(() => setWaiting(true), STALL_GRACE_MS);
     };
     const onPlaying = () => {
+      // Playback has begun at least once, so the context has run — a later
+      // pause that re-suspends it must not be mistaken for the startup state.
+      hasStartedRef.current = true;
       clearTimeout(grace);
       grace = undefined;
       if (stalledAt) {
@@ -1894,9 +1902,14 @@ export function VideoPlayer({
     // jumped the playhead thirty seconds or paused a programme that had not
     // begun. The viewer asked for the picture and got a transport command.
     //
-    // Only ever the first one: once the context is running this is the
-    // ordinary surface again.
-    if (surfaceRef.current?.diagnostics?.().audioContext === "suspended") return;
+    // Only ever the first one, and only before playback has ever begun. A bare
+    // "context is suspended" check was wrong: pausing the WASM path suspends
+    // the context too (see audioSink), so a *paused* player also reads as
+    // "suspended" and this swallowed the very tap meant to resume it — pause
+    // worked, un-pause did nothing. `hasStartedRef` distinguishes the startup
+    // black frame (never played) from a deliberate pause (played, then stopped).
+    if (surfaceRef.current?.diagnostics?.().audioContext === "suspended"
+        && !hasStartedRef.current) return;
     const zone = zoneAtEvent(e);
     if (zone === "back") skip(-10);
     else if (zone === "forward") skip(30);
@@ -1993,8 +2006,10 @@ export function VideoPlayer({
       if (e.key === "p") togglePictureInPicture();
       if (e.key === "m") toggleMute();
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
+      // Match every other transport (the tap zones and the on-screen skip
+      // buttons): 10s back, 30s forward. ArrowRight was 10s, the odd one out.
       if (e.key === "ArrowLeft") skip(-10);
-      if (e.key === "ArrowRight") skip(10);
+      if (e.key === "ArrowRight") skip(30);
       // Horizontal is seek, so vertical is the level — which is also where
       // every other player puts it. `preventDefault` because the page behind
       // the player would otherwise scroll under it.
