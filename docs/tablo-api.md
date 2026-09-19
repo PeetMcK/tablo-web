@@ -501,9 +501,8 @@ returned URL; never assume `local_url`.
 
 ### The device does not transcode, and cannot be asked to
 
-This generation hands over exactly what the tuner received. Probed three ways
-(`backend/tools/probe_transcode.py`, `probe_stream_fmt.py`), all against a live
-OTA channel:
+This generation hands over exactly what the tuner received. Probed three ways,
+all against a live OTA channel:
 
 **No endpoint.** 24 candidate paths — `/server/transcode`, `/server/encoder`,
 `/server/profiles`, `/server/quality`, `/settings/transcode`,
