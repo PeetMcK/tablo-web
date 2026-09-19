@@ -588,13 +588,18 @@ export interface LineupChannel {
 
 /** A single hard drive as `/server/harddrives` reports it. */
 export interface HardDrive {
+  name?: string;
   connected?: boolean;
   format_state?: string;
   kind?: string;
+  /** Total capacity, bytes. */
   size?: number;
   size_mib?: number;
+  /** Space in use, bytes (the device's field is `usage`, not `used`). */
+  usage?: number;
+  usage_mib?: number;
   free?: number;
-  used?: number;
+  free_mib?: number;
   busy_state?: string;
   error?: string | null;
 }

@@ -306,29 +306,31 @@ function StorageSection({ harddrives }: { harddrives: unknown | null }) {
       )}
       {drives.map((d, i) => {
         const total = fmtGiB(d.size_mib, d.size);
+        // The device reports used space as `usage`; `size` is the capacity.
+        const usedMib = d.usage_mib;
+        const usedBytes = d.usage;
+        const used = fmtGiB(usedMib, usedBytes);
+        const free = fmtGiB(d.free_mib, d.free);
         const hasBreakdown =
-          typeof d.used === "number" && typeof d.size === "number" && d.size > 0;
-        const usedPct = hasBreakdown
-          ? Math.min(100, Math.round((d.used! / d.size!) * 100))
-          : null;
-        const freePct =
-          !hasBreakdown &&
-          typeof d.free === "number" &&
-          typeof d.size === "number" &&
-          d.size > 0
-            ? Math.min(100, Math.round((d.free / d.size) * 100))
+          (typeof usedBytes === "number" || typeof usedMib === "number") &&
+          (typeof d.size === "number" || typeof d.size_mib === "number");
+        const capMib = d.size_mib ?? (d.size ? d.size / 1024 ** 2 : undefined);
+        const useMib = usedMib ?? (usedBytes ? usedBytes / 1024 ** 2 : undefined);
+        const fillPct =
+          hasBreakdown && capMib && useMib != null && capMib > 0
+            ? Math.min(100, Math.round((useMib / capMib) * 100))
             : null;
-        const fillPct = usedPct ?? (freePct != null ? 100 - freePct : null);
+        const label = d.name ?? d.kind ?? "Drive";
         return (
           <div key={i} className="rounded-xl border border-border-subtle p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-medium capitalize text-fg">
-                {d.kind ?? "Drive"}
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="min-w-0 truncate text-sm font-medium text-fg">
+                {label}
                 {d.connected === false && (
                   <span className="ml-2 text-xs text-danger">disconnected</span>
                 )}
               </p>
-              <p className="text-xs text-fg-muted">{total ?? "—"}</p>
+              <p className="shrink-0 text-xs text-fg-muted">{total ?? "—"}</p>
             </div>
             <div
               className="h-2 w-full overflow-hidden rounded-full bg-fill"
@@ -348,9 +350,10 @@ function StorageSection({ harddrives }: { harddrives: unknown | null }) {
             </div>
             <p className="mt-1 text-xs text-fg-muted">
               {fillPct != null
-                ? `${fillPct}% used`
+                ? `${used ?? `${fillPct}%`} used${free ? ` · ${free} free` : ""}`
                 : "Free space not reported by the device."}
-              {d.format_state && d.format_state !== "formatted"
+              {d.format_state &&
+              !["formatted", "authorized"].includes(d.format_state)
                 ? ` · ${d.format_state}`
                 : ""}
             </p>

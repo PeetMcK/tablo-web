@@ -48,19 +48,21 @@ def test_overview_null_slice_on_failure(authed, monkeypatch):
     body = r.json()
     assert body["harddrives"] is None
     assert body["server"] == {"path": "/server/info"}
-    assert body["settings"] == {"path": "/settings/info?allowAudioTranscode=true"}
+    assert body["settings"] == {"path": "/settings/info"}
 
 
-def test_info_read_asks_for_audio_transcode(authed, monkeypatch):
+def test_info_read_uses_plain_path(authed, monkeypatch):
+    # The device signs the path without its query string, so /settings/info is
+    # requested plain (the ?allowAudioTranscode variant 401s). See the route.
     seen = {}
 
     async def fake(method, path, body=""):
         seen["path"] = path
-        return {"led": "dim", "audio": "ac3"}
+        return {"led": "dim"}
     monkeypatch.setattr(app_state, "request_device", fake)
     r = client.get("/api/settings/info")
     assert r.status_code == 200
-    assert seen["path"] == "/settings/info?allowAudioTranscode=true"
+    assert seen["path"] == "/settings/info"
 
 
 # --- Writes: /settings/info allow-list -------------------------------------

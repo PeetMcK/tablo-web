@@ -170,6 +170,30 @@ test("a null slice renders unavailable, not a crash", async () => {
   ).toBeInTheDocument();
 });
 
+test("storage bar reflects usage vs capacity from the device", async () => {
+  vi.spyOn(api.settings, "overview").mockResolvedValue({
+    ...OVERVIEW,
+    harddrives: [
+      {
+        name: "WD My Passport (500 GB)",
+        connected: true,
+        kind: "external",
+        format_state: "authorized",
+        size: 491074011136,
+        size_mib: 468324,
+        usage: 33567145984,
+        usage_mib: 32012,
+        free: 457506865152,
+        free_mib: 436312,
+      },
+    ],
+  });
+  renderModal();
+  // ~6.8% used → the bar's aria-label rounds to 7% used.
+  expect(await screen.findByLabelText("7% used")).toBeInTheDocument();
+  expect(screen.getByText(/WD My Passport/)).toBeInTheDocument();
+});
+
 test("the app menu gear opens the settings modal", async () => {
   window.history.replaceState(null, "", "#/live");
   vi.spyOn(api, "status").mockResolvedValue({

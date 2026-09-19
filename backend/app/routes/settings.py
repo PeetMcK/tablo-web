@@ -91,7 +91,7 @@ async def overview():
             _try("GET", "/server/harddrives"),
             _try("GET", "/server/guide/status"),
             _try("GET", "/server/location"),
-            _try("GET", "/settings/info?allowAudioTranscode=true"),
+            _try("GET", "/settings/info"),
             _try("GET", "/server/update/info"),
         )
     )
@@ -109,7 +109,12 @@ async def overview():
 @router.get("/info")
 async def info():
     _require_auth()
-    return await state.request_device("GET", "/settings/info?allowAudioTranscode=true")
+    # No `?allowAudioTranscode=true`: the device signs the path WITHOUT its query
+    # string, so a signed request carrying one is a 401, and even when accepted
+    # (base-path signature, query in the URL) this firmware returns no `audio`
+    # field anyway. Plain /settings/info carries every writable key but `audio`;
+    # the audio control still writes (PATCH takes no query). See docs/tablo-api.md.
+    return await state.request_device("GET", "/settings/info")
 
 
 @router.get("/harddrives")
