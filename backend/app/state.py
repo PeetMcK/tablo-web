@@ -4,6 +4,7 @@ import asyncio
 import html
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -133,6 +134,18 @@ class GuideFetchIncomplete(RuntimeError):
     """
 
 
+class DeviceUnreachable(RuntimeError):
+    """A device call failed at the transport, twice, on two different pools.
+
+    Raised rather than letting the httpx exception through, because the one that
+    matters here carries no message at all: ``str(httpx.ReadTimeout(""))`` is the
+    empty string, and the route handlers format failures as
+    ``f"Device error: {e}"`` - so a dropped link reached the viewer as
+    ``Device error: `` and nothing else, while the browser showed
+    ``AbortError: BodyStreamBuffer was aborted``. Neither says what happened.
+    """
+
+
 class StreamSession:
     """Tracks a live HLS stream for one viewer."""
 
@@ -154,6 +167,18 @@ class AppState:
         self._channel_details: dict[str, dict] | None = None
         self.streams: dict[str, StreamSession] = {}  # session_id → session
         self._http = httpx.AsyncClient(timeout=30)
+        # A second client, used only for the local device.
+        #
+        # Separate from `_http` so that recovering from a dead device pool does
+        # not abort in-flight cloud requests: the observed failure was
+        # device-only, with cloud and database routes answering in two
+        # milliseconds throughout. Separate timeouts for the same reason - a
+        # device call that has not answered in ten seconds is not going to, and
+        # the flat thirty meant every call sat for half a minute before
+        # admitting the link was gone.
+        self._device_http = httpx.AsyncClient(timeout=self._DEVICE_TIMEOUT)
+        self._device_generation = 0
+        self._device_lock = asyncio.Lock()
         # Grid enrichment cache — avoids re-fetching 800 airing details on every guide load
         self._grid_cache: tuple | None = None
         self._grid_cache_time: float = 0.0
@@ -168,6 +193,11 @@ class AppState:
     # The client keeps its own copy for instant display; this only governs how
     # often the device is re-consulted.
     _GRID_CACHE_TTL = int(os.environ.get("GUIDE_CACHE_TTL", "3600"))
+
+    # Split, because the failure they guard against is a link that went away
+    # rather than a device that is thinking. Connecting is a round trip on a
+    # ~100ms link; a read that has not finished in ten seconds is not going to.
+    _DEVICE_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 
     # Above this share of failed device calls, a build is treated as failed
     # rather than merely thin. Some loss is normal - the device drops the odd
@@ -383,6 +413,23 @@ class AppState:
         resp = await self._request_device_raw(method, path, body)
         return resp.json()
 
+    async def _reset_device_http(self, generation: int) -> None:
+        """Swap in a fresh device pool, once, however many callers ask.
+
+        A guide build fails a dozen calls at once when the link drops, and every
+        one of them arrives here wanting a new pool. The generation each saw
+        before it failed says whether someone else has already built one; without
+        that check the twelve retries go out on twelve different pools and the
+        first of them is closed underneath the others.
+        """
+        async with self._device_lock:
+            if generation != self._device_generation:
+                return
+            old = self._device_http
+            self._device_http = httpx.AsyncClient(timeout=self._DEVICE_TIMEOUT)
+            self._device_generation += 1
+        await old.aclose()
+
     async def _request_device_raw(
         self, method: str, path: str, body: str = "", follow_redirects: bool = False
     ):
@@ -401,19 +448,39 @@ class AppState:
         auth_header, date_header = TabloAuth.make_device_auth(method, path, body)
 
         url = self.active_device.local_url.rstrip("/") + path
-        resp = await self._http.request(
-            method,
-            url,
-            content=body.encode() if body else None,
-            headers={
-                "Authorization": auth_header,
-                "Date": date_header,
-                "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
-            },
-            follow_redirects=follow_redirects,
-        )
-        resp.raise_for_status()
-        return resp
+        headers = {
+            "Authorization": auth_header,
+            "Date": date_header,
+            "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
+        }
+
+        started = time.monotonic()
+        for attempt in (0, 1):
+            generation = self._device_generation
+            client = self._device_http
+            try:
+                resp = await client.request(
+                    method,
+                    url,
+                    content=body.encode() if body else None,
+                    headers=headers,
+                    follow_redirects=follow_redirects,
+                )
+            except httpx.TransportError as e:
+                # Covers timeouts, connect errors, read errors and pool
+                # timeouts: every way a pool of dead keep-alive connections
+                # fails. A fresh connection is the fix, and it is all that
+                # restarting the backend was ever doing.
+                if attempt == 0:
+                    await self._reset_device_http(generation)
+                    continue
+                elapsed = time.monotonic() - started
+                raise DeviceUnreachable(
+                    f"{method} {path} failed after {elapsed:.1f}s on two"
+                    f" connections: {type(e).__name__}"
+                ) from e
+            resp.raise_for_status()
+            return resp
 
     async def patch_device(self, path: str, payload: dict) -> tuple[int, dict]:
         """PATCH the device, returning (status, body) rather than raising.
@@ -436,7 +503,7 @@ class AppState:
         body = json.dumps(payload, separators=(",", ":"))
         auth_header, date_header = TabloAuth.make_device_auth("PATCH", path, body)
         url = self.active_device.local_url.rstrip("/") + path
-        resp = await self._http.request(
+        resp = await self._device_http.request(
             "PATCH",
             url,
             content=body.encode(),

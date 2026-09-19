@@ -51,8 +51,34 @@ export interface Presenter {
   readonly presentedCount: number;
   /** Fields refused because the queue was full. Each one is a hole. */
   readonly droppedCount: number;
+  /**
+   * Fields passed over because a newer one was also due.
+   *
+   * Not a hole: the picture stayed on the clock, which is the whole point of
+   * showing the newest due field rather than the oldest. But it is the
+   * difference between `presentedCount` and the rate fields were offered at,
+   * and without it `presentedCount` — which counts ticks that drew, not fields
+   * consumed — reads as a field rate it was never measuring.
+   */
+  readonly skippedCount: number;
+  /** Calls to `tick()`: how often there was a chance to draw at all. */
+  readonly tickCount: number;
   /** Milliseconds between the last two ticks — the gap since a chance to draw. */
   readonly msSinceTick: number;
+  /**
+   * Milliseconds the picture has held while fields were still in hand.
+   *
+   * A hole in the middle of a segment does not empty the queue — it leaves it
+   * full of fields whose moment has not come — so the session's stall edge,
+   * which fires on an empty queue, never sees it. The clock runs, nothing is
+   * due, the picture holds, and the only thing that eventually notices is the
+   * six-second watchdog. That is the shape of a short stutter you can hear and
+   * never find.
+   *
+   * Zero when the queue is empty: that is starvation, which already has a name.
+   * Zero when the clock is stopped: that is a pause waiting on a tap.
+   */
+  readonly nothingDueMs: number;
   readonly queued: number;
   destroy(): void;
 }
@@ -61,10 +87,15 @@ export function createPresenter(deps: PresenterDeps): Presenter {
   let queue: FieldPresentation[] = [];
   let presented = 0;
   let dropped = 0;
+  let skipped = 0;
+  let ticks = 0;
   let lastTickMs: number | null = null;
   let sinceTick = 0;
   /** The field drawn as a still while the clock is stopped, so it is drawn once. */
   let stillShown: FieldPresentation | null = null;
+  /** Wall clock at the last draw, so a picture that stops moving can be timed. */
+  let lastDrawMs: number | null = null;
+  let heldMs = 0;
   /** What is currently on the GPU, so two fields of one frame upload once. */
   let uploaded: DecodedVideoFrame | null = null;
 
@@ -101,6 +132,8 @@ export function createPresenter(deps: PresenterDeps): Presenter {
     },
 
     tick() {
+      ticks++;
+
       // The gap since the last tick, which is the gap since the last chance to
       // draw. Animation frames stop entirely in a hidden or fully occluded
       // window, and while they are stopped the queue fills and every further
@@ -121,6 +154,11 @@ export function createPresenter(deps: PresenterDeps): Presenter {
       // player looks paused rather than broken, and leaves it queued so that
       // ordinary presentation still begins there once the sound starts.
       if (clock === null) {
+        // A stopped clock is a pause, not a hole: the picture holds because
+        // there is no time to be due at, and it is waiting on a tap rather than
+        // on the decoder.
+        heldMs = 0;
+        lastDrawMs = at;
         const first = queue[0];
         if (!first || stillShown === first) return;
         if (uploaded !== first.source) {
@@ -132,9 +170,19 @@ export function createPresenter(deps: PresenterDeps): Presenter {
         return;
       }
 
-      const { present, keep } = selectFrame(queue, clock);
+      const { present, drop, keep } = selectFrame(queue, clock);
       queue = keep;
-      if (!present) return;
+      // The third way a field leaves the queue, and the one nothing counted.
+      // Drawn and refused each had a number; passed over did not, so the three
+      // exits never added up to what was offered and no amount of arguing about
+      // `presentedCount` could have settled what it meant.
+      skipped += drop.length;
+      if (!present) {
+        // Held only when there is something in hand to draw. An empty queue is
+        // starvation, and it is reported elsewhere under its own name.
+        heldMs = queue.length > 0 && lastDrawMs !== null ? at - lastDrawMs : 0;
+        return;
+      }
 
       if (uploaded !== present.source) {
         deps.upload(present.source);
@@ -142,6 +190,8 @@ export function createPresenter(deps: PresenterDeps): Presenter {
       }
       deps.draw(present);
       presented++;
+      lastDrawMs = at;
+      heldMs = 0;
     },
 
     get newestPts() {
@@ -161,9 +211,24 @@ export function createPresenter(deps: PresenterDeps): Presenter {
       return dropped;
     },
 
+    /** Fields passed over because a newer one was also due. */
+    get skippedCount() {
+      return skipped;
+    },
+
+    /** Calls to `tick()`: how often there was a chance to draw at all. */
+    get tickCount() {
+      return ticks;
+    },
+
     /** Milliseconds between the last two ticks: how long since a chance to draw. */
     get msSinceTick() {
       return sinceTick;
+    },
+
+    /** How long the picture has held with fields still queued. */
+    get nothingDueMs() {
+      return heldMs;
     },
 
     get queued() {
