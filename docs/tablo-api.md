@@ -575,13 +575,26 @@ answer is "not here, not now" — for a reason that is about storage, not the AP
   ```
   Not 404 — the surface is there — but this device offers no profile to choose.
 
-So the compression, if it happens, happens on **internal** storage, which
-nothing records to while a large external drive is attached. To find out whether
-internal-storage recordings are re-encoded (and whether the API reports it),
-force a recording onto internal — detach or fill the external — then read that
-recording's `video_details.container_format`. A value other than `mpeg2` there
-is the proof; `/settings/recording_qualities/recordings` is where a selectable
-profile would appear if the firmware exposed one.
+**Internal-storage recordings are uncompressed too.** The internal drive is not
+listed by `/server/harddrives`, but it does hold recordings — the NFL games on
+this box are on internal. Their `video_details` is the direct test, and it comes
+back full broadcast-rate MPEG-2:
+
+```
+Buffalo Bills at Houston Texans     mpeg2 1920x1080  14.4 GB / 235 min =  8.2 Mbps
+Dallas Cowboys at New York Giants   mpeg2 1920x1080  18.2 GB / 225 min = 10.8 Mbps
+Denver Broncos at Kansas City       mpeg2 1280x720   11.0 GB / 210 min =  7.0 Mbps
+```
+
+A re-encoded H.264 copy of a four-hour game would be a few GB, not fourteen. So
+on firmware 2.2.58, in this state, recordings are **not** re-compressed on
+internal any more than on external — every recording, both drives, is written
+through as MPEG-2. If the hardware does re-compress to reclaim space, it is
+either gated on the internal drive actually filling up (it was not full here) or
+simply not active on this firmware; `/settings/recording_qualities/recordings`
+(empty) is the only API surface that would select or report it, and nothing
+populates it. A recording whose `video_details.container_format` is not `mpeg2`
+would be the proof that it ever runs — none exists on this device today.
 
 `video_details` on a finished recording carries more than §Reads noted:
 `state` (`"finished"`), `clean` (bool), `cloud`, `uploading`, `size` (bytes),
