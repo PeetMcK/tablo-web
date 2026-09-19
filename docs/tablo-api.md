@@ -166,8 +166,11 @@ protocol with its own key, not a second door into this one. Ports 22 (OpenSSH
 If the network surface is not enough — e.g. to disable the on-box `sshd`, read
 the real firmware, or recover a device whose account you do not control — the
 board has a **UART header**. On the board inspected it is a **4-pin inline
-header near the barrel jack, with `GND` silkscreened beside it**; four pads in a
-row next to power is the standard debug UART: **GND, VCC, TX, RX**.
+header near the barrel jack, with `GND` silkscreened beside it**, at **2.54 mm
+(0.1") pitch** (measured); four pads in a row next to power is the standard
+debug UART: **GND, VCC, TX, RX**. The 0.1" pitch means a standard pogo-pin jig
+or Dupont header seats without soldering — press-fit spring probes on GND/TX/RX
+(skip VCC) are enough to read the console.
 
 Identifying and connecting it (own-device, defensive use):
 
