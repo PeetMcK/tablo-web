@@ -18,8 +18,13 @@ from starlette.background import BackgroundTask
 
 from ..live_follower import RingFollower
 from ..live_ring import SegmentRing
-from ..vod_index import VodIndex, parse_vod_playlist
 from ..state import state
+from ..transcode_cache import (
+    deinterlace_filter,
+    encoder_profile,
+    square_pixels_filter,
+)
+from ..vod_index import VodIndex, parse_vod_playlist
 
 router = APIRouter(tags=["stream"])
 
@@ -1202,17 +1207,40 @@ def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
     relative, but with every argument relative the command line named the
     transcode directory nowhere at all - and `_startup_cleanup`, which is how a
     process orphaned by a crash is ever found again, greps for exactly that.
+
+    The video encoder is chosen exactly as the recordings cache chooses it
+    (``transcode_cache.encoder_profile``): ``libx264`` inside the container,
+    where no hardware encoder is reachable, and ``h264_videotoolbox`` when the
+    backend runs natively on macOS, where the Media Engine encodes far faster
+    for a fraction of the CPU (measured ~47s -> ~5s per 60s window on the
+    recordings path; the encode is effectively free, the device is the limit).
+    Live used to hardcode ``libx264`` and so burned software x264 even on the
+    native build while VideoToolbox sat idle.
+
+    The deinterlace and square-pixel filters are shared with that path too, so
+    live and recordings look the same. The square-pixel filter matters here for
+    correctness, not just consistency: VideoToolbox discards the sample aspect
+    ratio that x264 keeps, so without it SD (anamorphic 704x480) live would be
+    stretched tall and thin on the native build. Both filters honour their
+    ``TRANSCODE_DEINTERLACE`` / encoder env, and ``bwdif`` only touches frames
+    actually flagged interlaced, so the 720p60 progressive channels pass
+    through untouched.
     """
+    prof = encoder_profile()
+    # Deinterlace first (it samples the coded rows), then square the pixels,
+    # then any encoder-specific filter (VAAPI's hwupload). Same order as the
+    # recordings path, which is load-bearing for hardware pipelines.
+    filters = [*deinterlace_filter(), *square_pixels_filter(), *prof.filters]
     return [
         "ffmpeg",
         "-y",
         "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+        *prof.pre_input,
         "-i", input_url,
-        # yadif: deinterlace 1080i OTA broadcast so browsers can render video
-        "-vf", "yadif",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-        "-maxrate", "2000k", "-bufsize", "4000k",
-        "-pix_fmt", "yuv420p", "-g", "60",
+        *(["-vf", ",".join(filters)] if filters else []),
+        "-c:v", prof.name, *prof.flags,
+        *(["-pix_fmt", prof.pix_fmt] if prof.pix_fmt else []),
+        "-g", "60",
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "hls",
         "-hls_time", str(HLS_TIME),
