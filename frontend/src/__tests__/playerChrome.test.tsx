@@ -26,6 +26,13 @@ function stubSeekable(end: number) {
   });
 }
 
+function stubBuffered(start: number, end: number) {
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get: () => ({ length: 1, start: () => start, end: () => end }),
+  });
+}
+
 function renderLive() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -370,6 +377,33 @@ describe("the skip buttons", () => {
     stubSeekable(900);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("clamps a live skip to the buffered (cached) range, not the whole window", async () => {
+    // Seekable is 0..900 but only 200..600 is actually cached. A skip must
+    // stay inside that run — landing past it is what stalled live and made the
+    // player buffer in both directions. The scrubber (a separate path) stays
+    // free; this only gates skip.
+    stubSeekable(900);
+    stubBuffered(200, 600);
+    vi.spyOn(HTMLMediaElement.prototype, "currentTime", "get").mockReturnValue(450);
+    const planSkipSpy = vi.spyOn(playback, "planSkip");
+    try {
+      renderLive();
+      await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+      // Let liveTranscoded settle true (startStream returned transcoded).
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+
+      planSkipSpy.mockClear();
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+
+      const call = planSkipSpy.mock.calls.at(-1);
+      expect(call).toBeTruthy();
+      // planSkip(pending, from, delta, range, margin) — range is the clamp.
+      expect(call![3]).toEqual([200, 600]);
+    } finally {
+      planSkipSpy.mockRestore();
+    }
+  });
 
   it("turns a flurry of taps into a single seek", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

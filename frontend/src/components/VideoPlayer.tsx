@@ -1414,9 +1414,17 @@ export function VideoPlayer({
       // `cachedRanges` empty, because the wasm branch returns before either is
       // set, and `buffered` belongs to the hidden <video> a canvas does not
       // use. `readyRange` then found no run containing the playhead, returned
-      // [t, t], and the guard below saw a jump of zero and returned. Live wasm
-      // escaped only because `isLive` short-circuits it.
-      whole: isLive || usingWasm || cacheState === "complete",
+      // [t, t], and the guard below saw a jump of zero and returned.
+      //
+      // Transcoded live is the exception that must NOT be `whole`: its segments
+      // exist only as far as ffmpeg has produced and the player has buffered,
+      // so gating on `[start, end]` let a skip land past the cached edge and
+      // stall — the player then thrashed, buffering both directions around a
+      // position it did not have. Skip is meant to move only through what is
+      // cached; the scrubber stays free to go anywhere and wait. So here it
+      // clamps to the buffered run. Raw live (OTT, `!liveTranscoded`) and the
+      // wasm ring keep `whole`: they have no `buffered` to gate on.
+      whole: usingWasm || cacheState === "complete" || (isLive && !liveTranscoded),
     });
     // A live edge is a frontier the encoder is still extending, so a skip has
     // to stop well short of it. Anywhere else `hi` is a settled end.
@@ -1449,7 +1457,7 @@ export function VideoPlayer({
     setPendingSeek(target);
     if (skipTimerRef.current !== null) clearTimeout(skipTimerRef.current);
     skipTimerRef.current = setTimeout(commitSkip, SKIP_DEBOUNCE_MS);
-  }, [commitSkip, isLive, usingWasm, cacheState, rangeStart, rangeEnd]);
+  }, [commitSkip, isLive, liveTranscoded, usingWasm, cacheState, rangeStart, rangeEnd]);
 
   /**
    * Back to the live edge — stopping the same distance short of it as a skip.
