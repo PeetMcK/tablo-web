@@ -453,6 +453,37 @@ Three details the device gets right that are easy to get wrong:
 Re-POSTing an active `watch` refreshes its expiry and returns the same
 `playlist_url`, which is what makes it usable as a keepalive.
 
+**The app sends a body with `watch`; we send none and it still works.** Captured
+from the iOS app:
+
+```json
+POST /guide/channels/{id}/watch
+{"extra":{"width":375,"height":812,"deviceOS":"iOS","deviceOSVersion":"27.0",
+          "deviceModel":"iPhone18,2","deviceMake":"Apple","lang":"en_US",
+          "limitedAdTracking":1,"deviceId":"…"},
+ "platform":"ios","bandwidth":null,"device_id":"…"}
+```
+
+The body is client/telemetry context — screen size, OS, ad-tracking, a device
+id — plus a **`bandwidth`** field (null here). `bandwidth` is the only thing in
+it that could plausibly influence the stream; it was never sent non-null, so
+whether it selects a rate is untested — but given the single-variant MPEG-2
+master (see the transcode section), there is probably nothing to select. Our own
+`watch` sends an empty body and gets the same `playlist_url`, so the body is not
+required.
+
+The full live-session lifecycle, all captured against the real app:
+
+```
+POST   /guide/channels/{id}/watch        -> token, playlist_url, canRecord, …
+POST   /player/sessions/{token}/keepalive-> 200, same session (before expiry)
+DELETE /player/sessions/{token}          -> 204 (teardown)
+```
+
+`canRecord: true` in the watch response is the hint the player uses to offer
+"record" — which then fires the schedule write, not a special verb (see the
+`reclive` note under Unknowns).
+
 **`playlist_url` is on port 80, not 8887.** Derive the stream base from the
 returned URL; never assume `local_url`.
 
@@ -794,21 +825,21 @@ advertises these; none of the obvious paths resolve:
   See "Series scheduling, addressed by cloud identifier".
 - `search` — `/guide/search` 404 on the device (the *cloud* has
   `guide/search/`).
-- `reclive` — **not a distinct endpoint.** Recording the programme you are
-  watching is the ordinary schedule write applied in place: `PATCH /guide/{airing_identifier}`
-  (record this episode) or `PATCH /guide/{show_identifier}` (record the series),
-  the same writes in "Series scheduling". The player's record action fires one of
-  those against the currently-airing identifier; there is no separate live-record
-  verb.
+- `reclive` — **not a distinct endpoint (confirmed by capture).** Watching a
+  channel and recording the current programme fired `PATCH /guide/{airing_identifier}
+  {"scheduled": true}` -> `200` — the ordinary episode schedule write, against the
+  cloud airing identifier of what was on. Record-series is the same on the show
+  identifier. There is no separate live-record verb; the player just issues the
+  schedule write in place.
 - `snap_grid` — **effectively resolved as a non-feature.** The official app has
   no single-request grid: it builds the guide from `/views/guide/channels/{id}/airings?date=…`
   called once per channel, plus `/views/guide/upcoming`. Whatever `snap_grid`
   names in the capability list, nothing the app does uses it, so there is no
   cheaper device-side grid to find.
-- `scan_stop` — starting a scan is now known (`POST /channels/scans`, then poll,
-  then commit — see "Editing the channel lineup"). Stopping one **mid-run** is
-  not: a rescan capture let scans finish and abandoned the unwanted one without
-  ever sending a cancel, so `scan_stop`'s verb is still unmapped.
+- `scan_stop` — **resolved.** `POST /channels/scans/{id}/stop` -> `204`,
+  captured by starting a scan and cancelling it mid-run. So the full scan verb
+  set is `POST /channels/scans` (start), `GET …/{id}` (poll),
+  `POST …/{id}/stop` (cancel), `POST …/{id}/commit` (save).
 
 **Write enumerations.** The validator rejects bad values but does not list good
 ones, so these need a deliberate write to confirm:
