@@ -554,18 +554,39 @@ parameter. Video has no equivalent (below), so this does not remove the need to
 transcode the MPEG-2 *video* — but a client that only needed AAC audio could
 stop transcoding audio by flipping this once.
 
-### Video quality profiles: the endpoint exists, and is empty
+### Recording video transcode: plausible in hardware, not seen in this API state
 
-```
-GET /settings/recording_qualities/live         -> []
-GET /settings/recording_qualities/recordings   -> []
-```
+The device has a hardware encoder and is understood to re-compress recordings on
+its small **internal** storage to save space. Whether that is exposed or
+observable through the API is a separate question, and on the box as captured the
+answer is "not here, not now" — for a reason that is about storage, not the API:
 
-Both exist (not 404) and both return an empty array on this `t4g4`. So there
-*is* a video-quality-profile surface — the app asks for it — but this hardware
-offers none, which is consistent with everything above: no video transcode
-here. Another model, or a firmware that populated these, would be the place a
-video profile could appear.
+- **Only an external drive is attached.** `/server/harddrives` lists one drive,
+  `kind: "external"` (a 500 GB WD My Passport); the 128 GB internal is not even
+  listed while the external is present. Recordings therefore land on the
+  external.
+- **Every recording captured is stored as MPEG-2.** Across all recordings seen,
+  `video_details.container_format` is `"mpeg2"`, at roughly broadcast bitrate
+  (~7 Mbps) — i.e. written through untouched, not re-encoded.
+- **The quality-profile endpoints exist but are empty:**
+  ```
+  GET /settings/recording_qualities/live         -> []
+  GET /settings/recording_qualities/recordings   -> []
+  ```
+  Not 404 — the surface is there — but this device offers no profile to choose.
+
+So the compression, if it happens, happens on **internal** storage, which
+nothing records to while a large external drive is attached. To find out whether
+internal-storage recordings are re-encoded (and whether the API reports it),
+force a recording onto internal — detach or fill the external — then read that
+recording's `video_details.container_format`. A value other than `mpeg2` there
+is the proof; `/settings/recording_qualities/recordings` is where a selectable
+profile would appear if the firmware exposed one.
+
+`video_details` on a finished recording carries more than §Reads noted:
+`state` (`"finished"`), `clean` (bool), `cloud`, `uploading`, `size` (bytes),
+`width`/`height`, `container_format`, `audio`, `has_snap_grid`, `seek`,
+`recorded_offsets` vs `airing_offsets`, `flags`, `error`, `warnings`.
 
 **Probing live playback can wedge the API.** During the `fmt` sweep (repeated
 whole-playlist and segment fetches on port 80, ~25 minutes, plus ~20 `watch`
@@ -831,11 +852,14 @@ advertises these; none of the obvious paths resolve:
   cloud airing identifier of what was on. Record-series is the same on the show
   identifier. There is no separate live-record verb; the player just issues the
   schedule write in place.
-- `snap_grid` — **effectively resolved as a non-feature.** The official app has
-  no single-request grid: it builds the guide from `/views/guide/channels/{id}/airings?date=…`
-  called once per channel, plus `/views/guide/upcoming`. Whatever `snap_grid`
-  names in the capability list, nothing the app does uses it, so there is no
-  cheaper device-side grid to find.
+- `snap_grid` — **not a guide grid at all** (earlier guess corrected). Every
+  recording's `video_details` carries `has_snap_grid: true`, so `snap_grid` is
+  the *recording's* seek-thumbnail grid (the scrub-preview filmstrip, the role
+  `bif_url_*` plays elsewhere). The endpoint that serves it is unmapped —
+  seeking inside a recording in the app would reveal it. Separately, the guide
+  has no single-request grid: the app builds it from
+  `/views/guide/channels/{id}/airings?date=…` per channel plus
+  `/views/guide/upcoming`.
 - `scan_stop` — **resolved.** `POST /channels/scans/{id}/stop` -> `204`,
   captured by starting a scan and cancelling it mid-run. So the full scan verb
   set is `POST /channels/scans` (start), `GET …/{id}` (poll),
