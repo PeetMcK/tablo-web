@@ -3,11 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, afterEach, beforeEach, test, expect } from "vitest";
 import { SettingsModal } from "../components/SettingsModal";
 import { ChannelGrid } from "../components/ChannelGrid";
-import { api } from "../api/tablo";
+import { api, type SettingsOverview } from "../api/tablo";
 
 afterEach(() => vi.restoreAllMocks());
 
-const OVERVIEW = {
+const OVERVIEW: SettingsOverview = {
   server: {
     name: "Den Tablo",
     version: "2.2.58",
@@ -38,7 +38,7 @@ const OVERVIEW = {
     audio: "ac3",
   },
   update: null,
-} as never;
+};
 
 beforeEach(() => {
   vi.spyOn(api.settings, "channels").mockResolvedValue({
@@ -163,7 +163,7 @@ test("a null slice renders unavailable, not a crash", async () => {
   vi.spyOn(api.settings, "overview").mockResolvedValue({
     ...OVERVIEW,
     harddrives: null,
-  } as never);
+  });
   renderModal();
   expect(
     await screen.findByText(/no drive information available/i),
