@@ -87,7 +87,7 @@ looks like a credentials problem rather than a signing-scope one.
 | `/server/harddrives` | `connected`, `format_state`, `kind`, `size`, `size_mib`, `busy_state`, `error` |
 | `/server/location` | `state`, `location` (postal code, city, county, lat/long), `timezone` |
 | `/server/subscription` | `state`, `expires`, `url`, `identifier` |
-| `/server/update/info` | `available_update`, `state`, `current_step`, `last_checked`, `error` |
+| `/server/update/info` | `available_update`, `state` (`none`/…), `current_step`, `sequence` (`["downloading","installing","rebooting"]` — the step order), `last_checked`, `last_update`, `details`, `error` |
 | `/settings/info` | `led`, `extend_live_recordings`, `auto_delete_recordings`, `exclude_duplicates`, `preferred_audio_track`, `data_collection`, … |
 | `/storage/info` | `{"supported_kinds": ["external", "internal"]}` |
 | `/channels/info` | `{"committed_scan": …}` |
@@ -216,7 +216,7 @@ full updated object (so a write doubles as a read, same as the schedule writes):
 | `PATCH /settings/info` | `{"enable_amplifier": bool}` | tuner amplifier |
 | `PATCH /settings/info` | `{"audio": "ac3"｜"aac"}` | the audio-transcode toggle (see transcode section) |
 | `PATCH /server/info` | `{"name": "…"}` | renames the device |
-| `POST  /server/update/check` | — | triggers a firmware update check |
+| `POST  /server/update/check` | — (empty) | triggers a check; returns the full `update/info` object (so it doubles as a refreshed read). `state:"none"` + `available_update:null` = up to date |
 
 `/settings/info` PATCH is flat (`{"led": …}`), unlike the *schedule* writes
 which are nested — the write shape is per-endpoint, not global.
