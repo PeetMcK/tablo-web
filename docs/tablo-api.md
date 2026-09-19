@@ -315,10 +315,20 @@ Bulk-delete a series' episodes by filter — `watched` seen. This is a
 | `/views/library/counts` | the whole library index — per show `{title, identifier, recording, guide:{show_counts:{airing_count,conflicted_count,scheduled_count}, ota_show_counts, ott_show_counts, …images}}`, grouped |
 | `/views/guide/upcoming` | upcoming airings, date-grouped `[{key:"YYYY-MM-DD", contents:["LH-CEP…", …]}]` |
 | `/views/recordings/recent?sort&order&failed` | recent recordings, date-grouped |
+| `/views/guide/channels/{channel_identifier}/airings?date=YYYY-MM-DD&state=…` | one channel's airings for a day — the read the guide grid is built from |
 
 `/views/library/counts` is the single call behind the library screen —
 `conflicted_count` per show is the same conflict data `?state=conflicted`
 exposes per airing.
+
+**There is no grid endpoint; the app builds the grid itself.** A guide-browse
+capture showed the app calling `/views/guide/channels/{channel_identifier}/airings`
+**once per channel** (all ~35), each with `?date=YYYY-MM-DD` and an optional
+`?state=` filter, and laying the columns out client-side. Note `date` is
+honoured *here* (in `/views/`) even though `?day=` on the raw `/guide/airings`
+is ignored — the working date parameter lives on the view, not the collection.
+This settles `snap_grid`: the official app has no single-request grid either, so
+whatever `snap_grid` names, nothing uses it.
 
 ### Editing the channel lineup — commit a scan
 
@@ -782,10 +792,11 @@ advertises these; none of the obvious paths resolve:
   See "Series scheduling, addressed by cloud identifier".
 - `search` — `/guide/search` 404 on the device (the *cloud* has
   `guide/search/`).
-- `snap_grid` — untested; possibly the device-side equivalent of the cloud grid,
-  which would be the single most valuable thing left to find. (Note the app has
-  no local grid either — it composes upcoming from `/views/guide/upcoming` and
-  per-channel/`?state=` reads — so `snap_grid` may simply be unused.)
+- `snap_grid` — **effectively resolved as a non-feature.** The official app has
+  no single-request grid: it builds the guide from `/views/guide/channels/{id}/airings?date=…`
+  called once per channel, plus `/views/guide/upcoming`. Whatever `snap_grid`
+  names in the capability list, nothing the app does uses it, so there is no
+  cheaper device-side grid to find.
 - `scan_stop` — starting a scan is now known (`POST /channels/scans`, then poll,
   then commit — see "Editing the channel lineup"). Stopping one **mid-run** is
   not: a rescan capture let scans finish and abandoned the unwanted one without
