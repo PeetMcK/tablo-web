@@ -218,6 +218,18 @@ full updated object (so a write doubles as a read, same as the schedule writes):
 | `PATCH /server/info` | `{"name": "…"}` | renames the device |
 | `POST  /server/update/check` | — (empty) | triggers a check; returns the full `update/info` object (so it doubles as a refreshed read). `state:"none"` + `available_update:null` = up to date |
 
+Firmware updates on 4th-gen are **notification-based, not auto-install** (per
+Tablo support): the device self-checks every ~24h when powered on, the app
+prompts, and the user approves — there is no auto-update toggle in
+`settings/info`. `POST /server/update/check` forces that check on demand and the
+device does the version comparison itself against Nuvyyo's upstream (we send no
+version — the box reports its own `server_info.version`). Because the install is
+user-approved there is almost certainly an **apply/install** verb, but it was
+not captured: this device is current (`available_update: null`), so there was
+nothing to install and the `["downloading","installing","rebooting"]` sequence
+never ran. An out-of-date device is the only way to capture the apply verb and
+the populated `available_update` shape.
+
 `/settings/info` PATCH is flat (`{"led": …}`), unlike the *schedule* writes
 which are nested — the write shape is per-endpoint, not global.
 
