@@ -320,6 +320,39 @@ Bulk-delete a series' episodes by filter — `watched` seen. This is a
 `conflicted_count` per show is the same conflict data `?state=conflicted`
 exposes per airing.
 
+### Editing the channel lineup — commit a scan
+
+A third capture (adding/removing a channel from the guide) showed the lineup is
+not edited channel-by-channel. It is one write: **re-commit the whole set**.
+
+```
+POST /channels/scans/{scan_id}/commit
+["/channels/scans/discovered/86531", "/channels/scans/discovered/86532", …]
+-> 204
+```
+
+The JSON **array is the lineup**. A channel present in the array is in the guide
+and tunable; drop its `/channels/scans/discovered/{id}` path from the array and
+re-commit and it is gone from both. Verified by diffing two commits from the
+capture: 25 paths then 27, the two added being exactly the two channels enabled.
+There is no per-channel add/remove endpoint — the client reads the current set,
+edits the array, and POSTs the whole thing back.
+
+The `/channels/scans/` namespace behind it, all read-only GETs on 8887:
+
+| Path | Returns |
+|---|---|
+| `/channels/info` | `{"committed_scan": …}` — points at the active scan |
+| `/channels/scans/{id}` | scan meta — `postal_code`, `datetime`, `completed`, `progress`, `preferred_audio_track` |
+| `/channels/scans/{id}/discovered` | every OTA channel the scan found, as `/channels/scans/discovered/{id}` paths |
+| `/channels/scans/discovered/{id}` | one discovered channel — `signal_state` (`"good"`), `selected`, `recommended`, `new`, `physical_channel_path` (`/channels/physical/{n}`), and the full `channel` record (`flags`, `resolution`, `channel_identifier`) |
+| `/channels/scans/{id}/expected_ota` | channels expected at that postal code (`[]` here) |
+| `/channels/scans/{id}/ott` | OTT/FAST channels offered — `{identifier, name, discovered:false, selected, recommended, source:"network", logos}` |
+
+This capture reused an existing completed scan (`#65`); it did not *start* one,
+so the scan-start verb (and how `scan_stop`, an advertised capability, is
+invoked) is still unmapped — a rescan in the app would show it.
+
 ### Guide
 
 | Path | Returns |
@@ -734,7 +767,12 @@ advertises these; none of the obvious paths resolve:
 - `search` — `/guide/search` 404 on the device (the *cloud* has
   `guide/search/`).
 - `snap_grid` — untested; possibly the device-side equivalent of the cloud grid,
-  which would be the single most valuable thing left to find.
+  which would be the single most valuable thing left to find. (Note the app has
+  no local grid either — it composes upcoming from `/views/guide/upcoming` and
+  per-channel/`?state=` reads — so `snap_grid` may simply be unused.)
+- `scan_stop` / starting a scan — the channel-lineup capture reused an existing
+  completed scan, so the scan-start and scan-stop verbs are still unmapped. A
+  rescan in the app would reveal them.
 
 **Write enumerations.** The validator rejects bad values but does not list good
 ones, so these need a deliberate write to confirm:
