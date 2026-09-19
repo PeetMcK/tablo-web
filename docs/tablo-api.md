@@ -514,7 +514,9 @@ and the response gains one field:
 ```
 
 `PATCH /settings/info {"audio":"aac"}` is accepted and the field flips to
-`"aac"`; `{"audio":"ac3"}` flips it back — both observed, `200`, the full
+`"aac"`; `{"audio":"ac3"}` flips it back (the app has no reachable control for
+`preferred_audio_track`, the other audio field, so its write shape is unmapped
+and would need a direct signed probe rather than a capture) — both observed, `200`, the full
 settings object returned each time. So the box **can** re-encode its AC-3 audio
 to AAC on the way out; it is a persistent device setting, not a per-stream
 parameter. Video has no equivalent (below), so this does not remove the need to
@@ -792,6 +794,12 @@ advertises these; none of the obvious paths resolve:
   See "Series scheduling, addressed by cloud identifier".
 - `search` — `/guide/search` 404 on the device (the *cloud* has
   `guide/search/`).
+- `reclive` — **not a distinct endpoint.** Recording the programme you are
+  watching is the ordinary schedule write applied in place: `PATCH /guide/{airing_identifier}`
+  (record this episode) or `PATCH /guide/{show_identifier}` (record the series),
+  the same writes in "Series scheduling". The player's record action fires one of
+  those against the currently-airing identifier; there is no separate live-record
+  verb.
 - `snap_grid` — **effectively resolved as a non-feature.** The official app has
   no single-request grid: it builds the guide from `/views/guide/channels/{id}/airings?date=…`
   called once per channel, plus `/views/guide/upcoming`. Whatever `snap_grid`
