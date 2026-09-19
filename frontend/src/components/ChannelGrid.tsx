@@ -15,6 +15,7 @@ import { HeaderClock } from "./HeaderClock";
 import { SearchDropdown } from "./SearchDropdown";
 import { SearchResultsView } from "./SearchResultsView";
 import { CommandPalette } from "./CommandPalette";
+import { SettingsModal } from "./SettingsModal";
 import { onRoutePop, parseRoute, writeRoute, type Tab } from "../lib/route";
 
 function useGuideStream(enabled: boolean) {
@@ -146,6 +147,7 @@ export function ChannelGrid({ onLogout }: Props) {
   const [now, setNow] = useState(() => Date.now());
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Bumped on every library-target search activation, and used as
   // LibraryView's `key` below. Library hands off through the hash alone
   // (see `handleSearchActivate`), which LibraryView reads once at mount —
@@ -390,6 +392,7 @@ export function ChannelGrid({ onLogout }: Props) {
 
   return (
     <>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
@@ -490,7 +493,11 @@ export function ChannelGrid({ onLogout }: Props) {
               wide layout is unchanged and the phone simply stops moving. */}
           <div className="max-w-7xl mx-auto px-4 sm:px-6 h-[74px] flex items-center gap-1">
             {/* The mark is also the settings menu — see AppMenu for why. */}
-            <AppMenu email={userEmail} onLogout={onLogout} />
+            <AppMenu
+              email={userEmail}
+              onLogout={onLogout}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
 
             {/* Navigation Tabs.
                 `ml-4` is measured against the letterforms, not the boxes. Two

@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Settings } from "lucide-react";
 import { api } from "../api/tablo";
 import { ThemeControl } from "./ThemeControl";
 
 interface Props {
   email: string | null;
   onLogout: () => void;
+  onOpenSettings: () => void;
 }
 
 /**
@@ -27,7 +28,7 @@ interface Props {
  * what keeps that from being mystery meat, and is not optional. It is affordable
  * here only because everything behind it is low-frequency.
  */
-export function AppMenu({ email, onLogout }: Props) {
+export function AppMenu({ email, onLogout, onOpenSettings }: Props) {
   const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -170,6 +171,16 @@ export function AppMenu({ email, onLogout }: Props) {
           </div>
 
           <div className="p-2">
+            <button
+              onClick={() => { setOpen(false); onOpenSettings(); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-fg-secondary hover:text-fg hover:bg-fill-soft transition text-left"
+            >
+              <Settings className="w-4 h-4 shrink-0" strokeWidth={2} aria-hidden />
+              Settings
+            </button>
+
+            <div className="my-1 border-t border-border-subtle" />
+
             <button
               onClick={refreshChannels}
               disabled={refreshing}
