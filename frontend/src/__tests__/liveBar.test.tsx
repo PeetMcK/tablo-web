@@ -34,6 +34,14 @@ function stubSeekable(end: number) {
   });
 }
 
+/** Cached window a live skip is allowed to move through (see skip clamp). */
+function stubBuffered(start: number, end: number) {
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get: () => ({ length: 1, start: () => start, end: () => end }),
+  });
+}
+
 function renderLive(program: Program | null = NEWS_HOUR) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -143,6 +151,8 @@ describe("the live bar", () => {
 
   it("will not seek past the live edge, however wide the bar is", async () => {
     const { container } = renderLive();
+    // Cached all the way to the edge, so skip may reach it but not overrun it.
+    stubBuffered(0, HOUR_AGO_QUARTER);
     await playAt(container, HOUR_AGO_QUARTER);
 
     // Forward 30 from a quarter-minute behind the edge. Three quarters of the
