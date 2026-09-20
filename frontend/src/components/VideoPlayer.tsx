@@ -1063,6 +1063,11 @@ export function VideoPlayer({
                     reportWasmFailure(reason, "gave up");
                     log.warn(`recording wasm gave up (${reason})`, { at: fmt(at) });
                     api.stopStream(raw.session_id).catch(() => {});
+                    // Tear the dead surface down so its poll timer dies with
+                    // the session — otherwise it keeps requesting segments the
+                    // stopped backend no longer has, a 404 storm with no end.
+                    surface.destroy();
+                    if (surfaceRef.current === surface) surfaceRef.current = null;
                     if (!cancelled) setApiError(`Decoding stopped: ${reason}`);
                     return;
                   }
@@ -1088,6 +1093,10 @@ export function VideoPlayer({
                           reportWasmFailure(why, "gave up");
                           log.warn(`recording wasm gave up (${why})`);
                           api.stopStream(again.session_id).catch(() => {});
+                          // Same teardown as the first give-up: stop the dead
+                          // session's poll timer so it cannot 404-storm.
+                          next.destroy();
+                          if (surfaceRef.current === next) surfaceRef.current = null;
                           if (!cancelled) setApiError(`Decoding stopped: ${why}`);
                         },
                       });

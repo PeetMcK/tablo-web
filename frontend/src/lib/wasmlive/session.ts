@@ -750,6 +750,17 @@ export function createSession(deps: SessionDeps): LiveSession {
    * unconditionally, because a seek must always be acted on.
    */
   const scheduledPoll = () => {
+    // A failed session must not keep polling. Once the fallback machine has
+    // latched a failure (a decode error, no first frame, a gone backend), the
+    // surface is on its way to being torn down or rebuilt; continuing to ask
+    // the backend for segments it no longer has is the 404 storm. Stop the
+    // timer here so the storm cannot outlive the failure even for the window
+    // before the surface is destroyed.
+    if (fallback.failed) {
+      stopPolling?.();
+      stopPolling = null;
+      return;
+    }
     if (pollsQueued > 0) return;
     void safePoll();
   };
