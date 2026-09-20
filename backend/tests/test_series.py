@@ -156,6 +156,57 @@ def test_series_detail_composes_episodes_and_settings(authed, monkeypatch):
     assert ep["snapshot_image"] == 77
 
 
+def test_series_detail_carries_guide_path(authed, monkeypatch):
+    _dispatch(monkeypatch, {
+        "/recordings/series/1": {
+            "object_id": 1, "path": "/recordings/series/1",
+            "series": {"title": "A"}, "show_counts": {},
+            "keep": {"rule": "none", "count": None},
+            "guide_path": "/guide/series/9"},
+        "/recordings/series/1/episodes": [],
+        "/guide/shows?state=requested&lh": [],
+    })
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/1"})
+    assert r.status_code == 200
+    assert r.json()["meta"]["guide_path"] == "/guide/series/9"
+
+
+def test_series_airings_resolves_titled_rows(authed, monkeypatch):
+    async def fake(method, path, body=""):
+        if path == "/guide/series/9/episodes?state=requested&lh":
+            return ["/guide/series/episodes/500"]
+        if path == "/batch":
+            return {"/guide/series/episodes/500": {
+                "object_id": 500,
+                "episode": {"title": "Pilot", "number": 1, "season_number": 1},
+                "airing_details": {
+                    "datetime": "2026-09-20T20:00Z", "duration": 1800,
+                    "show_title": "A",
+                    "channel": {"channel": {"call_sign": "KUFM",
+                                            "major": 11, "minor": 5}}},
+                "schedule": {"state": "scheduled", "skip_reason": "none"}}}
+        raise AssertionError(f"unexpected {method} {path}")
+    monkeypatch.setattr(app_state, "request_device", fake)
+    r = client.get("/api/recordings/series/airings",
+                   params={"guide_path": "/guide/series/9", "state": "requested"})
+    assert r.status_code == 200
+    row = r.json()[0]
+    assert row["title"] == "Pilot"
+    assert row["channel"] == "KUFM"
+    assert row["state"] == "scheduled"
+    assert row["datetime"] == "2026-09-20T20:00Z"
+
+
+def test_series_airings_rejects_foreign_guide_path(authed, monkeypatch):
+    async def fake(method, path, body=""):
+        raise AssertionError("must not reach the device")
+    monkeypatch.setattr(app_state, "request_device", fake)
+    r = client.get("/api/recordings/series/airings",
+                   params={"guide_path": "/server/info", "state": "requested"})
+    assert r.status_code == 400
+
+
 def test_series_detail_rejects_foreign_path(authed, monkeypatch):
     async def fake(method, path, body=""):
         raise AssertionError("must not reach the device for a foreign path")

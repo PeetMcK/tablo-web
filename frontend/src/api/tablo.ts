@@ -693,10 +693,24 @@ export interface SeriesDetail {
     description: string | null;
     cover_image_id: number | null;
     kind: string | null;
+    guide_path: string | null;
   };
   settings: SeriesSettings;
   counts: Record<string, number>;
   episodes: SeriesEpisode[];
+}
+
+/** A scheduled/conflicted airing for one series (titled, unlike the global list). */
+export interface SeriesAiring {
+  object_id: number;
+  title: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  datetime: string | null;
+  duration: number | null;
+  channel: string | null;
+  state: string | null;
+  skip_reason: string | null;
 }
 
 /** A scheduled or conflicted airing (lineup handle + schedule; no title). */
@@ -1085,5 +1099,10 @@ export const api = {
     upcoming: () => req<UpcomingAiring[]>("/recordings/upcoming"),
 
     conflicts: () => req<UpcomingAiring[]>("/recordings/conflicts"),
+
+    airings: (guidePath: string, state: "requested" | "conflicted") =>
+      req<SeriesAiring[]>(
+        `/recordings/series/airings?guide_path=${encodeURIComponent(guidePath)}&state=${state}`,
+      ),
   },
 };

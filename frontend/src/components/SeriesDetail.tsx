@@ -13,7 +13,7 @@ import {
   X, Lock, LockOpen, Eye, EyeOff, Trash2, Film, Radio,
 } from "lucide-react";
 import {
-  api, type SeriesCard, type SeriesEpisode, type SeriesUpdate,
+  api, type SeriesAiring, type SeriesCard, type SeriesEpisode, type SeriesUpdate,
 } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -103,6 +103,65 @@ function EpisodeRow({
   );
 }
 
+function AiringsPane({
+  query, hasGuide, emptyLabel,
+}: {
+  query: { data?: SeriesAiring[]; isLoading: boolean };
+  hasGuide: boolean;
+  emptyLabel: string;
+}) {
+  if (!hasGuide) {
+    return (
+      <p className="text-fg-muted p-4 text-center text-sm">
+        This series has no guide entry, so its schedule isn't available.
+      </p>
+    );
+  }
+  if (query.isLoading) {
+    return <p className="text-fg-muted p-4 text-center text-sm">Loading…</p>;
+  }
+  const rows = query.data ?? [];
+  if (rows.length === 0) {
+    return <p className="text-fg-muted p-4 text-center text-sm">{emptyLabel}</p>;
+  }
+  return (
+    <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col p-4 pt-3">
+      {rows.map((a) => {
+        const se =
+          a.season_number != null && a.episode_number != null
+            ? `S${a.season_number} E${a.episode_number}`
+            : null;
+        const when = a.datetime ? new Date(a.datetime) : null;
+        return (
+          <li key={a.object_id}
+              className="flex items-center gap-3 py-2 text-sm border-b border-border-subtle">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="truncate font-medium">{a.title ?? "Untitled"}</span>
+                {se && <span className="text-fg-muted shrink-0">{se}</span>}
+                {a.skip_reason && a.skip_reason !== "none" && (
+                  <span className="px-1.5 py-0.5 rounded bg-warning-soft text-warning text-[11px] font-semibold shrink-0">
+                    {a.skip_reason}
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-fg-muted tabular-nums">
+                {when
+                  ? when.toLocaleString(undefined, {
+                      weekday: "short", month: "short", day: "numeric",
+                      hour: "numeric", minute: "2-digit",
+                    })
+                  : ""}
+                {a.channel ? ` · ${a.channel}` : ""}
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function SeriesDetail({
   card, onClose,
 }: {
@@ -113,6 +172,7 @@ export function SeriesDetail({
   const path = card.recordings_path;
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
+  const [tab, setTab] = useState<"episodes" | "upcoming" | "conflicts">("episodes");
 
   const { data, isLoading } = useQuery({
     queryKey: ["series-detail", path],
@@ -122,6 +182,20 @@ export function SeriesDetail({
   const settings = data?.settings;
   const identifier = settings?.identifier ?? null;
   const canConfigure = identifier != null;
+  const guidePath = data?.meta.guide_path ?? null;
+
+  // This series' scheduled / conflicted airings — titled (unlike the global
+  // list). Fetched only when their tab is open and the series has a guide path.
+  const upcoming = useQuery({
+    queryKey: ["series-airings", guidePath, "requested"],
+    queryFn: () => api.series.airings(guidePath!, "requested"),
+    enabled: tab === "upcoming" && !!guidePath,
+  });
+  const conflicts = useQuery({
+    queryKey: ["series-airings", guidePath, "conflicted"],
+    queryFn: () => api.series.airings(guidePath!, "conflicted"),
+    enabled: tab === "conflicts" && !!guidePath,
+  });
 
   // Padding steppers, in minutes. The device value (seconds) is the baseline;
   // once the viewer edits a field, `pad` holds their in-progress value. This
@@ -326,8 +400,25 @@ export function SeriesDetail({
             </section>
             </div>{/* end upper region */}
 
-            {/* Episodes — the one scroll region. Header + bulk bar stay put;
-                only the list below scrolls. */}
+            {/* Series-focused tabs — the recorded Episodes, plus this series'
+                scheduled Upcoming airings and Conflicts (titled). Sits in the
+                gap between settings and the list. */}
+            <div className="shrink-0 px-4 pt-3 overflow-x-auto">
+              <Segmented<"episodes" | "upcoming" | "conflicts">
+                value={tab}
+                options={[
+                  { value: "episodes", label: "Episodes" },
+                  { value: "upcoming", label: "Upcoming" },
+                  { value: "conflicts", label: "Conflicts" },
+                ]}
+                onChange={setTab}
+                label="Series view"
+              />
+            </div>
+
+            {tab === "episodes" ? (
+            /* Episodes — the one scroll region. Header + bulk bar stay put;
+                only the list below scrolls. */
             <section className="flex-1 min-h-0 flex flex-col p-4 pt-3">
               <div className="flex items-center justify-between mb-2 shrink-0">
                 <h3 className="text-sm font-bold">
@@ -401,6 +492,15 @@ export function SeriesDetail({
                 ))}
               </ul>
             </section>
+            ) : (
+              <AiringsPane
+                query={tab === "upcoming" ? upcoming : conflicts}
+                hasGuide={!!guidePath}
+                emptyLabel={tab === "upcoming"
+                  ? "Nothing scheduled for this series."
+                  : "No conflicts for this series."}
+              />
+            )}
           </div>
         )}
 
