@@ -293,7 +293,10 @@ describe("LibraryView", () => {
       }),
     );
     renderLibrary();
-    expect(await screen.findByText(/Only here/i)).toBeInTheDocument();
+    // The offline badge is now an icon-only status chip (no "Only here" text),
+    // matched by its label rather than visible text.
+    expect(await screen.findByLabelText(/the Tablo no longer has/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Only here/i)).toBeNull();
     expect(await screen.findByText(/^Cached$/i)).toBeInTheDocument();
     // Device state is irrelevant for an offline copy — it must still play.
     const play = await screen.findAllByRole("button", { name: /play nfl football/i });
@@ -1145,6 +1148,29 @@ describe("what the artwork offers", () => {
       season_number: 3, episode_number: 23,
     });
     expect(await screen.findByText(/S3 E23/)).toBeInTheDocument();
+  });
+
+  it("offers a clear-custom-image button only when a custom image exists", async () => {
+    renderWith({ ...FINISHED, object_id: 90220, cover_frame: 42 });
+    await screen.findByText("NFL Football");
+    expect(screen.getByRole("button", { name: /remove custom image/i }))
+      .toBeInTheDocument();
+  });
+
+  it("hides the clear-custom-image button when there is no custom image", async () => {
+    renderWith({ ...FINISHED, object_id: 90221, cover_frame: null });
+    await screen.findByText("NFL Football");
+    expect(screen.queryByRole("button", { name: /remove custom image/i })).toBeNull();
+  });
+
+  it("the clear-custom-image button clears the custom image", async () => {
+    const spy = vi.spyOn(api, "clearRecordingCover")
+      .mockResolvedValue({ object_id: 90222, cover_frame: null });
+    renderWith({ ...FINISHED, object_id: 90222, cover_frame: 42 });
+    fireEvent.click(
+      await screen.findByRole("button", { name: /remove custom image/i }),
+    );
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(90222));
   });
 
   it("drops Resume when there is nothing to resume", async () => {

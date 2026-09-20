@@ -28,8 +28,13 @@ Supersedes the card-overlay and watched-toggle details below where they differ:
 - **Top-right = hover-only TOGGLES**, revealed on hover **anywhere on the card**
   (the card root's `group`, not the picture's `group/art`): eye (toggle watched)
   + lock (toggle protect). Each shows the icon for the action it performs.
-- **Remove-custom-picture (Undo): hidden entirely** for now (placement TBD; the
-  `clearRecordingCover` call is parked, not deleted).
+- **Remove-custom-picture: top-middle of the picture** (resolved 2026-09-20). A
+  round `ImageOff` puck (round = action), centred at the top edge of the
+  thumbnail. Rendered only when a custom cover exists (`cover_frame !== null`)
+  and revealed on **image hover only** — `group-hover/art:`, the picture's own
+  group, *not* the card-level `group` the top-right toggles use — so it never
+  crowds the whole-card hover controls. Clears the cover via
+  `api.clearRecordingCover(objectId)`, `stopPropagation` so it never plays.
 - Watched thumbnail **dim** stays.
 
 **Watched toggle — device write rules (measured on-device):**
@@ -74,9 +79,11 @@ already has `POST /api/recordings/{id}/watched {watched}` and single
 Corners (maps to existing `LibraryView.tsx` overlay code):
 
 - **top-left** — unchanged state badge (Recording / Incomplete / Cached / Ready /
-  "% cached"), **plus** the `CloudOff` **"Only here"** badge **moved here to sit
-  beside it** (currently top-right). They can co-exist (offline_only + a cache
-  badge).
+  "% cached"), **plus** the `CloudOff` offline badge beside it. That badge is an
+  **icon-only status chip** (resolved 2026-09-20): no "Only here" text, the same
+  squarish box as the protected-lock chip (`px-1.5 py-1 rounded bg-ink/80`, a
+  `w-3.5` icon) — round is reserved for actions, so a pure status reads as a
+  chip, not a button. They can co-exist (offline_only + a cache badge).
 - **top-right** — **watched + protect cluster**, order **watched (left) → protect
   (right)**. *Affirmative persistent (rest + hover), negative only on hover:*
 

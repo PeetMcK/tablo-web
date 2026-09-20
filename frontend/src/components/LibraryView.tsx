@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -253,10 +253,14 @@ export function LibraryView() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
   });
 
-  // The "remove custom picture" control is hidden for now (placement TBD), so
-  // its mutation is parked here rather than deleted — restore the button in the
-  // bottom-left cluster and re-add `api.clearRecordingCover` when its spot is
-  // decided.
+  // The "remove custom picture" control lives at the top-middle of the picture,
+  // revealed on image hover only (not the whole card) and only when a custom
+  // cover exists. Round = action, so it is a puck like the watched/protect
+  // toggles, not a squarish status chip.
+  const clearCover = useMutation({
+    mutationFn: (id: number) => api.clearRecordingCover(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
+  });
 
   /**
    * Watched / protected toggles, optimistic against the cached listing.
@@ -876,10 +880,14 @@ export function LibraryView() {
                       </div>
                     ) : null}
                     {rec.offline_only && (
-                      <div className="flex items-center gap-1 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider"
-                           title="Kept here — the Tablo no longer has this recording">
-                        <CloudOff className="w-3 h-3" aria-hidden />
-                        Only here
+                      // Icon-only STATUS chip — squarish, the same box as the
+                      // protected lock (px-1.5 py-1, w-3.5 icon). Round is for
+                      // actions; this only reports that the copy is local, so it
+                      // carries no text and matches the other status chips.
+                      <div className="flex items-center px-1.5 py-1 rounded bg-ink/80 text-media-fg-muted"
+                           title="Kept here — the Tablo no longer has this recording"
+                           aria-label="Kept here — the Tablo no longer has this recording">
+                        <CloudOff className="w-3.5 h-3.5" aria-hidden />
                       </div>
                     )}
                   </div>
@@ -931,6 +939,30 @@ export function LibraryView() {
                           : <Lock className="w-3.5 h-3.5" aria-hidden />}
                       </button>
                     </div>
+                  )}
+
+                  {/* Clear-custom-image ACTION, top-middle of the picture.
+                      Only rendered when a viewer-picked cover exists
+                      (`cover_frame`), and revealed on hover of the PICTURE
+                      alone — `group-hover/art:`, not the card's `group` — so it
+                      does not crowd the whole-card hover controls. A round puck
+                      like the toggles (round = action); stops propagation so a
+                      tap clears the image rather than starting playback. */}
+                  {rec.cover_frame !== null && (
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        clearCover.mutate(rec.object_id);
+                      }}
+                      title="Remove custom image"
+                      aria-label="Remove custom image"
+                      className="absolute top-3 left-1/2 -translate-x-1/2 z-20 w-7 h-7 rounded-full
+                                 glass flex items-center justify-center text-media-fg hover:bg-fill
+                                 opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100 transition"
+                    >
+                      <ImageOff className="w-3.5 h-3.5" aria-hidden />
+                    </button>
                   )}
                   {/* While recording, the slot is not what exists — it is what
                       is promised. Showing `1h 0m` on something eight minutes old
