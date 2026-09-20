@@ -1459,6 +1459,52 @@ export function VideoPlayer({
     skipTimerRef.current = setTimeout(commitSkip, SKIP_DEBOUNCE_MS);
   }, [commitSkip, isLive, liveTranscoded, usingWasm, cacheState, rangeStart, rangeEnd]);
 
+  // Hardware media keys — the headphone/keyboard play-pause and seek — reach a
+  // page only through the Media Session API (or a <video> the browser adopts on
+  // its own). The MPEG-2 path draws to a canvas with WebAudio and has no such
+  // element, so without this the keys hit nothing there; wiring it explicitly
+  // makes them work on both the HLS and WASM surfaces. Handlers are stable
+  // (togglePlay handles play and pause off the surface's own paused state), so
+  // this registers once and tears down on unmount.
+  useEffect(() => {
+    const ms = navigator.mediaSession;
+    if (!ms) return;
+    try {
+      ms.setActionHandler("play", () => togglePlay());
+      ms.setActionHandler("pause", () => togglePlay());
+      ms.setActionHandler("seekbackward", (d) => skip(-(d.seekOffset ?? 10)));
+      ms.setActionHandler("seekforward", (d) => skip(d.seekOffset ?? 10));
+      ms.setActionHandler("seekto", (d) => {
+        if (typeof d.seekTime === "number") seekTo(d.seekTime);
+      });
+    } catch {
+      // A browser may not support every action; the ones it took still work.
+    }
+    return () => {
+      for (const a of ["play", "pause", "seekbackward",
+                       "seekforward", "seekto"] as const) {
+        try { ms.setActionHandler(a, null); } catch { /* ignore */ }
+      }
+    };
+  }, [togglePlay, skip, seekTo]);
+
+  // Name what is playing for the OS now-playing surface, and keep its
+  // play/pause state honest so the key toggles in the right direction.
+  useEffect(() => {
+    const ms = navigator.mediaSession;
+    if (ms && "MediaMetadata" in window) {
+      ms.metadata = new MediaMetadata({
+        title,
+        artist: subtitle || undefined,
+      });
+    }
+  }, [title, subtitle]);
+
+  useEffect(() => {
+    const ms = navigator.mediaSession;
+    if (ms) ms.playbackState = paused ? "paused" : "playing";
+  }, [paused]);
+
   /**
    * Back to the live edge — stopping the same distance short of it as a skip.
    *
