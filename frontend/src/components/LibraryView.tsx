@@ -138,6 +138,12 @@ function resumeFor(rec: Recording): number {
   // "greater wins" would otherwise enshrine it.
   const theirs = rec.position ?? 0;
   const furthest = Math.max(ours, theirs);
+  // `position:1` is the sentinel we write to un-mark watched without the device
+  // dropping the recording back to New (setting position>0 clears watched, and
+  // position 0 + not-watched reads as New). It is not a real resume point, so
+  // it must never surface a "Resume 0:01" — one second is nothing to resume to.
+  // Genuine positions (10s, 20s, …) are left alone: sub-30s resumes are wanted.
+  if (furthest <= 1) return 0;
   const limit = isRecording(rec) ? (rec.recorded_seconds ?? 0) : rec.duration;
   return limit > 0 ? Math.min(furthest, limit) : furthest;
 }

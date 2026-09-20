@@ -1092,6 +1092,20 @@ describe("what the artwork offers", () => {
     expect(watched).not.toHaveBeenCalled();
   });
 
+  it("the position-1 sentinel offers no Resume (and no New chip)", async () => {
+    renderWith({ ...FINISHED, object_id: 90206, watched: false, position: 1 });
+    await screen.findByText("NFL Football");
+    expect(screen.queryByText(/^Resume/)).toBeNull();
+    expect(screen.queryByText("New")).toBeNull();
+    // Collapsed to the single full-picture Play (no Resume/From-start pair).
+    expect(screen.queryByText("From start")).toBeNull();
+  });
+
+  it("a genuine sub-30s position still offers Resume", async () => {
+    renderWith({ ...FINISHED, object_id: 90207, watched: false, position: 10 });
+    expect(await screen.findByText(/Resume 0:10/)).toBeInTheDocument();
+  });
+
   it("the protect toggle protects the recording", async () => {
     const spy = vi.spyOn(api, "setProtected")
       .mockResolvedValue({ object_id: 90203, protected: true });
