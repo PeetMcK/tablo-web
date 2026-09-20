@@ -1335,6 +1335,42 @@ export function VideoPlayer({
     }
   }, []);
 
+  // Pause when the headphones come out, the way a native player does.
+  //
+  // A `<video>` playing its own audio is paused by the OS on an output-route
+  // change, which is where YouTube's behaviour comes from. The MPEG-2/WASM path
+  // has no such element — its sound is on a Web Audio graph, which keeps playing
+  // straight out the speakers when AirPods leave the ear. So watch the device
+  // list: an audio *output* disappearing is an unplug, and we pause. Pause
+  // only, never resume — reinserting should not blare the room, same as every
+  // native player. The count is the signal because `devicechange` says nothing
+  // about what changed, and labels need a permission we do not want.
+  useEffect(() => {
+    const md = navigator.mediaDevices;
+    if (!md?.addEventListener || !md.enumerateDevices) return;
+    let prevOutputs = -1;
+    let stopped = false;
+    const outputs = async () => {
+      try {
+        const devices = await md.enumerateDevices();
+        return devices.filter((d) => d.kind === "audiooutput").length;
+      } catch {
+        return -1;
+      }
+    };
+    void outputs().then((n) => { if (!stopped) prevOutputs = n; });
+    const onChange = async () => {
+      const n = await outputs();
+      if (prevOutputs >= 0 && n >= 0 && n < prevOutputs) {
+        const s = surfaceRef.current;
+        if (s && !s.paused) { s.pause(); setPaused(true); }
+      }
+      if (n >= 0) prevOutputs = n;
+    };
+    md.addEventListener("devicechange", onChange);
+    return () => { stopped = true; md.removeEventListener("devicechange", onChange); };
+  }, []);
+
   /**
    * Show the rest of this programme's series, without waiting for it to end.
    *
