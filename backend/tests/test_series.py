@@ -70,7 +70,7 @@ def test_series_index_merges_rule_and_counts(authed, monkeypatch):
             "series": {"title": "A", "genres": [], "description": "",
                        "cover_image": {"image_id": 11}},
             "show_counts": {"airing_count": 4, "unwatched_count": 3,
-                            "protected_count": 0},
+                            "protected_count": 0, "failed_count": 2},
             "keep": {"rule": "none", "count": None},
             "guide_path": "/guide/series/9"},
         "/recordings/sports/2": {
@@ -93,6 +93,7 @@ def test_series_index_merges_rule_and_counts(authed, monkeypatch):
     assert a["kind"] == "series"
     assert a["identifier"] == "C1_SHOW_X"
     assert a["cover_image_id"] == 11
+    assert a["failed_count"] == 2
 
     b = items["/recordings/sports/2"]
     assert b["rule"] == "none"           # no active rule → none

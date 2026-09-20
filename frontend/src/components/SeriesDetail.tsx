@@ -189,10 +189,10 @@ export function SeriesDetail({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-2xl h-full overflow-y-auto bg-surface-raised border-l border-border shadow-2xl"
+        className="w-full max-w-2xl h-full flex flex-col overflow-hidden bg-surface-raised border-l border-border shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sticky top-0 z-10 flex items-center gap-3 p-4 bg-surface-raised border-b border-border-subtle">
+        <div className="shrink-0 flex items-center gap-3 p-4 bg-surface-raised border-b border-border-subtle">
           <div className="w-24 aspect-video rounded overflow-hidden bg-surface-sunken shrink-0">
             {data?.meta.cover_image_id != null ? (
               <img src={`/api/channels/image/${data.meta.cover_image_id}`}
@@ -223,7 +223,10 @@ export function SeriesDetail({
         {isLoading ? (
           <p className="text-fg-muted py-12 text-center">Loading…</p>
         ) : (
-          <div className="p-4 flex flex-col gap-6">
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Upper region: description + settings, capped so the episode list
+                always keeps a pane; scrolls on its own only if it overflows. */}
+            <div className="shrink-0 max-h-[45%] overflow-y-auto p-4 flex flex-col gap-4 border-b border-border-subtle">
             {data?.meta.description && (
               <p className="text-sm text-fg-secondary leading-relaxed">
                 {data.meta.description}
@@ -320,35 +323,13 @@ export function SeriesDetail({
                 </div>
               </div>
 
-              {/* Danger zone. Turning the rule off on its own is already the
-                  "Off" segment above, so this holds only the destructive
-                  combination: stop future recordings AND delete what's here. */}
-              {canConfigure && (
-                <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
-                  <button
-                    onClick={() =>
-                      setConfirm({
-                        title: `Turn off ${card.title} and delete all episodes?`,
-                        body: "The recording rule is turned off so no future episodes record, and every unprotected episode already recorded is deleted. Protected episodes are kept.",
-                        confirmLabel: "Turn off & delete all",
-                        danger: true,
-                        onConfirm: () => {
-                          setRule("none");
-                          bulk.mutate("unprotected");
-                        },
-                      })
-                    }
-                    className="px-3 py-1.5 rounded-lg text-sm font-medium bg-danger-solid/15 text-danger hover:bg-danger-solid/25"
-                  >
-                    Turn off &amp; delete all
-                  </button>
-                </div>
-              )}
             </section>
+            </div>{/* end upper region */}
 
-            {/* Episodes + bulk bar */}
-            <section>
-              <div className="flex items-center justify-between mb-2">
+            {/* Episodes — the one scroll region. Header + bulk bar stay put;
+                only the list below scrolls. */}
+            <section className="flex-1 min-h-0 flex flex-col p-4 pt-3">
+              <div className="flex items-center justify-between mb-2 shrink-0">
                 <h3 className="text-sm font-bold">
                   Episodes{data?.episodes.length ? ` (${data.episodes.length})` : ""}
                 </h3>
@@ -377,7 +358,7 @@ export function SeriesDetail({
               </div>
 
               {selected.size > 0 && (
-                <div className="flex items-center gap-3 mb-2 px-3 py-2 rounded-lg bg-accent-soft text-sm">
+                <div className="flex items-center gap-3 mb-2 shrink-0 px-3 py-2 rounded-lg bg-accent-soft text-sm">
                   <span className="font-semibold">{selected.size} selected</span>
                   <button
                     onClick={deleteSelected}
@@ -391,7 +372,7 @@ export function SeriesDetail({
                 </div>
               )}
 
-              <ul className="flex flex-col">
+              <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col">
                 {(data?.episodes ?? []).map((ep) => (
                   <EpisodeRow
                     key={ep.object_id}
@@ -420,6 +401,32 @@ export function SeriesDetail({
                 ))}
               </ul>
             </section>
+          </div>
+        )}
+
+        {/* Footer: the destructive series-wide action, anchored bottom-right.
+            Turning the rule off alone is the "Off" segment above, so this is
+            only the combination — stop future recordings AND delete what's
+            here. Hidden when the series has no rule to turn off. */}
+        {!isLoading && canConfigure && (
+          <div className="shrink-0 flex justify-end p-3 border-t border-border-subtle bg-surface-raised">
+            <button
+              onClick={() =>
+                setConfirm({
+                  title: `Turn off ${card.title} and delete all episodes?`,
+                  body: "The recording rule is turned off so no future episodes record, and every unprotected episode already recorded is deleted. Protected episodes are kept.",
+                  confirmLabel: "Turn off & delete all",
+                  danger: true,
+                  onConfirm: () => {
+                    setRule("none");
+                    bulk.mutate("unprotected");
+                  },
+                })
+              }
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-danger-solid/15 text-danger hover:bg-danger-solid/25"
+            >
+              Turn off &amp; delete all
+            </button>
           </div>
         )}
       </div>
