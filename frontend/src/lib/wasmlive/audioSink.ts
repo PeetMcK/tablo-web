@@ -125,7 +125,32 @@ export async function createAudioSink(
   const node = new AudioWorkletNode(context, "pcm-processor", { outputChannelCount: [2] });
   const gain = context.createGain();
   node.connect(gain);
-  gain.connect(context.destination);
+
+  // Route the output through a real, playing <audio> element instead of
+  // straight to `context.destination`. The WASM path draws its picture to a
+  // canvas and plays its sound through Web Audio, so it exposes no media
+  // element — and the OS media hub (macOS Now Playing, hardware play/pause and
+  // seek keys) binds only to a playing HTMLMediaElement. A
+  // MediaStreamAudioDestination fed into a hidden <audio> gives the system that
+  // element. It is the *sole* output: also connecting to `context.destination`
+  // would play everything twice. Volume and mute still ride the gain node, so
+  // the element stays wide open. See VideoPlayer's Media Session wiring, which
+  // now has this element to attach its metadata and handlers to.
+  const streamDest = context.createMediaStreamDestination();
+  gain.connect(streamDest);
+  const anchor = document.createElement("audio");
+  anchor.srcObject = streamDest.stream;
+  anchor.autoplay = true;
+  anchor.volume = 1;
+  try {
+    anchor.style.display = "none";
+    document.body.append(anchor);
+  } catch {
+    // No DOM (non-browser context): the element still plays audio detached.
+  }
+  void anchor.play().catch(() => {
+    // Blocked without a gesture; `resume()` retries once the viewer acts.
+  });
 
   const state = createSinkState(context.sampleRate);
   let muted = false;
@@ -238,11 +263,21 @@ export async function createAudioSink(
       clockSeconds: sinkClockSeconds(state, context.currentTime, latency()),
       outputLatency: Number(latency().toFixed(4)),
     }),
-    resume: () => context.resume(),
+    async resume() {
+      await context.resume();
+      // The anchor may have been blocked at creation (no gesture yet); the
+      // viewer pressing play is that gesture, so try again here.
+      try { await anchor.play(); } catch { /* stays paused; retried next time */ }
+    },
     suspend: () => context.suspend(),
     async destroy() {
       node.port.onmessage = null;
       node.disconnect();
+      try {
+        anchor.pause();
+        anchor.srcObject = null;
+        anchor.remove();
+      } catch { /* already gone */ }
       await context.close();
     },
   };
