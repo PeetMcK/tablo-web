@@ -1156,6 +1156,10 @@ class AppState:
             "error": vd.get("error"),
             "watched": user.get("watched", False),
             "position": user.get("position", 0),
+            # Device-side retention flag: a protected recording is skipped by the
+            # series "delete all" (filter=unprotected) and survives auto-delete.
+            # Distinct from our local offline `pinned`/keep. See docs/tablo-api.md.
+            "protected": user.get("protected", False),
             "channel": channel,
             # e.g. "1080i" / "720p". Interlaced sources need deinterlacing on
             # the way to H.264, which costs throughput and roughly doubles the
