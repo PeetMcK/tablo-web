@@ -1736,4 +1736,29 @@ describe("a seek whose decoder never opens", () => {
     await session.poll();
     expect(session.currentTime).toBeGreaterThan(11);
   });
+
+  it("stops polling once the session has failed — no 404 storm", async () => {
+    // The scheduled timer must not keep requesting segments after a decode
+    // failure; the backend session is on its way out and would 404 for ever.
+    const scheduled: Array<() => void> = [];
+    const stop = vi.fn();
+    const h = harness({
+      schedule: (cb: () => void) => { scheduled.push(cb); return stop; },
+    });
+    await h.session.start();
+    const before = h.fetched.length;
+
+    // The decoder reports a fatal error; the fallback machine latches it.
+    h.worker.onmessage?.({
+      data: { type: "error", message: "decode error" },
+    } as MessageEvent);
+
+    // The timer fires after the failure: it must poll for nothing and tear the
+    // timer down.
+    scheduled.forEach((fn) => fn());
+    await Promise.resolve();
+
+    expect(h.fetched.length).toBe(before);
+    expect(stop).toHaveBeenCalled();
+  });
 });

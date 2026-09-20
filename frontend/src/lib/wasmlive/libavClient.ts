@@ -30,6 +30,21 @@ const DEVICE = "stream.ts";
 const READ_LIMIT = 256 * 1024;
 
 /**
+ * How many read-rounds of unbroken audio-decode failure to tolerate before
+ * giving up the session.
+ *
+ * A damaged audio frame — an AC-3 "new bit allocation info must be present in
+ * block 0", routine in an OTA recording — makes libav's send_packet refuse the
+ * packet. One such refusal used to throw out of the pump and kill everything,
+ * video included, even though the video decoder conceals its own damage. So a
+ * refused batch is dropped and decoding continues; audio resyncs at the next
+ * good frame. Only failures that do not stop — a genuinely broken stream —
+ * cross this count and end the session as before. The video path stays fatal
+ * on its own errors; this tolerance is audio-only.
+ */
+const AUDIO_DECODE_FAIL_LIMIT = 20;
+
+/**
  * How much the demuxer may read before it must name the streams.
  *
  * Bounded because the default is 5MB or EOF, which on a live feed is seconds
@@ -452,6 +467,10 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   const runPump = async () => {
     await open();
 
+    // Consecutive read-rounds whose audio decode threw; reset on any clean
+    // audio decode. See AUDIO_DECODE_FAIL_LIMIT.
+    let audioFailStreak = 0;
+
     for (;;) {
       const [result, packets] = await libav.ff_read_frame_multi(fmtCtx, vpkt, {
         limit: READ_LIMIT,
@@ -487,7 +506,18 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       const audioPackets = audioStream ? packets[audioStream.index] ?? [] : [];
       if (audioPackets.length) {
         const fin = result === libav.AVERROR_EOF;
-        const decoded = await libav.ff_decode_multi(actx, apkt, aframe, audioPackets, { fin });
+        let decoded: LibavFrame[];
+        try {
+          decoded = await libav.ff_decode_multi(actx, apkt, aframe, audioPackets, { fin });
+          audioFailStreak = 0;
+        } catch (e) {
+          // A refused audio packet (damaged AC-3 frame) is survivable: drop
+          // this batch and keep decoding video and the audio that follows.
+          // Give up only if the failures do not stop.
+          audioFailStreak += 1;
+          if (audioFailStreak > AUDIO_DECODE_FAIL_LIMIT) throw e;
+          decoded = [];
+        }
         if (decoded.length) {
           if (!asink) await openAudioGraph(decoded[0]);
           // Accounted before the graph, where the timestamps mean something.
