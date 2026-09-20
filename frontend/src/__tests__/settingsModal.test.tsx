@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, afterEach, beforeEach, test, expect } from "vitest";
 import { SettingsModal } from "../components/SettingsModal";
 import { ChannelGrid } from "../components/ChannelGrid";
-import { api, type SettingsOverview } from "../api/tablo";
+import { api, detailToMessage, type SettingsOverview } from "../api/tablo";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -206,6 +206,18 @@ test("storage bar reflects usage vs capacity from the device", async () => {
   // ~6.8% used → the bar's aria-label rounds to 7% used.
   expect(await screen.findByLabelText("7% used")).toBeInTheDocument();
   expect(screen.getByText(/WD My Passport/)).toBeInTheDocument();
+});
+
+test("detailToMessage flattens a 422 validation list, never [object Object]", () => {
+  expect(detailToMessage("plain error")).toBe("plain error");
+  expect(
+    detailToMessage([
+      { loc: ["body", "scan_id"], msg: "Input should be a valid string", type: "string_type" },
+    ]),
+  ).toBe("Input should be a valid string");
+  const obj = detailToMessage({ error: "nope" });
+  expect(obj).not.toBe("[object Object]");
+  expect(obj).toContain("nope");
 });
 
 test("rescan fills the channel list live as the device finds them", async () => {

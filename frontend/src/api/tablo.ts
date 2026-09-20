@@ -527,6 +527,35 @@ function guideGridStream(signal?: AbortSignal) {
   return ndjsonStream<GridChannel>("/channels/guide-grid/stream", signal);
 }
 
+/**
+ * A human-readable message from FastAPI's `detail`.
+ *
+ * `detail` is a string for our own HTTPExceptions, but a **list** of
+ * `{loc, msg, type}` objects for 422 request-validation errors. Passing that
+ * list straight to `new Error()` stringifies it to "[object Object]", which is
+ * what a user saw in a toast. Flatten the validation shape to its messages.
+ */
+export function detailToMessage(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) =>
+        d && typeof d === "object" && "msg" in d
+          ? String((d as { msg: unknown }).msg)
+          : String(d),
+      )
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return "Request failed.";
+    }
+  }
+  return "";
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: { "Content-Type": "application/json" },
@@ -534,7 +563,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? res.statusText);
+    throw new Error(detailToMessage(err.detail) || res.statusText);
   }
   return res.json();
 }

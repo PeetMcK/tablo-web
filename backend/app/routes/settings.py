@@ -207,8 +207,11 @@ async def channels_lineup():
 async def channels_scan_start():
     _require_auth()
     scan = await state.request_device("POST", "/channels/scans")
+    object_id = scan.get("object_id")
     return {
-        "scan_id": scan.get("object_id"),
+        # The device returns object_id as a number; the commit body types it as
+        # a string, so normalise here (a numeric scan_id was a 422 on commit).
+        "scan_id": str(object_id) if object_id is not None else None,
         "progress": scan.get("progress", 0.0),
         "completed": scan.get("completed", False),
     }
@@ -232,7 +235,7 @@ async def channels_scan_discovered(scan_id: str):
 
 
 class CommitIn(BaseModel):
-    scan_id: str
+    scan_id: str | int
     paths: list[str]
 
 
@@ -251,6 +254,10 @@ async def channels_commit(body: CommitIn):
         _json.dumps(body.paths, separators=(",", ":")),
     )
     return {"ok": True, "count": len(body.paths)}
+
+
+# NOTE: body.scan_id may arrive as str or int (see CommitIn); the f-string
+# renders either the same way, and the device path takes a bare number.
 
 
 # --- No-op writes (device verb not captured yet) ---------------------------

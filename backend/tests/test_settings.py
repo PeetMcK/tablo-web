@@ -230,13 +230,28 @@ def test_channels_lineup_no_committed_scan(authed, monkeypatch):
     assert r.json() == {"scan_id": None, "channels": []}
 
 
-def test_scan_start(authed, monkeypatch):
+def test_scan_start_coerces_numeric_object_id(authed, monkeypatch):
+    # The device returns object_id as a number; scan_id must be a string so the
+    # commit body (typed str) validates. A numeric scan_id was a 422 on commit.
     async def fake(method, path, body=""):
         assert method == "POST" and path == "/channels/scans"
-        return {"object_id": "68", "progress": 0.001, "completed": False}
+        return {"object_id": 68, "progress": 0.001, "completed": False}
     monkeypatch.setattr(app_state, "request_device", fake)
     r = client.post("/api/settings/channels/scan")
     assert r.json() == {"scan_id": "68", "progress": 0.001, "completed": False}
+
+
+def test_commit_accepts_a_numeric_scan_id(authed, monkeypatch):
+    seen = {}
+
+    async def fake_raw(method, path, body="", follow_redirects=False):
+        seen["path"] = path
+        return object()
+    monkeypatch.setattr(app_state, "_request_device_raw", fake_raw)
+    r = client.post("/api/settings/channels/commit",
+                    json={"scan_id": 71, "paths": ["/channels/scans/discovered/1"]})
+    assert r.status_code == 200
+    assert seen["path"] == "/channels/scans/71/commit"
 
 
 def test_scan_status(authed, monkeypatch):
