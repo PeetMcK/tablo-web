@@ -101,6 +101,68 @@ def test_series_index_merges_rule_and_counts(authed, monkeypatch):
     assert b["protected_count"] == 1
 
 
+def test_series_detail_composes_episodes_and_settings(authed, monkeypatch):
+    _dispatch(monkeypatch, {
+        "/recordings/series/1": {
+            "object_id": 1, "path": "/recordings/series/1",
+            "series": {"title": "A", "genres": ["Talk"], "description": "d",
+                       "cover_image": {"image_id": 11}},
+            "show_counts": {"airing_count": 1, "unwatched_count": 1},
+            "keep": {"rule": "none", "count": None},
+            "guide_path": "/guide/series/9"},
+        "/recordings/series/1/episodes": ["/recordings/series/episodes/100"],
+        "/batch": {
+            "/recordings/series/episodes/100": {
+                "object_id": 100,
+                "airing_details": {"datetime": "2026-01-01T00:00Z",
+                                   "duration": 1800},
+                "episode": {"title": "Ep", "number": 3, "season_number": 2,
+                            "orig_air_date": "2025-12-31"},
+                "video_details": {"size": 12345, "state": "finished",
+                                  "duration": 2115},
+                "snapshot_image": {"image_id": 77},
+                "user_info": {"position": 10, "watched": False,
+                              "protected": True}}},
+        "/guide/shows?state=requested&lh": [
+            {"identifier": "C1_SHOW_X",
+             "schedule": {"rule": "new",
+                          "offsets": {"start": -300, "end": 600,
+                                      "source": "show"}},
+             "keep": {"rule": "count", "count": 3},
+             "recordings_path": "/recordings/series/1"}],
+    })
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/1"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["meta"]["title"] == "A"
+    assert body["settings"]["identifier"] == "C1_SHOW_X"
+    assert body["settings"]["rule"] == "new"
+    assert body["settings"]["offsets"]["start"] == -300
+    assert body["settings"]["keep"]["count"] == 3
+
+    ep = body["episodes"][0]
+    assert ep["object_id"] == 100
+    assert ep["duration"] == 2115          # video_details, NOT the 1800 slot
+    assert ep["protected"] is True
+    assert ep["position"] == 10
+    assert ep["watched"] is False
+    assert ep["size"] == 12345
+    assert ep["season_number"] == 2
+    assert ep["episode_number"] == 3
+    assert ep["is_recording"] is False
+    assert ep["snapshot_image"] == 77
+
+
+def test_series_detail_rejects_foreign_path(authed, monkeypatch):
+    async def fake(method, path, body=""):
+        raise AssertionError("must not reach the device for a foreign path")
+    monkeypatch.setattr(app_state, "request_device", fake)
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/server/info"})
+    assert r.status_code == 400
+
+
 def test_conflicts_passes_through(authed, monkeypatch):
     seen = {}
 

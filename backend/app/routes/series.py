@@ -11,6 +11,7 @@ its literal `/series`, `/upcoming`, `/conflicts` paths win over that router's
 `/{object_id}` routes.
 """
 import asyncio
+import json
 import re
 
 from fastapi import APIRouter, HTTPException, Query
@@ -137,3 +138,98 @@ async def _compose_series_index() -> list[dict]:
 
     results = await asyncio.gather(*[one(p) for p in rec_paths])
     return [r for r in results if r]
+
+
+def _img(x) -> int | None:
+    """Snapshot/cover image, however the device wraps it (id, or {image_id})."""
+    if isinstance(x, dict):
+        return x.get("image_id")
+    return x if isinstance(x, int) else None
+
+
+def _episode_row(ep: dict) -> dict:
+    """One episode-list row from a resolved episode object.
+
+    Duration is `video_details.duration` — the real recorded length including
+    padding — never `airing_details.duration`, which is only the scheduled slot.
+    """
+    episode = ep.get("episode") or {}
+    airing = ep.get("airing_details") or {}
+    video = ep.get("video_details") or {}
+    user = ep.get("user_info") or {}
+    return {
+        "object_id": ep.get("object_id"),
+        "title": episode.get("title"),
+        "season_number": episode.get("season_number"),
+        "episode_number": episode.get("number"),
+        "orig_air_date": episode.get("orig_air_date"),
+        "datetime": airing.get("datetime"),
+        "duration": video.get("duration") or 0,
+        "size": video.get("size"),
+        "state": video.get("state"),
+        "snapshot_image": _img(ep.get("snapshot_image")),
+        "position": user.get("position", 0),
+        "watched": user.get("watched", False),
+        "protected": user.get("protected", False),
+        "is_recording": video.get("state") == "recording",
+    }
+
+
+@router.get("/series/detail")
+async def series_detail(recordings_path: str = Query(...)):
+    """A series' meta, its live settings, and its episode list.
+
+    Settings (rule/offsets/identifier) come only from the guide-shows
+    projection; keep falls back to the series meta. Episodes are resolved in one
+    `POST /batch` over the episode paths.
+    """
+    _require_auth()
+    if not _REC_PATH.match(recordings_path):
+        raise HTTPException(status_code=400,
+                            detail="Not a recordings series path")
+    try:
+        meta = await state.request_device("GET", recordings_path)
+        ep_paths = await state.request_device(
+            "GET", recordings_path + "/episodes") or []
+        resolved = {}
+        if ep_paths:
+            resolved = await state.request_device(
+                "POST", "/batch", json.dumps(ep_paths)) or {}
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+
+    series = meta.get("series") or {}
+    guide = await _try("GET", "/guide/shows?state=requested&lh") or []
+    g = next((x for x in guide
+              if x.get("recordings_path") == recordings_path), None)
+    if g:
+        sched = g.get("schedule") or {}
+        settings = {
+            "identifier": g.get("identifier"),
+            "rule": sched.get("rule") or "none",
+            "keep": g.get("keep") or meta.get("keep") or dict(_DEFAULT_KEEP),
+            "offsets": sched.get("offsets") or dict(_DEFAULT_OFFSETS),
+        }
+    else:
+        settings = {
+            "identifier": None,
+            "rule": "none",
+            "keep": meta.get("keep") or dict(_DEFAULT_KEEP),
+            "offsets": dict(_DEFAULT_OFFSETS),
+        }
+
+    episodes = [_episode_row(resolved[p]) for p in ep_paths if p in resolved]
+
+    return {
+        "meta": {
+            "title": series.get("title") or "Untitled",
+            "genres": series.get("genres") or [],
+            "description": series.get("description"),
+            "cover_image_id": (series.get("cover_image") or {}).get("image_id"),
+            "kind": _kind_of(recordings_path),
+        },
+        "settings": settings,
+        "counts": meta.get("show_counts") or {},
+        "episodes": episodes,
+    }
