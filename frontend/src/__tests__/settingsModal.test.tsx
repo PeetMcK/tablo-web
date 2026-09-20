@@ -298,3 +298,20 @@ test("the app menu gear opens the settings modal", async () => {
     await screen.findByRole("dialog", { name: "Settings" }),
   ).toBeInTheDocument();
 });
+
+test("Playback skip inputs seed from storage and persist changes", async () => {
+  localStorage.clear();
+  localStorage.setItem("tablo:skipForward", "45");
+  localStorage.setItem("tablo:skipBack", "5");
+  vi.spyOn(api.settings, "overview").mockResolvedValue(OVERVIEW);
+  renderModal();
+
+  const fwd = await screen.findByLabelText("Skip forward seconds");
+  const back = screen.getByLabelText("Skip back seconds");
+  expect((fwd as HTMLInputElement).value).toBe("45");
+  expect((back as HTMLInputElement).value).toBe("5");
+
+  fireEvent.change(fwd, { target: { value: "20" } });
+  fireEvent.blur(fwd);
+  expect(localStorage.getItem("tablo:skipForward")).toBe("20");
+});

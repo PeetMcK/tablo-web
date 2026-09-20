@@ -10,6 +10,7 @@ import {
   MapPin,
   Tv,
   Info,
+  FastForward,
 } from "lucide-react";
 import {
   api,
@@ -18,6 +19,9 @@ import {
   type HardDrive as HardDriveInfo,
 } from "../api/tablo";
 import { Switch, Segmented } from "./ui/controls";
+import {
+  loadSkipForward, loadSkipBack, saveSkipForward, saveSkipBack,
+} from "../lib/skip";
 
 interface Props {
   onClose: () => void;
@@ -128,6 +132,10 @@ export function SettingsModal({ onClose }: Props) {
         </header>
 
         <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-6 py-6">
+          {/* Client-side preference — always available, even if the device
+              settings below fail to load. */}
+          <PlaybackSection />
+
           {loading && <p className="text-sm text-fg-muted">Loading…</p>}
           {loadError && (
             <p className="text-sm text-danger">
@@ -207,6 +215,73 @@ function Row({
       </div>
       <div className="shrink-0">{children}</div>
     </div>
+  );
+}
+
+// --- Playback (client-side prefs) ------------------------------------------
+
+function SkipInput({
+  value, onCommit, label,
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+  label: string;
+}) {
+  // Local edit text so typing feels immediate; seeded once from `value`. On
+  // commit it snaps to the clamped whole-second result so a rejected entry
+  // (blank, 0, 999) shows what was actually stored, without a syncing effect.
+  const [text, setText] = useState(String(value));
+  const commit = () => {
+    const n = Number.parseInt(text, 10);
+    const next = Number.isFinite(n) ? Math.min(600, Math.max(1, n)) : value;
+    setText(String(next));
+    onCommit(next);
+  };
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        min={1}
+        max={600}
+        step={5}
+        value={text}
+        aria-label={label}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+        className="w-16 rounded-lg border border-border bg-fill-soft px-2 py-1 text-sm tabular-nums text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      />
+      <span className="text-xs text-fg-muted">sec</span>
+    </div>
+  );
+}
+
+/**
+ * Skip lengths, a per-browser viewer preference (localStorage), so it renders
+ * regardless of whether the device settings loaded. One setting drives every
+ * skip path — the on-screen buttons, keyboard, tap zones and the OS media
+ * controls — see lib/skip.
+ */
+function PlaybackSection() {
+  const [fwd, setFwd] = useState(loadSkipForward);
+  const [back, setBack] = useState(loadSkipBack);
+  return (
+    <Section icon={<FastForward className="h-4 w-4" />} title="Playback">
+      <Row label="Skip forward" hint="Jump ahead — buttons, keys, and headphone controls">
+        <SkipInput
+          value={fwd}
+          label="Skip forward seconds"
+          onCommit={(n) => { saveSkipForward(n); setFwd(loadSkipForward()); }}
+        />
+      </Row>
+      <Row label="Skip back" hint="Jump back to catch a missed moment">
+        <SkipInput
+          value={back}
+          label="Skip back seconds"
+          onCommit={(n) => { saveSkipBack(n); setBack(loadSkipBack()); }}
+        />
+      </Row>
+    </Section>
   );
 }
 
