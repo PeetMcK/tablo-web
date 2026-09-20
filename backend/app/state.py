@@ -66,7 +66,7 @@ async def _settled(task) -> dict:
     """
     try:
         return await task
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"[channels] lineup extras unavailable: {e}", flush=True)
         return {}
 
@@ -336,7 +336,7 @@ class AppState:
 
         try:
             paths = await self.request_device("GET", "/guide/channels")
-        except Exception as e:  # noqa: BLE001 - see the docstring on failure
+        except Exception as e:
             print(f"[channels] device lineup unavailable: {e}", flush=True)
             return {}
 
@@ -346,7 +346,7 @@ class AppState:
             async with gate:
                 try:
                     rec = (await self.request_device("GET", path)).get("channel") or {}
-                except Exception:  # noqa: BLE001 - one bad channel, not the lineup
+                except Exception:
                     return None
             ident = rec.get("channel_identifier")
             if not ident:

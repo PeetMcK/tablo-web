@@ -26,7 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.state import state  # noqa: E402
+from app.state import state
 
 CANDIDATES = ["all", "new", "none"]
 

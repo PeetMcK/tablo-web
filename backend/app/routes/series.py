@@ -15,6 +15,7 @@ import json
 import re
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
@@ -267,6 +268,17 @@ async def series_detail(recordings_path: str = Query(...)):
         if ep_paths:
             resolved = await state.request_device(
                 "POST", "/batch", json.dumps(ep_paths)) or {}
+    except httpx.HTTPStatusError as e:
+        # The device answered, with an error. A 404 means this series is gone
+        # (deleted, or a stale path a client still holds) — that is a 404 to our
+        # caller, not "the Tablo could not be reached". Any other status is the
+        # box refusing or failing, which stays a 502.
+        if e.response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Series {recordings_path} not found") from None
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
     except Exception:
         raise HTTPException(status_code=502,
                             detail="The Tablo could not be reached.") from None

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, NamedTuple
+from typing import NamedTuple
 from urllib.parse import urljoin
 
 from .live_ring import SegmentRing
