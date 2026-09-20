@@ -1501,14 +1501,17 @@ export function VideoPlayer({
   // Name what is playing for the OS now-playing surface, and keep its
   // play/pause state honest so the key toggles in the right direction.
   //
-  // The picture beside the name is the card's own — `cardArt`, so the hub and
-  // the library agree — and on a live channel the airing's poster. Without
-  // one, `nowPlayingArtwork` puts the app's mark there rather than nothing.
+  // The picture beside the name: for a recording the episode still
+  // (`thumbnail`, the per-episode grab) is preferred over the series cover, so
+  // the hub shows what this episode looked like; it falls back to `cardArt`
+  // (chosen frame → cover) if a still is somehow absent. On a live channel it
+  // is the airing's poster. Without any, `nowPlayingArtwork` puts the app's
+  // mark there rather than nothing.
   const artUrl = isLive
     ? (program?.poster_image_id != null
         ? `/api/channels/image/${program.poster_image_id}`
         : null)
-    : cardArt(source.recording);
+    : (source.recording.thumbnail ?? cardArt(source.recording));
   useEffect(() => {
     const ms = navigator.mediaSession;
     if (!ms || !("MediaMetadata" in window)) return;
