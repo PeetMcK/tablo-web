@@ -794,8 +794,20 @@ export function LibraryView() {
                     return (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2
                                       bg-scrim-soft opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
-                        {/* Where you left off leads: it is the likeliest thing
-                            wanted, and the only one that needs no thought. */}
+                        {/* Order top-to-bottom: Live (the frontier of what is
+                            recording now), Resume (where you left off), From
+                            start. Resume still carries the accent when it
+                            exists, else From start does. */}
+                        {live && (
+                          <button
+                            onClick={() => { setStartMode("live"); setPlaying(rec); }}
+                            className={`${chip} glass text-media-fg hover:bg-fill`}
+                            title="Jump to what is being recorded right now"
+                          >
+                            <Radio className="w-4 h-4" aria-hidden />
+                            Live
+                          </button>
+                        )}
                         {at > 0 && (
                           <button
                             onClick={() => { setStartMode("resume"); setPlaying(rec); }}
@@ -814,16 +826,6 @@ export function LibraryView() {
                           <Play className="w-4 h-4" fill="currentColor" aria-hidden />
                           From start
                         </button>
-                        {live && (
-                          <button
-                            onClick={() => { setStartMode("live"); setPlaying(rec); }}
-                            className={`${chip} glass text-media-fg hover:bg-fill`}
-                            title="Jump to what is being recorded right now"
-                          >
-                            <Radio className="w-4 h-4" aria-hidden />
-                            Live
-                          </button>
-                        )}
                       </div>
                     );
                   })()}
