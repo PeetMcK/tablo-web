@@ -23,6 +23,15 @@ interface Props {
   start: string | null;
   /** How to name the channel when there is no airing to name it. */
   channelLabel?: string;
+  /**
+   * The exact image the opener already resolved for this recording, so the
+   * sheet matches its card. A Library card resolves `cardArt(rec)` — a
+   * viewer-picked cover, else the episode's own snapshot, else the series art —
+   * and passing it here keeps the sheet from falling back to the series
+   * `cover_url` and showing a different picture than the card. When set, it wins
+   * over `detail.image_url`; unset (the guide), the sheet uses the airing's own.
+   */
+  posterOverride?: string | null;
   onClose: () => void;
   /**
    * The recording this sheet is about, when the opener knows which one.
@@ -176,7 +185,7 @@ function whenLine(start: string, duration: number): string | null {
  * title and a channel still looks deliberate instead of broken.
  */
 export function ShowInfo({
-  channel, start, channelLabel, recordingId,
+  channel, start, channelLabel, recordingId, posterOverride,
   onClose, onDeleted, onDeleteConfirmed, onDeleteFailed, onTune,
 }: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
@@ -448,9 +457,9 @@ export function ShowInfo({
             `cover_image` and `background_image` are both 1920x1080. Only
             `thumbnail_image` is a portrait 240x360 poster, and nothing here
             asks for that one. */}
-        {detail?.image_url && (
+        {(posterOverride ?? detail?.image_url) && (
           <img
-            src={detail.image_url}
+            src={(posterOverride ?? detail?.image_url) || undefined}
             alt=""
             className="w-full aspect-video max-w-full object-cover rounded-t-3xl bg-surface-sunken"
           />

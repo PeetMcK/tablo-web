@@ -16,7 +16,7 @@ function rec(over: Partial<Recording> = {}): Recording {
     thumbnail: "/api/recordings/1/thumbnail",
     image_url: null, cover_frame: null, has_preview: true,
     width: null, height: null, state: "finished", error: null,
-    watched: false, position: 0, cache_state: "absent", cache_progress: 0,
+    watched: false, position: 0, protected: false, cache_state: "absent", cache_progress: 0,
     pinned: false, offline_only: false, paused: false, cached_seconds: 0,
     rate: { mbps: 0, realtime: 0 }, channel: null, scan: null, interlaced: false,
     ...over,

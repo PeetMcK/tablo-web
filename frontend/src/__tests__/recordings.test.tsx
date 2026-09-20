@@ -59,6 +59,7 @@ const REC: Recording = {
   error: null,
   watched: false,
   position: 0,
+  protected: false,
   cache_state: "absent",
   cache_progress: 0,
   pinned: false,
@@ -1045,7 +1046,52 @@ describe("what the artwork offers", () => {
     });
     await screen.findByText("NFL Football");
 
-    expect(screen.queryByTitle(/watched/i)).toBeNull();
+    // No watched *coverage* on the strip (title is "watched 15:00"); the
+    // "Mark watched" toggle button is a separate control and may be present.
+    expect(screen.queryByTitle(/^watched \d/i)).toBeNull();
+  });
+
+  const FINISHED = {
+    ...REC, state: "finished", start: "2026-09-17T17:00:00Z",
+    duration: 3600, slot_seconds: 3600,
+    recording_started: "2026-09-17T17:00:00Z", recorded_seconds: 3600,
+  };
+
+  it("shows a NEW chip for a recording never started", async () => {
+    renderWith({ ...FINISHED, object_id: 90200, watched: false, position: 0 });
+    expect(await screen.findByText("New")).toBeInTheDocument();
+  });
+
+  it("drops the NEW chip once started or watched", async () => {
+    renderWith({ ...FINISHED, object_id: 90201, watched: false, position: 120 });
+    await screen.findByText("NFL Football");
+    expect(screen.queryByText("New")).toBeNull();
+  });
+
+  it("the watched toggle marks the recording watched", async () => {
+    const spy = vi.spyOn(api, "setRecordingWatched")
+      .mockResolvedValue({ object_id: 90202, watched: true });
+    renderWith({ ...FINISHED, object_id: 90202, watched: false, position: 0 });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark watched" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(90202, true));
+  });
+
+  it("the protect toggle protects the recording", async () => {
+    const spy = vi.spyOn(api, "setProtected")
+      .mockResolvedValue({ object_id: 90203, protected: true });
+    renderWith({ ...FINISHED, object_id: 90203, protected: false });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Protect from deletion" }),
+    );
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(90203, true));
+  });
+
+  it("shows season and episode inline when both are present", async () => {
+    renderWith({
+      ...FINISHED, object_id: 90204, title: "Wild Kratts",
+      season_number: 3, episode_number: 23,
+    });
+    expect(await screen.findByText(/S3 E23/)).toBeInTheDocument();
   });
 
   it("drops Resume when there is nothing to resume", async () => {

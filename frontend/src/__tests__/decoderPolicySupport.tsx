@@ -47,6 +47,7 @@ export const REC: Recording = {
   error: null,
   watched: false,
   position: 0,
+  protected: false,
   cache_state: "absent",
   cache_progress: 0,
   pinned: false,
