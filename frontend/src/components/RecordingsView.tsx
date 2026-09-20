@@ -22,7 +22,7 @@ type Segment = "series" | "upcoming" | "conflicts";
 
 /** Pull datetime + channel out of a lineup handle
  *  (`LH-C…-S{station}_{maj}_{min}-T{epoch}`). No title lives in the handle. */
-export function parseHandle(identifier: string): {
+function parseHandle(identifier: string): {
   date: Date | null;
   channel: string | null;
 } {
@@ -210,7 +210,11 @@ export function RecordingsView() {
       {segment === "conflicts" && <AiringList airings={conflicts.data ?? []} />}
 
       {selected && (
-        <SeriesDetail card={selected} onClose={() => setSelected(null)} />
+        <SeriesDetail
+          key={selected.recordings_path}
+          card={selected}
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   );

@@ -7,7 +7,7 @@
  * disabled with a hint and only episode cleanup is offered. The episode list
  * reuses the episode-level protect/watched/delete verbs.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Lock, LockOpen, Eye, EyeOff, Trash2, Film, Radio,
@@ -123,15 +123,13 @@ export function SeriesDetail({
   const identifier = settings?.identifier ?? null;
   const canConfigure = identifier != null;
 
-  // Padding steppers, in minutes, seeded from the device offsets (seconds).
-  const [startMin, setStartMin] = useState(0);
-  const [endMin, setEndMin] = useState(0);
-  useEffect(() => {
-    if (settings) {
-      setStartMin(Math.round((settings.offsets.start || 0) / 60));
-      setEndMin(Math.round((settings.offsets.end || 0) / 60));
-    }
-  }, [settings]);
+  // Padding steppers, in minutes. The device value (seconds) is the baseline;
+  // once the viewer edits a field, `pad` holds their in-progress value. This
+  // component is keyed on the series in RecordingsView, so opening another
+  // series remounts it and the edit state resets — no syncing effect needed.
+  const [pad, setPad] = useState<{ start: number; end: number } | null>(null);
+  const startMin = pad?.start ?? Math.round((settings?.offsets.start || 0) / 60);
+  const endMin = pad?.end ?? Math.round((settings?.offsets.end || 0) / 60);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["series-detail", path] });
@@ -301,7 +299,7 @@ export function SeriesDetail({
                       type="number"
                       value={startMin}
                       disabled={!canConfigure}
-                      onChange={(e) => setStartMin(Number(e.target.value))}
+                      onChange={(e) => setPad({ start: Number(e.target.value), end: endMin })}
                       onBlur={() => applyPadding(startMin, endMin)}
                       aria-label="Start padding minutes"
                       className="w-16 px-2 py-1 rounded bg-fill-soft border border-border tabular-nums"
@@ -313,7 +311,7 @@ export function SeriesDetail({
                       type="number"
                       value={endMin}
                       disabled={!canConfigure}
-                      onChange={(e) => setEndMin(Number(e.target.value))}
+                      onChange={(e) => setPad({ start: startMin, end: Number(e.target.value) })}
                       onBlur={() => applyPadding(startMin, endMin)}
                       aria-label="End padding minutes"
                       className="w-16 px-2 py-1 rounded bg-fill-soft border border-border tabular-nums"
