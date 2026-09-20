@@ -449,20 +449,20 @@ function AudioSection({
   settings: InfoSettings | null;
   onWrite: (k: keyof InfoSettings, v: string | boolean) => void;
 }) {
+  // The device stores this as `audio`: "ac3" = surround passthrough,
+  // "aac" = downmix to stereo. The app calls the AAC side "Audio Compatibility
+  // Mode" (for gear that can't play surround), so this is a switch, not a pair.
+  const stereo = settings?.audio === "aac";
   return (
     <Section icon={<Volume2 className="h-4 w-4" />} title="Audio">
       <Row
-        label="Audio output"
-        hint="AC-3 passes through; AAC is re-encoded by the device"
+        label="Audio compatibility mode"
+        hint="Converts surround (AC-3) to stereo (AAC) for devices that can't play surround"
       >
-        <Segmented
-          label="Audio output"
-          value={settings?.audio as "ac3" | "aac" | undefined}
-          options={[
-            { value: "ac3", label: "AC-3" },
-            { value: "aac", label: "AAC" },
-          ]}
-          onChange={(v) => onWrite("audio", v)}
+        <Switch
+          label="Audio compatibility mode"
+          checked={stereo}
+          onChange={(v) => onWrite("audio", v ? "aac" : "ac3")}
         />
       </Row>
     </Section>
@@ -550,12 +550,8 @@ function LocationSection({
     if (!valid) return;
     setBusy(true);
     try {
-      const r = await api.settings.setLocation(postal.trim());
-      onFlash(
-        r.noop
-          ? "Setting location isn't available yet — the device command hasn't been wired."
-          : "Location saved.",
-      );
+      await api.settings.setLocation(postal.trim());
+      onFlash("Location saved — the device will rescan channels for the new area.");
     } catch (e) {
       onFlash(e instanceof Error ? e.message : "Could not save location.");
     } finally {
