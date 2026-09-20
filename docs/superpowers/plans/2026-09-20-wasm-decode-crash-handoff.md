@@ -413,3 +413,45 @@ separable, and (2) is the smaller, safer change.
 Recent related commits on `main`: `34d1e28` (jsdom localStorage restored in
 tests), `443ef24` (upstream CI workflow removed), `70395a4` (configurable skip),
 `5c45c13`/`60bf0b3` (OS Now Playing + the silent audio anchor).
+
+---
+
+## Addendum, 2026-09-20 16:48 — "it only happens on this box"
+
+The user reports the crash does not occur on their other machines. That does
+**not** point at local corruption, and it fits Defect A exactly:
+
+`wasmlive/capability.ts:52-61` gates the WASM MPEG-2 path on two things — the
+`tablo.wasmlive` localStorage flag (**on unless explicitly set to `"0"`**) and a
+Chrome-family desktop UA (`/Chrome\/|Edg\//`, excluding `CriOS|Android`).
+Anything else falls through `chooseLivePath` to `mode: "transcode"`, which
+decodes H.264 in the browser's own pipeline and never runs libav-in-WASM at all.
+
+So a box on Safari or Firefox, or one where the kill switch was set, cannot hit
+this. The logs here show `open recording 78643 as mpeg-2` and an Edge-only
+`Intervention` line (`go.microsoft.com/fwlink`), i.e. this box is taking the
+WASM path. Machine-specific is what a defect confined to that path looks like —
+it is not evidence that the recording or this host is at fault.
+
+**Viewer-level workaround while this is open:** in the browser console,
+`localStorage.setItem("tablo.wasmlive", "0")` and reload. Playback falls back to
+the transcode path, which does not go near the failing decoder.
+
+### Ruled out by a clean restart
+
+Done at 16:48 on this box, and the failure reproduced immediately afterwards
+from the reconnected tab:
+
+- `frontend/node_modules/.vite` (9.5 MB) and `.vite-temp` deleted, so the dev
+  server re-optimised its dependencies from scratch — **not** a stale optimised
+  bundle or a cached wasm asset.
+- Both processes stopped and restarted clean (backend pid 14187, Vite pid
+  14215); no stray `ffmpeg` processes existed before or after; `check-stack.sh`
+  exits 0.
+- `npm ls --depth=0` reports no unmet or invalid installs, so `node_modules`
+  matches `package.json`.
+
+If you want to narrow the environment further, the remaining box-specific
+variables are the browser build itself and this host's GPU/WebGL2 backing for
+the presenter — but note the failure is in `decoder.push` (audio), upstream of
+anything the presenter does.
