@@ -81,6 +81,16 @@ def _kind_of(recordings_path: str) -> str | None:
     return parts[2] if len(parts) > 2 else None
 
 
+def _show_of(meta: dict) -> dict:
+    """The title-bearing sub-object, whatever the recording kind calls it.
+
+    Series meta nests it under `series`, sports under `sport`, movies under
+    `movie` — same shape (title/genres/description/cover_image) each time.
+    """
+    return (meta.get("series") or meta.get("sport")
+            or meta.get("movie") or {})
+
+
 _DEFAULT_OFFSETS = {"start": 0, "end": 0, "source": "none"}
 _DEFAULT_KEEP = {"rule": "none", "count": None}
 
@@ -108,7 +118,7 @@ async def _compose_series_index() -> list[dict]:
             meta = await _try("GET", path)
         if not meta:
             return None
-        series = meta.get("series") or {}
+        series = _show_of(meta)
         counts = meta.get("show_counts") or {}
         g = by_recpath.get(path)
         if g:
@@ -200,7 +210,7 @@ async def series_detail(recordings_path: str = Query(...)):
         raise HTTPException(status_code=502,
                             detail="The Tablo could not be reached.") from None
 
-    series = meta.get("series") or {}
+    series = _show_of(meta)
     guide = await _try("GET", "/guide/shows?state=requested&lh") or []
     g = next((x for x in guide
               if x.get("recordings_path") == recordings_path), None)
