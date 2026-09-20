@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, afterEach, beforeEach, test, expect } from "vitest";
 import { SettingsModal } from "../components/SettingsModal";
@@ -206,6 +206,58 @@ test("storage bar reflects usage vs capacity from the device", async () => {
   // ~6.8% used → the bar's aria-label rounds to 7% used.
   expect(await screen.findByLabelText("7% used")).toBeInTheDocument();
   expect(screen.getByText(/WD My Passport/)).toBeInTheDocument();
+});
+
+test("rescan fills the channel list live as the device finds them", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(api.settings, "overview").mockResolvedValue(OVERVIEW);
+    vi.spyOn(api.settings, "channels").mockResolvedValue({
+      scan_id: "77",
+      channels: [],
+    });
+    vi.spyOn(api.settings, "startScan").mockResolvedValue({
+      scan_id: "90",
+      progress: 0,
+      completed: false,
+    });
+    vi.spyOn(api.settings, "scanStatus")
+      .mockResolvedValueOnce({ progress: 0.5, completed: false })
+      .mockResolvedValue({ progress: 1, completed: true });
+    const ch = (call: string) => ({
+      path: `/channels/scans/discovered/${call}`,
+      call_sign: call,
+      selected: true,
+      signal_state: "good",
+    });
+    vi.spyOn(api.settings, "scanDiscovered")
+      .mockResolvedValueOnce({ channels: [ch("KAAA")] })
+      .mockResolvedValue({ channels: [ch("KAAA"), ch("KBBB")] });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SettingsModal onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0); // resolve overview/channels
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100); // first poll tick
+    });
+    expect(screen.getByText("KAAA")).toBeInTheDocument();
+    expect(screen.queryByText("KBBB")).not.toBeInTheDocument(); // not yet — live fill
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100); // second tick → completes
+    });
+    expect(screen.getByText("KBBB")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("the app menu gear opens the settings modal", async () => {
