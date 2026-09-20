@@ -1241,6 +1241,25 @@ async def unkeep_recording(object_id: int):
     return {"object_id": object_id, "pinned": False}
 
 
+@router.post("/{object_id}/keep/cancel")
+async def cancel_keep(object_id: int):
+    """Cancel an in-progress keep without deleting what's already cached.
+
+    Unlike Pause (which holds the download, still pinned, and shows a paused
+    state), Cancel drops it: it stops the active work, **un-pins** it so nothing
+    resumes it at boot, and clears any error — but the partial windows stay on
+    disk (reclaimable, not deleted). Re-keeping picks up from where it left off.
+    """
+    _require_auth()
+    meta = cache.read_meta(object_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Not cached")
+    await cache.stop(object_id)
+    cache.set_pinned(object_id, False)
+    cache.set_error(object_id, None)
+    return {"object_id": object_id, "pinned": False, "canceled": True}
+
+
 @router.post("/{object_id}/release")
 async def release_recording(object_id: int):
     """Stop encoding for a recording without deleting anything.

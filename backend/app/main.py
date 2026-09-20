@@ -59,6 +59,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[cache] sweep failed: {e}")
 
+    # Resume kept (pinned) downloads that a restart interrupted. One attempt:
+    # `ensure_prefetch` skips complete and paused entries, and a fresh run
+    # clears any stale error, so a still-reachable source finishes and an
+    # unreachable one flips to FAILED for the card to offer a Resume. No retry
+    # loop — if it errors, it errors (the user can Resume).
+    try:
+        pinned = recordings.cache.pinned_ids()
+        for oid in pinned:
+            recordings.cache.ensure_prefetch(oid)
+        if pinned:
+            print(f"[cache] resuming {len(pinned)} kept download(s): {pinned}")
+    except Exception as e:
+        print(f"[cache] keep-resume failed: {e}")
+
     # Guide history can only be captured going forward, so this starts at boot
     # rather than waiting for the first interval.
     async def _fetch_guide():

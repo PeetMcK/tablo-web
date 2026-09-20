@@ -886,6 +886,12 @@ export const api = {
   resumeKeep: (objectId: number) =>
     req<{ paused: boolean }>(`/recordings/${objectId}/keep/resume`, { method: "POST" }),
 
+  cancelKeep: (objectId: number) =>
+    req<{ pinned: boolean; canceled: boolean }>(
+      `/recordings/${objectId}/keep/cancel`,
+      { method: "POST" },
+    ),
+
   deleteRecordingCache: (objectId: number) =>
     req<{ ok: boolean }>(`/recordings/${objectId}/cache`, { method: "DELETE" }),
 

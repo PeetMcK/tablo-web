@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2 } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -220,10 +220,11 @@ export function LibraryView() {
     refetchInterval: 15_000,
   });
 
-  const control = useMutation<unknown, Error, { id: number; action: "pause" | "resume" | "delete" }>({
+  const control = useMutation<unknown, Error, { id: number; action: "pause" | "resume" | "delete" | "cancel" }>({
     mutationFn: ({ id, action }) =>
       action === "pause" ? api.pauseKeep(id)
         : action === "resume" ? api.resumeKeep(id)
+        : action === "cancel" ? api.cancelKeep(id)
         : api.deleteRecordingCache(id),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["recordings"] });
@@ -1083,36 +1084,69 @@ export function LibraryView() {
                   <p className="text-xs text-fg-muted line-clamp-2 leading-relaxed min-h-[2.5rem]">
                     {rec.description || "No description available"}
                   </p>
-                  {rec.pinned && rec.cache_state !== "complete" && (
+                  {rec.pinned && rec.cache_state === "failed" ? (
+                    // Couldn't finish. Say so and offer a Resume, which starts a
+                    // fresh attempt from whatever is already on disk.
+                    <div className="mt-2 flex items-center gap-2">
+                      <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-danger">
+                        <AlertTriangle className="w-3.5 h-3.5" aria-hidden />
+                        Download failed
+                      </span>
+                      <button
+                        onClick={() => control.mutate({ id: rec.object_id, action: "resume" })}
+                        disabled={control.isPending}
+                        className="rounded-full bg-fill-soft px-3 py-1 text-[11px] font-semibold text-fg-secondary
+                                   hover:bg-fill hover:text-fg transition disabled:opacity-40"
+                      >
+                        Resume
+                      </button>
+                    </div>
+                  ) : rec.pinned && rec.cache_state !== "complete" && rec.paused ? (
                     <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-widest">
-                      {rec.paused ? (
-                        <span className="text-fg-muted">Paused</span>
-                      ) : (
-                        <span className="flex items-center gap-1.5 text-success">
-                          <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
-                          Downloading
-                        </span>
-                      )}
-                      {/* normal-case: the units carry meaning here, and the
-                          line's uppercasing turns "3h 35m" into "3H 35M". */}
+                      <span className="text-fg-muted">Paused</span>
                       <span className="text-fg-muted tabular-nums normal-case">
                         {Math.round(rec.cache_progress * 100)}% ·{" "}
                         {formatDuration(rec.cached_seconds)} of {formatDuration(rec.duration)}
-                        {!rec.paused && rec.rate?.mbps > 0 && (
-                          <>
-                            {" · "}
-                            <span
-                              className="text-success"
-                              title={`${(rec.rate.mbps / 8).toFixed(1)} MB/s`}
-                            >
-                              {rec.rate.mbps.toFixed(1)} Mb/s
-                            </span>
-                            {rec.rate.realtime > 0 && ` · ${rec.rate.realtime.toFixed(1)}×`}
-                          </>
-                        )}
                       </span>
                     </div>
-                  )}
+                  ) : rec.pinned && rec.cache_state !== "complete" ? (
+                    // Active download: a spinner the height of the two stat lines
+                    // that turns into a Cancel (X) on hover. Cancel keeps the
+                    // partial cache and un-pins; re-keeping resumes.
+                    <div className="mt-2 flex items-center gap-3">
+                      <button
+                        onClick={() => control.mutate({ id: rec.object_id, action: "cancel" })}
+                        disabled={control.isPending}
+                        title="Cancel download (keeps what's downloaded)"
+                        aria-label={`Cancel download of ${rec.title ?? "recording"}`}
+                        className="group/dl relative w-8 h-8 shrink-0 rounded-full flex items-center justify-center
+                                   text-success hover:text-danger hover:bg-fill transition disabled:opacity-40"
+                      >
+                        <Loader2 className="w-6 h-6 animate-spin group-hover/dl:hidden" aria-hidden />
+                        <X className="hidden w-5 h-5 group-hover/dl:block" aria-hidden />
+                      </button>
+                      {/* normal-case: units carry meaning; uppercasing turns
+                          "3h 35m" into "3H 35M". Two lines, matched by the spinner. */}
+                      <div className="text-[11px] leading-tight tabular-nums normal-case text-fg-muted">
+                        <div>
+                          {Math.round(rec.cache_progress * 100)}% ·{" "}
+                          {formatDuration(rec.cached_seconds)} of {formatDuration(rec.duration)}
+                        </div>
+                        <div>
+                          {rec.rate?.mbps > 0 ? (
+                            <>
+                              <span className="text-success" title={`${(rec.rate.mbps / 8).toFixed(1)} MB/s`}>
+                                {rec.rate.mbps.toFixed(1)} Mb/s
+                              </span>
+                              {rec.rate.realtime > 0 && ` · ${rec.rate.realtime.toFixed(1)}×`}
+                            </>
+                          ) : (
+                            <span className="text-fg-subtle">starting…</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="mt-4 flex items-center justify-between">
                     <span
@@ -1122,7 +1156,7 @@ export function LibraryView() {
                       {formatAired(rec.start)}
                     </span>
                     <div className="flex items-center gap-2">
-                      {rec.pinned && rec.cache_state !== "complete" && (
+                      {rec.pinned && rec.cache_state !== "complete" && rec.cache_state !== "failed" && (
                         <button
                           onClick={() => control.mutate({
                             id: rec.object_id,
