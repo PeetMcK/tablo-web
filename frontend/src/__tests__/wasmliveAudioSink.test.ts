@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import {
-  createSinkState, flushState, notePts, onSamplesPlayed, sinkClockSeconds, starvedBy,
+  createSinkState, flushState, notePts, onSamplesPlayed, silentWavBytes,
+  sinkClockSeconds, starvedBy,
 } from "../lib/wasmlive/audioSink";
 
 describe("audio sink accounting", () => {
@@ -128,5 +129,51 @@ describe("starvedBy", () => {
     notePts(state, 92);
     expect(sinkClockSeconds(state)).toBeCloseTo(92);
     expect(starvedBy(state, 92)).toBe(0);
+  });
+});
+
+describe("silent anchor wav", () => {
+  // The bytes a real `<audio src>` plays so the OS media hub adopts the page.
+  // Chrome treats a MediaStream-fed element as a one-shot player and never
+  // offers it to Now Playing; a file-backed element is the ordinary kind.
+  const ascii = (b: Uint8Array, at: number, n: number) =>
+    String.fromCharCode(...b.subarray(at, at + n));
+  const u32 = (b: Uint8Array, at: number) =>
+    new DataView(b.buffer, b.byteOffset).getUint32(at, true);
+  const u16 = (b: Uint8Array, at: number) =>
+    new DataView(b.buffer, b.byteOffset).getUint16(at, true);
+
+  it("is a well-formed 8-bit mono PCM RIFF/WAVE of the asked length", () => {
+    const rate = 8000;
+    const seconds = 10;
+    const bytes = silentWavBytes(seconds, rate);
+    const samples = rate * seconds;
+    expect(bytes.length).toBe(44 + samples);
+    expect(ascii(bytes, 0, 4)).toBe("RIFF");
+    expect(u32(bytes, 4)).toBe(36 + samples);
+    expect(ascii(bytes, 8, 4)).toBe("WAVE");
+    expect(ascii(bytes, 12, 4)).toBe("fmt ");
+    expect(u32(bytes, 16)).toBe(16);        // PCM fmt chunk size
+    expect(u16(bytes, 20)).toBe(1);         // PCM
+    expect(u16(bytes, 22)).toBe(1);         // mono
+    expect(u32(bytes, 24)).toBe(rate);
+    expect(u32(bytes, 28)).toBe(rate);      // byte rate: 1 byte per frame
+    expect(u16(bytes, 32)).toBe(1);         // block align
+    expect(u16(bytes, 34)).toBe(8);         // bits per sample
+    expect(ascii(bytes, 36, 4)).toBe("data");
+    expect(u32(bytes, 40)).toBe(samples);
+  });
+
+  it("is silence, which for 8-bit PCM is the unsigned midpoint", () => {
+    const bytes = silentWavBytes(1, 8000);
+    expect(bytes.subarray(44).every((v) => v === 128)).toBe(true);
+  });
+
+  it("outlasts the five seconds Chrome needs to treat media as persistent", () => {
+    // Shorter media gets transient audio focus, which the OS hub does not
+    // surface. The default must clear that bar with room.
+    const bytes = silentWavBytes();
+    const rate = u32(bytes, 24);
+    expect(u32(bytes, 40) / rate).toBeGreaterThan(5);
   });
 });

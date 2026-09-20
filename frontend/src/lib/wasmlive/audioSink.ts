@@ -117,6 +117,39 @@ export interface AudioSink {
   diagnostics(): Record<string, unknown>;
 }
 
+/**
+ * A WAV of silence: 8-bit unsigned mono PCM, whose rest value is 128.
+ *
+ * Bytes rather than a Blob so the shape is testable without a DOM. Ten
+ * seconds at 8kHz is 80KB, which nothing will notice; the length is what
+ * matters, see the anchor element in `createAudioSink`.
+ */
+export function silentWavBytes(
+  seconds = 10, sampleRate = 8000,
+): Uint8Array<ArrayBuffer> {
+  const samples = Math.round(seconds * sampleRate);
+  const bytes = new Uint8Array(44 + samples);
+  const view = new DataView(bytes.buffer);
+  const tag = (at: number, text: string) => {
+    for (let i = 0; i < text.length; i++) bytes[at + i] = text.charCodeAt(i);
+  };
+  tag(0, "RIFF");
+  view.setUint32(4, 36 + samples, true);
+  tag(8, "WAVE");
+  tag(12, "fmt ");
+  view.setUint32(16, 16, true);          // PCM fmt chunk
+  view.setUint16(20, 1, true);           // PCM
+  view.setUint16(22, 1, true);           // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true);  // bytes per second: one per frame
+  view.setUint16(32, 1, true);           // block align
+  view.setUint16(34, 8, true);           // bits per sample
+  tag(36, "data");
+  view.setUint32(40, samples, true);
+  bytes.fill(128, 44);
+  return bytes;
+}
+
 export async function createAudioSink(
   context: AudioContext,
   workletUrl: string,
@@ -126,27 +159,45 @@ export async function createAudioSink(
   const gain = context.createGain();
   node.connect(gain);
 
-  // Route the output through a real, playing <audio> element instead of
-  // straight to `context.destination`. The WASM path draws its picture to a
-  // canvas and plays its sound through Web Audio, so it exposes no media
-  // element — and the OS media hub (macOS Now Playing, hardware play/pause and
-  // seek keys) binds only to a playing HTMLMediaElement. A
-  // MediaStreamAudioDestination fed into a hidden <audio> gives the system that
-  // element. It is the *sole* output: also connecting to `context.destination`
-  // would play everything twice. Volume and mute still ride the gain node, so
-  // the element stays wide open. See VideoPlayer's Media Session wiring, which
-  // now has this element to attach its metadata and handlers to.
-  const streamDest = context.createMediaStreamDestination();
-  gain.connect(streamDest);
+  gain.connect(context.destination);
+
+  // The OS media hub (macOS Now Playing, the hardware play/pause and seek
+  // keys) binds to a page only through a playing HTMLMediaElement that Chrome
+  // counts as an ordinary player. The WASM path draws to a canvas and sounds
+  // through Web Audio, so it has none; a hidden <audio> is kept playing
+  // alongside so that the page has one.
+  //
+  // It plays a file of silence, not the sound. Feeding it the mix through a
+  // MediaStreamAudioDestinationNode was tried first, and that is exactly the
+  // shape Chrome refuses: an element on a MediaStream is a one-shot player
+  // (WebMediaPlayerMS reports MediaContentType::kOneShot and an infinite
+  // duration), and MediaSessionImpl::IsControllable() is false for a session
+  // with only those — before the Media Session API's metadata or
+  // playbackState is even consulted. Measured 2026-09-20 in
+  // chrome://media-internals › Audio Focus: the MediaStream anchor produced
+  // no session at all; a file-backed one reads
+  // "Gain Active Playing { HasAudio } Controllable".
+  //
+  // So the sound stays on `context.destination`, and the anchor loops ten
+  // seconds of 8-bit silence at full volume. Full volume and unmuted matter:
+  // Chrome treats a muted element as having no audio, and a player without
+  // audio gets no session. Ten seconds matters too: under five, focus is
+  // transient and the hub does not show it. The viewer's volume and mute
+  // still ride the gain node. VideoPlayer's Media Session wiring puts the
+  // real title, position and duration over this element's own.
   const anchor = document.createElement("audio");
-  anchor.srcObject = streamDest.stream;
+  const silence = URL.createObjectURL(
+    new Blob([silentWavBytes()], { type: "audio/wav" }),
+  );
+  anchor.src = silence;
+  anchor.loop = true;
   anchor.autoplay = true;
   anchor.volume = 1;
   try {
     anchor.style.display = "none";
     document.body.append(anchor);
   } catch {
-    // No DOM (non-browser context): the element still plays audio detached.
+    // No DOM (non-browser context): the element still plays detached.
   }
   void anchor.play().catch(() => {
     // Blocked without a gesture; `resume()` retries once the viewer acts.
@@ -275,8 +326,10 @@ export async function createAudioSink(
       node.disconnect();
       try {
         anchor.pause();
-        anchor.srcObject = null;
+        anchor.removeAttribute("src");
+        anchor.load();
         anchor.remove();
+        URL.revokeObjectURL(silence);
       } catch { /* already gone */ }
       await context.close();
     },

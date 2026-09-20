@@ -19,6 +19,8 @@ import {
   planSkip, programWindow, readyRange, RECORDING_EDGE_MARGIN, SKIP_DEBOUNCE_MS,
   type LiveAnchor,
 } from "../lib/playback";
+import { nowPlayingArtwork } from "../lib/nowPlaying";
+import { cardArt } from "../lib/recording";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 import {
   createHlsSurface, DOCUMENT_FRAMES, type PlaybackSurface,
@@ -519,6 +521,12 @@ export function VideoPlayer({
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rangeStart, setRangeStart] = useState(0);
   const [rangeEnd, setRangeEnd] = useState(0);
+  // For the OS hub's seek: it speaks in offsets from the start of the range
+  // (that is what `setPositionState` below tells it), while `seekTo` takes
+  // the surface's own time. A ref, because the range start moves every
+  // second on a live ring and the handlers must not re-register with it.
+  const rangeStartRef = useRef(0);
+  rangeStartRef.current = rangeStart;
   /**
    * The sound is waiting for a gesture, and the viewer cannot know that.
    *
@@ -1475,7 +1483,9 @@ export function VideoPlayer({
       ms.setActionHandler("seekbackward", (d) => skip(-(d.seekOffset ?? 10)));
       ms.setActionHandler("seekforward", (d) => skip(d.seekOffset ?? 10));
       ms.setActionHandler("seekto", (d) => {
-        if (typeof d.seekTime === "number") seekTo(d.seekTime);
+        if (typeof d.seekTime === "number") {
+          seekTo(rangeStartRef.current + d.seekTime);
+        }
       });
     } catch {
       // A browser may not support every action; the ones it took still work.
@@ -1490,20 +1500,50 @@ export function VideoPlayer({
 
   // Name what is playing for the OS now-playing surface, and keep its
   // play/pause state honest so the key toggles in the right direction.
+  //
+  // The picture beside the name is the card's own — `cardArt`, so the hub and
+  // the library agree — and on a live channel the airing's poster. Without
+  // one, `nowPlayingArtwork` puts the app's mark there rather than nothing.
+  const artUrl = isLive
+    ? (program?.poster_image_id != null
+        ? `/api/channels/image/${program.poster_image_id}`
+        : null)
+    : cardArt(source.recording);
   useEffect(() => {
     const ms = navigator.mediaSession;
-    if (ms && "MediaMetadata" in window) {
-      ms.metadata = new MediaMetadata({
-        title,
-        artist: subtitle || undefined,
-      });
-    }
-  }, [title, subtitle]);
+    if (!ms || !("MediaMetadata" in window)) return;
+    ms.metadata = new MediaMetadata({
+      title,
+      artist: subtitle || undefined,
+      artwork: nowPlayingArtwork(artUrl),
+    });
+  }, [title, subtitle, artUrl]);
 
   useEffect(() => {
     const ms = navigator.mediaSession;
     if (ms) ms.playbackState = paused ? "paused" : "playing";
   }, [paused]);
+
+  // The hub's scrubber. Without this it shows what the element underneath
+  // reports: on the WASM path that is the sink's ten-second loop of silence
+  // (see audioSink), on HLS a time within the buffer rather than the
+  // programme. Offsets from the start of the range, matching what `seekto`
+  // hands back. Whole seconds: the browser interpolates between updates from
+  // the rate, so sending every tick buys nothing.
+  const wholePosition = Math.floor(position);
+  useEffect(() => {
+    const ms = navigator.mediaSession;
+    if (!ms || typeof ms.setPositionState !== "function") return;
+    const duration = rangeEnd - rangeStart;
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const at = Math.min(duration, Math.max(0, wholePosition - rangeStart));
+    try {
+      ms.setPositionState({ duration, position: at, playbackRate: 1 });
+    } catch {
+      // A pair the browser rejects (the range moved under a seek) is not
+      // worth a crash; the next tick sends a consistent one.
+    }
+  }, [wholePosition, rangeStart, rangeEnd]);
 
   /**
    * Back to the live edge — stopping the same distance short of it as a skip.
