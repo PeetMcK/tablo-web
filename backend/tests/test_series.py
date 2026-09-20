@@ -156,6 +156,41 @@ def test_series_detail_composes_episodes_and_settings(authed, monkeypatch):
     assert ep["snapshot_image"] == 77
 
 
+def test_series_detail_survives_an_unresolvable_episode(authed, monkeypatch):
+    """One stale path must not take the whole detail page down.
+
+    `POST /batch` answers with the key present and the value `null` for a path
+    it cannot resolve - an episode deleted between the `/episodes` listing and
+    the batch, which bulk-delete makes routine.
+    """
+    _dispatch(monkeypatch, {
+        "/recordings/series/1": {
+            "object_id": 1, "path": "/recordings/series/1",
+            "series": {"title": "A", "genres": [], "description": "d"},
+            "show_counts": {"airing_count": 2, "unwatched_count": 1},
+            "keep": {"rule": "none", "count": None}},
+        "/recordings/series/1/episodes": [
+            "/recordings/series/episodes/100",
+            "/recordings/series/episodes/101"],
+        "/batch": {
+            "/recordings/series/episodes/100": {
+                "object_id": 100,
+                "airing_details": {"datetime": "2026-01-01T00:00Z",
+                                   "duration": 1800},
+                "episode": {"title": "Ep", "number": 1, "season_number": 1},
+                "video_details": {"size": 1, "state": "finished",
+                                  "duration": 1800},
+                "user_info": {"position": 0, "watched": False}},
+            "/recordings/series/episodes/101": None,
+        },
+        "/guide/shows?state=requested&lh": [],
+    })
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/1"})
+    assert r.status_code == 200
+    assert [e["object_id"] for e in r.json()["episodes"]] == [100]
+
+
 def test_series_detail_carries_guide_path(authed, monkeypatch):
     _dispatch(monkeypatch, {
         "/recordings/series/1": {
@@ -205,6 +240,34 @@ def test_series_airings_resolves_titled_rows(authed, monkeypatch):
     assert row["channel"] == "KUFM"
     assert row["state"] == "scheduled"
     assert row["datetime"] == "2026-09-20T20:00Z"
+
+
+def test_series_airings_skips_an_unresolvable_path(authed, monkeypatch):
+    """Same `null` from `/batch`, on the airings side of the same response."""
+    async def fake(method, path, body=""):
+        if path == "/guide/series/9/episodes":
+            return ["/guide/series/episodes/500", "/guide/series/episodes/501"]
+        if path == "/batch":
+            return {
+                "/guide/series/episodes/500": {
+                    "object_id": 500,
+                    "episode": {"title": "Pilot", "number": 1,
+                                "season_number": 1},
+                    "airing_details": {
+                        "datetime": "2026-09-20T20:00Z", "duration": 1800,
+                        "show_title": "A",
+                        "channel": {"channel": {"call_sign": "KUFM",
+                                                "major": 11, "minor": 5}}},
+                    "schedule": {"state": "scheduled", "skip_reason": "none"}},
+                "/guide/series/episodes/501": None,
+            }
+        raise AssertionError(f"unexpected {method} {path}")
+    monkeypatch.setattr(app_state, "request_device", fake)
+    r = client.get("/api/recordings/series/airings",
+                   params={"guide_path": "/guide/series/9",
+                           "state": "requested"})
+    assert r.status_code == 200
+    assert [row["title"] for row in r.json()] == ["Pilot"]
 
 
 def test_series_airings_rejects_foreign_guide_path(authed, monkeypatch):
