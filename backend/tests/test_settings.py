@@ -230,13 +230,17 @@ def test_commit_forwards_the_array(authed, monkeypatch):
 
 # --- No-op writes ----------------------------------------------------------
 
-def test_noop_guide_update(authed, monkeypatch):
-    async def fake(*a, **k):
-        raise AssertionError("must not touch device")
+def test_guide_update_triggers_a_refresh(authed, monkeypatch):
+    seen = {}
+
+    async def fake(method, path, body=""):
+        seen["method"], seen["path"] = method, path
+        return {}
     monkeypatch.setattr(app_state, "request_device", fake)
-    monkeypatch.setattr(app_state, "patch_device", fake)
     r = client.post("/api/settings/guide/update")
-    assert r.status_code == 200 and r.json()["noop"] is True
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "noop": False}
+    assert seen == {"method": "POST", "path": "/server/guide/refresh"}
 
 
 def test_noop_location_set(authed, monkeypatch):

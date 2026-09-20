@@ -248,6 +248,7 @@ full updated object (so a write doubles as a read, same as the schedule writes):
 | `PATCH /settings/info` | `{"audio": "ac3"｜"aac"}` | the audio-transcode toggle (see transcode section) |
 | `PATCH /server/info` | `{"name": "…"}` | renames the device |
 | `POST  /server/update/check` | — (empty) | triggers a check; returns the full `update/info` object (so it doubles as a refreshed read). `state:"none"` + `available_update:null` = up to date |
+| `POST  /server/guide/refresh` | — (empty) | forces a guide re-download → `204`, empty body. The app sends `?lh`; the device signs the path *without* its query, so the flag drops and plain `/server/guide/refresh` returns `204` too (verified on 172.16.16.121). Refresh is async — poll `/server/guide/status` (`download_progress`) after. Captured from the app's guide-refresh action |
 
 Firmware updates on 4th-gen are **notification-based, not auto-install** (per
 Tablo support): the device self-checks every ~24h when powered on, the app

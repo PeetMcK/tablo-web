@@ -249,8 +249,16 @@ async def channels_commit(body: CommitIn):
 
 @router.post("/guide/update")
 async def guide_update():
+    """Trigger a guide re-download.
+
+    Captured from the official app: POST /server/guide/refresh -> 204, empty
+    body. Signed on the plain path (the device signs without the query string,
+    so the app's `?lh` flag is dropped here — verified 204 either way). The
+    device then refreshes asynchronously; poll /server/guide/status for progress.
+    """
     _require_auth()
-    return {"ok": False, "noop": True, "reason": "no guide-refresh verb captured"}
+    await state.request_device("POST", "/server/guide/refresh")
+    return {"ok": True, "noop": False}
 
 
 class LocationIn(BaseModel):

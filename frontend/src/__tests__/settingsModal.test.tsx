@@ -114,17 +114,17 @@ test("audio toggle writes aac", async () => {
   await waitFor(() => expect(patch).toHaveBeenCalledWith("audio", "aac"));
 });
 
-test("guide update calls the no-op route and shows a note", async () => {
+test("guide update triggers the refresh and confirms it started", async () => {
   vi.spyOn(api.settings, "overview").mockResolvedValue(OVERVIEW);
   const patch = vi.spyOn(api.settings, "patchInfo");
   const gu = vi
     .spyOn(api.settings, "guideUpdate")
-    .mockResolvedValue({ ok: false, noop: true, reason: "x" });
+    .mockResolvedValue({ ok: true, noop: false, reason: "" });
   renderModal();
   const btn = await screen.findByRole("button", { name: /update guide/i });
   fireEvent.click(btn);
   await waitFor(() => expect(gu).toHaveBeenCalled());
-  expect(await screen.findByText(/isn't available yet/i)).toBeInTheDocument();
+  expect(await screen.findByText(/guide update started/i)).toBeInTheDocument();
   expect(patch).not.toHaveBeenCalled();
 });
 
