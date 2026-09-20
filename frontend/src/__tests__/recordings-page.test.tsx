@@ -19,6 +19,7 @@ const CARD: SeriesCard = {
   episode_count: 3,
   unwatched_count: 2,
   protected_count: 0,
+  failed_count: 0,
   conflict: false,
 };
 
@@ -78,23 +79,49 @@ describe("Recordings page", () => {
     expect(screen.getByText("2 new")).toBeInTheDocument();
   });
 
-  it("hides the Conflicts segment when there are none", async () => {
+  it("shows the full Tablo tab set", async () => {
     renderRecordings();
     await screen.findByText("Wild Kratts");
-    expect(screen.queryByRole("radio", { name: "Conflicts" })).toBeNull();
+    for (const name of ["Recordings", "Scheduled", "Upcoming Airings",
+                        "Conflicts", "Failures"]) {
+      expect(screen.getByRole("radio", { name })).toBeInTheDocument();
+    }
   });
 
-  it("shows a conflicts banner and the segment when conflicts exist", async () => {
+  it("shows a conflicts banner when conflicts exist", async () => {
     vi.spyOn(api.series, "conflicts").mockResolvedValue(UPCOMING);
     renderRecordings();
     expect(await screen.findByText(/recordings? conflict/i)).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Conflicts" })).toBeInTheDocument();
+  });
+
+  it("Scheduled shows only series with an active rule", async () => {
+    vi.spyOn(api.series, "index").mockResolvedValue({
+      series: [CARD, { ...CARD, recordings_path: "/recordings/series/9",
+                       title: "Off Show", rule: "none" }],
+    });
+    renderRecordings();
+    await screen.findByText("Wild Kratts");
+    fireEvent.click(screen.getByRole("radio", { name: "Scheduled" }));
+    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
+    expect(screen.queryByText("Off Show")).toBeNull();
+  });
+
+  it("Failures shows only series with failed recordings", async () => {
+    vi.spyOn(api.series, "index").mockResolvedValue({
+      series: [CARD, { ...CARD, recordings_path: "/recordings/series/9",
+                       title: "Broke Show", failed_count: 2 }],
+    });
+    renderRecordings();
+    await screen.findByText("Wild Kratts");
+    fireEvent.click(screen.getByRole("radio", { name: "Failures" }));
+    expect(screen.getByText("Broke Show")).toBeInTheDocument();
+    expect(screen.queryByText("Wild Kratts")).toBeNull();
   });
 
   it("groups upcoming airings by day and shows time + channel", async () => {
     renderRecordings();
     await screen.findByText("Wild Kratts");
-    fireEvent.click(screen.getByRole("radio", { name: "Upcoming" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Upcoming Airings" }));
     // channels parsed from the lineup handles
     expect(await screen.findByText("8.6")).toBeInTheDocument();
     expect(screen.getByText("11.5")).toBeInTheDocument();

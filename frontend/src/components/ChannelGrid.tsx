@@ -143,6 +143,8 @@ export function ChannelGrid({ onLogout }: Props) {
   const [activeTab, setTab] = useState<Tab>(initialRoute.tab);
   /** The Guide is the one tab laid out as a viewport rather than a document. */
   const isGuide = activeTab === "grid";
+  /** Tabs laid out as a viewport (own scroll pane) rather than a document. */
+  const isViewport = isGuide || activeTab === "recordings";
   // Set once the user closes the restored stream, so it does not reopen.
   const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -448,7 +450,7 @@ export function ChannelGrid({ onLogout }: Props) {
           to solve a problem only the Guide has.
           `dvh`, not `vh`: on mobile `vh` is the LARGEST viewport, so `h-screen`
           is taller than what you can actually see whenever the URL bar shows. */}
-      <div className={`flex flex-col bg-surface ${isGuide ? "h-dvh overflow-hidden" : "min-h-screen"}`}>
+      <div className={`flex flex-col bg-surface ${isViewport ? "h-dvh overflow-hidden" : "min-h-screen"}`}>
         {/* Header */}
         {/* Opaque, not `.glass`. Frosted glass means "there is live content
             behind this that you should still perceive" — true of the player's
@@ -639,7 +641,7 @@ export function ChannelGrid({ onLogout }: Props) {
             `px-4` below sm — the same gutter the header uses, since the two
             have to agree on where the page starts. */}
         <main className={`flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 pt-4
-                          ${isGuide ? "pb-0 sm:pb-10 min-h-0 flex flex-col" : "pb-10"}`}>
+                          ${isViewport ? "pb-0 sm:pb-10 min-h-0 flex flex-col" : "pb-10"}`}>
           {activeTab === "live" && (
             <>
               {/* Content type filter chips */}
@@ -738,7 +740,7 @@ export function ChannelGrid({ onLogout }: Props) {
           )}
 
           {activeTab === "recordings" && (
-            <div className="flex flex-col">
+            <div className="flex flex-col flex-1 min-h-0">
               <RecordingsView />
             </div>
           )}

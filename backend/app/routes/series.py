@@ -144,6 +144,7 @@ async def _compose_series_index() -> list[dict]:
             "episode_count": counts.get("airing_count", 0),
             "unwatched_count": counts.get("unwatched_count", 0),
             "protected_count": counts.get("protected_count", 0),
+            "failed_count": counts.get("failed_count", 0),
             "conflict": False,
         }
 

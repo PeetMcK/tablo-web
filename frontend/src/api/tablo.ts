@@ -656,6 +656,7 @@ export interface SeriesCard {
   episode_count: number;
   unwatched_count: number;
   protected_count: number;
+  failed_count: number;
   conflict: boolean;
 }
 

@@ -18,7 +18,15 @@ import { api, type SeriesCard, type UpcomingAiring } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { SeriesDetail } from "./SeriesDetail";
 
-type Segment = "series" | "upcoming" | "conflicts";
+type Segment = "recordings" | "scheduled" | "upcoming" | "conflicts" | "failures";
+
+const TABS: { value: Segment; label: string }[] = [
+  { value: "recordings", label: "Recordings" },
+  { value: "scheduled", label: "Scheduled" },
+  { value: "upcoming", label: "Upcoming Airings" },
+  { value: "conflicts", label: "Conflicts" },
+  { value: "failures", label: "Failures" },
+];
 
 /** Pull datetime + channel out of a lineup handle
  *  (`LH-C…-S{station}_{maj}_{min}-T{epoch}`). No title lives in the handle. */
@@ -96,7 +104,36 @@ function SeriesGridCard({ s, onOpen }: { s: SeriesCard; onOpen: () => void }) {
   );
 }
 
-function AiringList({ airings }: { airings: UpcomingAiring[] }) {
+function SeriesGrid({
+  list, empty, onOpen,
+}: {
+  list: SeriesCard[];
+  empty: string;
+  onOpen: (s: SeriesCard) => void;
+}) {
+  if (list.length === 0) {
+    return (
+      <p className="text-fg-muted py-8 text-center flex flex-col items-center gap-2">
+        <CalendarClock className="w-8 h-8" aria-hidden />
+        {empty}
+      </p>
+    );
+  }
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+      {list.map((s) => (
+        <SeriesGridCard key={s.recordings_path} s={s} onOpen={() => onOpen(s)} />
+      ))}
+    </div>
+  );
+}
+
+function AiringList({
+  airings, emptyLabel = "Nothing scheduled.",
+}: {
+  airings: UpcomingAiring[];
+  emptyLabel?: string;
+}) {
   const groups = useMemo(() => {
     const by = new Map<string, { air: UpcomingAiring; date: Date | null; channel: string | null }[]>();
     for (const air of airings) {
@@ -109,7 +146,7 @@ function AiringList({ airings }: { airings: UpcomingAiring[] }) {
   }, [airings]);
 
   if (airings.length === 0) {
-    return <p className="text-fg-muted py-8 text-center">Nothing scheduled.</p>;
+    return <p className="text-fg-muted py-8 text-center">{emptyLabel}</p>;
   }
 
   return (
@@ -142,7 +179,7 @@ function AiringList({ airings }: { airings: UpcomingAiring[] }) {
 }
 
 export function RecordingsView() {
-  const [segment, setSegment] = useState<Segment>("series");
+  const [segment, setSegment] = useState<Segment>("recordings");
   const [selected, setSelected] = useState<SeriesCard | null>(null);
 
   const series = useQuery({ queryKey: ["series"], queryFn: api.series.index });
@@ -150,25 +187,24 @@ export function RecordingsView() {
   const conflicts = useQuery({ queryKey: ["conflicts"], queryFn: api.series.conflicts });
 
   const conflictCount = conflicts.data?.length ?? 0;
-
-  const options: { value: Segment; label: string }[] = [
-    { value: "series", label: "Series" },
-    { value: "upcoming", label: "Upcoming" },
-    ...(conflictCount > 0
-      ? [{ value: "conflicts" as Segment, label: "Conflicts" }]
-      : []),
-  ];
+  const all = series.data?.series ?? [];
+  const scheduled = all.filter((s) => s.rule !== "none");
+  const failed = all.filter((s) => s.failed_count > 0);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-bold">Recordings</h1>
-        <Segmented<Segment>
-          value={segment}
-          options={options}
-          onChange={setSegment}
-          label="Recordings view"
-        />
+    <div className="flex flex-col gap-4 h-full min-h-0">
+      <div className="flex items-center gap-3 shrink-0">
+        <h1 className="text-xl font-bold shrink-0">Recordings</h1>
+        {/* The tab set mirrors the Tablo app. Scrolls sideways on a phone
+            rather than wrapping, so the row height never changes. */}
+        <div className="overflow-x-auto -mx-1 px-1">
+          <Segmented<Segment>
+            value={segment}
+            options={TABS}
+            onChange={setSegment}
+            label="Recordings view"
+          />
+        </div>
       </div>
 
       {conflictCount > 0 && (
@@ -188,26 +224,27 @@ export function RecordingsView() {
         </div>
       )}
 
-      {segment === "series" && (
-        series.isLoading ? (
+      {/* The one scroll pane: the header, switch and banner stay put; only the
+          active segment's grid/list scrolls. `pb-6` keeps the last row off the
+          bottom edge, `-mx-1 px-1` gives focus rings room without a clip. */}
+      <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1 pb-6">
+        {series.isLoading && segment !== "upcoming" && segment !== "conflicts" ? (
           <p className="text-fg-muted py-8 text-center">Loading…</p>
-        ) : series.data && series.data.series.length > 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-            {series.data.series.map((s) => (
-              <SeriesGridCard key={s.recordings_path} s={s}
-                              onOpen={() => setSelected(s)} />
-            ))}
-          </div>
+        ) : segment === "recordings" ? (
+          <SeriesGrid list={all} empty="No series recordings yet."
+                      onOpen={setSelected} />
+        ) : segment === "scheduled" ? (
+          <SeriesGrid list={scheduled} empty="No series are set to record."
+                      onOpen={setSelected} />
+        ) : segment === "failures" ? (
+          <SeriesGrid list={failed} empty="No failed recordings."
+                      onOpen={setSelected} />
+        ) : segment === "upcoming" ? (
+          <AiringList airings={upcoming.data ?? []} />
         ) : (
-          <p className="text-fg-muted py-8 text-center flex flex-col items-center gap-2">
-            <CalendarClock className="w-8 h-8" aria-hidden />
-            No series recordings yet.
-          </p>
-        )
-      )}
-
-      {segment === "upcoming" && <AiringList airings={upcoming.data ?? []} />}
-      {segment === "conflicts" && <AiringList airings={conflicts.data ?? []} />}
+          <AiringList airings={conflicts.data ?? []} emptyLabel="No conflicts." />
+        )}
+      </div>
 
       {selected && (
         <SeriesDetail
