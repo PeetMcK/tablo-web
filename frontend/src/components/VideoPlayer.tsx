@@ -21,6 +21,9 @@ import {
 } from "../lib/playback";
 import { nowPlayingArtwork } from "../lib/nowPlaying";
 import { cardArt } from "../lib/recording";
+import {
+  loadSkipForward, loadSkipBack, SKIP_CONFIG_EVENT,
+} from "../lib/skip";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 import {
   createHlsSurface, DOCUMENT_FRAMES, type PlaybackSurface,
@@ -1480,15 +1483,15 @@ export function VideoPlayer({
     try {
       ms.setActionHandler("play", () => togglePlay());
       ms.setActionHandler("pause", () => togglePlay());
-      ms.setActionHandler("seekbackward", (d) => skip(-(d.seekOffset ?? 10)));
-      ms.setActionHandler("seekforward", (d) => skip(d.seekOffset ?? 10));
+      ms.setActionHandler("seekbackward", (d) => skip(-(d.seekOffset ?? loadSkipBack())));
+      ms.setActionHandler("seekforward", (d) => skip(d.seekOffset ?? loadSkipForward()));
       // AirPods (and most headphone remotes) map their gestures to
       // next/previous track, not seek — a double squeeze is "next track", a
       // triple is "previous track". For a DVR: double jumps a commercial
       // (+30s), triple nudges back for a missed line (-10s). Same skip path as
       // the on-screen buttons.
-      ms.setActionHandler("nexttrack", () => skip(30));
-      ms.setActionHandler("previoustrack", () => skip(-10));
+      ms.setActionHandler("nexttrack", () => skip(loadSkipForward()));
+      ms.setActionHandler("previoustrack", () => skip(-loadSkipBack()));
       ms.setActionHandler("seekto", (d) => {
         if (typeof d.seekTime === "number") {
           seekTo(rangeStartRef.current + d.seekTime);
@@ -2015,8 +2018,8 @@ export function VideoPlayer({
     if (surfaceRef.current?.diagnostics?.().audioContext === "suspended"
         && !hasStartedRef.current) return;
     const zone = zoneAtEvent(e);
-    if (zone === "back") skip(-10);
-    else if (zone === "forward") skip(30);
+    if (zone === "back") skip(-loadSkipBack());
+    else if (zone === "forward") skip(loadSkipForward());
     else if (zone === "play") togglePlay();
   }, [skip, togglePlay]);
 
@@ -2111,9 +2114,9 @@ export function VideoPlayer({
       if (e.key === "m") toggleMute();
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
       // Match every other transport (the tap zones and the on-screen skip
-      // buttons): 10s back, 30s forward. ArrowRight was 10s, the odd one out.
-      if (e.key === "ArrowLeft") skip(-10);
-      if (e.key === "ArrowRight") skip(30);
+      // buttons): back on Left, forward on Right, both the configured amount.
+      if (e.key === "ArrowLeft") skip(-loadSkipBack());
+      if (e.key === "ArrowRight") skip(loadSkipForward());
       // Horizontal is seek, so vertical is the level — which is also where
       // every other player puts it. `preventDefault` because the page behind
       // the player would otherwise scroll under it.
@@ -2433,6 +2436,26 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
    */
   const [barHover, setBarHover] = useState(false);
   const chromeUp = poppedOut ? barHover : showControls;
+
+  // Skip amounts (seconds) from the viewer's setting, for the button labels.
+  // The onClick handlers call `loadSkipForward()/loadSkipBack()` directly, so
+  // the jump is always the current value; this state only keeps the labels in
+  // step, refreshed when the setting changes (same tab via a custom event,
+  // other tabs via `storage`).
+  const [skipFwd, setSkipFwd] = useState(loadSkipForward);
+  const [skipBack, setSkipBack] = useState(loadSkipBack);
+  useEffect(() => {
+    const refresh = () => {
+      setSkipFwd(loadSkipForward());
+      setSkipBack(loadSkipBack());
+    };
+    window.addEventListener(SKIP_CONFIG_EVENT, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener(SKIP_CONFIG_EVENT, refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
 
   /**
    * Coming up is instant; going away waits.
@@ -2902,14 +2925,14 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                 so the hand travels the same distance either way. */}
             <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
               <button
-                onClick={(e) => { e.stopPropagation(); skip(-10); }}
+                onClick={(e) => { e.stopPropagation(); skip(-loadSkipBack()); }}
                 className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
                   ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"} ${lent("back")}`}
-                title="Back 10s (Left arrow)"
-                aria-label="Back 10 seconds"
+                title={`Back ${skipBack}s (Left arrow)`}
+                aria-label={`Back ${skipBack} seconds`}
               >
                 <RotateCcw className="w-4 h-4" aria-hidden />
-                {!poppedOut && <span className="text-[10px] font-black tabular-nums">10</span>}
+                {!poppedOut && <span className="text-[10px] font-black tabular-nums">{skipBack}</span>}
               </button>
 
               <button
@@ -2924,14 +2947,14 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
               </button>
 
               <button
-                onClick={(e) => { e.stopPropagation(); skip(30); }}
+                onClick={(e) => { e.stopPropagation(); skip(loadSkipForward()); }}
                 className={`flex items-center gap-1 rounded-lg glass text-player-fg hover:bg-fill transition
                   ${poppedOut ? "w-8 h-8 justify-center" : "px-2.5 h-9"} ${lent("forward")}`}
-                title="Forward 30s (Right arrow)"
-                aria-label="Forward 30 seconds"
+                title={`Forward ${skipFwd}s (Right arrow)`}
+                aria-label={`Forward ${skipFwd} seconds`}
               >
                 <RotateCw className="w-4 h-4" aria-hidden />
-                {!poppedOut && <span className="text-[10px] font-black tabular-nums">30</span>}
+                {!poppedOut && <span className="text-[10px] font-black tabular-nums">{skipFwd}</span>}
               </button>
             </div>
 
