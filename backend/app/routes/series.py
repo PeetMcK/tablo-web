@@ -241,7 +241,7 @@ async def series_airings(
                             detail="The Tablo could not be reached.") from None
     rows = [
         _airing_row(a) for a in resolved.values()
-        if (a.get("schedule") or {}).get("state") == want
+        if isinstance(a, dict) and (a.get("schedule") or {}).get("state") == want
     ]
     rows.sort(key=lambda r: r.get("datetime") or "")
     return rows
@@ -291,7 +291,17 @@ async def series_detail(recordings_path: str = Query(...)):
             "offsets": dict(_DEFAULT_OFFSETS),
         }
 
-    episodes = [_episode_row(resolved[p]) for p in ep_paths if p in resolved]
+    # `POST /batch` answers with the key present and the value `null` for a path
+    # it cannot resolve — an episode deleted between the listing and the batch,
+    # which bulk-delete makes routine. Filtering on the key let that `null`
+    # through and `_episode_row` crashed the whole detail request on it, so the
+    # page died for one stale path among dozens of good ones. Filter on the
+    # value instead: the episode is simply gone, which is what the caller means.
+    episodes = [
+        _episode_row(ep)
+        for ep in (resolved.get(p) for p in ep_paths)
+        if isinstance(ep, dict)
+    ]
 
     return {
         "meta": {
