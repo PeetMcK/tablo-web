@@ -1068,12 +1068,28 @@ describe("what the artwork offers", () => {
     expect(screen.queryByText("New")).toBeNull();
   });
 
+  it("shows a Watched chip for a watched recording", async () => {
+    renderWith({ ...FINISHED, object_id: 90210, watched: true, position: 0 });
+    expect(await screen.findByText("Watched")).toBeInTheDocument();
+    expect(screen.queryByText("New")).toBeNull();
+  });
+
   it("the watched toggle marks the recording watched", async () => {
     const spy = vi.spyOn(api, "setRecordingWatched")
       .mockResolvedValue({ object_id: 90202, watched: true });
     renderWith({ ...FINISHED, object_id: 90202, watched: false, position: 0 });
     fireEvent.click(await screen.findByRole("button", { name: "Mark watched" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith(90202, true));
+  });
+
+  it("un-marking watched writes position 1, not watched:false (avoids New)", async () => {
+    const pos = vi.spyOn(api, "setRecordingPosition")
+      .mockResolvedValue({ object_id: 90205, position: 1 });
+    const watched = vi.spyOn(api, "setRecordingWatched");
+    renderWith({ ...FINISHED, object_id: 90205, watched: true, position: 0 });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark unwatched" }));
+    await waitFor(() => expect(pos).toHaveBeenCalledWith(90205, 1));
+    expect(watched).not.toHaveBeenCalled();
   });
 
   it("the protect toggle protects the recording", async () => {
