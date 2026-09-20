@@ -14,6 +14,7 @@ from .routes import (
     resume,
     schedule,
     search,
+    series,
     settings,
     stream,
 )
@@ -125,6 +126,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(channels.router)
 app.include_router(iptv.router)
+app.include_router(series.router)
 app.include_router(recordings.router)
 app.include_router(resume.router)
 app.include_router(schedule.router)
