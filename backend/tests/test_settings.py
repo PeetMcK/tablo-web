@@ -1,5 +1,6 @@
 """Settings routes: auth gate, read tolerance, allow-listed writes, no-ops."""
 
+import asyncio
 import json
 
 import pytest
@@ -9,6 +10,40 @@ from app.main import app
 from app.state import state as app_state
 
 client = TestClient(app)
+
+
+def test_query_is_stripped_from_the_signed_path(monkeypatch):
+    """The device signs the bare path; the query must not be in the signature,
+    but must still be on the URL (that is what returns the `audio` field)."""
+    seen = {}
+
+    def fake_auth(method, path, body=""):
+        seen["signed"] = path
+        return "auth", "date"
+
+    class FakeResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    class FakeClient:
+        async def request(self, method, url, **kw):
+            seen["url"] = url
+            return FakeResp()
+
+    import tablo_api
+    monkeypatch.setattr(tablo_api.TabloAuth, "make_device_auth", staticmethod(fake_auth))
+    monkeypatch.setattr(app_state, "active_device",
+                        type("D", (), {"local_url": "http://tablo:8887"})())
+    monkeypatch.setattr(app_state, "_device_http", FakeClient())
+
+    asyncio.run(app_state.request_device("GET", "/settings/info?allowAudioTranscode=true&lh"))
+    assert seen["signed"] == "/settings/info"
+    assert seen["url"] == "http://tablo:8887/settings/info?allowAudioTranscode=true&lh"
 
 
 @pytest.fixture
@@ -48,21 +83,21 @@ def test_overview_null_slice_on_failure(authed, monkeypatch):
     body = r.json()
     assert body["harddrives"] is None
     assert body["server"] == {"path": "/server/info"}
-    assert body["settings"] == {"path": "/settings/info"}
+    assert body["settings"] == {"path": "/settings/info?allowAudioTranscode=true&lh"}
 
 
-def test_info_read_uses_plain_path(authed, monkeypatch):
-    # The device signs the path without its query string, so /settings/info is
-    # requested plain (the ?allowAudioTranscode variant 401s). See the route.
+def test_info_read_requests_audio_field(authed, monkeypatch):
+    # `?allowAudioTranscode=true&lh` is what makes the device include `audio`.
+    # The signature covers the bare path (state strips the query). See the route.
     seen = {}
 
     async def fake(method, path, body=""):
         seen["path"] = path
-        return {"led": "dim"}
+        return {"led": "dim", "audio": "ac3"}
     monkeypatch.setattr(app_state, "request_device", fake)
     r = client.get("/api/settings/info")
     assert r.status_code == 200
-    assert seen["path"] == "/settings/info"
+    assert seen["path"] == "/settings/info?allowAudioTranscode=true&lh"
 
 
 # --- Writes: /settings/info allow-list -------------------------------------
@@ -96,7 +131,8 @@ def test_info_patch_forwards_one_key(authed, monkeypatch):
     monkeypatch.setattr(app_state, "patch_device", fake_patch)
     r = client.patch("/api/settings/info", json={"led": "dim"})
     assert r.status_code == 200
-    assert seen == {"path": "/settings/info", "payload": {"led": "dim"}}
+    assert seen == {"path": "/settings/info?allowAudioTranscode=true&lh",
+                    "payload": {"led": "dim"}}
     assert r.json() == {"led": "dim"}
 
 
@@ -243,9 +279,25 @@ def test_guide_update_triggers_a_refresh(authed, monkeypatch):
     assert seen == {"method": "POST", "path": "/server/guide/refresh"}
 
 
-def test_noop_location_set(authed, monkeypatch):
-    async def fake(*a, **k):
-        raise AssertionError("must not touch device")
-    monkeypatch.setattr(app_state, "patch_device", fake)
+def test_location_set_patches_nested_postal(authed, monkeypatch):
+    seen = {}
+
+    async def fake_patch(path, payload):
+        seen["path"], seen["payload"] = path, payload
+        return 200, {"location": {"postal_code": "97201"}}
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
     r = client.patch("/api/settings/location", json={"postal_code": "97201"})
-    assert r.status_code == 200 and r.json()["noop"] is True
+    assert r.status_code == 200
+    assert seen["path"] == "/server/location"
+    assert seen["payload"] == {"location": {"postal_code": "97201"}}
+
+
+def test_location_set_rejects_empty(authed, monkeypatch):
+    called = {}
+
+    async def fake_patch(path, payload):
+        called["hit"] = True
+        return 200, {}
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+    r = client.patch("/api/settings/location", json={"postal_code": "  "})
+    assert r.status_code == 400 and "hit" not in called

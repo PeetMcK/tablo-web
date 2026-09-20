@@ -445,7 +445,15 @@ class AppState:
             raise RuntimeError("No active device")
 
         from tablo_api import TabloAuth
-        auth_header, date_header = TabloAuth.make_device_auth(method, path, body)
+        # The device signs the path WITHOUT its query string: a signature over
+        # `/settings/info?allowAudioTranscode=true` is rejected 401, while one
+        # over `/settings/info` is accepted and the query still reaches the
+        # handler (that flag, plus `&lh`, is what makes the device return the
+        # `audio` field). This mirrors the official app, which signs the bare
+        # path and appends the query to the URL. Callers with no query are
+        # unaffected. See docs/tablo-api.md.
+        sign_path = path.split("?", 1)[0]
+        auth_header, date_header = TabloAuth.make_device_auth(method, sign_path, body)
 
         url = self.active_device.local_url.rstrip("/") + path
         headers = {
@@ -501,7 +509,12 @@ class AppState:
         from tablo_api import TabloAuth
 
         body = json.dumps(payload, separators=(",", ":"))
-        auth_header, date_header = TabloAuth.make_device_auth("PATCH", path, body)
+        # Sign the path without its query string, same as GET: the device
+        # validates the signature over the bare path and still reads the query
+        # (e.g. `?allowAudioTranscode=true&lh`, which makes the echo include the
+        # `audio` field). See _request_device_raw and docs/tablo-api.md.
+        sign_path = path.split("?", 1)[0]
+        auth_header, date_header = TabloAuth.make_device_auth("PATCH", sign_path, body)
         url = self.active_device.local_url.rstrip("/") + path
         resp = await self._device_http.request(
             "PATCH",

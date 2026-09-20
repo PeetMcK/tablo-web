@@ -933,7 +933,7 @@ export const api = {
       req<NoopResult>("/settings/guide/update", { method: "POST" }),
 
     setLocation: (postal_code: string) =>
-      req<NoopResult>("/settings/location", {
+      req<Record<string, unknown>>("/settings/location", {
         method: "PATCH",
         body: JSON.stringify({ postal_code }),
       }),

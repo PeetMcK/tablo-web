@@ -105,12 +105,13 @@ test("LED segmented control writes the chosen value", async () => {
   await waitFor(() => expect(patch).toHaveBeenCalledWith("led", "off"));
 });
 
-test("audio toggle writes aac", async () => {
-  vi.spyOn(api.settings, "overview").mockResolvedValue(OVERVIEW);
+test("audio compatibility switch writes aac when turned on", async () => {
+  vi.spyOn(api.settings, "overview").mockResolvedValue(OVERVIEW); // audio: ac3
   const patch = vi.spyOn(api.settings, "patchInfo").mockResolvedValue({ audio: "aac" });
   renderModal();
-  const aac = await screen.findByRole("radio", { name: "AAC" });
-  fireEvent.click(aac);
+  const sw = await screen.findByRole("switch", { name: /audio compatibility/i });
+  expect(sw).toHaveAttribute("aria-checked", "false");
+  fireEvent.click(sw);
   await waitFor(() => expect(patch).toHaveBeenCalledWith("audio", "aac"));
 });
 
@@ -168,6 +169,19 @@ test("a null slice renders unavailable, not a crash", async () => {
   expect(
     await screen.findByText(/no drive information available/i),
   ).toBeInTheDocument();
+});
+
+test("saving a location patches the device with the postal code", async () => {
+  vi.spyOn(api.settings, "overview").mockResolvedValue(OVERVIEW);
+  const setLoc = vi
+    .spyOn(api.settings, "setLocation")
+    .mockResolvedValue({ location: { postal_code: "59802" } });
+  renderModal();
+  const input = await screen.findByLabelText("Postal code");
+  fireEvent.change(input, { target: { value: "59802" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(setLoc).toHaveBeenCalledWith("59802"));
+  expect(await screen.findByText(/rescan channels/i)).toBeInTheDocument();
 });
 
 test("storage bar reflects usage vs capacity from the device", async () => {

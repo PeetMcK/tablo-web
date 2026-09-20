@@ -91,7 +91,7 @@ async def overview():
             _try("GET", "/server/harddrives"),
             _try("GET", "/server/guide/status"),
             _try("GET", "/server/location"),
-            _try("GET", "/settings/info"),
+            _try("GET", "/settings/info?allowAudioTranscode=true&lh"),
             _try("GET", "/server/update/info"),
         )
     )
@@ -109,12 +109,13 @@ async def overview():
 @router.get("/info")
 async def info():
     _require_auth()
-    # No `?allowAudioTranscode=true`: the device signs the path WITHOUT its query
-    # string, so a signed request carrying one is a 401, and even when accepted
-    # (base-path signature, query in the URL) this firmware returns no `audio`
-    # field anyway. Plain /settings/info carries every writable key but `audio`;
-    # the audio control still writes (PATCH takes no query). See docs/tablo-api.md.
-    return await state.request_device("GET", "/settings/info")
+    # `?allowAudioTranscode=true&lh` is what makes the device include the `audio`
+    # field. Both flags are needed: without `&lh` the field is omitted. The
+    # signature covers the path only (state strips the query before signing), so
+    # this is a 200 with `audio` present. See docs/tablo-api.md.
+    return await state.request_device(
+        "GET", "/settings/info?allowAudioTranscode=true&lh"
+    )
 
 
 @router.get("/harddrives")
@@ -162,7 +163,11 @@ async def patch_info(body: dict):
             raise HTTPException(400, f"{key} must be one of {allowed}.")
     else:
         raise HTTPException(400, f"{key} is not a writable setting.")
-    status, data = await state.patch_device("/settings/info", {key: value})
+    # Query is signed off (state strips it); `?allowAudioTranscode=true&lh` makes
+    # the echoed object include `audio`, so the client resyncs it after any write.
+    status, data = await state.patch_device(
+        "/settings/info?allowAudioTranscode=true&lh", {key: value}
+    )
     if status >= 400:
         raise _device_error(status, data)
     return data
@@ -267,5 +272,21 @@ class LocationIn(BaseModel):
 
 @router.patch("/location")
 async def set_location(body: LocationIn):
+    """Set the device's location by US ZIP / CA postal code.
+
+    Captured from the official app: PATCH /server/location with the postal code
+    NESTED under `location` -> 200, returns the updated location object. Signed
+    on the plain path (device drops the query). Changing the code re-derives the
+    channel lineup, so the device kicks off a channel scan right after — the app
+    then polls /channels/scans. See docs/tablo-api.md.
+    """
     _require_auth()
-    return {"ok": False, "noop": True, "reason": "no location-set verb captured"}
+    postal = body.postal_code.strip()
+    if not postal:
+        raise HTTPException(400, "Postal code cannot be empty.")
+    status, data = await state.patch_device(
+        "/server/location", {"location": {"postal_code": postal}}
+    )
+    if status >= 400:
+        raise _device_error(status, data)
+    return data

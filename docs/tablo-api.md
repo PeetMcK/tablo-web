@@ -245,10 +245,11 @@ full updated object (so a write doubles as a read, same as the schedule writes):
 | `PATCH /settings/info` | `{"extend_live_recordings": bool}` | |
 | `PATCH /settings/info` | `{"exclude_duplicates": bool}` | |
 | `PATCH /settings/info` | `{"enable_amplifier": bool}` | tuner amplifier |
-| `PATCH /settings/info` | `{"audio": "ac3"｜"aac"}` | the audio-transcode toggle (see transcode section) |
+| `PATCH /settings/info` | `{"audio": "ac3"｜"aac"}` | the audio-transcode toggle — the app's "Audio Compatibility Mode" (`ac3` = surround passthrough / mode OFF, `aac` = downmix to stereo / mode ON). PATCH to `/settings/info?allowAudioTranscode=true&lh` so the echoed object includes `audio`. See transcode section |
 | `PATCH /server/info` | `{"name": "…"}` | renames the device |
 | `POST  /server/update/check` | — (empty) | triggers a check; returns the full `update/info` object (so it doubles as a refreshed read). `state:"none"` + `available_update:null` = up to date |
 | `POST  /server/guide/refresh` | — (empty) | forces a guide re-download → `204`, empty body. The app sends `?lh`; the device signs the path *without* its query, so the flag drops and plain `/server/guide/refresh` returns `204` too (verified on 172.16.16.121). Refresh is async — poll `/server/guide/status` (`download_progress`) after. Captured from the app's guide-refresh action |
+| `PATCH /server/location` | `{"location":{"postal_code":"59802"}}` | sets the location by US ZIP / CA postal → `200`, returns the updated location object. Postal code is **nested** under `location` (not flat like `/settings/info`). Captured from the app. **Side effect:** changing the code re-derives the lineup, so the device starts a channel scan immediately — the app follows with `POST /channels/scans` and polls `/channels/scans/{id}`. Signed on the plain path (drops `?lh`) |
 
 Firmware updates on 4th-gen are **notification-based, not auto-install** (per
 Tablo support): the device self-checks every ~24h when powered on, the app
@@ -578,8 +579,15 @@ below, found by capturing the official app.
 ### The device *does* transcode audio — `settings/info.audio`
 
 Captured from the official iOS app (Proxyman, settings screen). `GET
-/settings/info` normally returns what §Reads lists. Add **`?allowAudioTranscode=true`**
-and the response gains one field:
+/settings/info` normally returns what §Reads lists. Add
+**`?allowAudioTranscode=true&lh`** and the response gains one field — the
+`audio` toggle. **Both flags are needed** (`&lh` too; `?allowAudioTranscode=true`
+alone omits it), and the signature must cover the **bare path** — the device
+rejects a signature that includes the query (401), while accepting the
+base-path signature and still reading the query off the URL. Verified on
+172.16.16.121 firmware 2.2.58. In this app the toggle is surfaced under
+**Troubleshooting → "Audio Compatibility Mode"** (ON = `aac`/stereo). The
+response gains:
 
 ```json
 {"led":"dim","extend_live_recordings":true,"auto_delete_recordings":true,
