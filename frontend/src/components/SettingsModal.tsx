@@ -630,16 +630,27 @@ function ChannelsSection({ onFlash }: { onFlash: (m: string) => void }) {
   const rescan = async () => {
     setScanning(true);
     setScanPct(0);
+    setChannels([]);
     try {
       const start = await api.settings.startScan();
       const id = start.scan_id;
       setScanId(id);
-      // Poll on a human interval; a tight loop can wedge the device.
-      for (let i = 0; i < 150; i++) {
+      // Poll on a human interval; a tight loop can wedge the device. Read the
+      // discovered set each tick so the list fills live as the device finds
+      // channels — a slow fill, like the app, not one jump at the end.
+      let completed = false;
+      for (let i = 0; i < 150 && !completed; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         const st = await api.settings.scanStatus(id);
         setScanPct(Math.round((st.progress ?? 0) * 100));
-        if (st.completed) break;
+        completed = st.completed;
+        try {
+          const disc = await api.settings.scanDiscovered(id);
+          setChannels(disc.channels);
+        } catch {
+          // A single failed discovered-read mid-scan is not fatal; the next
+          // tick tries again and the final read below is authoritative.
+        }
       }
       const disc = await api.settings.scanDiscovered(id);
       setChannels(disc.channels);
@@ -673,7 +684,9 @@ function ChannelsSection({ onFlash }: { onFlash: (m: string) => void }) {
         <p className="text-xs text-fg-muted">
           {loading
             ? "Loading…"
-            : `${channels.filter((c) => c.selected).length} of ${channels.length} kept`}
+            : scanning
+              ? `Scanning… ${channels.length} found`
+              : `${channels.filter((c) => c.selected).length} of ${channels.length} kept`}
         </p>
         <button
           onClick={rescan}
@@ -683,6 +696,22 @@ function ChannelsSection({ onFlash }: { onFlash: (m: string) => void }) {
           {scanning ? `Scanning… ${scanPct}%` : "Rescan"}
         </button>
       </div>
+
+      {scanning && (
+        <div
+          className="h-1.5 w-full overflow-hidden rounded-full bg-fill"
+          role="progressbar"
+          aria-label="Channel scan progress"
+          aria-valuenow={scanPct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div
+            className="h-full rounded-full bg-accent transition-all"
+            style={{ width: `${scanPct}%` }}
+          />
+        </div>
+      )}
 
       {channels.length > 0 && (
         <div className="max-h-56 space-y-1 overflow-y-auto rounded-xl border border-border-subtle p-2">
