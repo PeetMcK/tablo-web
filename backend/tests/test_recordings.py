@@ -259,6 +259,42 @@ def test_resume_position_surfaced():
     assert AppState._recording_fields(DEVICE_RECORDING)["position"] == 42
 
 
+def test_protected_surfaced_defaulting_false():
+    # Absent in the base record -> False.
+    assert AppState._recording_fields(DEVICE_RECORDING)["protected"] is False
+    # Present -> passed through.
+    rec = {**DEVICE_RECORDING,
+           "user_info": {"position": 0, "watched": False, "protected": True}}
+    assert AppState._recording_fields(rec)["protected"] is True
+
+
+def test_protect_endpoint_forwards_flat_body(monkeypatch):
+    from app.state import state as app_state
+    monkeypatch.setattr(type(app_state), "is_authenticated",
+                        property(lambda self: True))
+
+    async def fake_resolve(object_id):
+        return "/recordings/series/episodes/86128", 1875
+    seen = {}
+
+    async def fake_patch(path, payload):
+        seen["path"], seen["payload"] = path, payload
+        return 200, {}
+    monkeypatch.setattr(app_state, "resolve_recording", fake_resolve)
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+
+    r = client.patch("/api/recordings/86128/protect", json={"protected": True})
+    assert r.status_code == 200
+    assert r.json() == {"object_id": 86128, "protected": True}
+    assert seen == {"path": "/recordings/series/episodes/86128",
+                    "payload": {"protected": True}}
+
+
+def test_protect_endpoint_requires_auth():
+    assert client.patch("/api/recordings/1/protect",
+                        json={"protected": True}).status_code == 401
+
+
 # A series episode, as the device returns one. Measured against
 # /recordings/series/episodes/86128: `series` is null on an episode record and
 # only `series_path` links it to its show, which is why the end card fetches

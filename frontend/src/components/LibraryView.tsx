@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, FileDown, Info, Loader2, Pause, Radio, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2, Undo2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -251,6 +251,60 @@ export function LibraryView() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
   });
 
+  /**
+   * Watched / protected toggles, optimistic against the cached listing.
+   *
+   * The status is the whole point of the icon, so it flips at once and the
+   * device write follows; a refusal rolls the row back and the trailing
+   * invalidation reconciles with the truth. Both write the same way — one row
+   * of `["recordings"]` patched by `object_id`.
+   */
+  const patchRow = useCallback(
+    (id: number, patch: Partial<Recording>) => {
+      qc.setQueryData<RecordingList>(["recordings"], (held) =>
+        held
+          ? {
+              ...held,
+              recordings: held.recordings.map((r) =>
+                r.object_id === id ? { ...r, ...patch } : r,
+              ),
+            }
+          : held,
+      );
+    },
+    [qc],
+  );
+
+  const setWatched = useMutation({
+    mutationFn: ({ id, watched }: { id: number; watched: boolean }) =>
+      api.setRecordingWatched(id, watched),
+    onMutate: async ({ id, watched }) => {
+      await qc.cancelQueries({ queryKey: ["recordings"] });
+      const prev = qc.getQueryData<RecordingList>(["recordings"]);
+      patchRow(id, { watched });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["recordings"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
+  });
+
+  const setProtect = useMutation({
+    mutationFn: ({ id, protectedFlag }: { id: number; protectedFlag: boolean }) =>
+      api.setProtected(id, protectedFlag),
+    onMutate: async ({ id, protectedFlag }) => {
+      await qc.cancelQueries({ queryKey: ["recordings"] });
+      const prev = qc.getQueryData<RecordingList>(["recordings"]);
+      patchRow(id, { protected: protectedFlag });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["recordings"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
+  });
+
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["recordings"],
     queryFn: () => api.recordings(),
@@ -456,6 +510,11 @@ export function LibraryView() {
           channel={infoFor.channel?.identifier ?? ""}
           start={infoFor.channel?.identifier ? infoFor.start : null}
           channelLabel={infoFor.channel?.call_sign ?? undefined}
+          // The sheet shows the SAME image the card resolved — a viewer-picked
+          // cover, else this episode's own snapshot, else the series art — so
+          // it never falls back to the generic series cover and shows a
+          // different picture than the card the viewer just tapped.
+          posterOverride={cardArt(infoFor)}
           // This card's recording, not the airing's newest: a capture stopped
           // and restarted leaves two against one slot, and the sheet must
           // delete the one whose card was opened.
@@ -635,7 +694,8 @@ export function LibraryView() {
                       // in — an out-of-flow box contributes nothing to its
                       // parent's height, which is what makes `aspect-video`
                       // above hold whatever shape the frame happens to be.
-                      className="absolute inset-0 w-full h-full object-fill"
+                      className={`absolute inset-0 w-full h-full object-fill transition-opacity
+                                  ${rec.watched ? "opacity-[0.55]" : ""}`}
                       loading="lazy"
                       // A card whose artwork link is dead falls back to the
                       // frame it still has, rather than showing the empty box.
@@ -732,58 +792,110 @@ export function LibraryView() {
                     );
                   })()}
 
-                  {/* Recording wins the corner outright. Nothing else a card can
-                      say about itself matters as much as the fact that it is
-                      still growing — and the cache badges cannot apply anyway,
-                      since keeping a copy needs a finished recording. */}
-                  {isRecording(rec) ? (
-                    <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded bg-danger-solid text-[10px] font-bold text-danger-fg uppercase tracking-wider">
-                      <span className="relative flex w-2 h-2" aria-hidden>
-                        {/* The pulse is the only motion on the card, and it
-                            stops for reduced motion — where the dot alone
-                            still reads as recording. */}
-                        <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger-fg opacity-60" />
-                        <span className="relative inline-flex w-2 h-2 rounded-full bg-danger-fg" />
-                      </span>
-                      Recording
-                    </div>
-                  ) : broken ? (
-                    // Four seconds of an hour is not a short recording, it is a
-                    // broken one. The device does not agree - `error` is null
-                    // and `warnings` empty on all three measured failures - so
-                    // this is inferred from how little of the slot exists, and
-                    // said out loud rather than left to a sliver on the strip.
-                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-warning-solid text-[10px] font-bold text-warning-fg uppercase tracking-wider"
-                         title="Only a fraction of the scheduled programme was captured.">
-                      <AlertTriangle className="w-3 h-3" aria-hidden />
-                      Incomplete
-                    </div>
-                  ) : rec.pinned ? (
-                    <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded bg-success-solid text-[10px] font-bold text-success-fg uppercase tracking-wider">
-                      <CheckCircle2 className="w-3 h-3" aria-hidden />
-                      {rec.cache_state === "complete" ? "Cached" : `${Math.round(rec.cache_progress * 100)}%`}
-                    </div>
-                  ) : rec.cache_state === "complete" ? (
-                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-accent text-[10px] font-bold text-accent-fg uppercase tracking-wider">
-                      Ready
-                    </div>
-                  ) : rec.cache_progress > 0 ? (
-                    // Watching transcodes as it goes, so a recording nobody
-                    // asked to keep is often substantially on disk already.
-                    // Deliberately not emerald and without the tick: that badge
-                    // means the copy is kept and outlives the Tablo deleting
-                    // it, and an incidental cache makes no such promise. The
-                    // colour carries the distinction now that both say cached.
-                    <div className="absolute top-3 left-3 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider tabular-nums"
-                         title="Transcoded so far. Keep it offline to fill in the rest.">
-                      {Math.max(1, Math.round(rec.cache_progress * 100))}% cached
-                    </div>
-                  ) : null}
-                  {rec.offline_only && (
-                    <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider"
-                         title="Kept here — the Tablo no longer has this recording">
-                      <CloudOff className="w-3 h-3" aria-hidden />
-                      Only here
+                  {/* Top-left cluster: the single state badge, with the
+                      "Only here" offline badge beside it (moved here from the
+                      top-right, which the watched/protect controls now own).
+                      Recording wins the state slot outright — nothing a card can
+                      say matters as much as the fact that it is still growing,
+                      and the cache badges cannot apply anyway, since keeping a
+                      copy needs a finished recording. */}
+                  <div className="absolute top-3 left-3 flex items-start gap-1.5">
+                    {isRecording(rec) ? (
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-danger-solid text-[10px] font-bold text-danger-fg uppercase tracking-wider">
+                        <span className="relative flex w-2 h-2" aria-hidden>
+                          {/* The pulse is the only motion on the card, and it
+                              stops for reduced motion — where the dot alone
+                              still reads as recording. */}
+                          <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger-fg opacity-60" />
+                          <span className="relative inline-flex w-2 h-2 rounded-full bg-danger-fg" />
+                        </span>
+                        Recording
+                      </div>
+                    ) : broken ? (
+                      // Four seconds of an hour is not a short recording, it is a
+                      // broken one. The device does not agree - `error` is null
+                      // and `warnings` empty on all three measured failures - so
+                      // this is inferred from how little of the slot exists, and
+                      // said out loud rather than left to a sliver on the strip.
+                      <div className="flex items-center gap-1 px-2 py-1 rounded bg-warning-solid text-[10px] font-bold text-warning-fg uppercase tracking-wider"
+                           title="Only a fraction of the scheduled programme was captured.">
+                        <AlertTriangle className="w-3 h-3" aria-hidden />
+                        Incomplete
+                      </div>
+                    ) : rec.pinned ? (
+                      <div className="flex items-center gap-1 px-2 py-1 rounded bg-success-solid text-[10px] font-bold text-success-fg uppercase tracking-wider">
+                        <CheckCircle2 className="w-3 h-3" aria-hidden />
+                        {rec.cache_state === "complete" ? "Cached" : `${Math.round(rec.cache_progress * 100)}%`}
+                      </div>
+                    ) : rec.cache_state === "complete" ? (
+                      <div className="px-2 py-1 rounded bg-accent text-[10px] font-bold text-accent-fg uppercase tracking-wider">
+                        Ready
+                      </div>
+                    ) : rec.cache_progress > 0 ? (
+                      // Watching transcodes as it goes, so a recording nobody
+                      // asked to keep is often substantially on disk already.
+                      // Deliberately not emerald and without the tick: that badge
+                      // means the copy is kept and outlives the Tablo deleting
+                      // it, and an incidental cache makes no such promise. The
+                      // colour carries the distinction now that both say cached.
+                      <div className="px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider tabular-nums"
+                           title="Transcoded so far. Keep it offline to fill in the rest.">
+                        {Math.max(1, Math.round(rec.cache_progress * 100))}% cached
+                      </div>
+                    ) : null}
+                    {rec.offline_only && (
+                      <div className="flex items-center gap-1 px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider"
+                           title="Kept here — the Tablo no longer has this recording">
+                        <CloudOff className="w-3 h-3" aria-hidden />
+                        Only here
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Top-right cluster: watched + protect toggles. The
+                      affirmative icon (watched eye / locked lock) is persistent;
+                      the negative (mark-watched / protect) appears only on card
+                      hover. Watched left, protect right. Each stops propagation
+                      so a tap toggles rather than starting playback. Skipped
+                      while recording — neither applies to a growing file. */}
+                  {!isRecording(rec) && (
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setWatched.mutate({ id: rec.object_id, watched: !rec.watched });
+                        }}
+                        title={rec.watched ? "Mark unwatched" : "Mark watched"}
+                        aria-label={rec.watched ? "Mark unwatched" : "Mark watched"}
+                        aria-pressed={rec.watched}
+                        className={`z-20 w-7 h-7 rounded-full glass flex items-center justify-center
+                                    text-media-fg hover:bg-fill transition
+                                    ${rec.watched ? "opacity-100"
+                                                  : "opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100"}`}
+                      >
+                        {rec.watched
+                          ? <Eye className="w-3.5 h-3.5" aria-hidden />
+                          : <EyeOff className="w-3.5 h-3.5" aria-hidden />}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setProtect.mutate({ id: rec.object_id, protectedFlag: !rec.protected });
+                        }}
+                        title={rec.protected ? "Remove protection" : "Protect from deletion"}
+                        aria-label={rec.protected ? "Remove protection" : "Protect from deletion"}
+                        aria-pressed={rec.protected}
+                        className={`z-20 w-7 h-7 rounded-full glass flex items-center justify-center
+                                    text-media-fg hover:bg-fill transition
+                                    ${rec.protected ? "opacity-100"
+                                                    : "opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100"}`}
+                      >
+                        {rec.protected
+                          ? <Lock className="w-3.5 h-3.5" aria-hidden />
+                          : <LockOpen className="w-3.5 h-3.5" aria-hidden />}
+                      </button>
                     </div>
                   )}
                   {/* While recording, the slot is not what exists — it is what
@@ -818,31 +930,41 @@ export function LibraryView() {
                       recordings had captured four seconds, eight seconds and
                       3.7 minutes of an hour, and the device reported no error
                       for any of them: this bar is the only thing that says so. */}
-                  {/* Only while the picture is one the viewer picked. Bottom
-                      left, clear of the badges in the opposite corner and of
-                      the strip's reach along the bottom edge — and it appears
-                      on hover like the play controls, because a card at rest
-                      should be its picture and nothing else.
-
-                      Above the strip's band in z-order, or the band would take
-                      the click and start playing instead. */}
-                  {rec.cover_frame !== null && (
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        clearCover.mutate(rec.object_id);
-                      }}
-                      disabled={clearCover.isPending}
-                      title="Use the show's own picture again"
-                      aria-label="Use the show's own picture again"
-                      className="absolute bottom-3 left-3 z-20 w-7 h-7 rounded-full glass
-                                 flex items-center justify-center text-media-fg
-                                 opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100
-                                 hover:bg-fill transition disabled:opacity-40"
-                    >
-                      <Undo2 className="w-3.5 h-3.5" aria-hidden />
-                    </button>
+                  {/* Bottom-left cluster: the NEW chip (persistent) with the
+                      "use the show's own picture again" undo button to its LEFT.
+                      NEW shows for a recording never started (position 0, not
+                      watched). The undo appears on hover only, and only while the
+                      picture is one the viewer picked — sitting left of NEW, they
+                      coexist. Clear of the badges opposite and of the strip's
+                      reach along the bottom edge; above the strip in z-order, or
+                      the band would take the click and start playing. */}
+                  {(rec.cover_frame !== null ||
+                    (rec.position === 0 && !rec.watched && !isRecording(rec))) && (
+                    <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1.5">
+                      {rec.cover_frame !== null && (
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            clearCover.mutate(rec.object_id);
+                          }}
+                          disabled={clearCover.isPending}
+                          title="Use the show's own picture again"
+                          aria-label="Use the show's own picture again"
+                          className="w-7 h-7 rounded-full glass flex items-center justify-center
+                                     text-media-fg opacity-0 group-hover/art:opacity-100
+                                     focus-visible:opacity-100 hover:bg-fill transition
+                                     disabled:opacity-40"
+                        >
+                          <Undo2 className="w-3.5 h-3.5" aria-hidden />
+                        </button>
+                      )}
+                      {rec.position === 0 && !rec.watched && !isRecording(rec) && (
+                        <span className="px-2 py-1 rounded bg-accent text-[10px] font-bold text-accent-fg uppercase tracking-wider">
+                          New
+                        </span>
+                      )}
+                    </div>
                   )}
 
                   {span && (
@@ -865,6 +987,14 @@ export function LibraryView() {
                   <div className="flex items-start gap-2">
                     <h3 className="font-bold text-fg truncate leading-tight flex-1">
                       {rec.title || "Untitled Recording"}
+                      {/* The card is an episode: season/episode inline after the
+                          series title, muted. Omitted for anything without both
+                          (sport, movies, one-off live). */}
+                      {rec.season_number != null && rec.episode_number != null && (
+                        <span className="ml-1.5 text-xs font-semibold text-fg-muted tabular-nums align-baseline">
+                          S{rec.season_number} E{rec.episode_number}
+                        </span>
+                      )}
                     </h3>
                     {/* The way into everything the card has no room for —
                         artwork, synopsis, rating, and the record controls. On

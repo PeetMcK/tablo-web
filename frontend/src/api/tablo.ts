@@ -323,6 +323,9 @@ export interface Recording {
   error: string | null;
   watched: boolean;
   position: number;
+  /** Device-side retention flag — kept from deletion. Distinct from `pinned`
+   *  (our local offline keep). */
+  protected: boolean;
   cache_state: CacheState;
   /** Fraction of the recording transcoded, 0-1. */
   cache_progress: number;
@@ -806,6 +809,12 @@ export const api = {
     req<{ object_id: number; watched: boolean }>(
       `/recordings/${objectId}/watched`,
       { method: "POST", body: JSON.stringify({ watched }) },
+    ),
+
+  setProtected: (objectId: number, protectedFlag: boolean) =>
+    req<{ object_id: number; protected: boolean }>(
+      `/recordings/${objectId}/protect`,
+      { method: "PATCH", body: JSON.stringify({ protected: protectedFlag }) },
     ),
 
   /**

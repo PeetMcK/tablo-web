@@ -443,6 +443,42 @@ async def set_watched(object_id: int, body: WatchedIn):
     return {"object_id": object_id, "watched": body.watched}
 
 
+class ProtectedIn(BaseModel):
+    """Whether the device should keep this recording from deletion."""
+
+    protected: bool
+
+
+@router.patch("/{object_id}/protect")
+async def set_protected(object_id: int, body: ProtectedIn):
+    """Protect a recording, or release it.
+
+    Captured from the official app: `PATCH {episode_path} {"protected": bool}`
+    -> 200, echoing the episode. The flat body is the write shape (same as
+    `watched`/`position`); the episode path is what `resolve_recording` returns
+    (`/recordings/{series|sports}/episodes|events/{id}`). A protected recording
+    is skipped by the series "delete all" and by auto-delete. See docs/tablo-api.md.
+    """
+    _require_auth()
+
+    try:
+        path, _duration = await state.resolve_recording(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Recording {object_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Device error: {e}")
+
+    try:
+        status, _data = await state.patch_device(path, {"protected": body.protected})
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    if status != 200:
+        raise HTTPException(status_code=502, detail="The Tablo refused the flag")
+
+    return {"object_id": object_id, "protected": body.protected}
+
+
 class CoverIn(BaseModel):
     """Where in the recording the chosen frame is, in seconds.
 
