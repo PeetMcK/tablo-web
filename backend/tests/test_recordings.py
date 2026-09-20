@@ -295,6 +295,39 @@ def test_protect_endpoint_requires_auth():
                         json={"protected": True}).status_code == 401
 
 
+def test_cancel_keep_stops_unpins_and_clears_error_keeping_cache(monkeypatch):
+    from app.state import state as app_state
+    from app.routes import recordings as rec_routes
+    monkeypatch.setattr(type(app_state), "is_authenticated",
+                        property(lambda self: True))
+    calls = {"stop": False, "pinned": None, "error": "unset", "evicted": False}
+
+    async def fake_stop(oid):
+        calls["stop"] = True
+
+    monkeypatch.setattr(rec_routes.cache, "read_meta", lambda oid: object())
+    monkeypatch.setattr(rec_routes.cache, "stop", fake_stop)
+    monkeypatch.setattr(rec_routes.cache, "set_pinned",
+                        lambda oid, pinned, info=None: calls.__setitem__("pinned", pinned) or True)
+    monkeypatch.setattr(rec_routes.cache, "set_error",
+                        lambda oid, err: calls.__setitem__("error", err) or True)
+    # Cancel must never delete bytes.
+    monkeypatch.setattr(rec_routes.cache, "evict",
+                        lambda *a, **k: calls.__setitem__("evicted", True) or True)
+
+    r = client.post("/api/recordings/42/keep/cancel")
+    assert r.status_code == 200
+    assert r.json() == {"object_id": 42, "pinned": False, "canceled": True}
+    assert calls["stop"] is True          # active work stopped
+    assert calls["pinned"] is False       # un-pinned
+    assert calls["error"] is None         # error cleared
+    assert calls["evicted"] is False      # cache NOT deleted
+
+
+def test_cancel_keep_requires_auth():
+    assert client.post("/api/recordings/1/keep/cancel").status_code == 401
+
+
 # A series episode, as the device returns one. Measured against
 # /recordings/series/episodes/86128: `series` is null on an episode record and
 # only `series_path` links it to its show, which is why the end card fetches
@@ -756,6 +789,27 @@ def test_pinned_entry_survives_eviction_pressure(tmp_path):
     c.make_room(0)
     assert c.state(1) is CacheState.COMPLETE   # kept
     assert c.state(2) is CacheState.ABSENT     # reclaimed
+
+
+def test_set_error_marks_a_partial_download_failed(tmp_path):
+    # A 2-window recording with one window done is PARTIAL; an error on the
+    # stopped fill makes it FAILED at that progress; clearing returns to PARTIAL.
+    c = _cache(tmp_path)
+    _register(c, oid=1, duration=120)
+    _mark_done(c, 1, 0)
+    assert c.state(1) is CacheState.PARTIAL
+    c.set_error(1, "source gone")
+    assert c.state(1) is CacheState.FAILED
+    c.set_error(1, None)
+    assert c.state(1) is CacheState.PARTIAL
+
+
+def test_a_complete_download_ignores_a_stale_error(tmp_path):
+    c = _cache(tmp_path)
+    _register(c, oid=1, duration=60)
+    _mark_done(c, 1, 0)   # 60s = one window = complete
+    c.set_error(1, "ignored")
+    assert c.state(1) is CacheState.COMPLETE
 
 
 def test_evict_refuses_pinned_unless_forced(tmp_path):

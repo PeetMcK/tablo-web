@@ -494,11 +494,16 @@ class TranscodeCache:
         done = self.windows_done(object_id)
         if done >= total:
             return CacheState.COMPLETE
-        if done > 0 or self._prefetch.get(object_id) or any(
+        active = bool(self._prefetch.get(object_id)) or any(
             k[0] == object_id for k in self._window_jobs
-        ):
-            return CacheState.PARTIAL
-        return CacheState.FAILED if meta.error else CacheState.PARTIAL
+        )
+        # A recorded error means a stopped download that could not finish — show
+        # it FAILED at any progress (a 92%-then-source-gone keep still needs a
+        # Resume). While work is actively running the error is cleared, so an
+        # in-flight fill reads PARTIAL, not FAILED.
+        if meta.error and not active:
+            return CacheState.FAILED
+        return CacheState.PARTIAL
 
     def progress(self, object_id: int) -> float:
         meta = self.read_meta(object_id)
@@ -954,6 +959,19 @@ class TranscodeCache:
         if meta is None:
             return False
         meta.paused = paused
+        self.write_meta(meta)
+        return True
+
+    def set_error(self, object_id: int, error: str | None) -> bool:
+        """Record (or clear) a download failure, surfaced as CacheState.FAILED.
+
+        A pinned fill whose source cannot be reached would otherwise spin
+        forever; setting this stops it and lets the card offer a Resume.
+        """
+        meta = self.read_meta(object_id)
+        if meta is None:
+            return False
+        meta.error = error
         self.write_meta(meta)
         return True
 
@@ -1566,6 +1584,9 @@ class TranscodeCache:
         sem = self._prefetch_slots
         total = window_count(duration)
         loop = asyncio.get_event_loop()
+        # A fresh run is a fresh attempt: clear any prior failure so the card
+        # stops reading FAILED while we try again (boot resume or a Resume tap).
+        self.set_error(object_id, None)
 
         async def fill(w: int) -> None:
             # Yield to a waiting viewer, but not forever. This used to wait on
@@ -1651,6 +1672,16 @@ class TranscodeCache:
                 await batch
             if retarget:
                 continue
+
+            # A pinned fill that made no progress this batch could not reach its
+            # source (every window in the batch failed) — otherwise `todo` would
+            # have shrunk. Rather than spin forever, mark it failed and stop; the
+            # card shows an error and a Resume, which starts a fresh run. Only
+            # for pinned: an on-demand fill following a viewer is allowed to wait.
+            if pinned and not any(self.window_ready(object_id, w) for w in filling):
+                print(f"[cache] prefetch for {object_id} made no progress - failing", flush=True)
+                self.set_error(object_id, "The download could not be completed.")
+                return
 
     async def stop(self, object_id: int) -> None:
         """Halt all work for a recording, leaving encoded windows on disk.

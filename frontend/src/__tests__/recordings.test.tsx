@@ -1116,6 +1116,29 @@ describe("what the artwork offers", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith(90203, true));
   });
 
+  it("a downloading keep shows a cancel control that cancels", async () => {
+    const cancel = vi.spyOn(api, "cancelKeep")
+      .mockResolvedValue({ pinned: false, canceled: true });
+    renderWith({
+      ...FINISHED, object_id: 90300, pinned: true, cache_state: "partial",
+      cache_progress: 0.5, paused: false, cached_seconds: 100,
+      rate: { mbps: 2.5, realtime: 0.5 },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /cancel download/i }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith(90300));
+  });
+
+  it("a failed keep shows Download failed + a Resume that restarts it", async () => {
+    const resume = vi.spyOn(api, "resumeKeep").mockResolvedValue({ paused: false });
+    renderWith({
+      ...FINISHED, object_id: 90301, pinned: true, cache_state: "failed",
+      cache_progress: 0.9,
+    });
+    expect(await screen.findByText(/download failed/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(resume).toHaveBeenCalledWith(90301));
+  });
+
   it("shows season and episode inline when both are present", async () => {
     renderWith({
       ...FINISHED, object_id: 90204, title: "Wild Kratts",
