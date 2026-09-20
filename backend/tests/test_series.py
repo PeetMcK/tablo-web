@@ -163,6 +163,76 @@ def test_series_detail_rejects_foreign_path(authed, monkeypatch):
     assert r.status_code == 400
 
 
+def _capture_patch(monkeypatch, script=None):
+    """Stub patch_device, recording (path, payload); return a calls list.
+
+    `script` is an optional list of (status, data) to return in order; default
+    is always (200, {"ok": True}).
+    """
+    calls = []
+    seq = list(script or [])
+
+    async def fake_patch(path, payload):
+        calls.append((path, payload))
+        if seq:
+            return seq.pop(0)
+        return (200, {"ok": True})
+
+    monkeypatch.setattr(app_state, "patch_device", fake_patch)
+    return calls
+
+
+def test_settings_rule_maps_to_schedule_rule(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"identifier": "C1_SHOW_X", "rule": "new"})
+    assert r.status_code == 200
+    assert calls == [("/guide/C1_SHOW_X", {"schedule": {"rule": "new"}})]
+
+
+def test_settings_keep_count(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"identifier": "C1_SHOW_X",
+                           "keep": {"rule": "count", "count": 5}})
+    assert r.status_code == 200
+    assert calls == [("/guide/C1_SHOW_X",
+                      {"keep": {"rule": "count", "count": 5}})]
+
+
+def test_settings_padding_seconds(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"identifier": "C1_SHOW_X",
+                           "offsets": {"start": -300, "end": 1800}})
+    assert r.status_code == 200
+    assert calls == [("/guide/C1_SHOW_X",
+                      {"schedule": {"offsets": {"source": "show",
+                                                "start": -300, "end": 1800}}})]
+
+
+def test_settings_padding_defaults_to_source_none(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    client.patch("/api/recordings/series/settings",
+                 json={"identifier": "C1", "offsets": {"start": 0, "end": 0}})
+    assert calls[0][1]["schedule"]["offsets"]["source"] == "none"
+
+
+def test_settings_rejects_unknown_key(authed, monkeypatch):
+    _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"identifier": "C1", "bogus": 1})
+    assert r.status_code == 422
+
+
+def test_settings_retries_once_on_999(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch, script=[(999, {}), (200, {"ok": True})])
+    r = client.patch("/api/recordings/series/settings",
+                     json={"identifier": "C1", "rule": "all"})
+    assert r.status_code == 200
+    assert len(calls) == 2
+
+
 def test_conflicts_passes_through(authed, monkeypatch):
     seen = {}
 

@@ -13,6 +13,7 @@ its literal `/series`, `/upcoming`, `/conflicts` paths win over that router's
 import asyncio
 import json
 import re
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
@@ -233,3 +234,75 @@ async def series_detail(recordings_path: str = Query(...)):
         "counts": meta.get("show_counts") or {},
         "episodes": episodes,
     }
+
+
+class KeepIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule: Literal["all", "none", "count"]
+    count: int | None = None
+
+
+class OffsetsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start: int
+    end: int
+
+
+class SeriesSettingsIn(BaseModel):
+    """Allow-listed series settings write. Unknown keys are rejected (422)."""
+    model_config = ConfigDict(extra="forbid")
+    identifier: str
+    rule: Literal["all", "new", "none"] | None = None
+    keep: KeepIn | None = None
+    offsets: OffsetsIn | None = None
+
+
+async def _patch_guide(identifier: str, body: dict) -> dict:
+    """PATCH /guide/{identifier}, with one retry on the transient 999.
+
+    One keep write was observed to return 999 then succeed on retry; a single
+    retry covers it without masking a real refusal.
+    """
+    path = f"/guide/{identifier}"
+    status, data = await state.patch_device(path, body)
+    if status == 999:
+        status, data = await state.patch_device(path, body)
+    if status != 200:
+        raise _device_error(status, data)
+    return data
+
+
+@router.patch("/series/settings")
+async def series_settings(body: SeriesSettingsIn):
+    """Map an allow-listed settings body to the nested device writes.
+
+    Rule and offsets both live under `schedule`, so they go in one PATCH; keep
+    is its own PATCH. Offsets `source` flips to "show" when either side is
+    non-zero, "none" at defaults. Seconds throughout.
+    """
+    _require_auth()
+    echo: dict = {}
+
+    schedule: dict = {}
+    if body.rule is not None:
+        schedule["rule"] = body.rule
+    if body.offsets is not None:
+        start, end = body.offsets.start, body.offsets.end
+        schedule["offsets"] = {
+            "source": "show" if (start or end) else "none",
+            "start": start,
+            "end": end,
+        }
+    if schedule:
+        echo["schedule"] = await _patch_guide(body.identifier,
+                                              {"schedule": schedule})
+
+    if body.keep is not None:
+        keep: dict = {"rule": body.keep.rule}
+        if body.keep.rule == "count":
+            keep["count"] = body.keep.count
+        echo["keep"] = await _patch_guide(body.identifier, {"keep": keep})
+
+    if not echo:
+        raise HTTPException(status_code=400, detail="No settings to change")
+    return {"identifier": body.identifier, "echo": echo}
