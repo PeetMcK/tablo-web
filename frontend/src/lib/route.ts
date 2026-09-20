@@ -1,4 +1,4 @@
-export type Tab = "live" | "grid" | "library" | "search";
+export type Tab = "live" | "grid" | "library" | "recordings" | "search";
 
 export interface Route {
   tab: Tab;
@@ -8,7 +8,7 @@ export interface Route {
   q?: string;
 }
 
-const TABS: Tab[] = ["live", "grid", "library", "search"];
+const TABS: Tab[] = ["live", "grid", "library", "recordings", "search"];
 
 /**
  * Names the UI uses that the route does not.

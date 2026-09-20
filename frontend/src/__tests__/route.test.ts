@@ -15,7 +15,13 @@ describe("parseRoute", () => {
     expect(parseRoute("#/live").tab).toBe("live");
     expect(parseRoute("#/grid").tab).toBe("grid");
     expect(parseRoute("#/library").tab).toBe("library");
+    expect(parseRoute("#/recordings").tab).toBe("recordings");
     expect(parseRoute("#/search").tab).toBe("search");
+  });
+
+  it("round-trips the Recordings tab through writeRoute", () => {
+    writeRoute({ tab: "recordings", watch: null });
+    expect(parseRoute(window.location.hash).tab).toBe("recordings");
   });
 
   it("falls back to Live TV for anything it does not recognise", () => {

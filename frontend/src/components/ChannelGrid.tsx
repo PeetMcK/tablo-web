@@ -8,6 +8,7 @@ import { useMediaQuery } from "../lib/useMediaQuery";
 import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { LibraryView } from "./LibraryView";
+import { RecordingsView } from "./RecordingsView";
 import { ShowInfo } from "./ShowInfo";
 import { GuideGridView, type GuideJumpTarget } from "./GuideGridView";
 import { AppMenu } from "./AppMenu";
@@ -527,6 +528,13 @@ export function ChannelGrid({ onLogout }: Props) {
               >
                 Library
               </button>
+              <button
+                onClick={() => goToTab("recordings")}
+                className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
+                           ${activeTab === "recordings" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+              >
+                Recordings
+              </button>
             </nav>
 
             {/* Phone, closed: the field is an icon, and it is the last thing in
@@ -726,6 +734,12 @@ export function ChannelGrid({ onLogout }: Props) {
                   keeps the route it snapshotted at its own mount and the
                   activation silently does nothing. */}
               <LibraryView key={libraryActivation} />
+            </div>
+          )}
+
+          {activeTab === "recordings" && (
+            <div className="flex flex-col">
+              <RecordingsView />
             </div>
           )}
 
