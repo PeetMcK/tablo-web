@@ -6,6 +6,7 @@ series detail (meta + settings + episode list), allow-listed settings writes
 test_settings.py does it — monkeypatch the signed helpers on `app_state`.
 """
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -277,6 +278,30 @@ def test_series_airings_rejects_foreign_guide_path(authed, monkeypatch):
     r = client.get("/api/recordings/series/airings",
                    params={"guide_path": "/server/info", "state": "requested"})
     assert r.status_code == 400
+
+
+def test_series_detail_404_when_the_series_is_gone(authed, monkeypatch):
+    # A deleted (or stale) recordings_path: the device answers 404, which must
+    # surface as 404 — not "the Tablo could not be reached".
+    async def fake(method, path, body=""):
+        req = httpx.Request(method, "http://tablo:8887" + path.split("?", 1)[0])
+        raise httpx.HTTPStatusError(
+            "not found", request=req, response=httpx.Response(404, request=req))
+    monkeypatch.setattr(app_state, "request_device", fake)
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/94868"})
+    assert r.status_code == 404
+
+
+def test_series_detail_502_on_transport_error(authed, monkeypatch):
+    # A genuine connection failure stays 502 — a not-found must not swallow a
+    # real outage into a 404.
+    async def fake(method, path, body=""):
+        raise RuntimeError("connection reset")
+    monkeypatch.setattr(app_state, "request_device", fake)
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/1"})
+    assert r.status_code == 502
 
 
 def test_series_detail_rejects_foreign_path(authed, monkeypatch):
