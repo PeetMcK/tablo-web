@@ -26,6 +26,7 @@ router = APIRouter(prefix="/api/recordings", tags=["series"])
 # show or an /episodes suffix of one — never an arbitrary path. The device signs
 # whatever we hand it, so an unvalidated path is an SSRF-shaped hole.
 _REC_PATH = re.compile(r"^/recordings/(series|sports|movies)/\d+$")
+_GUIDE_PATH = re.compile(r"^/guide/(series|sports|movies)/\d+$")
 
 
 def _require_auth() -> None:
@@ -187,6 +188,59 @@ def _episode_row(ep: dict) -> dict:
     }
 
 
+def _airing_row(a: dict) -> dict:
+    """One scheduled/conflicted airing row for a series (titled, unlike the
+    global lineup-handle list)."""
+    episode = a.get("episode") or {}
+    ad = a.get("airing_details") or {}
+    ch = (ad.get("channel") or {}).get("channel") or {}
+    sched = a.get("schedule") or {}
+    channel = ch.get("call_sign")
+    if not channel and ch.get("major") is not None:
+        channel = f"{ch.get('major')}.{ch.get('minor')}"
+    return {
+        "object_id": a.get("object_id"),
+        "title": episode.get("title") or ad.get("show_title"),
+        "season_number": episode.get("season_number"),
+        "episode_number": episode.get("number"),
+        "datetime": ad.get("datetime"),
+        "duration": ad.get("duration"),
+        "channel": channel,
+        "state": sched.get("state"),
+        "skip_reason": sched.get("skip_reason"),
+    }
+
+
+@router.get("/series/airings")
+async def series_airings(
+    guide_path: str = Query(...),
+    airing_state: Literal["requested", "conflicted"] = Query("requested",
+                                                             alias="state"),
+):
+    """This series' scheduled ("requested") or conflicted airings, titled.
+
+    Resolves `{guide_path}/episodes?state={state}&lh` (episode paths) then one
+    `POST /batch` — so, unlike the global airings list, these carry titles and
+    channels. `guide_path` is allow-listed.
+    """
+    _require_auth()
+    if not _GUIDE_PATH.match(guide_path):
+        raise HTTPException(status_code=400, detail="Not a guide series path")
+    try:
+        paths = await state.request_device(
+            "GET", f"{guide_path}/episodes?state={airing_state}&lh") or []
+        resolved = {}
+        if paths:
+            resolved = await state.request_device(
+                "POST", "/batch", json.dumps(paths)) or {}
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    rows = [_airing_row(resolved[p]) for p in paths if p in resolved]
+    rows.sort(key=lambda r: r.get("datetime") or "")
+    return rows
+
+
 @router.get("/series/detail")
 async def series_detail(recordings_path: str = Query(...)):
     """A series' meta, its live settings, and its episode list.
@@ -240,6 +294,7 @@ async def series_detail(recordings_path: str = Query(...)):
             "description": series.get("description"),
             "cover_image_id": (series.get("cover_image") or {}).get("image_id"),
             "kind": _kind_of(recordings_path),
+            "guide_path": meta.get("guide_path"),
         },
         "settings": settings,
         "counts": meta.get("show_counts") or {},

@@ -26,7 +26,7 @@ const CARD: SeriesCard = {
 function detailFor(overrides: Partial<SeriesDetail> = {}): SeriesDetail {
   return {
     meta: { title: "Wild Kratts", genres: ["Kids"], description: "d",
-            cover_image_id: null, kind: "series" },
+            cover_image_id: null, kind: "series", guide_path: "/guide/series/9" },
     settings: { identifier: "C1", rule: "all",
                 keep: { rule: "count", count: 5 },
                 offsets: { start: 0, end: 0, source: "none" } },
@@ -195,6 +195,18 @@ describe("Series detail", () => {
     // Ep A is watched → its control is "Mark unwatched".
     fireEvent.click(screen.getByRole("button", { name: "Mark unwatched" }));
     await waitFor(() => expect(pos).toHaveBeenCalledWith(100, 1));
+  });
+
+  it("the Upcoming tab loads this series' scheduled airings", async () => {
+    const spy = vi.spyOn(api.series, "airings").mockResolvedValue([
+      { object_id: 500, title: "Money Buys Justice", season_number: 4,
+        episode_number: 3, datetime: "2026-09-20T20:00Z", duration: 1800,
+        channel: "KUFM", state: "scheduled", skip_reason: "none" },
+    ]);
+    await open();
+    fireEvent.click(screen.getByRole("radio", { name: "Upcoming" }));
+    expect(await screen.findByText("Money Buys Justice")).toBeInTheDocument();
+    expect(spy).toHaveBeenCalledWith("/guide/series/9", "requested");
   });
 
   it("multi-select delete loops deleteRecording", async () => {
