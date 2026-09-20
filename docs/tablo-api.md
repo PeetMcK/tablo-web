@@ -979,3 +979,53 @@ For **reads**, the cheap technique is status-code archaeology: a `404` means
 the path does not exist, a `401` means it does and your signature was wrong,
 and a `405` means it exists but wants a different verb. That distinction is
 what turned up `?day=` on `/guide/airings` — it answered `401`, not `404`.
+
+## Series management (Recordings tab) — probed 2026-09-20, fw 2.2.58
+
+The DVR-management surface behind the Recordings tab. Two device views of a
+series must be merged; the live rule set is one of them.
+
+- `GET /guide/shows?state=requested&lh` — the **live rule set**, returned as
+  **full objects inline** (not paths): `{identifier, schedule{rule,
+  channel_identifier, offsets{start,end,source}}, keep{rule,count},
+  recordings_path|null}`. `&lh` is **required** (400 without). `identifier`
+  (e.g. `C185701_SHOW_SH009369660000`) is the **settings PATCH target** and the
+  only place the rule/offsets live. `recordings_path` is null until the series
+  has a recording.
+- `GET /recordings/shows` — **path strings** of series that have recordings
+  (`/recordings/series/92895`, `/recordings/sports/86664`). Join to the guide
+  set on `recordings_path`.
+- `GET /recordings/{kind}/{id}` — series meta: `{object_id, path,
+  series{title,genres,description,orig_air_date,episode_runtime,cast,
+  cover_image{image_id},background_image,thumbnail_image}, show_counts{
+  airing_count,unwatched_count,protected_count,watched_and_protected_count,
+  failed_count}, user_info{up_next}, keep{rule,count}, guide_path}`. Carries
+  `keep` and `guide_path` but **not** the schedule/rule/offsets — those are only
+  in the guide-shows projection. `guide_path` (`/guide/series/2915`) is **not**
+  the settings identifier.
+- `GET /recordings/{kind}/{id}/episodes` — episode **path strings**
+  (`/recordings/series/episodes/92894`).
+- `POST /batch` — body is a JSON **array of paths**; returns `{path: object}`.
+  Used to resolve an episode list in one call. Rejects lineup-handle
+  identifiers (`400 invalid_post_data`).
+- `GET /guide/airings?state=requested&lh` (upcoming) / `?state=conflicted&lh`
+  (conflicts) — lightweight `{identifier, schedule{state,qualifier,skip_reason,
+  skip_detail,offsets}}`. The **identifier is a lineup handle**
+  `LH-C{content}-S{station}_{maj}_{min}-T{epoch}` — it encodes datetime (epoch
+  after `-T`) and channel major/minor but **no title**, and is **not**
+  resolvable via `/batch` or `GET /guide/airings/{identifier}` (both 404/400).
+  Titled upcoming needs a different mapping — a documented follow-up.
+
+Writes (all to `/guide/{identifier}` are **nested**; offsets in **seconds**):
+
+| Concern | Call |
+|---|---|
+| Rule | `PATCH /guide/{identifier} {"schedule":{"rule":"all"\|"new"\|"none"}}` |
+| Keep | `PATCH /guide/{identifier} {"keep":{"rule":"count"\|"all"\|"none","count":N}}` |
+| Padding | `PATCH /guide/{identifier} {"schedule":{"offsets":{"source":"show","start":<sec>,"end":<sec>}}}` (`source` "none" at defaults; negative start = start early) |
+| Bulk delete | `POST {recordings_path}/delete {"filter":"watched"\|"unprotected"}` (200/204, no body — use the raw helper; `unprotected` = "delete all", skips protected) |
+| Protect (episode) | `PATCH /recordings/{kind}/episodes\|events/{id} {"protected":bool}` |
+
+`{kind}` ∈ `series | sports | movies`; episode segment `episodes` (series/movies)
+or `events` (sports). One keep PATCH returned a transient **999** then succeeded
+on retry — the settings route retries `/guide/{identifier}` writes once on 999.

@@ -642,6 +642,81 @@ export interface NoopResult {
   reason: string;
 }
 
+/** One series on the Recordings grid (the composed index). */
+export interface SeriesCard {
+  recordings_path: string;
+  /** The settings PATCH target; null when the series has no active rule. */
+  identifier: string | null;
+  kind: string | null;
+  title: string;
+  cover_image_id: number | null;
+  rule: "all" | "new" | "none";
+  keep: { rule: string; count: number | null };
+  offsets: { start: number; end: number; source: string };
+  episode_count: number;
+  unwatched_count: number;
+  protected_count: number;
+  conflict: boolean;
+}
+
+/** One episode row inside a series detail. */
+export interface SeriesEpisode {
+  object_id: number;
+  title: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  orig_air_date: string | null;
+  datetime: string | null;
+  /** video_details.duration — the real recorded length, never the slot. */
+  duration: number;
+  size: number | null;
+  state: string | null;
+  snapshot_image: number | null;
+  position: number;
+  watched: boolean;
+  protected: boolean;
+  is_recording: boolean;
+}
+
+export interface SeriesSettings {
+  identifier: string | null;
+  rule: "all" | "new" | "none";
+  keep: { rule: string; count: number | null };
+  offsets: { start: number; end: number; source: string };
+}
+
+export interface SeriesDetail {
+  meta: {
+    title: string;
+    genres: string[];
+    description: string | null;
+    cover_image_id: number | null;
+    kind: string | null;
+  };
+  settings: SeriesSettings;
+  counts: Record<string, number>;
+  episodes: SeriesEpisode[];
+}
+
+/** A scheduled or conflicted airing (lineup handle + schedule; no title). */
+export interface UpcomingAiring {
+  identifier: string;
+  schedule: {
+    state: string;
+    qualifier: string;
+    skip_reason: string;
+    skip_detail: string | null;
+    offsets: { start: number; end: number; source: string };
+  };
+}
+
+export interface SeriesUpdate {
+  identifier: string;
+  rule?: "all" | "new" | "none";
+  keep?: { rule: "all" | "none" | "count"; count?: number };
+  offsets?: { start: number; end: number };
+}
+
 export const api = {
   status: () => req<AuthStatus>("/auth/status"),
 
@@ -981,5 +1056,33 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ postal_code }),
       }),
+  },
+
+  series: {
+    index: () => req<{ series: SeriesCard[] }>("/recordings/series"),
+
+    detail: (recordingsPath: string) =>
+      req<SeriesDetail>(
+        `/recordings/series/detail?recordings_path=${encodeURIComponent(recordingsPath)}`,
+      ),
+
+    update: (body: SeriesUpdate) =>
+      req<{ identifier: string; echo: Record<string, unknown> }>(
+        "/recordings/series/settings",
+        { method: "PATCH", body: JSON.stringify(body) },
+      ),
+
+    bulkDelete: (recordingsPath: string, filter: "watched" | "unprotected") =>
+      req<{ ok: boolean; filter: string; status: number }>(
+        "/recordings/series/bulk-delete",
+        {
+          method: "POST",
+          body: JSON.stringify({ recordings_path: recordingsPath, filter }),
+        },
+      ),
+
+    upcoming: () => req<UpcomingAiring[]>("/recordings/upcoming"),
+
+    conflicts: () => req<UpcomingAiring[]>("/recordings/conflicts"),
   },
 };
