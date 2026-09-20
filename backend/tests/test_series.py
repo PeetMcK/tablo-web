@@ -75,7 +75,7 @@ def test_series_index_merges_rule_and_counts(authed, monkeypatch):
             "guide_path": "/guide/series/9"},
         "/recordings/sports/2": {
             "object_id": 2, "path": "/recordings/sports/2",
-            "series": {"title": "B", "cover_image": {"image_id": 22}},
+            "sport": {"title": "B", "cover_image": {"image_id": 22}},
             "show_counts": {"airing_count": 1, "unwatched_count": 0,
                             "protected_count": 1},
             "keep": {"rule": "all", "count": None},
@@ -99,6 +99,7 @@ def test_series_index_merges_rule_and_counts(authed, monkeypatch):
     assert b["identifier"] is None       # not settable without a guide handle
     assert b["kind"] == "sports"
     assert b["protected_count"] == 1
+    assert b["title"] == "B"             # sports title lives under `sport`
 
 
 def test_series_detail_composes_episodes_and_settings(authed, monkeypatch):
