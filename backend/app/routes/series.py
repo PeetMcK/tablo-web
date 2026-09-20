@@ -306,3 +306,31 @@ async def series_settings(body: SeriesSettingsIn):
     if not echo:
         raise HTTPException(status_code=400, detail="No settings to change")
     return {"identifier": body.identifier, "echo": echo}
+
+
+class BulkDeleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recordings_path: str
+    filter: Literal["watched", "unprotected"]
+
+
+@router.post("/series/bulk-delete")
+async def series_bulk_delete(body: BulkDeleteIn):
+    """Delete a series' episodes by the device's own filter.
+
+    `watched` removes watched episodes; `unprotected` is the device's "delete
+    all" — it skips protected ones. The device answers 200/204 (no body), so it
+    goes through the raw helper. recordings_path is allow-listed.
+    """
+    _require_auth()
+    if not _REC_PATH.match(body.recordings_path):
+        raise HTTPException(status_code=400,
+                            detail="Not a recordings series path")
+    try:
+        resp = await state._request_device_raw(
+            "POST", body.recordings_path + "/delete",
+            json.dumps({"filter": body.filter}))
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+    return {"ok": True, "filter": body.filter, "status": resp.status_code}

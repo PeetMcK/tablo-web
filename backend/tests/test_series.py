@@ -233,6 +233,40 @@ def test_settings_retries_once_on_999(authed, monkeypatch):
     assert len(calls) == 2
 
 
+def test_bulk_delete_forwards_filter(authed, monkeypatch):
+    import json as _json
+    calls = []
+
+    async def fake_raw(method, path, body="", follow_redirects=False):
+        calls.append((method, path, body))
+        return type("R", (), {"status_code": 200})()
+
+    monkeypatch.setattr(app_state, "_request_device_raw", fake_raw)
+    r = client.post("/api/recordings/series/bulk-delete",
+                    json={"recordings_path": "/recordings/series/1",
+                          "filter": "watched"})
+    assert r.status_code == 200
+    assert calls == [("POST", "/recordings/series/1/delete",
+                      _json.dumps({"filter": "watched"}))]
+
+
+def test_bulk_delete_rejects_bad_filter(authed):
+    r = client.post("/api/recordings/series/bulk-delete",
+                    json={"recordings_path": "/recordings/series/1",
+                          "filter": "everything"})
+    assert r.status_code == 422
+
+
+def test_bulk_delete_rejects_foreign_path(authed, monkeypatch):
+    async def fake_raw(method, path, body="", follow_redirects=False):
+        raise AssertionError("must not reach the device for a foreign path")
+    monkeypatch.setattr(app_state, "_request_device_raw", fake_raw)
+    r = client.post("/api/recordings/series/bulk-delete",
+                    json={"recordings_path": "/server/info",
+                          "filter": "watched"})
+    assert r.status_code == 400
+
+
 def test_conflicts_passes_through(authed, monkeypatch):
     seen = {}
 
