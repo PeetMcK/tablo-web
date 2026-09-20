@@ -320,21 +320,17 @@ export function SeriesDetail({
                 </div>
               </div>
 
-              {/* Danger zone */}
+              {/* Danger zone. Turning the rule off on its own is already the
+                  "Off" segment above, so this holds only the destructive
+                  combination: stop future recordings AND delete what's here. */}
               {canConfigure && (
                 <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
                   <button
-                    onClick={() => setRule("none")}
-                    className="px-3 py-1.5 rounded-lg text-sm font-medium border border-border hover:bg-fill"
-                  >
-                    Stop recording
-                  </button>
-                  <button
                     onClick={() =>
                       setConfirm({
-                        title: `Stop recording ${card.title} and delete everything?`,
-                        body: "The rule is turned off and all unprotected episodes are deleted. Protected episodes are kept.",
-                        confirmLabel: "Stop & delete",
+                        title: `Turn off ${card.title} and delete all episodes?`,
+                        body: "The recording rule is turned off so no future episodes record, and every unprotected episode already recorded is deleted. Protected episodes are kept.",
+                        confirmLabel: "Turn off & delete all",
                         danger: true,
                         onConfirm: () => {
                           setRule("none");
@@ -344,7 +340,7 @@ export function SeriesDetail({
                     }
                     className="px-3 py-1.5 rounded-lg text-sm font-medium bg-danger-solid/15 text-danger hover:bg-danger-solid/25"
                   >
-                    Stop & delete everything
+                    Turn off &amp; delete all
                   </button>
                 </div>
               )}
