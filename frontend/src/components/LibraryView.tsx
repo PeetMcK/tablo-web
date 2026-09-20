@@ -988,7 +988,11 @@ export function LibraryView() {
                           </span>
                         )}
                         {rec.protected && (
-                          <span className="w-6 h-6 rounded-full bg-ink/80 flex items-center justify-center text-warning"
+                          // Same vertical box as the New/Watched chips (px-1.5
+                          // py-1) so the row height never changes whether or not
+                          // the lock is present — a taller circle nudged the
+                          // chip beside it by a couple of pixels.
+                          <span className="flex items-center px-1.5 py-1 rounded bg-ink/80 text-warning"
                                 title="Protected from deletion"
                                 aria-label="Protected from deletion">
                             <Lock className="w-3.5 h-3.5" aria-hidden />
