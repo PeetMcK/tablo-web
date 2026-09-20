@@ -242,7 +242,10 @@ async def channels_commit(body: CommitIn):
     it is hidden from the guide and no longer tunable. See docs/tablo-api.md.
     """
     _require_auth()
-    await state.request_device(
+    # Commit answers 204 with an empty body, so go through the raw request:
+    # request_device would call .json() on nothing and raise. Signature covers
+    # the path; the body is the lineup array.
+    await state._request_device_raw(
         "POST",
         f"/channels/scans/{body.scan_id}/commit",
         _json.dumps(body.paths, separators=(",", ":")),
@@ -262,7 +265,9 @@ async def guide_update():
     device then refreshes asynchronously; poll /server/guide/status for progress.
     """
     _require_auth()
-    await state.request_device("POST", "/server/guide/refresh")
+    # 204 with an empty body — use the raw request so request_device does not
+    # try to .json() nothing.
+    await state._request_device_raw("POST", "/server/guide/refresh")
     return {"ok": True, "noop": False}
 
 

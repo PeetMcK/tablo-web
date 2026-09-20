@@ -248,12 +248,14 @@ def test_scan_status(authed, monkeypatch):
 
 
 def test_commit_forwards_the_array(authed, monkeypatch):
+    # Commit returns 204 (empty), so the route uses _request_device_raw, not
+    # request_device (which would .json() nothing and raise).
     seen = {}
 
-    async def fake_request(method, path, body=""):
+    async def fake_raw(method, path, body="", follow_redirects=False):
         seen["method"], seen["path"], seen["body"] = method, path, body
-        return {}
-    monkeypatch.setattr(app_state, "request_device", fake_request)
+        return object()
+    monkeypatch.setattr(app_state, "_request_device_raw", fake_raw)
     paths = ["/channels/scans/discovered/1", "/channels/scans/discovered/2"]
     r = client.post("/api/settings/channels/commit",
                     json={"scan_id": "77", "paths": paths})
@@ -267,12 +269,13 @@ def test_commit_forwards_the_array(authed, monkeypatch):
 # --- No-op writes ----------------------------------------------------------
 
 def test_guide_update_triggers_a_refresh(authed, monkeypatch):
+    # Refresh returns 204 (empty) → route uses _request_device_raw.
     seen = {}
 
-    async def fake(method, path, body=""):
+    async def fake_raw(method, path, body="", follow_redirects=False):
         seen["method"], seen["path"] = method, path
-        return {}
-    monkeypatch.setattr(app_state, "request_device", fake)
+        return object()
+    monkeypatch.setattr(app_state, "_request_device_raw", fake_raw)
     r = client.post("/api/settings/guide/update")
     assert r.status_code == 200
     assert r.json() == {"ok": True, "noop": False}
