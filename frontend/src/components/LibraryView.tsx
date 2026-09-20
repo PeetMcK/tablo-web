@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2 } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -246,10 +246,10 @@ export function LibraryView() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
   });
 
-  const clearCover = useMutation({
-    mutationFn: (id: number) => api.clearRecordingCover(id),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
-  });
+  // The "remove custom picture" control is hidden for now (placement TBD), so
+  // its mutation is parked here rather than deleted — restore the button in the
+  // bottom-left cluster and re-add `api.clearRecordingCover` when its spot is
+  // decided.
 
   /**
    * Watched / protected toggles, optimistic against the cached listing.
@@ -275,13 +275,38 @@ export function LibraryView() {
     [qc],
   );
 
-  const setWatched = useMutation({
-    mutationFn: ({ id, watched }: { id: number; watched: boolean }) =>
-      api.setRecordingWatched(id, watched),
-    onMutate: async ({ id, watched }) => {
+  /**
+   * Marking watched and un-marking are asymmetric because of how the device
+   * stores it (measured on-device):
+   *   - `{watched:true}`  sets watched AND forces `position` to 0.
+   *   - `{position:>0}`    sets the position AND clears `watched`.
+   *   - `{watched:false}` clears watched but leaves position — so un-marking a
+   *     watched recording (whose position the device already reset to 0) would
+   *     read as **New** (position 0, not watched).
+   * To un-mark without it flashing back to New, we write `position:1` instead:
+   * that clears watched and lands it at "seen / in progress", never New. See
+   * docs/tablo-api.md.
+   */
+  const markWatched = useMutation({
+    mutationFn: (id: number) => api.setRecordingWatched(id, true),
+    onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: ["recordings"] });
       const prev = qc.getQueryData<RecordingList>(["recordings"]);
-      patchRow(id, { watched });
+      patchRow(id, { watched: true, position: 0 });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["recordings"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recordings"] }),
+  });
+
+  const markUnwatched = useMutation({
+    mutationFn: (id: number) => api.setRecordingPosition(id, 1),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: ["recordings"] });
+      const prev = qc.getQueryData<RecordingList>(["recordings"]);
+      patchRow(id, { watched: false, position: 1 });
       return { prev };
     },
     onError: (_e, _v, ctx) => {
@@ -852,31 +877,35 @@ export function LibraryView() {
                     )}
                   </div>
 
-                  {/* Top-right cluster: watched + protect toggles. The
-                      affirmative icon (watched eye / locked lock) is persistent;
-                      the negative (mark-watched / protect) appears only on card
-                      hover. Watched left, protect right. Each stops propagation
-                      so a tap toggles rather than starting playback. Skipped
-                      while recording — neither applies to a growing file. */}
+                  {/* Top-right cluster: watched + protect TOGGLES. These are
+                      hover-only controls (persistent state lives in the
+                      bottom-left status cluster instead), revealed on hover
+                      ANYWHERE on the card — `group-hover:` uses the card root's
+                      `group`, not the picture's `group/art`. Watched left,
+                      protect right. Each stops propagation so a tap toggles
+                      rather than starting playback. Skipped while recording —
+                      neither applies to a growing file. */}
                   {!isRecording(rec) && (
-                    <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5
+                                    opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
                       <button
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          setWatched.mutate({ id: rec.object_id, watched: !rec.watched });
+                          // Un-mark via position:1 (clears watched without New);
+                          // mark via watched:true. See the mutations above.
+                          if (rec.watched) markUnwatched.mutate(rec.object_id);
+                          else markWatched.mutate(rec.object_id);
                         }}
                         title={rec.watched ? "Mark unwatched" : "Mark watched"}
                         aria-label={rec.watched ? "Mark unwatched" : "Mark watched"}
                         aria-pressed={rec.watched}
-                        className={`z-20 w-7 h-7 rounded-full glass flex items-center justify-center
-                                    text-media-fg hover:bg-fill transition
-                                    ${rec.watched ? "opacity-100"
-                                                  : "opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100"}`}
+                        className="z-20 w-7 h-7 rounded-full glass flex items-center justify-center
+                                   text-media-fg hover:bg-fill transition"
                       >
                         {rec.watched
-                          ? <Eye className="w-3.5 h-3.5" aria-hidden />
-                          : <EyeOff className="w-3.5 h-3.5" aria-hidden />}
+                          ? <EyeOff className="w-3.5 h-3.5" aria-hidden />
+                          : <Eye className="w-3.5 h-3.5" aria-hidden />}
                       </button>
                       <button
                         onClick={(e) => {
@@ -887,14 +916,12 @@ export function LibraryView() {
                         title={rec.protected ? "Remove protection" : "Protect from deletion"}
                         aria-label={rec.protected ? "Remove protection" : "Protect from deletion"}
                         aria-pressed={rec.protected}
-                        className={`z-20 w-7 h-7 rounded-full glass flex items-center justify-center
-                                    text-media-fg hover:bg-fill transition
-                                    ${rec.protected ? "opacity-100"
-                                                    : "opacity-0 group-hover/art:opacity-100 focus-visible:opacity-100"}`}
+                        className="z-20 w-7 h-7 rounded-full glass flex items-center justify-center
+                                   text-media-fg hover:bg-fill transition"
                       >
                         {rec.protected
-                          ? <Lock className="w-3.5 h-3.5" aria-hidden />
-                          : <LockOpen className="w-3.5 h-3.5" aria-hidden />}
+                          ? <LockOpen className="w-3.5 h-3.5" aria-hidden />
+                          : <Lock className="w-3.5 h-3.5" aria-hidden />}
                       </button>
                     </div>
                   )}
@@ -930,42 +957,40 @@ export function LibraryView() {
                       recordings had captured four seconds, eight seconds and
                       3.7 minutes of an hour, and the device reported no error
                       for any of them: this bar is the only thing that says so. */}
-                  {/* Bottom-left cluster: the NEW chip (persistent) with the
-                      "use the show's own picture again" undo button to its LEFT.
-                      NEW shows for a recording never started (position 0, not
-                      watched). The undo appears on hover only, and only while the
-                      picture is one the viewer picked — sitting left of NEW, they
-                      coexist. Clear of the badges opposite and of the strip's
-                      reach along the bottom edge; above the strip in z-order, or
-                      the band would take the click and start playing. */}
-                  {(rec.cover_frame !== null ||
-                    (rec.position === 0 && !rec.watched && !isRecording(rec))) && (
-                    <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1.5">
-                      {rec.cover_frame !== null && (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            clearCover.mutate(rec.object_id);
-                          }}
-                          disabled={clearCover.isPending}
-                          title="Use the show's own picture again"
-                          aria-label="Use the show's own picture again"
-                          className="w-7 h-7 rounded-full glass flex items-center justify-center
-                                     text-media-fg opacity-0 group-hover/art:opacity-100
-                                     focus-visible:opacity-100 hover:bg-fill transition
-                                     disabled:opacity-40"
-                        >
-                          <Undo2 className="w-3.5 h-3.5" aria-hidden />
-                        </button>
-                      )}
-                      {rec.position === 0 && !rec.watched && !isRecording(rec) && (
-                        <span className="px-2 py-1 rounded bg-accent text-[10px] font-bold text-accent-fg uppercase tracking-wider">
-                          New
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  {/* Bottom-left cluster: persistent STATUS. A New or Watched
+                      chip (mutually exclusive; nothing when in progress) and,
+                      when protected, a colourful lock — sitting to the right of
+                      the chip, or alone in the corner when the show is neither
+                      new nor watched. No hover involved; the toggles live in the
+                      top-right hover cluster. Above the strip in z-order so the
+                      band cannot take a click. (The "remove custom picture" undo
+                      is intentionally hidden for now — placement TBD.) */}
+                  {(() => {
+                    const isNew = rec.position === 0 && !rec.watched && !isRecording(rec);
+                    const isWatched = rec.watched && !isRecording(rec);
+                    if (!isNew && !isWatched && !rec.protected) return null;
+                    return (
+                      <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1.5">
+                        {isNew && (
+                          <span className="px-2 py-1 rounded bg-accent text-[10px] font-bold text-accent-fg uppercase tracking-wider">
+                            New
+                          </span>
+                        )}
+                        {isWatched && (
+                          <span className="px-2 py-1 rounded bg-ink/80 text-[10px] font-bold text-media-fg-muted uppercase tracking-wider">
+                            Watched
+                          </span>
+                        )}
+                        {rec.protected && (
+                          <span className="w-6 h-6 rounded-full bg-ink/80 flex items-center justify-center text-warning"
+                                title="Protected from deletion"
+                                aria-label="Protected from deletion">
+                            <Lock className="w-3.5 h-3.5" aria-hidden />
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {span && (
                     <CoverageStrip

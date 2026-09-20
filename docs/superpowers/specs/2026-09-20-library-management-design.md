@@ -16,6 +16,37 @@ Recordings spec (`2026-09-20-recordings-page-design.md`) on the Library card.
 Library shows episodes directly; the Recordings *series* page is a separate,
 deferred build.
 
+## Revision — status/toggle redesign (2026-09-20)
+
+Supersedes the card-overlay and watched-toggle details below where they differ:
+
+- **Bottom-left = persistent STATUS** (no hover): a **New** chip (`position===0
+  && !watched`) or a **Watched** chip (`watched`) — mutually exclusive, nothing
+  while in progress or recording. When **protected**, a **colourful lock** sits
+  to the right of the chip, or alone in the corner when the show is neither new
+  nor watched. (No persistent eye anymore; the chip carries watched status.)
+- **Top-right = hover-only TOGGLES**, revealed on hover **anywhere on the card**
+  (the card root's `group`, not the picture's `group/art`): eye (toggle watched)
+  + lock (toggle protect). Each shows the icon for the action it performs.
+- **Remove-custom-picture (Undo): hidden entirely** for now (placement TBD; the
+  `clearRecordingCover` call is parked, not deleted).
+- Watched thumbnail **dim** stays.
+
+**Watched toggle — device write rules (measured on-device):**
+- `{watched:true}` sets watched AND forces `position:0`.
+- `{position:>0}` sets the position AND clears `watched` (mutually exclusive).
+- `{watched:false}` clears watched but leaves position — so on an already-watched
+  recording (position already 0) it reads back as **New**.
+
+Therefore the toggle is asymmetric:
+- **Mark watched** → `POST /watched {watched:true}`.
+- **Mark unwatched** → `POST /position {position:1}` (NOT `watched:false`): this
+  clears watched and lands at "seen / in progress", never New.
+
+Consequence: a genuinely-New recording marked watched then un-marked returns as
+In-progress (pos 1), not New — the device discards the original position on
+`watched:true`, so New is unrecoverable. This is intended.
+
 ## Non-goals
 
 - The whole **Recordings** tab (series management, rules, keep, padding,
