@@ -173,25 +173,34 @@ def test_series_detail_carries_guide_path(authed, monkeypatch):
 
 
 def test_series_airings_resolves_titled_rows(authed, monkeypatch):
+    def ep(oid, title, state):
+        return {
+            "object_id": oid,
+            "episode": {"title": title, "number": 1, "season_number": 1},
+            "airing_details": {
+                "datetime": "2026-09-20T20:00Z", "duration": 1800,
+                "show_title": "A",
+                "channel": {"channel": {"call_sign": "KUFM",
+                                        "major": 11, "minor": 5}}},
+            "schedule": {"state": state, "skip_reason": "none"}}
+
     async def fake(method, path, body=""):
-        if path == "/guide/series/9/episodes?state=requested&lh":
-            return ["/guide/series/episodes/500"]
+        # Plain /episodes (batch-able paths), NOT the &lh handle variant.
+        if path == "/guide/series/9/episodes":
+            return ["/guide/series/episodes/500", "/guide/series/episodes/501"]
         if path == "/batch":
-            return {"/guide/series/episodes/500": {
-                "object_id": 500,
-                "episode": {"title": "Pilot", "number": 1, "season_number": 1},
-                "airing_details": {
-                    "datetime": "2026-09-20T20:00Z", "duration": 1800,
-                    "show_title": "A",
-                    "channel": {"channel": {"call_sign": "KUFM",
-                                            "major": 11, "minor": 5}}},
-                "schedule": {"state": "scheduled", "skip_reason": "none"}}}
+            return {
+                "/guide/series/episodes/500": ep(500, "Pilot", "scheduled"),
+                "/guide/series/episodes/501": ep(501, "Old One", "none"),
+            }
         raise AssertionError(f"unexpected {method} {path}")
     monkeypatch.setattr(app_state, "request_device", fake)
     r = client.get("/api/recordings/series/airings",
                    params={"guide_path": "/guide/series/9", "state": "requested"})
     assert r.status_code == 200
-    row = r.json()[0]
+    rows = r.json()
+    assert len(rows) == 1                 # the "none"-state episode is filtered out
+    row = rows[0]
     assert row["title"] == "Pilot"
     assert row["channel"] == "KUFM"
     assert row["state"] == "scheduled"

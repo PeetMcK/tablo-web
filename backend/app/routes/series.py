@@ -219,24 +219,30 @@ async def series_airings(
 ):
     """This series' scheduled ("requested") or conflicted airings, titled.
 
-    Resolves `{guide_path}/episodes?state={state}&lh` (episode paths) then one
-    `POST /batch` — so, unlike the global airings list, these carry titles and
-    channels. `guide_path` is allow-listed.
+    `{guide_path}/episodes` returns plain, batch-able episode paths (the
+    `?state=…&lh` filtered variant returns lineup handles that `/batch` rejects
+    as "Malformed endpoint"). So resolve them all in one `POST /batch`, then keep
+    the ones whose `schedule.state` matches — giving titled rows with channels,
+    unlike the global lineup-handle list. `guide_path` is allow-listed.
     """
     _require_auth()
     if not _GUIDE_PATH.match(guide_path):
         raise HTTPException(status_code=400, detail="Not a guide series path")
+    want = "conflicted" if airing_state == "conflicted" else "scheduled"
     try:
         paths = await state.request_device(
-            "GET", f"{guide_path}/episodes?state={airing_state}&lh") or []
+            "GET", f"{guide_path}/episodes") or []
         resolved = {}
         if paths:
             resolved = await state.request_device(
-                "POST", "/batch", json.dumps(paths)) or {}
+                "POST", "/batch", json.dumps(paths[:300])) or {}
     except Exception:
         raise HTTPException(status_code=502,
                             detail="The Tablo could not be reached.") from None
-    rows = [_airing_row(resolved[p]) for p in paths if p in resolved]
+    rows = [
+        _airing_row(a) for a in resolved.values()
+        if (a.get("schedule") or {}).get("state") == want
+    ]
     rows.sort(key=lambda r: r.get("datetime") or "")
     return rows
 
