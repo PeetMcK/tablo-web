@@ -61,10 +61,11 @@ describe("hardware media keys (Media Session)", () => {
     delete (navigator as unknown as Record<string, unknown>).mediaSession;
   });
 
-  it("registers play/pause and seek action handlers", async () => {
+  it("registers play/pause, seek, and next/previous-track handlers", async () => {
     renderLive();
     await waitFor(() => {
-      for (const a of ["play", "pause", "seekbackward", "seekforward", "seekto"]) {
+      for (const a of ["play", "pause", "seekbackward", "seekforward",
+                       "nexttrack", "previoustrack", "seekto"]) {
         expect(handlers[a]).toBeTypeOf("function");
       }
     });

@@ -1482,6 +1482,12 @@ export function VideoPlayer({
       ms.setActionHandler("pause", () => togglePlay());
       ms.setActionHandler("seekbackward", (d) => skip(-(d.seekOffset ?? 10)));
       ms.setActionHandler("seekforward", (d) => skip(d.seekOffset ?? 10));
+      // AirPods (and most headphone remotes) map their gestures to
+      // next/previous track, not seek — a double squeeze is "next track". For a
+      // DVR that means jump a commercial: +30s forward, -30s back. Same skip
+      // path as the on-screen buttons.
+      ms.setActionHandler("nexttrack", () => skip(30));
+      ms.setActionHandler("previoustrack", () => skip(-30));
       ms.setActionHandler("seekto", (d) => {
         if (typeof d.seekTime === "number") {
           seekTo(rangeStartRef.current + d.seekTime);
@@ -1491,8 +1497,8 @@ export function VideoPlayer({
       // A browser may not support every action; the ones it took still work.
     }
     return () => {
-      for (const a of ["play", "pause", "seekbackward",
-                       "seekforward", "seekto"] as const) {
+      for (const a of ["play", "pause", "seekbackward", "seekforward",
+                       "nexttrack", "previoustrack", "seekto"] as const) {
         try { ms.setActionHandler(a, null); } catch { /* ignore */ }
       }
     };
