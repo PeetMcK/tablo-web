@@ -55,6 +55,52 @@ def test_upcoming_passes_through(authed, monkeypatch):
     assert r.json()[0]["identifier"].startswith("LH-")
 
 
+def test_series_index_merges_rule_and_counts(authed, monkeypatch):
+    _dispatch(monkeypatch, {
+        "/guide/shows?state=requested&lh": [
+            {"identifier": "C1_SHOW_X",
+             "schedule": {"rule": "all",
+                          "offsets": {"start": 0, "end": 0, "source": "none"}},
+             "keep": {"rule": "count", "count": 5},
+             "recordings_path": "/recordings/series/1"},
+        ],
+        "/recordings/shows": ["/recordings/series/1", "/recordings/sports/2"],
+        "/recordings/series/1": {
+            "object_id": 1, "path": "/recordings/series/1",
+            "series": {"title": "A", "genres": [], "description": "",
+                       "cover_image": {"image_id": 11}},
+            "show_counts": {"airing_count": 4, "unwatched_count": 3,
+                            "protected_count": 0},
+            "keep": {"rule": "none", "count": None},
+            "guide_path": "/guide/series/9"},
+        "/recordings/sports/2": {
+            "object_id": 2, "path": "/recordings/sports/2",
+            "series": {"title": "B", "cover_image": {"image_id": 22}},
+            "show_counts": {"airing_count": 1, "unwatched_count": 0,
+                            "protected_count": 1},
+            "keep": {"rule": "all", "count": None},
+            "guide_path": "/guide/sports/8"},
+    })
+    r = client.get("/api/recordings/series")
+    assert r.status_code == 200
+    items = {s["recordings_path"]: s for s in r.json()["series"]}
+    assert len(items) == 2
+
+    a = items["/recordings/series/1"]
+    assert a["rule"] == "all"            # from the guide join, not meta
+    assert a["keep"]["count"] == 5       # guide entry keep wins
+    assert a["unwatched_count"] == 3
+    assert a["kind"] == "series"
+    assert a["identifier"] == "C1_SHOW_X"
+    assert a["cover_image_id"] == 11
+
+    b = items["/recordings/sports/2"]
+    assert b["rule"] == "none"           # no active rule → none
+    assert b["identifier"] is None       # not settable without a guide handle
+    assert b["kind"] == "sports"
+    assert b["protected_count"] == 1
+
+
 def test_conflicts_passes_through(authed, monkeypatch):
     seen = {}
 

@@ -74,5 +74,66 @@ async def series_index():
     return {"series": await _compose_series_index()}
 
 
+def _kind_of(recordings_path: str) -> str | None:
+    parts = recordings_path.split("/")
+    return parts[2] if len(parts) > 2 else None
+
+
+_DEFAULT_OFFSETS = {"start": 0, "end": 0, "source": "none"}
+_DEFAULT_KEEP = {"rule": "none", "count": None}
+
+
 async def _compose_series_index() -> list[dict]:
-    return []
+    """Merge the two device views of a series.
+
+    `/guide/shows?state=requested&lh` is the live rule set — the only place the
+    rule, offsets and the settings `identifier` live; it returns full objects
+    keyed (for our purposes) by `recordings_path`. `/recordings/shows` is what
+    actually has recordings on disk. A recorded series with no active rule is
+    absent from the first list, so it lists with rule "none" and a null
+    identifier (settings disabled, cleanup still available). Per-series fetches
+    are bounded and tolerant — one flaky series drops itself, not the page.
+    """
+    guide = await _try("GET", "/guide/shows?state=requested&lh") or []
+    by_recpath = {g["recordings_path"]: g
+                  for g in guide if g.get("recordings_path")}
+    rec_paths = await _try("GET", "/recordings/shows") or []
+
+    sem = asyncio.Semaphore(8)
+
+    async def one(path: str) -> dict | None:
+        async with sem:
+            meta = await _try("GET", path)
+        if not meta:
+            return None
+        series = meta.get("series") or {}
+        counts = meta.get("show_counts") or {}
+        g = by_recpath.get(path)
+        if g:
+            sched = g.get("schedule") or {}
+            rule = sched.get("rule") or "none"
+            offsets = sched.get("offsets") or dict(_DEFAULT_OFFSETS)
+            keep = g.get("keep") or meta.get("keep") or dict(_DEFAULT_KEEP)
+            identifier = g.get("identifier")
+        else:
+            rule = "none"
+            offsets = dict(_DEFAULT_OFFSETS)
+            keep = meta.get("keep") or dict(_DEFAULT_KEEP)
+            identifier = None
+        return {
+            "recordings_path": path,
+            "identifier": identifier,
+            "kind": _kind_of(path),
+            "title": series.get("title") or "Untitled",
+            "cover_image_id": (series.get("cover_image") or {}).get("image_id"),
+            "rule": rule,
+            "keep": keep,
+            "offsets": offsets,
+            "episode_count": counts.get("airing_count", 0),
+            "unwatched_count": counts.get("unwatched_count", 0),
+            "protected_count": counts.get("protected_count", 0),
+            "conflict": False,
+        }
+
+    results = await asyncio.gather(*[one(p) for p in rec_paths])
+    return [r for r in results if r]
