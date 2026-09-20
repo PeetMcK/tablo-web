@@ -25,7 +25,7 @@ import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.state import state  # noqa: E402
+from app.state import state
 
 DELAY = 0.4  # seconds between requests; do not lower
 

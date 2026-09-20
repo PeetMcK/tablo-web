@@ -9,13 +9,11 @@ from types import SimpleNamespace
 from urllib.parse import urljoin
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field
 
 from .. import store
 from ..state import _run_sync, state
-from . import stream as stream_routes
-from ..vod_index import parse_vod_playlist
 from ..transcode_cache import (
     CacheFull,
     CacheState,
@@ -23,6 +21,8 @@ from ..transcode_cache import (
     TranscodeCache,
     resolve_within,
 )
+from ..vod_index import parse_vod_playlist
+from . import stream as stream_routes
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 

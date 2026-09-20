@@ -64,7 +64,7 @@ class VodIndex:
             lines.append("#EXT-X-ENDLIST")
         return "\n".join(lines) + "\n"
 
-    def extended_with(self, fresh: "VodIndex") -> "VodIndex":
+    def extended_with(self, fresh: VodIndex) -> VodIndex:
         """This index plus whatever a later read of the same playlist added.
 
         Accumulating rather than replacing, because a segment's name here is its

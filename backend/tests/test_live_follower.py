@@ -5,12 +5,15 @@ does, rather than pulling in an async plugin convention this suite does not use.
 """
 
 import asyncio
-
-import pytest
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.live_follower import (
-    DeviceSegment, RingFollower, parse_device_playlist, variant_of,
+    DeviceSegment,
+    RingFollower,
+    parse_device_playlist,
+    variant_of,
 )
 from app.live_ring import SegmentRing
 

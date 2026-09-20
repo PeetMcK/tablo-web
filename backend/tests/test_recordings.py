@@ -4,8 +4,8 @@ import asyncio
 import signal
 import struct
 import time
-from datetime import datetime, timedelta, timezone
 from collections import deque
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -13,9 +13,9 @@ from fastapi.testclient import TestClient
 
 from app import store
 from app.main import app
-from app.transcode_cache import _BIF_MAGIC
 from app.state import AppState
 from app.transcode_cache import (
+    _BIF_MAGIC,
     MAX_ONDEMAND_WINDOWS,
     SEGMENT_SECONDS,
     WINDOW_SECONDS,
@@ -296,8 +296,8 @@ def test_protect_endpoint_requires_auth():
 
 
 def test_cancel_keep_stops_unpins_and_clears_error_keeping_cache(monkeypatch):
-    from app.state import state as app_state
     from app.routes import recordings as rec_routes
+    from app.state import state as app_state
     monkeypatch.setattr(type(app_state), "is_authenticated",
                         property(lambda self: True))
     calls = {"stop": False, "pinned": None, "error": "unset", "evicted": False}
