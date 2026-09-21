@@ -413,3 +413,77 @@ def test_a_failing_refresh_is_swallowed(monkeypatch):
 
     assert asyncio.run(
         schedule_routes.refresh_series_airings("/guide/series/6472")) == 0
+
+
+# ---------------------------------------------------------------------------
+# What the sheet asks for when it opens
+#
+# The mirror is a sync behind, and a sync can be hours old or have failed
+# outright: measured 2026-09-21, the mirror said a series recorded "new" while
+# the device said "all", and called an episode scheduled after it had been
+# turned off in the Tablo app. The sheet asks the device rather than rendering
+# yesterday's answer.
+# ---------------------------------------------------------------------------
+
+def test_the_live_state_comes_from_the_device_not_the_mirror(authed, monkeypatch):
+    rows, start = _guide(time.time(), schedule_state="scheduled")
+    store.save_guide(rows)
+    store.save_series([{
+        "path": "/guide/series/6472", "identifier": "X", "title": "Finding",
+        "description": None, "genres": [], "rating": None, "orig_air_date": None,
+        "episode_runtime": None, "cast": [], "cover_image_id": None,
+        "thumbnail_image_id": None, "background_image_id": None,
+        "schedule_rule": "new", "keep_rule": "none", "keep_count": None,
+    }])
+
+    async def fake(method, path, body=""):
+        if path == "/guide/series/episodes/67388":
+            return {"schedule": {"state": "unscheduled", "skip_reason": "none"}}
+        if path == "/guide/series/6472":
+            return {"schedule_rule": "all"}
+        raise AssertionError(f"unexpected {method} {path}")
+    monkeypatch.setattr(app_state, "request_device", fake)
+
+    r = client.get("/api/schedule/live", params={"channel": "ch1", "start": start})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["schedule_state"] == "unscheduled"
+    assert body["scheduled"] is False
+    assert body["series_rule"] == "all"
+
+
+def test_the_live_state_is_written_back_to_the_mirror(authed, monkeypatch):
+    """So every other view converges on it without waiting for a sync."""
+    rows, start = _guide(time.time(), schedule_state="scheduled")
+    store.save_guide(rows)
+
+    async def fake(method, path, body=""):
+        if path == "/guide/series/episodes/67388":
+            return {"schedule": {"state": "unscheduled", "skip_reason": "none"}}
+        return {"schedule_rule": "all"}
+    monkeypatch.setattr(app_state, "request_device", fake)
+
+    client.get("/api/schedule/live", params={"channel": "ch1", "start": start})
+
+    assert store.airing_detail("ch1", start)["scheduled"] is False
+
+
+def test_the_live_state_of_an_airing_we_do_not_have_is_a_404(authed):
+    r = client.get("/api/schedule/live",
+                   params={"channel": "nope", "start": "2026-01-01T00:00Z"})
+    assert r.status_code == 404
+
+
+def test_a_device_that_will_not_answer_says_so(authed, monkeypatch):
+    """Rather than pretending the mirror's answer came from the device."""
+    rows, start = _guide(time.time(), schedule_state="scheduled")
+    store.save_guide(rows)
+
+    async def fake(method, path, body=""):
+        raise RuntimeError("device down")
+    monkeypatch.setattr(app_state, "request_device", fake)
+
+    r = client.get("/api/schedule/live", params={"channel": "ch1", "start": start})
+
+    assert r.status_code == 502

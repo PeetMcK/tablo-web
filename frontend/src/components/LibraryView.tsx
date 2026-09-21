@@ -606,6 +606,14 @@ export function LibraryView() {
           // for the Library means a recording still being written. Its live
           // edge is the same pictures, and we already hold them — so this
           // plays the recording there rather than tuning a second stream.
+          // This view owns a player, so it plays in place rather than routing
+          // to itself. "resume" is the ordinary entry point: the saved
+          // position, or the start when there is none.
+          onWatchRecording={() => {
+            setStartMode("resume");
+            setPlaying(infoFor);
+            setInfoFor(null);
+          }}
           onTune={() => { setStartMode("live"); setPlaying(infoFor); setInfoFor(null); }}
         />
       )}

@@ -8,6 +8,8 @@ import {
   recordingFor, recordingForSeries, useRecordingsInProgress,
 } from "../lib/useRecordingsInProgress";
 import { api } from "../api/tablo";
+import { loadResume, resumeKey } from "../lib/resume";
+import { writeRoute } from "../lib/route";
 import type { AiringDetail, SeriesRule } from "../api/tablo";
 
 interface Props {
@@ -84,6 +86,13 @@ interface Props {
    * onward - and offering to open what you just came from would loop.
    */
   backToSeries?: boolean;
+  /**
+   * Play the recording this sheet describes, resuming where it was left.
+   *
+   * Optional because only the Library has a player of its own; everywhere
+   * else the sheet routes to it, which the router addresses by recording id.
+   */
+  onWatchRecording?: (objectId: number) => void;
   /** Tune to this airing's channel. Only reachable while it is on air. */
   onTune: () => void;
 }
@@ -202,7 +211,7 @@ function whenLine(start: string, duration: number): string | null {
 export function ShowInfo({
   channel, start, channelLabel, recordingId, posterOverride,
   onClose, onDeleted, onDeleteConfirmed, onDeleteFailed, onOpenSeries,
-  backToSeries, onTune,
+  backToSeries, onWatchRecording, onTune,
 }: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
   // rather than freezing at whatever it was when opened.
@@ -263,6 +272,32 @@ export function ShowInfo({
       if (!live) return;
       if (rec === null && air === null) { setFailed(true); return; }
       setDetail(rec === null ? air : withAiringActions(rec, air));
+
+      // Then ask the device what it actually thinks. The mirror is a sync
+      // behind - measured, it called an episode scheduled after it had been
+      // turned off in the Tablo app, and reported a series rule the device had
+      // since changed. Second rather than first, so the sheet opens at mirror
+      // speed and corrects itself a moment later; a refusal leaves the
+      // mirror's answer standing, which beats a sheet that will not open.
+      if (start === null) return;
+      try {
+        const fresh = await api.airingLive(channel, start);
+        if (!live) return;
+        setDetail((d) => (d ? {
+          ...d,
+          schedule_state: fresh.schedule_state,
+          skip_reason: fresh.skip_reason,
+          scheduled: fresh.scheduled,
+          series: d.series
+            ? {
+                ...d.series,
+                schedule_rule: fresh.series_rule ?? d.series.schedule_rule,
+              }
+            : d.series,
+        } : d));
+      } catch {
+        // The mirror's answer stands.
+      }
     })();
 
     return () => { live = false; };
@@ -355,6 +390,17 @@ export function ShowInfo({
    * differ whenever a capture was stopped and restarted.
    */
   const deletable = recordingId ?? detail?.recording_id ?? null;
+
+  /**
+   * The recording this sheet can play, and how far into it someone got.
+   *
+   * Same id the delete acts on: whatever this sheet is about, there is one
+   * recording of it, and both controls mean that one.
+   */
+  const watchable = deletable;
+  const watchedAt = watchable != null
+    ? loadResume(resumeKey("recording", watchable))
+    : 0;
 
   /**
    * Delete the recording on the Tablo, and stop offering to.
@@ -546,7 +592,34 @@ export function ShowInfo({
               Always for a channel with no listings: what is missing there is
               the EPG data, not the channel, and watching it is the only thing
               this sheet is for. */}
-          {(noListing || detail?.airing_now) && (
+          {/* What pressing it does, said in the label. A recording resumes
+              where it was left, which is a surprise worth naming: the Library
+              card beside this one already says "Resume 16:56" rather than
+              making anyone guess.
+
+              The recording wins over the broadcast when both exist. It plays
+              from its first moment - the device serves one still being written
+              as HLS - so it is watching from the start rather than joining
+              half way through, and it needs no tuner. */}
+          {watchable != null && (
+            <button
+              onClick={() => (onWatchRecording
+                ? onWatchRecording(watchable)
+                // No player here: the Guide and the series panel have none.
+                // The Library route does, and addresses a recording by id.
+                : writeRoute({ tab: "library",
+                               watch: { kind: "recording", id: watchable } }))}
+              className="mt-6 w-full flex items-center justify-center gap-2
+                         px-4 py-2.5 rounded-xl text-sm font-semibold
+                         bg-accent text-accent-fg hover:opacity-90 transition
+                         focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              <Play className="w-4 h-4" aria-hidden />
+              {watchedAt > 0 ? "Continue Watching" : "Watch Now"}
+            </button>
+          )}
+
+          {watchable == null && (noListing || detail?.airing_now) && (
             <button
               onClick={onTune}
               className="mt-6 w-full flex items-center justify-center gap-2

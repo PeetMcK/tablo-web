@@ -805,6 +805,25 @@ export const api = {
    * (channel, start) is `guide_airing`'s primary key, so no new identifier
    * has to be carried through the guide for this.
    */
+  /**
+   * What the device says about this airing right now.
+   *
+   * The mirror behind `airingDetail` is a sync behind - six hours apart at
+   * best, and a sync can fail outright. Measured: after one did, it called an
+   * episode scheduled that had been turned off in the Tablo app, and reported
+   * a series rule the device had since changed.
+   */
+  airingLive: (channel: string, start: string) =>
+    req<{
+      schedule_state: string | null;
+      skip_reason: string | null;
+      scheduled: boolean;
+      series_rule: string | null;
+    }>(
+      `/schedule/live?channel=${encodeURIComponent(channel)}` +
+      `&start=${encodeURIComponent(start)}`,
+    ),
+
   airingDetail: (channel: string, start: string) =>
     req<AiringDetail>(
       `/channels/airing-detail?channel=${encodeURIComponent(channel)}` +

@@ -647,7 +647,15 @@ export function SeriesDetail({
           start={sheet.start}
           recordingId={sheet.recordingId}
           backToSeries
-          onClose={() => setSheet(null)}
+          onClose={() => {
+            setSheet(null);
+            // Whatever the sheet did - turned an episode off, changed the
+            // rule, deleted a recording - this panel is now describing the
+            // state from before it. Re-read rather than guess which.
+            qc.invalidateQueries({ queryKey: ["series-detail"] });
+            qc.invalidateQueries({ queryKey: ["series-airings"] });
+            qc.invalidateQueries({ queryKey: ["series"] });
+          }}
           onDeleted={() => {
             qc.invalidateQueries({ queryKey: ["series-detail"] });
             qc.invalidateQueries({ queryKey: ["series"] });

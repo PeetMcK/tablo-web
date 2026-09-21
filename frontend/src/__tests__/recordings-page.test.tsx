@@ -320,6 +320,22 @@ describe("Series detail", () => {
     expect(rec).not.toHaveBeenCalled();
   });
 
+  it("re-reads the series when the sheet closes, in case it changed something", async () => {
+    // The sheet can turn an episode off, change the rule, or delete a
+    // recording - all of which the panel behind it is now wrong about.
+    vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("no"));
+    const detail = vi.spyOn(api.series, "detail").mockResolvedValue(detailFor());
+    await open();
+    const readsBefore = detail.mock.calls.length;
+
+    fireEvent.click(await screen.findByRole("button", { name: /^ep a/i }));
+    await screen.findAllByRole("dialog");
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(detail.mock.calls.length).toBeGreaterThan(readsBefore));
+  });
+
   it("the series panel stays open behind the sheet", async () => {
     // Drill in and come back: closing the sheet must land where it was opened
     // from, with the list still scrolled where it was.
