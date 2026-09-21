@@ -1283,6 +1283,41 @@ describe("saying why it failed", () => {
       opened: true, bytesFed: 4096, videoStream: false,
     });
   });
+
+  it("says when a damaged batch was dropped, and only when the count moves", async () => {
+    // The tolerance that keeps a damaged recording playing is silent by
+    // design: the pump drops the refused batch and carries on. Silent is how
+    // it was found the hard way — a session that lost media looked identical
+    // to one that lost none. Stats arrive with every segment, so the line is
+    // tied to the count rising, not to the stats arriving.
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const { session, worker } = harness();
+    await session.start();
+
+    const stats = (videoDropped: number, audioDropped: number) => ({
+      data: {
+        type: "stats",
+        stats: { opened: true, bytesFed: 4096, videoStream: true, videoDropped, audioDropped },
+      },
+    } as MessageEvent);
+
+    worker.onmessage?.(stats(0, 0));
+    expect(warn.mock.calls.filter(([m]) => /damaged batch/.test(String(m)))).toHaveLength(0);
+
+    // One refused video batch: said once.
+    worker.onmessage?.(stats(1, 0));
+    const said = warn.mock.calls.filter(([m]) => /damaged batch/.test(String(m)));
+    expect(said).toHaveLength(1);
+    expect(said[0][1]).toMatchObject({ videoDropped: 1, audioDropped: 0 });
+
+    // The same counts again are the same damage, not new damage.
+    worker.onmessage?.(stats(1, 0));
+    expect(warn.mock.calls.filter(([m]) => /damaged batch/.test(String(m)))).toHaveLength(1);
+
+    // Audio counts too, and on its own.
+    worker.onmessage?.(stats(1, 1));
+    expect(warn.mock.calls.filter(([m]) => /damaged batch/.test(String(m)))).toHaveLength(2);
+  });
 });
 
 describe("seeking at or past the end of a recording", () => {

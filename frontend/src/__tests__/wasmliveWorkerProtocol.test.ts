@@ -23,6 +23,7 @@ function fakeDecoder(
     stats: vi.fn(() => ({
       bytesFed: 0, bytesDelivered: 0, opened: true, bytesAtOpen: 0, msToOpen: 0,
       videoStream: true, audioStream: true, videoFrames: 0, audioChunks: 0,
+      videoDropped: 0, audioDropped: 0,
     })),
     ...overrides,
   };

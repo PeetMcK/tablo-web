@@ -122,6 +122,17 @@ export interface DecoderStats {
   audioStream: boolean;
   videoFrames: number;
   audioChunks: number;
+  /**
+   * Read rounds whose decode was refused and dropped, by stream.
+   *
+   * The tolerance above keeps a damaged recording playing, and does it
+   * silently: the pump swallows the refusal and carries on. Without these, a
+   * session that lost media reads exactly like one that lost none, and the
+   * cost of surviving is invisible at the moment it is paid. See
+   * VIDEO_DECODE_FAIL_LIMIT.
+   */
+  videoDropped: number;
+  audioDropped: number;
 }
 
 export interface LibavDecoder {
@@ -277,6 +288,10 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   let firstByteAtMs: number | null = null;
   let videoFrames = 0;
   let audioChunks = 0;
+  // Cumulative, like the frame counts above: `reset` rebuilds the decoder for
+  // a seek but does not rewrite what this session has already been through.
+  let videoDropped = 0;
+  let audioDropped = 0;
 
   /**
    * Bound a call that may never return, and clean up either way.
@@ -515,6 +530,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           // the failures do not stop.
           videoFailStreak += 1;
           if (videoFailStreak > VIDEO_DECODE_FAIL_LIMIT) throw e;
+          videoDropped += 1;
           frames = [];
         }
         for (const frame of frames) out.video.push(toVideoFrame(frame));
@@ -546,6 +562,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           // Give up only if the failures do not stop.
           audioFailStreak += 1;
           if (audioFailStreak > AUDIO_DECODE_FAIL_LIMIT) throw e;
+          audioDropped += 1;
           decoded = [];
         }
         if (decoded.length) {
@@ -673,6 +690,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       audioStream: Boolean(audioStream),
       videoFrames,
       audioChunks,
+      videoDropped,
+      audioDropped,
     }),
 
     async flush() {
