@@ -106,4 +106,35 @@ describe("CaptionOverlay", () => {
 
     expect(container.querySelector('[aria-live="polite"]')).toBeTruthy();
   });
+
+  it("rests low while the chrome is hidden", () => {
+    const { frames, step } = manualFrames();
+    const { src, seek } = source([HELLO]);
+
+    const { container } = render(
+      <CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />,
+    );
+    seek(2);
+    step();
+
+    const box = container.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(box.getAttribute("data-raised")).toBe("false");
+  });
+
+  it("lifts clear of the transport when the chrome is showing", () => {
+    const { frames, step } = manualFrames();
+    const { src, seek } = source([HELLO]);
+
+    const { container } = render(
+      <CaptionOverlay source={() => src} enabled raised currentTime={() => 0} frames={frames} />,
+    );
+    seek(2);
+    step();
+
+    // The floor, not a lift: captions hold their resting height unless that
+    // would put them inside the transport band, and only then rise to its top
+    // edge. Which of the two applies is the window's business, not ours.
+    const box = container.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(box.getAttribute("data-raised")).toBe("true");
+  });
 });
