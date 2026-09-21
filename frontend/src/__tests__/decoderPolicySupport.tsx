@@ -9,7 +9,8 @@ import { vi } from "vitest";
 
 import type { Channel, Program, Recording } from "../api/tablo";
 import type { OpenOptions } from "../lib/wasmlive/open";
-import type { PlaybackSurface } from "../lib/playbackSurface";
+import type { CaptionCue } from "../lib/captions";
+import type { CaptionSource, PlaybackSurface } from "../lib/playbackSurface";
 
 export type { Channel, Program, Recording, OpenOptions };
 
@@ -64,8 +65,34 @@ export const REC: Recording = {
   has_preview: false,
 };
 
+/**
+ * A caption source a test drives directly.
+ *
+ * `announce` is what the session does the first time a cue arrives, which is
+ * the moment the CC button is allowed to appear.
+ */
+export function stubCaptions(cues: CaptionCue[] = []): CaptionSource & { announce(): void } {
+  const handlers = new Set<() => void>();
+  let seen = cues.length > 0;
+  return {
+    get available() { return seen; },
+    at: (seconds: number) =>
+      cues.find((c) => seconds >= c.startSeconds && seconds < c.endSeconds) ?? null,
+    on(_event: "change", handler: () => void) {
+      handlers.add(handler);
+      return () => { handlers.delete(handler); };
+    },
+    announce() { seen = true; handlers.forEach((fn) => fn()); },
+  };
+}
+
 /** A surface the player can hold, shaped only as far as the player reads it. */
-export function stubSurface(audioContext = "running"): PlaybackSurface {
+export function stubSurface(
+  audioContext = "running",
+  /* Left out by default, which is how the transcode fallback says it has no
+     captions — and how every caller written before captions existed behaves. */
+  captions?: CaptionSource,
+): PlaybackSurface {
   return {
     play: vi.fn().mockResolvedValue(undefined),
     pause: vi.fn(),
@@ -81,6 +108,7 @@ export function stubSurface(audioContext = "running"): PlaybackSurface {
     error: null,
     diagnostics: () => ({ kind: "wasm", audioContext }),
     on: () => () => {},
+    captions,
     destroy: vi.fn(),
   };
 }
