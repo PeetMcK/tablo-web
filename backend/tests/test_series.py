@@ -484,6 +484,40 @@ def test_settings_without_identifier_still_writes(authed, monkeypatch):
     assert calls == [("/guide/series/9", {"schedule": {"rule": "all"}})]
 
 
+def test_settings_channel_path_pins(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"guide_path": "/guide/series/9",
+                           "channel_path": "/guide/channels/5"})
+    assert r.status_code == 200
+    assert calls == [("/guide/series/9",
+                      {"schedule": {"channel_path": "/guide/channels/5"}})]
+
+
+def test_settings_channel_path_null_unpins(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"guide_path": "/guide/series/9", "channel_path": None})
+    assert r.status_code == 200
+    assert calls == [("/guide/series/9", {"schedule": {"channel_path": None}})]
+
+
+def test_settings_channel_path_omitted_not_written(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    client.patch("/api/recordings/series/settings",
+                 json={"guide_path": "/guide/series/9", "rule": "all"})
+    assert "channel_path" not in calls[0][1]["schedule"]
+
+
+def test_settings_rejects_non_channel_path(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"guide_path": "/guide/series/9",
+                           "channel_path": "/server/info"})
+    assert r.status_code == 400
+    assert calls == []
+
+
 def test_settings_rejects_non_guide_path(authed, monkeypatch):
     calls = _capture_patch(monkeypatch)
     r = client.patch("/api/recordings/series/settings",

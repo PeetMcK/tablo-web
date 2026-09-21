@@ -32,7 +32,8 @@ function detailFor(overrides: Partial<SeriesDetail> = {}): SeriesDetail {
             cover_image_id: null, kind: "series", guide_path: "/guide/series/9" },
     settings: { identifier: "C1", rule: "all",
                 keep: { rule: "count", count: 5 },
-                offsets: { start: 0, end: 0, source: "none" } },
+                offsets: { start: 0, end: 0, source: "none" },
+                channel_path: null },
     counts: {},
     episodes: [
       { object_id: 100, title: "Ep A", season_number: 3, episode_number: 1,
@@ -168,6 +169,7 @@ describe("Series detail", () => {
     vi.spyOn(api.series, "index").mockResolvedValue({ series: [CARD] });
     vi.spyOn(api.series, "schedule").mockResolvedValue([]);
     vi.spyOn(api.series, "detail").mockResolvedValue(detailFor());
+    vi.spyOn(api.series, "channels").mockResolvedValue([]);
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -257,6 +259,22 @@ describe("Series detail", () => {
     // Nothing to act on, so the bulk actions stay away.
     expect(screen.queryByRole("button", { name: /delete all/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /delete watched/i })).toBeNull();
+  });
+
+  it("the Channel control pins the rule to a channel and back to all", async () => {
+    vi.spyOn(api.series, "channels").mockResolvedValue([
+      { path: "/guide/channels/5", call_sign: "KSPS", number: "7.1" },
+      { path: "/guide/channels/9", call_sign: "PBS", number: "11.1" },
+    ]);
+    const spy = vi.spyOn(api.series, "update").mockResolvedValue({ identifier: "C1", echo: {} });
+    await open();
+    const sel = await screen.findByLabelText("Channel");
+    fireEvent.change(sel, { target: { value: "/guide/channels/5" } });
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(
+      { identifier: "C1", guide_path: "/guide/series/9", channel_path: "/guide/channels/5" }));
+    fireEvent.change(sel, { target: { value: "all" } });
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(
+      { identifier: "C1", guide_path: "/guide/series/9", channel_path: null }));
   });
 
   it("the Upcoming tab loads this series' airings in every state", async () => {

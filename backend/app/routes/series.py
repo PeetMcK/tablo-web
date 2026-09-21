@@ -32,6 +32,7 @@ router = APIRouter(prefix="/api/recordings", tags=["series"])
 # whatever we hand it, so an unvalidated path is an SSRF-shaped hole.
 _REC_PATH = re.compile(r"^/recordings/(series|sports|movies)/\d+$")
 _GUIDE_PATH = re.compile(r"^/guide/(series|sports|movies)/\d+$")
+_CHANNEL_PATH = re.compile(r"^/guide/channels/\d+$")
 
 
 def _require_auth() -> None:
@@ -507,6 +508,18 @@ async def series_airings(
     return rows
 
 
+async def _schedule_channel_path(guide_path: str | None) -> str | None:
+    """The rule's pinned channel, read from the guide *series* object.
+
+    Only that object carries `schedule.channel_path`; the `requested&lh`
+    projection reports the channel as `channel_identifier` instead, so settings
+    read the guide object for this one field."""
+    if not guide_path:
+        return None
+    g = await _try("GET", guide_path)
+    return ((g or {}).get("schedule") or {}).get("channel_path")
+
+
 async def _series_detail_by_guide(guide_path: str) -> dict:
     """Detail for a ruled series with nothing recorded yet — keyed on its guide
     series path. Meta/settings come from the ruled+catalog join; there are no
@@ -532,10 +545,52 @@ async def _series_detail_by_guide(guide_path: str) -> dict:
             "rule": r["rule"],
             "keep": r["keep"],
             "offsets": r["offsets"],
+            "channel_path": await _schedule_channel_path(guide_path),
         },
         "counts": r.get("show_counts") or {},
         "episodes": [],
     }
+
+
+def _channel_option(ad_channel: dict) -> dict | None:
+    """One channel a series airs on, from an airing's `airing_details.channel`."""
+    if not isinstance(ad_channel, dict):
+        return None
+    path = ad_channel.get("path")
+    if not path:
+        return None
+    inner = ad_channel.get("channel") or {}
+    major, minor = inner.get("major"), inner.get("minor")
+    number = f"{major}.{minor}" if major is not None and minor is not None else None
+    return {"path": path, "call_sign": inner.get("call_sign"), "number": number}
+
+
+@router.get("/series/channels")
+async def series_channels(guide_path: str = Query(...)):
+    """The distinct channels a series airs on — the choices for pinning its rule
+    to one channel. Derived from its upcoming airings; tolerant (empty on any
+    read failure) so the settings panel still opens."""
+    _require_auth()
+    if not _GUIDE_PATH.match(guide_path):
+        raise HTTPException(status_code=400, detail="Not a guide series path")
+    paths = await _try("GET", f"{guide_path}/episodes") or []
+    resolved = await _batch_resolve(paths)
+    by_path: dict[str, dict] = {}
+    for a in resolved.values():
+        if not isinstance(a, dict):
+            continue
+        opt = _channel_option((a.get("airing_details") or {}).get("channel") or {})
+        if opt and opt["path"] not in by_path:
+            by_path[opt["path"]] = opt
+
+    def _num_key(o: dict) -> tuple:
+        parts = (o.get("number") or "").split(".")
+        try:
+            return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+        except ValueError:
+            return (9999, 9999)
+
+    return sorted(by_path.values(), key=_num_key)
 
 
 @router.get("/series/detail")
@@ -587,6 +642,7 @@ async def series_detail(
     guide = await _try("GET", "/guide/shows?state=requested&lh") or []
     g = next((x for x in guide
               if x.get("recordings_path") == recordings_path), None)
+    channel_path = await _schedule_channel_path(meta.get("guide_path"))
     if g:
         sched = g.get("schedule") or {}
         settings = {
@@ -594,6 +650,7 @@ async def series_detail(
             "rule": sched.get("rule") or "none",
             "keep": g.get("keep") or meta.get("keep") or dict(_DEFAULT_KEEP),
             "offsets": sched.get("offsets") or dict(_DEFAULT_OFFSETS),
+            "channel_path": channel_path,
         }
     else:
         settings = {
@@ -601,6 +658,7 @@ async def series_detail(
             "rule": "none",
             "keep": meta.get("keep") or dict(_DEFAULT_KEEP),
             "offsets": dict(_DEFAULT_OFFSETS),
+            "channel_path": channel_path,
         }
 
     episodes = [_episode_row(ep) for ep in episode_objs]
@@ -645,6 +703,11 @@ class SeriesSettingsIn(BaseModel):
     rule: Literal["all", "new", "none"] | None = None
     keep: KeepIn | None = None
     offsets: OffsetsIn | None = None
+    # Pin the rule to one channel (`/guide/channels/N`) or `null` for all. `None`
+    # here is ambiguous with "omitted", so callers that mean "all channels" must
+    # send it explicitly — series_settings reads `model_fields_set` to tell them
+    # apart and only writes when the field was actually sent.
+    channel_path: str | None = None
 
 
 async def _patch_guide(path: str, body: dict) -> dict:
@@ -684,6 +747,10 @@ async def series_settings(body: SeriesSettingsIn):
             "start": start,
             "end": end,
         }
+    if "channel_path" in body.model_fields_set:
+        if body.channel_path is not None and not _CHANNEL_PATH.match(body.channel_path):
+            raise HTTPException(status_code=400, detail="Not a guide channel path")
+        schedule["channel_path"] = body.channel_path
     if schedule:
         echo["schedule"] = await _patch_guide(body.guide_path,
                                               {"schedule": schedule})
