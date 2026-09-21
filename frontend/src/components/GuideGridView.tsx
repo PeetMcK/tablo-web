@@ -1061,20 +1061,9 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
                       )}
                       {air.title}
                     </p>
-                    {(() => {
-                      // Prefer the real blurb; then a type word. "Live TV Event"
-                      // is reserved for actual live events — it used to be the
-                      // catch-all, which labelled untagged movies (a FAST movie
-                      // channel like MOVIES! GOLD) as live events.
-                      const genreLabel = air.genres?.length ? air.genres.join(" · ") : "";
-                      const sub = air.description
-                        || (air.kind === "movieAiring" ? "Movie"
-                            : air.kind === "sportEvent" ? "Live TV Event"
-                            : genreLabel);
-                      return sub ? (
-                        <p className="text-[10px] text-fg-muted line-clamp-1 mt-0.5">{sub}</p>
-                      ) : null;
-                    })()}
+                    <p className="text-[10px] text-fg-muted line-clamp-1 mt-0.5">
+                      {air.description || "Live TV Event"}
+                    </p>
                     {/* Per-airing progress bar, or coverage where something is
                         recording this: the same geometry the Library card and
                         the Live card draw, from the same function. */}
