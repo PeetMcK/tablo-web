@@ -8,7 +8,9 @@
  * nothing else.
  */
 
+import type { CaptionCue } from "../captions";
 import { log } from "../debug";
+import type { CaptionSource } from "../playbackSurface";
 import { initialFallbackState, reduceFallback } from "./fallback";
 import type { FallbackState } from "./fallback";
 import { MAX_QUEUED_FRAMES } from "./frameQueue";
@@ -199,6 +201,15 @@ export const ENDED_STILL_MS = 400;
  */
 export const ENDED_QUIET_SECONDS = 0.1;
 
+/**
+ * How many cues to keep behind the playhead.
+ *
+ * The overlay only ever asks what covers now, so history is kept solely so a
+ * small backward seek finds something rather than nothing. A three-hour
+ * recording would otherwise hold every caption of every hour played.
+ */
+export const CAPTION_QUEUE_LIMIT = 40;
+
 export interface SessionDeps {
   playlistUrl: string;
   /** When the backend opened this session, which media time is measured from. */
@@ -238,7 +249,7 @@ export interface SessionDeps {
 }
 
 export type SessionEvent =
-  | "ready" | "timeupdate" | "waiting" | "playing" | "ended" | "error";
+  | "ready" | "timeupdate" | "waiting" | "playing" | "ended" | "error" | "captions";
 
 export interface LiveSession {
   start(): Promise<void>;
@@ -258,6 +269,8 @@ export interface LiveSession {
   readonly seekable: readonly [number, number] | null;
   readonly paused: boolean;
   readonly failure: string | null;
+  /** Cues for this stream, in media time. See `CaptionSource`. */
+  readonly captions: CaptionSource;
   diagnostics(): Record<string, unknown>;
   on(event: SessionEvent, handler: () => void): () => void;
   destroy(): void;
@@ -295,6 +308,20 @@ export function createSession(deps: SessionDeps): LiveSession {
    * the seekable range disagree by however far apart the two origins are.
    */
   let ptsOffset: number | null = null;
+
+  /**
+   * Cues waiting to be shown, oldest first, in the decoder's PTS domain.
+   *
+   * Held raw rather than converted on arrival because `ptsOffset` is not known
+   * until the first audio chunk anchors the clock, and cues can arrive before
+   * it. Converting at the point of the question is one conversion instead of
+   * two, and it cannot be done too early.
+   */
+  let cues: CaptionCue[] = [];
+  /** Whether this stream has ever carried captions. Survives a seek. */
+  let captionsSeen = false;
+  const captionHandlers = new Set<() => void>();
+
   /** Media time of the first segment fed since the last reset. */
   let anchorMedia: number | null = null;
   /** Media time the decoder has been fed up to, which paces fetching. */
@@ -418,7 +445,10 @@ export function createSession(deps: SessionDeps): LiveSession {
     // Only media is filtered. An error or a set of counters from the old
     // decoder still describes something that went wrong, and dropping it would
     // hide the failure rather than the position.
-    if ((message.type === "video" || message.type === "audio") && message.epoch !== epoch) {
+    if (
+      (message.type === "video" || message.type === "audio" || message.type === "captions") &&
+      message.epoch !== epoch
+    ) {
       return;
     }
     if (message.type === "reset") {
@@ -438,6 +468,23 @@ export function createSession(deps: SessionDeps): LiveSession {
       }
       if (chunks.length) sawAudio = true;
       for (const chunk of chunks) deps.audio.push(chunk);
+      return;
+    }
+    if (message.type === "captions") {
+      captionsSeen = true;
+      for (const cue of message.cues) {
+        // The parser revises a cue as more of it arrives and re-sends it under
+        // the same start, so a repeat replaces rather than stacks.
+        const at = cues.findIndex((c) => c.startSeconds === cue.startSeconds);
+        if (at >= 0) cues[at] = cue; else cues.push(cue);
+      }
+      cues.sort((a, b) => a.startSeconds - b.startSeconds);
+      // A long recording would otherwise accumulate every caption of every
+      // hour played. Forty is more than a screen's worth of history, and the
+      // overlay only ever asks about now.
+      if (cues.length > CAPTION_QUEUE_LIMIT) cues = cues.slice(-CAPTION_QUEUE_LIMIT);
+      captionHandlers.forEach((fn) => fn());
+      emit("captions");
       return;
     }
     if (message.type === "booted") {
@@ -1060,6 +1107,11 @@ export function createSession(deps: SessionDeps): LiveSession {
       ptsOffset = null;
       anchorMedia = null;
       fedThroughMedia = null;
+      // The cues belong to where playback was, and their times are in an
+      // offset that is about to be re-derived. `captionsSeen` does not go with
+      // them: the channel is still a captioned one, and a CC button that
+      // vanished on every skip would flicker.
+      cues = [];
       // Bumped before the reset is posted, so a poll already awaiting a fetch
       // abandons what it is holding rather than sending it on afterwards.
       epoch += 1;
@@ -1115,6 +1167,29 @@ export function createSession(deps: SessionDeps): LiveSession {
     get paused() { return paused; },
     get failure() { return fallback.failed; },
 
+    captions: {
+      get available() { return captionsSeen; },
+
+      at(mediaSeconds: number) {
+        // Media time back into the decoder's, which is what the cues carry.
+        // Before the clock is anchored there is no offset to apply and no
+        // cue that could be right anyway; zero is as good an answer as any.
+        const raw = mediaSeconds - (ptsOffset ?? 0);
+        // Backwards: the newest cue covering a time is the one the parser
+        // revised last, and on a roll-up the spans overlap.
+        for (let i = cues.length - 1; i >= 0; i--) {
+          const cue = cues[i];
+          if (raw >= cue.startSeconds && raw < cue.endSeconds) return cue;
+        }
+        return null;
+      },
+
+      on(_event: "change", handler: () => void) {
+        captionHandlers.add(handler);
+        return () => { captionHandlers.delete(handler); };
+      },
+    },
+
     diagnostics: () => ({
       kind: "wasm",
       ...deps.audio.diagnostics(),
@@ -1131,6 +1206,8 @@ export function createSession(deps: SessionDeps): LiveSession {
       anchorMedia,
       fedThroughMedia,
       takenThrough,
+      captionsSeen,
+      captionCues: cues.length,
       // Whether the transport is waiting on the network or on its own pacing.
       // Answering that took a temporary instrumented build on 2026-09-17; it
       // should not need one again.

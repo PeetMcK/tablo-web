@@ -7,9 +7,31 @@
  * the rest of the player learning that anything changed.
  */
 
+import type { CaptionCue } from "./captions";
+
 export type SurfaceEvent =
   | "ready" | "timeupdate" | "waiting" | "playing" | "paused" | "ended" | "error"
   | "volumechange";
+
+/**
+ * Captions, where an implementation has any.
+ *
+ * `at` takes media seconds, which is the domain the whole player speaks;
+ * converting from whatever the decoder counts in is the implementation's job,
+ * so that nothing above this line learns the device has a clock of its own.
+ */
+export interface CaptionSource {
+  /**
+   * Whether this stream has been seen to carry captions.
+   *
+   * What the CC button is shown on. False until the first cue, so a stream
+   * with no captions never offers a control that would do nothing.
+   */
+  readonly available: boolean;
+  /** The cue covering this media time, or null. */
+  at(mediaSeconds: number): CaptionCue | null;
+  on(event: "change", handler: () => void): () => void;
+}
 
 /**
  * Where animation frames come from.
@@ -130,6 +152,17 @@ export interface PlaybackSurface {
    * and a mirror opened while playback is paused, both need this.
    */
   repaint?(): void;
+  /**
+   * Captions, when this implementation can produce them.
+   *
+   * Optional, and absent on the element-backed surface: an H.264 transcode
+   * carries none, so a surface with nothing to show says so by not having
+   * this. That is also what keeps the player's rule for showing its CC button
+   * to a single clause rather than a list of cases — transcode fallback,
+   * uncaptioned programming and a mid-session fallback all answer the same
+   * question the same way.
+   */
+  captions?: CaptionSource;
   destroy(): void;
 }
 
