@@ -336,6 +336,23 @@ describe("Series detail", () => {
       expect(detail.mock.calls.length).toBeGreaterThan(readsBefore));
   });
 
+  it("dismissing the sheet by its backdrop leaves the panel open", async () => {
+    // The sheet renders inside the panel, so a click on its backdrop bubbled
+    // to the panel's own outside-click and took both down - losing the place
+    // in the list the sheet was opened from.
+    vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("no"));
+    await open();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^ep a/i }));
+    const sheet = (await screen.findAllByRole("dialog"))
+      .find((d) => d.className.includes("z-[60]"))!;
+    fireEvent.click(sheet);
+
+    // The sheet is gone and the panel is not.
+    await waitFor(() => expect(screen.getAllByRole("dialog")).toHaveLength(1));
+    expect(screen.getByText("Episodes (2)")).toBeInTheDocument();
+  });
+
   it("the series panel stays open behind the sheet", async () => {
     // Drill in and come back: closing the sheet must land where it was opened
     // from, with the list still scrolled where it was.
