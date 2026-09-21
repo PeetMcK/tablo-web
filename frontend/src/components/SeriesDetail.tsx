@@ -239,6 +239,12 @@ export function SeriesDetail({
     queryFn: () => api.series.airings(guidePath!, "conflicted"),
     enabled: tab === "conflicts" && !!guidePath,
   });
+  // The channels this series airs on — the choices for pinning the rule.
+  const channels = useQuery({
+    queryKey: ["series-channels", guidePath],
+    queryFn: () => api.series.channels(guidePath!),
+    enabled: canConfigure && !!guidePath,
+  });
 
   // Padding steppers, in minutes. The device value (seconds) is the baseline;
   // once the viewer edits a field, `pad` holds their in-progress value. This
@@ -271,6 +277,9 @@ export function SeriesDetail({
               : {}),
             ...(body.offsets !== undefined
               ? { offsets: { ...prev.settings.offsets, ...body.offsets } }
+              : {}),
+            ...(body.channel_path !== undefined
+              ? { channel_path: body.channel_path }
               : {}),
           },
         };
@@ -314,6 +323,10 @@ export function SeriesDetail({
     if (guidePath)
       update.mutate({ identifier, guide_path: guidePath,
                      offsets: { start: s * 60, end: e * 60 } });
+  };
+  const setChannel = (channel_path: string | null) => {
+    if (guidePath)
+      update.mutate({ identifier, guide_path: guidePath, channel_path });
   };
   // Turning a rule off is a confirm (see Issue 2): a scheduled-but-unrecorded
   // series leaves the Recordings list entirely, a recorded one just stops
@@ -441,6 +454,45 @@ export function SeriesDetail({
                   ))}
                 </select>
               </div>
+
+              {/* Channel — pin the rule to one channel, or record on all.
+                  Shown only when the series' channels are known. */}
+              {(channels.data?.length ?? 0) > 0 && (() => {
+                const opts = channels.data ?? [];
+                const cur = settings?.channel_path ?? null;
+                const withCur = cur && !opts.some((o) => o.path === cur)
+                  ? [...opts, { path: cur, call_sign: null, number: null }]
+                  : opts;
+                const label = (o: { call_sign: string | null; number: string | null }) =>
+                  o.call_sign
+                    ? `${o.call_sign}${o.number ? ` ${o.number}` : ""}`
+                    : o.number ? `Channel ${o.number}` : "Pinned channel";
+                return (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span className="text-sm font-semibold">Channel</span>
+                      <span className="text-[11px] text-fg-muted">
+                        {cur ? "One channel only" : "Any channel it airs on"}
+                      </span>
+                    </div>
+                    <select
+                      value={cur ?? "all"}
+                      disabled={!canConfigure}
+                      onChange={(e) =>
+                        setChannel(e.target.value === "all" ? null : e.target.value)}
+                      aria-label="Channel"
+                      className="rounded-lg border border-border bg-fill-soft px-2.5 py-1.5 text-sm
+                                 font-medium text-fg disabled:opacity-50 focus:outline-none
+                                 focus-visible:ring-2 focus-visible:ring-accent"
+                    >
+                      <option value="all">All channels</option>
+                      {withCur.map((o) => (
+                        <option key={o.path} value={o.path}>{label(o)}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })()}
 
               {/* Padding */}
               <div className="flex items-center justify-between gap-3">
