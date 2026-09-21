@@ -335,28 +335,28 @@ def _capture_patch(monkeypatch, script=None):
 def test_settings_rule_maps_to_schedule_rule(authed, monkeypatch):
     calls = _capture_patch(monkeypatch)
     r = client.patch("/api/recordings/series/settings",
-                     json={"identifier": "C1_SHOW_X", "rule": "new"})
+                     json={"identifier": "C1_SHOW_X", "guide_path": "/guide/series/9", "rule": "new"})
     assert r.status_code == 200
-    assert calls == [("/guide/C1_SHOW_X", {"schedule": {"rule": "new"}})]
+    assert calls == [("/guide/series/9", {"schedule": {"rule": "new"}})]
 
 
 def test_settings_keep_count(authed, monkeypatch):
     calls = _capture_patch(monkeypatch)
     r = client.patch("/api/recordings/series/settings",
-                     json={"identifier": "C1_SHOW_X",
+                     json={"identifier": "C1_SHOW_X", "guide_path": "/guide/series/9",
                            "keep": {"rule": "count", "count": 5}})
     assert r.status_code == 200
-    assert calls == [("/guide/C1_SHOW_X",
+    assert calls == [("/guide/series/9",
                       {"keep": {"rule": "count", "count": 5}})]
 
 
 def test_settings_padding_seconds(authed, monkeypatch):
     calls = _capture_patch(monkeypatch)
     r = client.patch("/api/recordings/series/settings",
-                     json={"identifier": "C1_SHOW_X",
+                     json={"identifier": "C1_SHOW_X", "guide_path": "/guide/series/9",
                            "offsets": {"start": -300, "end": 1800}})
     assert r.status_code == 200
-    assert calls == [("/guide/C1_SHOW_X",
+    assert calls == [("/guide/series/9",
                       {"schedule": {"offsets": {"source": "show",
                                                 "start": -300, "end": 1800}}})]
 
@@ -364,23 +364,32 @@ def test_settings_padding_seconds(authed, monkeypatch):
 def test_settings_padding_defaults_to_source_none(authed, monkeypatch):
     calls = _capture_patch(monkeypatch)
     client.patch("/api/recordings/series/settings",
-                 json={"identifier": "C1", "offsets": {"start": 0, "end": 0}})
+                 json={"identifier": "C1", "guide_path": "/guide/series/9", "offsets": {"start": 0, "end": 0}})
     assert calls[0][1]["schedule"]["offsets"]["source"] == "none"
 
 
 def test_settings_rejects_unknown_key(authed, monkeypatch):
     _capture_patch(monkeypatch)
     r = client.patch("/api/recordings/series/settings",
-                     json={"identifier": "C1", "bogus": 1})
+                     json={"identifier": "C1", "guide_path": "/guide/series/9", "bogus": 1})
     assert r.status_code == 422
 
 
 def test_settings_retries_once_on_999(authed, monkeypatch):
     calls = _capture_patch(monkeypatch, script=[(999, {}), (200, {"ok": True})])
     r = client.patch("/api/recordings/series/settings",
-                     json={"identifier": "C1", "rule": "all"})
+                     json={"identifier": "C1", "guide_path": "/guide/series/9", "rule": "all"})
     assert r.status_code == 200
     assert len(calls) == 2
+
+
+def test_settings_rejects_non_guide_path(authed, monkeypatch):
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"identifier": "C1", "guide_path": "/server/info",
+                           "rule": "all"})
+    assert r.status_code == 400
+    assert calls == []   # never reaches the device
 
 
 def test_bulk_delete_forwards_filter(authed, monkeypatch):
