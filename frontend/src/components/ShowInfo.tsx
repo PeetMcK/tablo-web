@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeft, ChevronRight, Circle, CircleSlash, Layers, Play,
-  SlidersHorizontal, Square, Trash2, X,
+  Loader2, SlidersHorizontal, Square, Trash2, X,
 } from "lucide-react";
 import { recordedSpan } from "../lib/recording";
 import {
@@ -355,6 +355,15 @@ export function ShowInfo({
   const noListing = start === null && recordingId == null;
 
   /**
+   * Still waiting on the first answer about this programme.
+   *
+   * Not for a channel with no listing at all: there is nothing to wait for
+   * there, and the sheet is the row - it names the channel and offers to
+   * watch it.
+   */
+  const loading = !noListing && detail === null && !failed;
+
+  /**
    * Ask before a write that starts or stops a recording.
    *
    * Only when something is actually at stake: an airing that has not begun
@@ -539,6 +548,23 @@ export function ShowInfo({
         className="w-full min-h-0 overflow-y-auto rounded-3xl
                    bg-surface-overlay border border-border shadow-2xl shadow-shade"
       >
+        {/* One state, then the card - never half of it.
+
+            The actions are the trap here: they are drawn from the id the
+            opener already holds, so they rendered the instant the sheet did,
+            while the title, artwork and description waited on the fetch. That
+            read as a bare pair of buttons with a card popping in around them.
+
+            A press has to register, though, so this is a beat of "loading"
+            rather than an empty rectangle - and it is sized to nothing, so it
+            does not pretend to be the card that follows. */}
+        {loading ? (
+          <div role="status" className="flex items-center justify-center gap-3 p-10">
+            <Loader2 className="w-5 h-5 animate-spin text-fg-muted" aria-hidden />
+            <span className="text-sm text-fg-muted">Loading…</span>
+          </div>
+        ) : (
+        <>
         {/* Rendered only when there is art. A placeholder box at hero size
             reads as a failed image rather than as an absent one.
 
@@ -870,6 +896,8 @@ export function ShowInfo({
             <p role="alert" className="mt-3 text-xs text-danger">{writeError}</p>
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* The question, over the card rather than above it.
