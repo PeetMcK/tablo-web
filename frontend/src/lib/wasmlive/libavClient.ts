@@ -601,7 +601,13 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           captionPairs += pairs.length;
           captionTrack.add(seconds, pairs);
         }
-        out.captions = captionTrack.drain();
+        // At end of stream there is no later picture coming to settle the
+        // order, so whatever is still held has to go in as it stands — the
+        // alternative is losing the last second of captions on every
+        // recording.
+        out.captions = result === libav.AVERROR_EOF
+          ? captionTrack.flush()
+          : captionTrack.drain();
         captionCues += out.captions.length;
 
         const fin = result === libav.AVERROR_EOF;

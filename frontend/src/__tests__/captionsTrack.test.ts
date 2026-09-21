@@ -54,7 +54,8 @@ describe("createCaptionTrack", () => {
     feed(chars("HELLO"));
     feed([pair(0x14, 0x2d)]);   // CR
 
-    const cues = track.drain();
+    // `flush`, not `drain`: nothing newer is coming to settle the order.
+    const cues = track.flush();
     expect(cues.length).toBeGreaterThan(0);
     expect(cues.map((c) => c.text).join(" ")).toContain("HELLO");
     expect(cues[0].startSeconds).toBeGreaterThanOrEqual(0);
@@ -70,8 +71,8 @@ describe("createCaptionTrack", () => {
     feed(chars("HELLO"));
     feed([pair(0x14, 0x2d)]);
 
-    expect(track.drain().length).toBeGreaterThan(0);
-    expect(track.drain()).toEqual([]);
+    expect(track.flush().length).toBeGreaterThan(0);
+    expect(track.flush()).toEqual([]);
   });
 
   it("drops screen state on reset but stays a captioned stream", () => {
@@ -83,12 +84,55 @@ describe("createCaptionTrack", () => {
     feed(chars("HELLO"));
 
     track.reset();
-    expect(track.drain()).toEqual([]);
+    expect(track.flush()).toEqual([]);
     // A seek does not make the channel uncaptioned, and letting the button
     // vanish and come back would flicker on every skip.
     expect(track.seen).toBe(true);
 
     feed([pair(0x14, 0x2d)]);
-    expect(track.drain().every((c) => !c.text.includes("HELLO"))).toBe(true);
+    expect(track.flush().every((c) => !c.text.includes("HELLO"))).toBe(true);
+  });
+});
+
+describe("display order", () => {
+  /**
+   * The decoder hands packets over in decode order, a read round at a time.
+   * MPEG-2 reorders for B-frames, and a picture that belongs earlier in
+   * display order routinely arrives in the *next* round — so sorting within a
+   * round is not enough. 608 is a command stream, and bytes in the wrong order
+   * spell the wrong words: "[cheers, applause]" came out as
+   * "[cheerpps, alause]" against a live broadcast.
+   */
+  it("feeds pairs in PTS order even when they arrive out of it", () => {
+    const track = createCaptionTrack();
+    const step = 0.034;
+
+    // Build the whole sequence with its true times, then hand it over shuffled
+    // the way read-round boundaries shuffle it.
+    const seq: Array<{ t: number; p: CcPair }> = [];
+    let t = 0;
+    const plan = (pairs: CcPair[]) => { for (const p of pairs) { seq.push({ t, p }); t += step; } };
+    plan([pair(0x14, 0x25)]);   // RU2
+    plan([pair(0x14, 0x2d)]);   // CR
+    plan(chars("HELLO WORLD"));
+    plan([pair(0x14, 0x2d)]);   // CR
+
+    // Swap each adjacent pair of entries: a small, local reordering, which is
+    // exactly what a round boundary produces.
+    const shuffled = [...seq];
+    for (let i = 0; i + 1 < shuffled.length; i += 2) {
+      [shuffled[i], shuffled[i + 1]] = [shuffled[i + 1], shuffled[i]];
+    }
+    for (const { t: at, p } of shuffled) track.add(at, [p]);
+
+    const text = track.flush().map((c) => c.text).join(" ");
+    expect(text).toContain("HELLO WORLD");
+  });
+
+  it("holds a pair back until later pictures prove nothing earlier is coming", () => {
+    const track = createCaptionTrack();
+    track.add(10, [pair(0x14, 0x25)]);
+    // Nothing has arrived from far enough ahead to settle the order yet.
+    expect(track.drain()).toEqual([]);
   });
 });

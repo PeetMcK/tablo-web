@@ -56,7 +56,14 @@ describe("captions end to end", () => {
     // Real captions are words, not punctuation noise.
     const text = collected.map((c) => c.text).join(" ");
     expect(text).toMatch(/[A-Za-z]{3,}/);
-    expect(text.toLowerCase()).toContain("darkness");
+
+    // The exact sentence, not just a word from it. A loose match was what let
+    // a real ordering bug through: the pairs were being fed to the 608 state
+    // machine out of display order, so the words came out with their letters
+    // transposed - "[cheers, applause]" as "[cheerpps, alause]" - and any
+    // assertion looking for a single keyword still passed.
+    const flat = text.replace(/\s+/g, " ");
+    expect(flat).toContain("Elliot had shown them how to find light in the darkness.");
 
     for (const cue of collected) {
       expect(cue.endSeconds).toBeGreaterThan(cue.startSeconds);

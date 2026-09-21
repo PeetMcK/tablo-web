@@ -39,7 +39,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([HELLO]);
 
-    render(<CaptionOverlay source={src} enabled currentTime={() => 0} frames={frames} />);
+    render(<CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />);
     seek(2);
     step();
 
@@ -50,7 +50,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([HELLO]);
 
-    render(<CaptionOverlay source={src} enabled currentTime={() => 0} frames={frames} />);
+    render(<CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />);
     seek(5);
     step();
 
@@ -61,7 +61,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([HELLO]);
 
-    render(<CaptionOverlay source={src} enabled currentTime={() => 0} frames={frames} />);
+    render(<CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />);
     seek(2);
     step();
     expect(screen.getByText("HELLO")).toBeTruthy();
@@ -75,7 +75,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([HELLO]);
 
-    render(<CaptionOverlay source={src} enabled={false} currentTime={() => 0} frames={frames} />);
+    render(<CaptionOverlay source={() => src} enabled={false} currentTime={() => 0} frames={frames} />);
     seek(2);
     step();
 
@@ -86,7 +86,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([{ startSeconds: 0, endSeconds: 9, text: "FIRST\nSECOND" }]);
 
-    render(<CaptionOverlay source={src} enabled currentTime={() => 0} frames={frames} />);
+    render(<CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />);
     seek(1);
     step();
 
@@ -99,7 +99,7 @@ describe("CaptionOverlay", () => {
     const { src, seek } = source([{ startSeconds: 0, endSeconds: 9, text: "HELLO" }]);
 
     const { container } = render(
-      <CaptionOverlay source={src} enabled currentTime={() => 0} frames={frames} />,
+      <CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />,
     );
     seek(1);
     step();

@@ -300,7 +300,7 @@ interface PlayerView {
    * is what the button is rendered on. `surfaceTime` is a getter rather than a
    * number because the overlay reads it once per animation frame.
    */
-  captionSource: CaptionSource | null;
+  captionSourceAt: () => CaptionSource | null;
   captionsAvailable: boolean;
   captionsOn: boolean;
   toggleCaptions: () => void;
@@ -478,8 +478,6 @@ export function VideoPlayer({
   const [captionsOn, setCaptionsOn] = useState(() => {
     try { return localStorage.getItem("tablo.cc") === "1"; } catch { return false; }
   });
-  /** The surface's cues, or null where a surface has none to give. */
-  const [captionSource, setCaptionSource] = useState<CaptionSource | null>(null);
   /** Whether a caption has actually been seen on this stream. */
   const [captionsAvailable, setCaptionsAvailable] = useState(false);
 
@@ -491,6 +489,17 @@ export function VideoPlayer({
    * reading than that anyway.
    */
   const surfaceTime = useCallback(() => surfaceRef.current?.currentTime ?? 0, []);
+
+  /**
+   * The current surface's captions, read when asked rather than held.
+   *
+   * A getter for the same reason as the clock above: the player swaps
+   * surfaces - a rebuild, a fallback, a different recording - and a source
+   * captured in state goes on answering about the session the playhead has
+   * left. That drew nothing at all, with a cue lookup that was correct and
+   * a queue that belonged to somewhere else.
+   */
+  const captionSourceAt = useCallback(() => surfaceRef.current?.captions ?? null, []);
 
   const toggleCaptions = useCallback(() => {
     setCaptionsOn((was) => {
@@ -926,7 +935,6 @@ export function VideoPlayer({
      * never appears on a transcode, which has no caption source at all.
      */
     const captions = surface.captions ?? null;
-    setCaptionSource(captions);
     setCaptionsAvailable(captions?.available ?? false);
     if (captions) {
       offs.push(captions.on("change", () => setCaptionsAvailable(captions.available)));
@@ -2404,7 +2412,7 @@ export function VideoPlayer({
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
-    captionSource, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
+    captionSourceAt, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2592,7 +2600,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
-    captionSource, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
+    captionSourceAt, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2813,14 +2821,17 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           picture-in-picture window's — and a JSX `<video>` would give each
           root an element of its own. The stream is attached to one element
           through a MediaSource; a second would start from nothing. */}
-      <div ref={videoHostRef} className="w-full h-full" />
+      <div
+        ref={videoHostRef}
+        className="w-full h-full"
+      />
 
       {/* Over the picture, under the chrome. Not rendered into the pop-out:
           that window is fed a mirror of canvas pixels, and a DOM layer is not
           one of them. */}
-      {captionSource && !pip && (
+      {captionsAvailable && !pip && (
         <CaptionOverlay
-          source={captionSource}
+          source={captionSourceAt}
           enabled={captionsOn}
           currentTime={surfaceTime}
         />
