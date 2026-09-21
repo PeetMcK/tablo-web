@@ -12,7 +12,9 @@ its literal `/series`, `/upcoming`, `/conflicts` paths win over that router's
 """
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Literal
 
 import httpx
@@ -20,6 +22,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
 from ..state import state
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recordings", tags=["series"])
 
@@ -44,10 +48,10 @@ def _device_error(status: int, data: dict) -> HTTPException:
     return HTTPException(status_code=502, detail="The Tablo could not be reached.")
 
 
-async def _try(method: str, path: str):
+async def _try(method: str, path: str, body: str = ""):
     """A tolerant read: a failing sub-fetch becomes None, not a 500."""
     try:
-        return await state.request_device(method, path)
+        return await state.request_device(method, path, body)
     except Exception:
         return None
 
@@ -78,6 +82,17 @@ async def series_index():
     return {"series": await _compose_series_index()}
 
 
+@router.get("/schedule")
+async def schedule():
+    """Every upcoming airing of every series I record, titled and state-marked.
+
+    Rows carry `state` (`scheduled`/`skipped`/`conflicted`/`recording`) and
+    `skip_reason`, so what will *not* record is as visible as what will.
+    """
+    _require_auth()
+    return await _compose_schedule()
+
+
 def _kind_of(recordings_path: str) -> str | None:
     parts = recordings_path.split("/")
     return parts[2] if len(parts) > 2 else None
@@ -97,61 +112,225 @@ _DEFAULT_OFFSETS = {"start": 0, "end": 0, "source": "none"}
 _DEFAULT_KEEP = {"rule": "none", "count": None}
 
 
-async def _compose_series_index() -> list[dict]:
-    """Merge the two device views of a series.
+# identifier -> resolved catalog object, cached per device sid. The
+# `/guide/shows` catalog is ~884 shows and slow-changing; resolving it on every
+# Recordings load is wasteful, so we memoise it briefly.
+_RULED_CATALOG_CACHE: dict[str, tuple[float, dict[str, dict]]] = {}
+_RULED_CATALOG_TTL = 300.0  # seconds
+_BATCH_CHUNK = 48
 
-    `/guide/shows?state=requested&lh` is the live rule set — the only place the
-    rule, offsets and the settings `identifier` live; it returns full objects
-    keyed (for our purposes) by `recordings_path`. `/recordings/shows` is what
-    actually has recordings on disk. A recorded series with no active rule is
-    absent from the first list, so it lists with rule "none" and a null
-    identifier (settings disabled, cleanup still available). Per-series fetches
-    are bounded and tolerant — one flaky series drops itself, not the page.
+
+def _kind_of_guide(path: str | None) -> str | None:
+    if not path:
+        return None
+    parts = path.split("/")
+    return parts[2] if len(parts) > 2 else None
+
+
+async def _ruled_catalog_index(want_ids: set[str]) -> dict[str, dict]:
+    """Map each wanted rule `identifier` to its resolved catalog object.
+
+    The `requested&lh` rule set carries no title/cover/guide_path, and `/batch`
+    rejects SHOW identifiers, so the only join is `identifier` across the
+    `/guide/shows` catalog. Cached per device sid (TTL) because the catalog is
+    large and slow-changing; the scan early-exits once every wanted id is found.
     """
-    guide = await _try("GET", "/guide/shows?state=requested&lh") or []
-    by_recpath = {g["recordings_path"]: g
-                  for g in guide if g.get("recordings_path")}
-    rec_paths = await _try("GET", "/recordings/shows") or []
+    if not want_ids:
+        return {}
+    sid = getattr(state, "active_sid", None) or "_"
+    hit = _RULED_CATALOG_CACHE.get(sid)
+    if (hit and (time.monotonic() - hit[0]) < _RULED_CATALOG_TTL
+            and want_ids <= hit[1].keys()):
+        return {k: hit[1][k] for k in want_ids if k in hit[1]}
+    paths = await _try("GET", "/guide/shows") or []
+    index: dict[str, dict] = {}
+    for i in range(0, len(paths), _BATCH_CHUNK):
+        chunk = [p for p in paths[i:i + _BATCH_CHUNK] if isinstance(p, str)]
+        if not chunk:
+            continue
+        resolved = await _try("POST", "/batch", json.dumps(chunk)) or {}
+        for key, obj in resolved.items():
+            if isinstance(obj, dict) and obj.get("identifier"):
+                obj.setdefault("path", key)
+                index[obj["identifier"]] = obj
+        if want_ids <= index.keys():
+            break
+    _RULED_CATALOG_CACHE[sid] = (time.monotonic(), index)
+    return {k: index[k] for k in want_ids if k in index}
 
+
+async def resolve_ruled() -> list[dict]:
+    """Every series that has a recording rule, recorded or not.
+
+    The `requested&lh` rule set gives rule/keep/offsets/identifier and, for the
+    recorded ones, a recordings_path. A **recorded** ruled series is fleshed out
+    from its own recordings meta (title/cover/guide_path/counts) — no catalog
+    needed, so a catalog hiccup never costs a recorded series its rule. Only the
+    **unrecorded** ruled series (no recordings_path, invisible to the old
+    recorded-paths-only index) fall back to the `/guide/shows` catalog. Each
+    output dict carries title, cover, guide_path (for `/episodes`) and counts.
+    """
+    ruled = await _try("GET", "/guide/shows?state=requested&lh") or []
     sem = asyncio.Semaphore(8)
 
-    async def one(path: str) -> dict | None:
+    async def _meta(path: str) -> dict | None:
         async with sem:
-            meta = await _try("GET", path)
+            return await _try("GET", path)
+
+    recorded = [r for r in ruled if r.get("recordings_path")]
+    metas = await asyncio.gather(*[_meta(r["recordings_path"]) for r in recorded])
+    meta_by_path = {r["recordings_path"]: (m or {})
+                    for r, m in zip(recorded, metas)}
+    want = {r["identifier"] for r in ruled
+            if r.get("identifier") and not r.get("recordings_path")}
+    index = await _ruled_catalog_index(want)
+
+    out: list[dict] = []
+    for r in ruled:
+        ident = r.get("identifier")
+        sched = r.get("schedule") or {}
+        recpath = r.get("recordings_path")
+        if recpath:
+            meta = meta_by_path.get(recpath) or {}
+            show = _show_of(meta)
+            guide_path = meta.get("guide_path")
+            counts = meta.get("show_counts") or {}
+            kind = _kind_of(recpath)
+            keep = r.get("keep") or meta.get("keep") or dict(_DEFAULT_KEEP)
+        else:
+            cat = index.get(ident) if ident else None
+            if not cat:
+                if ident:
+                    logger.warning("ruled series %s not found in catalog", ident)
+                continue
+            show = _show_of(cat)
+            guide_path = cat.get("path")
+            counts = cat.get("show_counts") or {}
+            kind = _kind_of_guide(guide_path)
+            keep = r.get("keep") or cat.get("keep") or dict(_DEFAULT_KEEP)
+        out.append({
+            "identifier": ident,
+            "guide_path": guide_path,
+            "recordings_path": recpath,
+            "kind": kind,
+            "title": show.get("title") or "Untitled",
+            "cover_image_id": _img(show.get("cover_image")),
+            "rule": sched.get("rule") or "none",
+            "keep": keep,
+            "offsets": sched.get("offsets") or dict(_DEFAULT_OFFSETS),
+            "show_counts": counts,
+        })
+    return out
+
+
+def _card(*, recordings_path, identifier, guide_path, kind, title,
+          cover_image_id, rule, keep, offsets, counts) -> dict:
+    """The one card shape the Recordings grid consumes."""
+    return {
+        "recordings_path": recordings_path,
+        "identifier": identifier,
+        "guide_path": guide_path,
+        "kind": kind,
+        "title": title,
+        "cover_image_id": cover_image_id,
+        "rule": rule,
+        "keep": keep,
+        "offsets": offsets,
+        "episode_count": counts.get("airing_count", 0),
+        "unwatched_count": counts.get("unwatched_count", 0),
+        "protected_count": counts.get("protected_count", 0),
+        "failed_count": counts.get("failed_count", 0),
+        "scheduled_count": counts.get("scheduled_count", 0),
+        "conflict": (counts.get("conflicted_count", 0) or 0) > 0,
+    }
+
+
+async def _compose_series_index() -> list[dict]:
+    """Every series worth a card: the union of those with a rule (recorded or
+    not) and those with recordings but no rule.
+
+    `resolve_ruled()` supplies the ruled set with title/cover/guide_path even
+    when nothing is on disk yet — the case the old recorded-paths-only loop
+    dropped, so a scheduled-but-never-recorded series was invisible. Recorded
+    ruled series are enriched with real disk counts; recorded-but-unruled
+    series are then added from `/recordings/shows` with rule "none". Per-series
+    fetches are bounded and tolerant — one flaky series drops itself.
+    """
+    ruled = await resolve_ruled()
+    ruled_recpaths = {r["recordings_path"] for r in ruled if r.get("recordings_path")}
+    rec_paths = await _try("GET", "/recordings/shows") or []
+    sem = asyncio.Semaphore(8)
+
+    async def _meta(path: str) -> dict | None:
+        async with sem:
+            return await _try("GET", path)
+
+    cards: list[dict] = [
+        _card(
+            recordings_path=r.get("recordings_path"),
+            identifier=r["identifier"],
+            guide_path=r.get("guide_path"),
+            kind=r.get("kind"),
+            title=r["title"],
+            cover_image_id=r["cover_image_id"],
+            rule=r["rule"], keep=r["keep"], offsets=r["offsets"],
+            counts=r.get("show_counts") or {},
+        )
+        for r in ruled
+    ]
+
+    async def _unruled_card(path: str) -> dict | None:
+        if path in ruled_recpaths:
+            return None
+        meta = await _meta(path)
         if not meta:
             return None
-        series = _show_of(meta)
-        counts = meta.get("show_counts") or {}
-        g = by_recpath.get(path)
-        if g:
-            sched = g.get("schedule") or {}
-            rule = sched.get("rule") or "none"
-            offsets = sched.get("offsets") or dict(_DEFAULT_OFFSETS)
-            keep = g.get("keep") or meta.get("keep") or dict(_DEFAULT_KEEP)
-            identifier = g.get("identifier")
-        else:
-            rule = "none"
-            offsets = dict(_DEFAULT_OFFSETS)
-            keep = meta.get("keep") or dict(_DEFAULT_KEEP)
-            identifier = None
-        return {
-            "recordings_path": path,
-            "identifier": identifier,
-            "kind": _kind_of(path),
-            "title": series.get("title") or "Untitled",
-            "cover_image_id": (series.get("cover_image") or {}).get("image_id"),
-            "rule": rule,
-            "keep": keep,
-            "offsets": offsets,
-            "episode_count": counts.get("airing_count", 0),
-            "unwatched_count": counts.get("unwatched_count", 0),
-            "protected_count": counts.get("protected_count", 0),
-            "failed_count": counts.get("failed_count", 0),
-            "conflict": False,
-        }
+        show = _show_of(meta)
+        return _card(
+            recordings_path=path, identifier=None, guide_path=None,
+            kind=_kind_of(path), title=show.get("title") or "Untitled",
+            cover_image_id=_img(show.get("cover_image")),
+            rule="none", keep=meta.get("keep") or dict(_DEFAULT_KEEP),
+            offsets=dict(_DEFAULT_OFFSETS), counts=meta.get("show_counts") or {},
+        )
 
-    results = await asyncio.gather(*[one(p) for p in rec_paths])
-    return [r for r in results if r]
+    extra = await asyncio.gather(*[_unruled_card(p) for p in rec_paths])
+    cards.extend(c for c in extra if c)
+    return cards
+
+
+async def _compose_schedule() -> list[dict]:
+    """Every upcoming airing of every ruled series, titled and state-marked.
+
+    Scoped to the series I record (not the whole lineup). Each row keeps its
+    real `schedule.state`, so a rerun a "new" rule skips shows as such instead
+    of vanishing. A series whose `/episodes` read fails drops itself.
+    """
+    ruled = await resolve_ruled()
+    sem = asyncio.Semaphore(6)
+
+    async def _rows(r: dict) -> list[dict]:
+        gp = r.get("guide_path")
+        if not gp:
+            return []
+        async with sem:
+            paths = await _try("GET", f"{gp}/episodes") or []
+            resolved = (await _try("POST", "/batch", json.dumps(paths[:300]))
+                        if paths else {}) or {}
+        rows = []
+        for a in resolved.values():
+            if not isinstance(a, dict):
+                continue
+            row = _airing_row(a)
+            row["series_title"] = r["title"]
+            row["series_cover_image_id"] = r["cover_image_id"]
+            rows.append(row)
+        return rows
+
+    nested = await asyncio.gather(*[_rows(r) for r in ruled])
+    rows = [row for group in nested for row in group]
+    rows.sort(key=lambda x: x.get("datetime") or "")
+    return rows
 
 
 def _img(x) -> int | None:
@@ -215,8 +394,8 @@ def _airing_row(a: dict) -> dict:
 @router.get("/series/airings")
 async def series_airings(
     guide_path: str = Query(...),
-    airing_state: Literal["requested", "conflicted"] = Query("requested",
-                                                             alias="state"),
+    airing_state: Literal["requested", "conflicted", "all"] = Query(
+        "requested", alias="state"),
 ):
     """This series' scheduled ("requested") or conflicted airings, titled.
 
@@ -242,21 +421,64 @@ async def series_airings(
                             detail="The Tablo could not be reached.") from None
     rows = [
         _airing_row(a) for a in resolved.values()
-        if isinstance(a, dict) and (a.get("schedule") or {}).get("state") == want
+        if isinstance(a, dict)
+        and (airing_state == "all"
+             or (a.get("schedule") or {}).get("state") == want)
     ]
     rows.sort(key=lambda r: r.get("datetime") or "")
     return rows
 
 
+async def _series_detail_by_guide(guide_path: str) -> dict:
+    """Detail for a ruled series with nothing recorded yet — keyed on its guide
+    series path. Meta/settings come from the ruled+catalog join; there are no
+    on-disk episodes to list."""
+    if not _GUIDE_PATH.match(guide_path):
+        raise HTTPException(status_code=400, detail="Not a guide series path")
+    r = next((x for x in await resolve_ruled()
+              if x.get("guide_path") == guide_path), None)
+    if not r:
+        raise HTTPException(status_code=404,
+                            detail=f"Series {guide_path} not found")
+    return {
+        "meta": {
+            "title": r["title"],
+            "genres": [],
+            "description": None,
+            "cover_image_id": r["cover_image_id"],
+            "kind": r.get("kind"),
+            "guide_path": guide_path,
+        },
+        "settings": {
+            "identifier": r["identifier"],
+            "rule": r["rule"],
+            "keep": r["keep"],
+            "offsets": r["offsets"],
+        },
+        "counts": r.get("show_counts") or {},
+        "episodes": [],
+    }
+
+
 @router.get("/series/detail")
-async def series_detail(recordings_path: str = Query(...)):
+async def series_detail(
+    recordings_path: str | None = Query(None),
+    guide_path: str | None = Query(None),
+):
     """A series' meta, its live settings, and its episode list.
 
-    Settings (rule/offsets/identifier) come only from the guide-shows
-    projection; keep falls back to the series meta. Episodes are resolved in one
-    `POST /batch` over the episode paths.
+    Addressed by `recordings_path` (a series on disk) or, for a ruled series
+    with nothing recorded yet, by `guide_path`. Settings (rule/offsets/
+    identifier) come from the guide-shows projection; keep falls back to the
+    series meta. Episodes are resolved in one `POST /batch` over the episode
+    paths — empty for a guide-only series, which has none on disk.
     """
     _require_auth()
+    if not recordings_path and not guide_path:
+        raise HTTPException(status_code=400,
+                            detail="Give recordings_path or guide_path")
+    if guide_path and not recordings_path:
+        return await _series_detail_by_guide(guide_path)
     if not _REC_PATH.match(recordings_path):
         raise HTTPException(status_code=400,
                             detail="Not a recordings series path")

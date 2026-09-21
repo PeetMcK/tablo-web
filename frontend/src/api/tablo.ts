@@ -644,9 +644,12 @@ export interface NoopResult {
 
 /** One series on the Recordings grid (the composed index). */
 export interface SeriesCard {
-  recordings_path: string;
+  /** Null for a ruled series with nothing recorded yet (no bytes on disk). */
+  recordings_path: string | null;
   /** The settings PATCH target; null when the series has no active rule. */
   identifier: string | null;
+  /** Guide series path, for a ruled series' upcoming airings / guide-only detail. */
+  guide_path: string | null;
   kind: string | null;
   title: string;
   cover_image_id: number | null;
@@ -657,7 +660,16 @@ export interface SeriesCard {
   unwatched_count: number;
   protected_count: number;
   failed_count: number;
+  /** Upcoming airings queued to record, from the device's show_counts. */
+  scheduled_count: number;
   conflict: boolean;
+}
+
+/** One row of the cross-series Schedule feed: a titled upcoming airing with its
+ *  real record state. */
+export interface ScheduleRow extends SeriesAiring {
+  series_title: string;
+  series_cover_image_id: number | null;
 }
 
 /** One episode row inside a series detail. */
@@ -1081,6 +1093,11 @@ export const api = {
         `/recordings/series/detail?recordings_path=${encodeURIComponent(recordingsPath)}`,
       ),
 
+    detailByGuide: (guidePath: string) =>
+      req<SeriesDetail>(
+        `/recordings/series/detail?guide_path=${encodeURIComponent(guidePath)}`,
+      ),
+
     update: (body: SeriesUpdate) =>
       req<{ identifier: string; echo: Record<string, unknown> }>(
         "/recordings/series/settings",
@@ -1100,7 +1117,9 @@ export const api = {
 
     conflicts: () => req<UpcomingAiring[]>("/recordings/conflicts"),
 
-    airings: (guidePath: string, state: "requested" | "conflicted") =>
+    schedule: () => req<ScheduleRow[]>("/recordings/schedule"),
+
+    airings: (guidePath: string, state: "requested" | "conflicted" | "all") =>
       req<SeriesAiring[]>(
         `/recordings/series/airings?guide_path=${encodeURIComponent(guidePath)}&state=${state}`,
       ),
