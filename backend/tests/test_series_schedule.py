@@ -188,6 +188,34 @@ async def test_series_airings_requested_filters(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_series_detail_sports_lists_events_not_episodes(monkeypatch):
+    # A sport has no `{path}/episodes` (device 404s it); its games are events
+    # found via /recordings/airings filtered on sport_path. Must not 404.
+    ev = "/recordings/sports/events/74778"
+    other = "/recordings/sports/events/999"
+    fake = FakeState({
+        ("GET", "/recordings/sports/63558"): {
+            "sport": {"title": "NFL Football"},
+            "show_counts": {"airing_count": 1}, "guide_path": "/guide/sports/1"},
+        ("GET", "/recordings/airings"): [ev, other],
+        ("GET", "/guide/shows?state=requested&lh"): [],
+        "objs": {
+            ev: {"object_id": 74778, "event": {"title": "Colts at Chiefs"},
+                 "airing_details": {"datetime": "2026-09-21T00:00Z"},
+                 "video_details": {"duration": 9000}, "user_info": {},
+                 "sport_path": "/recordings/sports/63558"},
+            other: {"object_id": 999, "event": {"title": "Other Game"},
+                    "sport_path": "/recordings/sports/OTHER"},
+        },
+    })
+    monkeypatch.setattr(S, "state", fake)
+    d = await S.series_detail(recordings_path="/recordings/sports/63558",
+                              guide_path=None)
+    assert d["meta"]["title"] == "NFL Football"
+    assert [e["title"] for e in d["episodes"]] == ["Colts at Chiefs"]
+
+
+@pytest.mark.asyncio
 async def test_series_detail_by_guide_path_no_recordings(monkeypatch):
     fake = FakeState({("GET", "/guide/shows?state=requested&lh"): RULED,
                       ("GET", "/guide/shows"): CATALOG, "objs": OBJS})

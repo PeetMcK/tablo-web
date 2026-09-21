@@ -347,12 +347,15 @@ def _episode_row(ep: dict) -> dict:
     padding — never `airing_details.duration`, which is only the scheduled slot.
     """
     episode = ep.get("episode") or {}
+    event = ep.get("event") or {}
     airing = ep.get("airing_details") or {}
     video = ep.get("video_details") or {}
     user = ep.get("user_info") or {}
     return {
         "object_id": ep.get("object_id"),
-        "title": episode.get("title"),
+        # Series episodes carry `episode.title`; sport events carry `event.title`
+        # (their `episode` is null) — e.g. "Colts at Chiefs".
+        "title": episode.get("title") or event.get("title") or airing.get("show_title"),
         "season_number": episode.get("season_number"),
         "episode_number": episode.get("number"),
         "orig_air_date": episode.get("orig_air_date"),
@@ -366,6 +369,32 @@ def _episode_row(ep: dict) -> dict:
         "protected": user.get("protected", False),
         "is_recording": video.get("state") == "recording",
     }
+
+
+async def _recorded_episode_objects(recordings_path: str, kind: str | None) -> list[dict]:
+    """The recorded episodes/games behind a series card, tolerant of the shape.
+
+    A **series** lists them at `{recordings_path}/episodes`. A **sport** has no
+    `/episodes` (the device 404s it) — its games are `/recordings/sports/events/N`
+    objects, found by filtering the global `/recordings/airings` on `sport_path`.
+    Both are best-effort: a failed sub-fetch yields an empty list, never a 500,
+    so the drawer still shows settings and upcoming for a sport with no games.
+    """
+    if kind == "sports":
+        paths = await _try("GET", "/recordings/airings") or []
+        resolved = (await _try("POST", "/batch", json.dumps(paths[:600]))
+                    if paths else {}) or {}
+        events = [v for v in resolved.values()
+                  if isinstance(v, dict) and v.get("sport_path") == recordings_path]
+        events.sort(key=lambda e: (e.get("airing_details") or {}).get("datetime") or "",
+                    reverse=True)
+        return events
+    ep_paths = await _try("GET", recordings_path + "/episodes") or []
+    resolved = (await _try("POST", "/batch", json.dumps(ep_paths))
+                if ep_paths else {}) or {}
+    # Batch answers with the key present and value null for a path it cannot
+    # resolve (an episode deleted between listing and batch); filter on value.
+    return [ep for ep in (resolved.get(p) for p in ep_paths) if isinstance(ep, dict)]
 
 
 def _airing_row(a: dict) -> dict:
@@ -484,12 +513,6 @@ async def series_detail(
                             detail="Not a recordings series path")
     try:
         meta = await state.request_device("GET", recordings_path)
-        ep_paths = await state.request_device(
-            "GET", recordings_path + "/episodes") or []
-        resolved = {}
-        if ep_paths:
-            resolved = await state.request_device(
-                "POST", "/batch", json.dumps(ep_paths)) or {}
     except httpx.HTTPStatusError as e:
         # The device answered, with an error. A 404 means this series is gone
         # (deleted, or a stale path a client still holds) — that is a 404 to our
@@ -504,6 +527,12 @@ async def series_detail(
     except Exception:
         raise HTTPException(status_code=502,
                             detail="The Tablo could not be reached.") from None
+
+    # Episodes are fetched tolerantly, AFTER the meta 404 gate: a sport has no
+    # `/episodes` (device 404s it) but is a live series, so a missing episode
+    # list must not 404 the whole drawer.
+    episode_objs = await _recorded_episode_objects(
+        recordings_path, _kind_of(recordings_path))
 
     series = _show_of(meta)
     guide = await _try("GET", "/guide/shows?state=requested&lh") or []
@@ -525,17 +554,7 @@ async def series_detail(
             "offsets": dict(_DEFAULT_OFFSETS),
         }
 
-    # `POST /batch` answers with the key present and the value `null` for a path
-    # it cannot resolve — an episode deleted between the listing and the batch,
-    # which bulk-delete makes routine. Filtering on the key let that `null`
-    # through and `_episode_row` crashed the whole detail request on it, so the
-    # page died for one stale path among dozens of good ones. Filter on the
-    # value instead: the episode is simply gone, which is what the caller means.
-    episodes = [
-        _episode_row(ep)
-        for ep in (resolved.get(p) for p in ep_paths)
-        if isinstance(ep, dict)
-    ]
+    episodes = [_episode_row(ep) for ep in episode_objs]
 
     return {
         "meta": {
