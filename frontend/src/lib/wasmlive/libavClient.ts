@@ -39,10 +39,27 @@ const READ_LIMIT = 256 * 1024;
  * video included, even though the video decoder conceals its own damage. So a
  * refused batch is dropped and decoding continues; audio resyncs at the next
  * good frame. Only failures that do not stop — a genuinely broken stream —
- * cross this count and end the session as before. The video path stays fatal
- * on its own errors; this tolerance is audio-only.
+ * cross this count and end the session as before.
  */
 const AUDIO_DECODE_FAIL_LIMIT = 20;
+
+/**
+ * The same tolerance for video, and for the same reason.
+ *
+ * Damage in the video elementary stream is as routine in an OTA recording as
+ * damage in the audio: `mpeg2video` reports `ac-tex damaged` or `slice below
+ * image`, conceals what it can, and then refuses one packet outright with
+ * AVERROR_INVALIDDATA. ffmpeg's own CLI skips that packet and decodes the rest
+ * of the segment; this threw out of the pump instead and ended the session —
+ * picture, sound and all — on one bad frame. Recording 94912 died 17s in on
+ * exactly that, twice over, because a rebuild resumes at the same playhead and
+ * feeds the same bytes.
+ *
+ * So a refused batch is dropped and decoding continues; the decoder resyncs at
+ * the next key frame. The cost is the few frames of that read round, which is
+ * a blink against losing the stream.
+ */
+const VIDEO_DECODE_FAIL_LIMIT = 20;
 
 /**
  * How much the demuxer may read before it must name the streams.
@@ -470,6 +487,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     // Consecutive read-rounds whose audio decode threw; reset on any clean
     // audio decode. See AUDIO_DECODE_FAIL_LIMIT.
     let audioFailStreak = 0;
+    // The same for video. See VIDEO_DECODE_FAIL_LIMIT.
+    let videoFailStreak = 0;
 
     for (;;) {
       const [result, packets] = await libav.ff_read_frame_multi(fmtCtx, vpkt, {
@@ -480,13 +499,24 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       const videoPackets = videoStream ? packets[videoStream.index] ?? [] : [];
       if (videoPackets.length) {
         const fin = result === libav.AVERROR_EOF;
-        const frames = deinterlace
-          ? await libav.ff_decode_filter_multi(vctx, vsrc, vsink, vpkt, vframe, videoPackets, {
-              copyoutFrame: "video_packed", fin,
-            })
-          : await libav.ff_decode_multi(vctx, vpkt, vframe, videoPackets, {
-              copyoutFrame: "video_packed", fin,
-            });
+        let frames: LibavFrame[];
+        try {
+          frames = deinterlace
+            ? await libav.ff_decode_filter_multi(vctx, vsrc, vsink, vpkt, vframe, videoPackets, {
+                copyoutFrame: "video_packed", fin,
+              })
+            : await libav.ff_decode_multi(vctx, vpkt, vframe, videoPackets, {
+                copyoutFrame: "video_packed", fin,
+              });
+          videoFailStreak = 0;
+        } catch (e) {
+          // A refused video packet (a damaged MPEG-2 frame) is survivable:
+          // drop this batch and keep decoding what follows. Give up only if
+          // the failures do not stop.
+          videoFailStreak += 1;
+          if (videoFailStreak > VIDEO_DECODE_FAIL_LIMIT) throw e;
+          frames = [];
+        }
         for (const frame of frames) out.video.push(toVideoFrame(frame));
         // Correct each duration from the frame that follows it.
         //
