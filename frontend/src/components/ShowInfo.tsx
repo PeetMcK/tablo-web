@@ -946,14 +946,24 @@ export function ShowInfo({
           the thing that opened it, which is the whole point of playing here
           rather than routing to the Library. */}
       {playing && (
-        <VideoPlayer
-          source={{ kind: "recording", recording: playing }}
-          startAt={loadResume(resumeKey("recording", playing.object_id))}
-          onPosition={(seconds) =>
-            saveResume(resumeKey("recording", playing.object_id),
-                       seconds, playing.duration)}
-          onClose={() => setPlaying(null)}
-        />
+        // Its own layer, above this sheet and outside its backdrop's reach.
+        // Nested inside, every click on the player's controls bubbled to the
+        // dismiss handler and closed the lot - and the picture painted below
+        // the sheet, the player being z-50 against the sheet's z-60.
+        <div
+          data-player-layer
+          className="fixed inset-0 z-[80]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <VideoPlayer
+            source={{ kind: "recording", recording: playing }}
+            startAt={loadResume(resumeKey("recording", playing.object_id))}
+            onPosition={(seconds) =>
+              saveResume(resumeKey("recording", playing.object_id),
+                         seconds, playing.duration)}
+            onClose={() => setPlaying(null)}
+          />
+        </div>
       )}
     </div>
   );
