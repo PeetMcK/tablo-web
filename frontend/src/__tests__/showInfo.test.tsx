@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ShowInfo } from "../components/ShowInfo";
 import { api } from "../api/tablo";
 import type { AiringDetail } from "../api/tablo";
+import { saveResume, resumeKey, __resetResumeForTests } from "../lib/resume";
 
 function detail(over: Partial<AiringDetail> = {}): AiringDetail {
   return {
@@ -492,6 +493,90 @@ describe("the confirmation sits over the card", () => {
   });
 });
 
+describe("watching what the sheet describes", () => {
+  const SLOT = "2026-09-21T22:00Z";
+  const airing = (over = {}) => detail({
+    title: "Jeopardy!", start: SLOT, duration: 1800, ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "airingLive").mockRejectedValue(new Error("offline"));
+    __resetResumeForTests();
+    window.location.hash = "";
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("continues a recording that was left part-watched", async () => {
+    // The label says where pressing it lands, because resuming forty minutes
+    // in is a surprise to anyone expecting the start.
+    saveResume(resumeKey("recording", 86353), 1016, 2684);
+    const onWatch = vi.fn();
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing({ recording_id: 86353 }));
+    render(<ShowInfo channel="ch1" start={SLOT} onWatchRecording={onWatch}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /continue watching/i }));
+
+    expect(onWatch).toHaveBeenCalledWith(86353);
+  });
+
+  it("offers to watch a recording nobody has started", async () => {
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing({ recording_id: 86353 }));
+    render(<ShowInfo channel="ch1" start={SLOT} onWatchRecording={vi.fn()}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: /^watch now$/i }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /continue watching/i })).toBeNull();
+  });
+
+  it("prefers the recording over the broadcast when both exist", async () => {
+    // A recording in progress plays from its first moment, so this is watching
+    // from the start rather than joining half way - and it needs no tuner.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(
+      airing({ recording_id: 86353, airing_now: true }));
+    render(<ShowInfo channel="ch1" start={SLOT} onWatchRecording={vi.fn()}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: /^watch now$/i }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /watch live/i })).toBeNull();
+  });
+
+  it("falls back to the broadcast when there is no recording", async () => {
+    const onTune = vi.fn();
+    vi.spyOn(api, "airingDetail").mockResolvedValue(
+      airing({ recording_id: null, airing_now: true }));
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={onTune} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /watch live/i }));
+
+    expect(onTune).toHaveBeenCalled();
+  });
+
+  it("offers nothing to watch when there is nothing to watch", async () => {
+    // Next Tuesday's episode, unrecorded: a dead button reads as broken.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(
+      airing({ recording_id: null, airing_now: false }));
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    await screen.findByText("Jeopardy!");
+    expect(screen.queryByRole("button", { name: /watch/i })).toBeNull();
+  });
+
+  it("takes the viewer to the recording when the host cannot play it", async () => {
+    // The Guide and the series panel have no player of their own; the Library
+    // route does, and the router already addresses a recording by id.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing({ recording_id: 86353 }));
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^watch now$/i }));
+
+    expect(window.location.hash).toBe("#/library/rec/86353");
+  });
+});
+
 describe("what the sheet knows when it opens", () => {
   const SLOT = "2026-09-22T00:00Z";
   const stale = (over = {}) => detail({
@@ -840,7 +925,11 @@ describe("ShowInfo on a recording", () => {
     expect(screen.queryByText("Stale guide title")).toBeNull();
     // The guide's answers about what can be done to it.
     expect(screen.getByRole("button", { name: /^all$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /watch live/i })).toBeInTheDocument();
+    // Watching, though, goes to the recording rather than the broadcast: it is
+    // already being written and plays from its first moment, so this starts at
+    // the beginning instead of joining half way, and costs no tuner.
+    expect(screen.getByRole("button", { name: /^watch now$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /watch live/i })).toBeNull();
   });
 
   it("fails only when neither source has anything", async () => {
