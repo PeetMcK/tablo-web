@@ -179,9 +179,11 @@ export function SeriesDetail({
   const detailKey = path ?? card.guide_path ?? card.title;
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
-  const [tab, setTab] = useState<"episodes" | "upcoming" | "conflicts">(
-    hasRecordings ? "episodes" : "upcoming",
-  );
+  // Episodes always, even with nothing on disk. A series scheduled nightly and
+  // not yet recorded had no Episodes tab at all, so the panel opened on
+  // Upcoming and the place that would say "none yet" did not exist - which
+  // reads as a different kind of series rather than an empty one.
+  const [tab, setTab] = useState<"episodes" | "upcoming" | "conflicts">("episodes");
 
   const { data, isLoading } = useQuery({
     queryKey: ["series-detail", detailKey],
@@ -456,9 +458,7 @@ export function SeriesDetail({
               <Segmented<"episodes" | "upcoming" | "conflicts">
                 value={tab}
                 options={[
-                  ...(hasRecordings
-                    ? [{ value: "episodes" as const, label: "Episodes" }]
-                    : []),
+                  { value: "episodes", label: "Episodes" },
                   { value: "upcoming", label: "Upcoming" },
                   { value: "conflicts", label: "Conflicts" },
                 ]}
@@ -472,9 +472,14 @@ export function SeriesDetail({
                 only the list below scrolls. */
             <section className="flex-1 min-h-0 flex flex-col p-4 pt-3">
               <div className="flex items-center justify-between mb-2 shrink-0">
+                {/* The count is stated even at zero: "Episodes (0)" is an
+                    answer, where a bare "Episodes" over a blank panel looks
+                    like something failed to load. */}
                 <h3 className="text-sm font-bold">
-                  Episodes{data?.episodes.length ? ` (${data.episodes.length})` : ""}
+                  Episodes ({data?.episodes.length ?? 0})
                 </h3>
+                {/* Nothing to delete, so nothing offering to. */}
+                {(data?.episodes.length ?? 0) > 0 && (
                 <div className="flex gap-2">
                   <button
                     onClick={() => bulk.mutate("watched")}
@@ -497,6 +502,7 @@ export function SeriesDetail({
                     Delete all
                   </button>
                 </div>
+                )}
               </div>
 
               {selected.size > 0 && (
@@ -514,6 +520,11 @@ export function SeriesDetail({
                 </div>
               )}
 
+              {(data?.episodes.length ?? 0) === 0 ? (
+                <p className="text-fg-muted p-4 text-center text-sm">
+                  Nothing recorded yet.
+                </p>
+              ) : (
               <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col">
                 {(data?.episodes ?? []).map((ep) => (
                   <EpisodeRow
@@ -542,6 +553,7 @@ export function SeriesDetail({
                   />
                 ))}
               </ul>
+              )}
             </section>
             ) : (
               <AiringsPane
