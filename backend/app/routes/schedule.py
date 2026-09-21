@@ -11,7 +11,7 @@ doing something unintended. See docs/tablo-api.md.
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from .. import store
@@ -60,6 +60,58 @@ def _device_error(status: int, data: dict) -> HTTPException:
         return HTTPException(status_code=400,
                              detail=description or "The Tablo refused the change.")
     return HTTPException(status_code=502, detail="The Tablo could not be reached.")
+
+
+@router.get("/live")
+async def live_state(channel: str = Query(...), start: str = Query(...)):
+    """What the device says about this airing right now.
+
+    The mirror is a sync behind, and a sync is six hours apart at best and can
+    fail outright - measured 2026-09-21, after a failed sync the mirror said a
+    series recorded "new" where the device said "all", and called an episode
+    scheduled that had been turned off in the Tablo app an hour earlier. The
+    sheet asks this on open rather than rendering the older answer.
+
+    Two device reads at most: the airing for its schedule block, and the series
+    for its rule. Both are written back, so every other view converges without
+    waiting for the next sync.
+    """
+    _require_auth()
+    handles = await _handles(channel, start)
+    if not handles["airing_path"]:
+        raise HTTPException(
+            status_code=409,
+            detail="This channel's schedule comes from the cloud, "
+                   "which carries no recording state.",
+        )
+
+    try:
+        airing = await state.request_device("GET", handles["airing_path"])
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
+
+    row = AppState._airing_row(airing)
+    await _run_sync(store.update_airing_schedule, channel, start, row)
+
+    # The rule, which lives on the series rather than the airing. A failure
+    # here is not fatal: the airing's own state is the more urgent of the two,
+    # and the mirror's rule is at worst a sync old.
+    rule = None
+    if handles["series_path"]:
+        try:
+            series = await state.request_device("GET", handles["series_path"])
+            rule = (series or {}).get("schedule_rule")
+            await _run_sync(store.save_series, [AppState._series_row(series)])
+        except Exception:
+            rule = None
+
+    return {
+        "schedule_state": row.get("schedule_state"),
+        "skip_reason": row.get("skip_reason"),
+        "scheduled": store._is_scheduled(row.get("schedule_state")),
+        "series_rule": rule,
+    }
 
 
 @router.put("/airing")

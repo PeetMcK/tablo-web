@@ -4,8 +4,9 @@
  * looks the same everywhere.
  *
  * The device's `schedule.state` is one of: `scheduled` (will record),
- * `skipped` (won't — see `skip_reason`), `conflicted` (wanted, tuner clash),
- * `recording` (in progress now), or `none`.
+ * `skipped` (won't — see `skip_reason`), `unscheduled` (this episode turned
+ * off on its own, under a rule that still records the rest), `conflicted`
+ * (wanted, tuner clash), `recording` (in progress now), or `none`.
  */
 
 /** The filterable buckets a viewer toggles on the Schedule grid. `recording`
@@ -59,6 +60,15 @@ export function stateMarker(
       return {
         group: "airing",
         label: skipLabel(skipReason),
+        className: "bg-fill text-fg-muted",
+      };
+    // Turned off on its own: the series still records, this one will not.
+    // It read as the bare "Airing" default, which says when it is on and
+    // nothing about whether it will be kept.
+    case "unscheduled":
+      return {
+        group: "airing",
+        label: "Won't record",
         className: "bg-fill text-fg-muted",
       };
     default:

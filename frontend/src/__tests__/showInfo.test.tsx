@@ -492,6 +492,52 @@ describe("the confirmation sits over the card", () => {
   });
 });
 
+describe("what the sheet knows when it opens", () => {
+  const SLOT = "2026-09-22T00:00Z";
+  const stale = (over = {}) => detail({
+    title: "Jeopardy!", start: SLOT, duration: 1800,
+    scheduled: true, schedule_state: "scheduled", past: false,
+    series: { path: "/guide/series/6137", schedule_rule: "new" },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks the device rather than trusting the mirror", async () => {
+    // Measured: after a failed sync the mirror called an episode scheduled
+    // that had been turned off in the Tablo app an hour earlier, and said the
+    // series recorded "new" where the device said "all".
+    const live = vi.spyOn(api, "airingLive").mockResolvedValue({
+      schedule_state: "unscheduled", skip_reason: "none",
+      scheduled: false, series_rule: "all",
+    });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(stale());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    await screen.findByText("Jeopardy!");
+
+    await waitFor(() => expect(live).toHaveBeenCalledWith("ch1", SLOT));
+    // The stale REC line is gone, and the rule the device reports is the one
+    // shown as chosen.
+    await waitFor(() =>
+      expect(screen.queryByText(/REC · RECORD/i)).toBeNull());
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed", "true");
+  });
+
+  it("keeps what the mirror said when the device will not answer", async () => {
+    // A sheet a sync behind beats a sheet that refuses to open.
+    vi.spyOn(api, "airingLive").mockRejectedValue(new Error("device down"));
+    vi.spyOn(api, "airingDetail").mockResolvedValue(stale());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText(/REC · RECORD/i)).toBeInTheDocument();
+  });
+});
+
 describe("moving between an episode and its series", () => {
   const SLOT = "2026-09-21T22:00Z";
   const episode = (over = {}) => detail({

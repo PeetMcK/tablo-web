@@ -804,7 +804,13 @@ def imminent_cover_ids(hours: int = 12, now: float | None = None) -> list[int]:
 # mean "not recording" and treating everything else as recording fails safe: an
 # unseen state shows a REC badge that can be turned off, rather than hiding a
 # recording that is actually scheduled.
-_NOT_RECORDING = {None, "none", "skipped"}
+#
+# `unscheduled` is the device's word for an episode turned off on its own,
+# under a series rule that still records the rest. It was missing here, so the
+# sheet showed "REC - RECORD: ALL EPISODES" over an episode that would not
+# record, and offered to stop a recording that was never going to happen -
+# measured on Jeopardy! S43 E6, turned off in the Tablo app.
+_NOT_RECORDING = {None, "none", "skipped", "unscheduled"}
 
 
 def _is_scheduled(state: str | None) -> bool:

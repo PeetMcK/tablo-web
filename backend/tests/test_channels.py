@@ -452,3 +452,75 @@ def test_a_row_the_device_never_described_carries_no_scan():
     row = state._assemble_grid_row(c, {}, {}, {}, {}, {})
 
     assert row["scan"] is None
+
+
+def test_an_unscheduled_airing_is_not_reported_as_recording(monkeypatch):
+    """`unscheduled` is the device's word for "this one will not record".
+
+    Measured on a real device: Jeopardy! S43 E6 came back `unscheduled` after
+    the episode was turned off in the Tablo app, and the sheet showed
+    "REC - RECORD: ALL EPISODES" over it with an offer to stop recording
+    something that was never going to record.
+
+    The open-enumeration rule still holds for states nobody has seen - an
+    unknown state reads as recording, which fails safe - but this one is known.
+    """
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+    store.save_guide([{
+        "identifier": "ch1", "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None, "kind": "ota",
+        "airings": [{
+            "title": "Jeopardy!", "subtitle": None, "description": None,
+            "start": start, "duration": 1800, "genres": [], "kind": "episode",
+            "episode_title": None, "season_number": 43, "episode_number": 6,
+            "orig_air_date": None, "series_path": None,
+            "airing_path": "/guide/series/episodes/1",
+            "schedule_state": "unscheduled", "schedule_qualifier": None,
+            "skip_reason": "none",
+        }],
+    }], now=now)
+
+    d = client.get("/api/channels/airing-detail",
+                   params={"channel": "ch1", "start": start}).json()
+
+    assert d["schedule_state"] == "unscheduled"
+    assert d["scheduled"] is False
+
+
+def test_a_state_nobody_has_seen_still_reads_as_recording(monkeypatch):
+    """The open enumeration: hiding a recording that is scheduled is worse
+    than showing a badge that can be turned off."""
+    import time
+
+    from app import store
+    from app.state import state
+
+    monkeypatch.setattr(type(state), "is_authenticated", property(lambda self: True))
+
+    now = time.time()
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 7200))
+    store.save_guide([{
+        "identifier": "ch2", "call_sign": "KPAX", "major": 8, "minor": 1,
+        "network": "CBS", "display_name": "KPAX", "logo_url": None, "kind": "ota",
+        "airings": [{
+            "title": "Something New", "subtitle": None, "description": None,
+            "start": start, "duration": 1800, "genres": [], "kind": "episode",
+            "episode_title": None, "season_number": None, "episode_number": None,
+            "orig_air_date": None, "series_path": None, "airing_path": None,
+            "schedule_state": "queued_somehow", "schedule_qualifier": None,
+            "skip_reason": None,
+        }],
+    }], now=now)
+
+    d = client.get("/api/channels/airing-detail",
+                   params={"channel": "ch2", "start": start}).json()
+
+    assert d["scheduled"] is True

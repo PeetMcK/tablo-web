@@ -263,6 +263,32 @@ export function ShowInfo({
       if (!live) return;
       if (rec === null && air === null) { setFailed(true); return; }
       setDetail(rec === null ? air : withAiringActions(rec, air));
+
+      // Then ask the device what it actually thinks. The mirror is a sync
+      // behind - measured, it called an episode scheduled after it had been
+      // turned off in the Tablo app, and reported a series rule the device had
+      // since changed. Second rather than first, so the sheet opens at mirror
+      // speed and corrects itself a moment later; a refusal leaves the
+      // mirror's answer standing, which beats a sheet that will not open.
+      if (start === null) return;
+      try {
+        const fresh = await api.airingLive(channel, start);
+        if (!live) return;
+        setDetail((d) => (d ? {
+          ...d,
+          schedule_state: fresh.schedule_state,
+          skip_reason: fresh.skip_reason,
+          scheduled: fresh.scheduled,
+          series: d.series
+            ? {
+                ...d.series,
+                schedule_rule: fresh.series_rule ?? d.series.schedule_rule,
+              }
+            : d.series,
+        } : d));
+      } catch {
+        // The mirror's answer stands.
+      }
     })();
 
     return () => { live = false; };
