@@ -38,11 +38,13 @@ function detailFor(overrides: Partial<SeriesDetail> = {}): SeriesDetail {
       { object_id: 100, title: "Ep A", season_number: 3, episode_number: 1,
         orig_air_date: "2025-01-01", datetime: null, duration: 1800, size: null,
         state: "finished", snapshot_image: null, position: 0, watched: true,
-        protected: false, is_recording: false },
+        protected: false, is_recording: false,
+        channel_identifier: "S34654_008_01" },
       { object_id: 101, title: "Ep B", season_number: 3, episode_number: 2,
         orig_air_date: "2025-01-08", datetime: null, duration: 1800, size: null,
         state: "finished", snapshot_image: null, position: 0, watched: false,
-        protected: false, is_recording: false },
+        protected: false, is_recording: false,
+        channel_identifier: "S34654_008_01" },
     ],
     ...overrides,
   };
@@ -51,11 +53,11 @@ function detailFor(overrides: Partial<SeriesDetail> = {}): SeriesDetail {
 const SCHEDULE: ScheduleRow[] = [
   { object_id: 1, title: "New Tonight", season_number: 1, episode_number: 4,
     datetime: "2026-09-22T00:00Z", duration: 1800, channel: "7.1",
-    state: "scheduled", skip_reason: "none",
+    channel_identifier: "S1_007_01", state: "scheduled", skip_reason: "none",
     series_title: "Newsy", series_cover_image_id: null },
   { object_id: 2, title: "A Rerun", season_number: 1, episode_number: 2,
     datetime: "2026-09-21T22:00Z", duration: 1800, channel: "7.1",
-    state: "skipped", skip_reason: "not_new",
+    channel_identifier: "S1_007_01", state: "skipped", skip_reason: "not_new",
     series_title: "Rerunny", series_cover_image_id: null },
 ];
 
@@ -261,7 +263,8 @@ describe("Series detail", () => {
     const spy = vi.spyOn(api.series, "airings").mockResolvedValue([
       { object_id: 500, title: "Money Buys Justice", season_number: 4,
         episode_number: 3, datetime: "2026-09-20T20:00Z", duration: 1800,
-        channel: "KUFM", state: "scheduled", skip_reason: "none" },
+        channel: "KUFM", channel_identifier: "S54511_011_05",
+        state: "scheduled", skip_reason: "none" },
     ]);
     await open();
     // Scoped to the panel: the page behind it has an Upcoming tab of its own
@@ -271,5 +274,62 @@ describe("Series detail", () => {
     fireEvent.click(within(panel).getByRole("radio", { name: "Upcoming" }));
     expect(await screen.findByText("Money Buys Justice")).toBeInTheDocument();
     expect(spy).toHaveBeenCalledWith("/guide/series/9", "all");
+  });
+
+  it("an upcoming row opens that airing's own sheet", async () => {
+    vi.spyOn(api.series, "airings").mockResolvedValue([
+      { object_id: 500, title: "Money Buys Justice", season_number: 4,
+        episode_number: 3, datetime: "2026-09-20T20:00Z", duration: 1800,
+        channel: "KUFM", channel_identifier: "S54511_011_05",
+        state: "scheduled", skip_reason: "none" },
+    ]);
+    const sheet = vi.spyOn(api, "airingDetail").mockRejectedValue(new Error("no"));
+    await open();
+    fireEvent.click(within(screen.getByRole("dialog"))
+      .getByRole("radio", { name: "Upcoming" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /money buys justice/i }));
+
+    // Addressed by the identifier, not the "KUFM" label beside it.
+    await waitFor(() => expect(sheet)
+      .toHaveBeenCalledWith("S54511_011_05", "2026-09-20T20:00Z"));
+  });
+
+  it("an episode row opens that recording's sheet, which outlives the guide", async () => {
+    // The guide is pruned at 31 days, so an episode recorded a fortnight ago
+    // has no airing left to look up - the recording describes itself instead.
+    const rec = vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("no"));
+    await open();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^ep a/i }));
+
+    await waitFor(() => expect(rec).toHaveBeenCalledWith(100));
+  });
+
+  it("the row's own controls are not a way into the sheet", async () => {
+    // Four buttons and a checkbox share that row; only the empty space opens.
+    const rec = vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("no"));
+    vi.spyOn(api, "setProtected").mockResolvedValue({
+      object_id: 100, protected: true,
+    });
+    await open();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /protect from deletion/i })[0]);
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(rec).not.toHaveBeenCalled();
+  });
+
+  it("the series panel stays open behind the sheet", async () => {
+    // Drill in and come back: closing the sheet must land where it was opened
+    // from, with the list still scrolled where it was.
+    vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("no"));
+    await open();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^ep a/i }));
+    await screen.findByText(/information unavailable|ep a/i);
+
+    // Both surfaces are present: the panel did not close to make room.
+    expect(screen.getAllByRole("dialog").length).toBeGreaterThan(1);
   });
 });

@@ -15,18 +15,18 @@ describe("parseRoute", () => {
     expect(parseRoute("#/live").tab).toBe("live");
     expect(parseRoute("#/grid").tab).toBe("grid");
     expect(parseRoute("#/library").tab).toBe("library");
-    expect(parseRoute("#/schedule").tab).toBe("schedule");
+    expect(parseRoute("#/series").tab).toBe("series");
     expect(parseRoute("#/search").tab).toBe("search");
   });
 
-  it("round-trips the Schedule tab through writeRoute", () => {
-    writeRoute({ tab: "schedule", watch: null });
-    expect(parseRoute(window.location.hash).tab).toBe("schedule");
+  it("round-trips the Series tab through writeRoute", () => {
+    writeRoute({ tab: "series", watch: null });
+    expect(parseRoute(window.location.hash).tab).toBe("series");
   });
 
   it("does not answer to the old name", () => {
     // A clean break, chosen deliberately: #/recordings was the section that is
-    // now Schedule, and keeping it alive as an alias would leave two URLs for
+    // now Series, and keeping it alive as an alias would leave two URLs for
     // one screen forever. Anything unrecognised lands on Live TV.
     expect(parseRoute("#/recordings").tab).toBe("live");
   });

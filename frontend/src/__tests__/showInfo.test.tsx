@@ -492,6 +492,57 @@ describe("the confirmation sits over the card", () => {
   });
 });
 
+describe("moving between an episode and its series", () => {
+  const SLOT = "2026-09-21T22:00Z";
+  const episode = (over = {}) => detail({
+    title: "Jeopardy!", start: SLOT, duration: 1800,
+    series: { path: "/guide/series/6137", schedule_rule: "new" },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers the series behind the episode", async () => {
+    const onOpenSeries = vi.fn();
+    vi.spyOn(api, "airingDetail").mockResolvedValue(episode());
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}}
+                     onOpenSeries={onOpenSeries} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /series information/i }));
+
+    // The guide path is all this sheet knows; the caller turns it into
+    // whatever its own series panel needs.
+    expect(onOpenSeries).toHaveBeenCalledWith("/guide/series/6137", "Jeopardy!");
+  });
+
+  it("offers nothing for an airing with no series behind it", async () => {
+    // A one-off film has no series to open, so the control would lead nowhere.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(episode({ series: null }));
+    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}}
+                     onOpenSeries={vi.fn()} onTune={() => {}} />);
+
+    await screen.findByText("Jeopardy!");
+    expect(screen.queryByRole("button", { name: /series information/i })).toBeNull();
+  });
+
+  it("says Back to Series when that is where it was opened from", async () => {
+    // Onward and back are different journeys: the panel is directly behind
+    // this sheet, so offering to "open" it would loop.
+    const onClose = vi.fn();
+    vi.spyOn(api, "airingDetail").mockResolvedValue(episode());
+    render(<ShowInfo channel="ch1" start={SLOT} backToSeries
+                     onClose={onClose} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /back to series/i }));
+
+    expect(onClose).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /series information/i })).toBeNull();
+  });
+});
+
 describe("deleting the recording an airing produced", () => {
   const SLOT = "2026-09-18T07:00Z";
   const recorded = (over = {}) => detail({

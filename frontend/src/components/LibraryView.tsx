@@ -8,6 +8,7 @@ import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { ShowInfo } from "./ShowInfo";
+import { useSeriesDrawer } from "../lib/useSeriesDrawer";
 import { CoverageStrip } from "./CoverageStrip";
 import { RecordingPill } from "./RecordingPill";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
@@ -198,6 +199,8 @@ function dayTint(iso: string, alpha?: number): string {
 }
 
 export function LibraryView() {
+  // Opening the series behind a recording, from its sheet.
+  const { openSeries, drawer: seriesDrawer } = useSeriesDrawer();
   const [playing, setPlaying] = useState<Recording | null>(null);
   /** Which entry point the card asked for; only in-progress recordings ask. */
   const [startMode, setStartMode] = useState<StartMode>("resume");
@@ -556,6 +559,10 @@ export function LibraryView() {
           // and restarted leaves two against one slot, and the sheet must
           // delete the one whose card was opened.
           recordingId={infoFor.object_id}
+          onOpenSeries={(guidePath, title) => {
+            setInfoFor(null);
+            void openSeries(guidePath, title);
+          }}
           onClose={() => setInfoFor(null)}
           // The row goes on the same beat as the sheet, before the device has
           // answered: re-reading the listing costs a round trip of its own, and
@@ -602,6 +609,9 @@ export function LibraryView() {
           onTune={() => { setStartMode("live"); setPlaying(infoFor); setInfoFor(null); }}
         />
       )}
+
+      {/* The series panel, when the sheet sent us to one. */}
+      {seriesDrawer}
 
       {nowPlaying && (
         <VideoPlayer

@@ -402,6 +402,13 @@ def _episode_row(ep: dict) -> dict:
         "episode_number": episode.get("number"),
         "orig_air_date": episode.get("orig_air_date"),
         "datetime": airing.get("datetime"),
+        # The identifier, not the label: the info sheet is addressed by
+        # (channel, start), and a call sign cannot be turned back into one.
+        # Null for an offline copy whose device record is gone.
+        "channel_identifier": (
+            ((airing.get("channel") or {}).get("channel") or {})
+            .get("channel_identifier")
+        ),
         "duration": video.get("duration") or 0,
         "size": video.get("size"),
         "state": video.get("state"),
@@ -455,6 +462,9 @@ def _airing_row(a: dict) -> dict:
         "datetime": ad.get("datetime"),
         "duration": ad.get("duration"),
         "channel": channel,
+        # Beside the label, not instead of it: "KUFM" is for reading and this
+        # is for addressing the airing.
+        "channel_identifier": ch.get("channel_identifier"),
         "state": sched.get("state"),
         "skip_reason": sched.get("skip_reason"),
     }

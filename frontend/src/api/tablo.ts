@@ -700,6 +700,13 @@ export interface SeriesEpisode {
   watched: boolean;
   protected: boolean;
   is_recording: boolean;
+  /**
+   * The channel it aired on, as the guide addresses it.
+   *
+   * Null for an offline copy whose device record is gone - there is then no
+   * airing to open, however old or new the recording is.
+   */
+  channel_identifier: string | null;
 }
 
 export interface SeriesSettings {
@@ -731,7 +738,10 @@ export interface SeriesAiring {
   episode_number: number | null;
   datetime: string | null;
   duration: number | null;
+  /** For reading: "KUFM", or "11.5" when the station has no call sign. */
   channel: string | null;
+  /** For addressing: the identifier the guide and the info sheet use. */
+  channel_identifier: string | null;
   state: string | null;
   skip_reason: string | null;
 }

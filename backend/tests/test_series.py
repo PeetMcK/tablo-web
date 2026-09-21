@@ -157,6 +157,69 @@ def test_series_detail_composes_episodes_and_settings(authed, monkeypatch):
     assert ep["snapshot_image"] == 77
 
 
+def test_an_episode_row_carries_the_channel_it_aired_on(authed, monkeypatch):
+    """The info sheet is addressed by (channel identifier, start), and the row
+    had neither: only a display label, on the airings list, and nothing at all
+    here. Without it a click on an episode has nothing to open."""
+    _dispatch(monkeypatch, {
+        "/recordings/series/1": {
+            "object_id": 1, "path": "/recordings/series/1",
+            "series": {"title": "A", "genres": [], "description": "d",
+                       "cover_image": None},
+            "show_counts": {"airing_count": 1, "unwatched_count": 0},
+            "keep": {"rule": "none", "count": None},
+            "guide_path": "/guide/series/9"},
+        "/recordings/series/1/episodes": ["/recordings/series/episodes/100"],
+        "/batch": {
+            "/recordings/series/episodes/100": {
+                "object_id": 100,
+                "airing_details": {
+                    "datetime": "2026-01-01T00:00Z", "duration": 1800,
+                    "channel": {"channel": {
+                        "call_sign": "KPAX", "major": 8, "minor": 1,
+                        "channel_identifier": "S34654_008_01"}}},
+                "episode": {"title": "Ep", "number": 3, "season_number": 2},
+                "video_details": {"duration": 1800, "state": "finished"},
+                "user_info": {}}},
+        "/guide/shows?state=requested&lh": [],
+    })
+
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/1"})
+
+    ep = r.json()["episodes"][0]
+    assert ep["channel_identifier"] == "S34654_008_01"
+    assert ep["datetime"] == "2026-01-01T00:00Z"
+
+
+def test_an_episode_that_never_had_a_channel_says_so(authed, monkeypatch):
+    """An offline copy of something the device has since deleted keeps no
+    channel. Null rather than absent, so the caller can tell there is nothing
+    to open rather than guessing."""
+    _dispatch(monkeypatch, {
+        "/recordings/series/1": {
+            "object_id": 1, "path": "/recordings/series/1",
+            "series": {"title": "A", "genres": [], "description": "d",
+                       "cover_image": None},
+            "show_counts": {}, "keep": {"rule": "none", "count": None},
+            "guide_path": "/guide/series/9"},
+        "/recordings/series/1/episodes": ["/recordings/series/episodes/100"],
+        "/batch": {
+            "/recordings/series/episodes/100": {
+                "object_id": 100,
+                "airing_details": {"datetime": "2026-01-01T00:00Z"},
+                "episode": {"title": "Ep"},
+                "video_details": {"duration": 1800, "state": "finished"},
+                "user_info": {}}},
+        "/guide/shows?state=requested&lh": [],
+    })
+
+    r = client.get("/api/recordings/series/detail",
+                   params={"recordings_path": "/recordings/series/1"})
+
+    assert r.json()["episodes"][0]["channel_identifier"] is None
+
+
 def test_series_detail_survives_an_unresolvable_episode(authed, monkeypatch):
     """One stale path must not take the whole detail page down.
 
@@ -241,6 +304,35 @@ def test_series_airings_resolves_titled_rows(authed, monkeypatch):
     assert row["channel"] == "KUFM"
     assert row["state"] == "scheduled"
     assert row["datetime"] == "2026-09-20T20:00Z"
+
+
+def test_an_airing_row_carries_the_channel_identifier_too(authed, monkeypatch):
+    """`channel` is a label for reading - "KUFM", or "11.5" when there is no
+    call sign. The info sheet needs the identifier, which is a different thing
+    and cannot be derived from the label."""
+    async def fake(method, path, body=""):
+        if path == "/guide/series/9/episodes":
+            return ["/guide/series/episodes/500"]
+        if path == "/batch":
+            return {"/guide/series/episodes/500": {
+                "object_id": 500,
+                "episode": {"title": "Pilot", "number": 1, "season_number": 1},
+                "airing_details": {
+                    "datetime": "2026-09-20T20:00Z", "duration": 1800,
+                    "show_title": "A",
+                    "channel": {"channel": {
+                        "call_sign": "KUFM", "major": 11, "minor": 5,
+                        "channel_identifier": "S54511_011_05"}}},
+                "schedule": {"state": "scheduled", "skip_reason": "none"}}}
+        raise AssertionError(f"unexpected {method} {path}")
+    monkeypatch.setattr(app_state, "request_device", fake)
+
+    r = client.get("/api/recordings/series/airings",
+                   params={"guide_path": "/guide/series/9", "state": "requested"})
+
+    row = r.json()[0]
+    assert row["channel"] == "KUFM"                      # unchanged, for reading
+    assert row["channel_identifier"] == "S54511_011_05"  # new, for addressing
 
 
 def test_series_airings_skips_an_unresolvable_path(authed, monkeypatch):
