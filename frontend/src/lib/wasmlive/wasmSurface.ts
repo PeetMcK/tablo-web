@@ -39,6 +39,10 @@ export function createWasmSurface(session: LiveSession): PlaybackSurface {
       handlers.get("volumechange")?.forEach((fn) => fn());
     },
     get error() { return session.failure; },
+    /* Read straight through. The session owns the queue and the conversion to
+       media time; mirroring either here is how two copies of one number start
+       to drift. */
+    captions: session.captions,
     diagnostics: () => session.diagnostics(),
 
     on(event: SurfaceEvent, handler: () => void) {

@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Play, Pause, RotateCcw, RotateCw, Volume1, Volume2, VolumeX, Maximize,
-  PictureInPicture2,
+  PictureInPicture2, Captions,
 } from "lucide-react";
 import { PictureInPictureExit } from "./icons";
 import { usePlayer } from "../hooks/usePlayer";
@@ -27,10 +27,11 @@ import {
 } from "../lib/skip";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 import {
-  createHlsSurface, DOCUMENT_FRAMES, type PlaybackSurface,
+  createHlsSurface, DOCUMENT_FRAMES, type CaptionSource, type PlaybackSurface,
 } from "../lib/playbackSurface";
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
+import { CaptionOverlay } from "./CaptionOverlay";
 import { SeriesEndCard, type CardReason } from "./SeriesEndCard";
 
 /**
@@ -291,6 +292,19 @@ interface PlayerView {
   poppedOut: boolean;
   togglePictureInPicture: () => void;
   enterFullscreen: () => void;
+  /**
+   * Captions, and the controls for them.
+   *
+   * `captionSource` is null wherever the surface has none — a transcode — and
+   * `captionsAvailable` stays false until a cue has actually been seen, which
+   * is what the button is rendered on. `surfaceTime` is a getter rather than a
+   * number because the overlay reads it once per animation frame.
+   */
+  captionSourceAt: () => CaptionSource | null;
+  captionsAvailable: boolean;
+  captionsOn: boolean;
+  toggleCaptions: () => void;
+  surfaceTime: () => number;
   paused: boolean;
   togglePlay: () => void;
   skip: (delta: number) => void;
@@ -454,6 +468,46 @@ export function VideoPlayer({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   if (canvasRef.current == null) canvasRef.current = createStageCanvas();
   const [usingWasm, setUsingWasm] = useState(false);
+
+  /**
+   * Captions on or off, remembered between sessions.
+   *
+   * Read defensively: a browser blocking site data throws on access, and that
+   * reads as off — the same answer everyone else starts from.
+   */
+  const [captionsOn, setCaptionsOn] = useState(() => {
+    try { return localStorage.getItem("tablo.cc") === "1"; } catch { return false; }
+  });
+  /** Whether a caption has actually been seen on this stream. */
+  const [captionsAvailable, setCaptionsAvailable] = useState(false);
+
+  /**
+   * Where the overlay reads the playhead.
+   *
+   * A getter, and a stable one: passing the number would re-render the overlay
+   * on every tick of the player's own clock, and the overlay wants a fresher
+   * reading than that anyway.
+   */
+  const surfaceTime = useCallback(() => surfaceRef.current?.currentTime ?? 0, []);
+
+  /**
+   * The current surface's captions, read when asked rather than held.
+   *
+   * A getter for the same reason as the clock above: the player swaps
+   * surfaces - a rebuild, a fallback, a different recording - and a source
+   * captured in state goes on answering about the session the playhead has
+   * left. That drew nothing at all, with a cue lookup that was correct and
+   * a queue that belonged to somewhere else.
+   */
+  const captionSourceAt = useCallback(() => surfaceRef.current?.captions ?? null, []);
+
+  const toggleCaptions = useCallback(() => {
+    setCaptionsOn((was) => {
+      const next = !was;
+      try { localStorage.setItem("tablo.cc", next ? "1" : "0"); } catch { /* not worth failing over */ }
+      return next;
+    });
+  }, []);
 
   // Latched at mount. These decide how the stream is opened; letting a later
   // value through would change `load`'s identity and restart playback.
@@ -871,6 +925,21 @@ export function VideoPlayer({
       surface.on("playing", onPlaying),
       surface.on("ended", onEnded),
     ];
+
+    /**
+     * Whether this surface has captions to offer, which decides whether the
+     * viewer is shown a CC button at all.
+     *
+     * A stream announces itself as captioned the first time a cue arrives,
+     * roughly a second in — so the button appears then and not before, and
+     * never appears on a transcode, which has no caption source at all.
+     */
+    const captions = surface.captions ?? null;
+    setCaptionsAvailable(captions?.available ?? false);
+    if (captions) {
+      offs.push(captions.on("change", () => setCaptionsAvailable(captions.available)));
+    }
+
     sync(true);
     return () => offs.forEach((off) => off());
   }, []);
@@ -2185,6 +2254,12 @@ export function VideoPlayer({
       cachedRanges: rangesLabel(cachedRangesRef.current),
       atCachedPoint: isCached(s?.currentTime ?? 0, cachedRangesRef.current),
       mediaError: s?.error ?? null,
+      // The caption the overlay would be drawing, asked exactly as the overlay
+      // asks it. Worth having permanently: cues arriving and no caption on
+      // screen is otherwise indistinguishable from no cues at all, and the two
+      // have nothing in common.
+      captionNow: s?.captions?.at(s.currentTime ?? 0)?.text ?? null,
+      captionSurface: Boolean(s?.captions),
       // Whatever the implementation in use can say about itself: readyState
       // and buffered ranges for hls, decode and present counts for wasm.
       ...(s?.diagnostics() ?? {}),
@@ -2230,6 +2305,9 @@ export function VideoPlayer({
       if (e.key === "f") enterFullscreen();
       // Symmetrical with the button: out if it is in, in if it is out.
       if (e.key === "p") togglePictureInPicture();
+      // Only where there is something to toggle. A key that silently does
+      // nothing is worse than one that is not bound.
+      if (e.key === "c" && captionsAvailable) toggleCaptions();
       if (e.key === "m") toggleMute();
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
       // Match every other transport (the tap zones and the on-screen skip
@@ -2255,7 +2333,8 @@ export function VideoPlayer({
       if (keyHandler.current === handler) keyHandler.current = null;
     };
   }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer,
-      poppedOut, togglePictureInPicture, nudgeVolume, card, closeCard]);
+      poppedOut, togglePictureInPicture, nudgeVolume, card, closeCard,
+      captionsAvailable, toggleCaptions]);
 
   const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
@@ -2333,6 +2412,7 @@ export function VideoPlayer({
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
+    captionSourceAt, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2520,6 +2600,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
+    captionSourceAt, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2740,9 +2821,21 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           picture-in-picture window's — and a JSX `<video>` would give each
           root an element of its own. The stream is attached to one element
           through a MediaSource; a second would start from nothing. */}
-      <div ref={videoHostRef} className="w-full h-full" />
+      <div
+        ref={videoHostRef}
+        className="w-full h-full"
+      />
 
-
+      {/* Over the picture, under the chrome. Not rendered into the pop-out:
+          that window is fed a mirror of canvas pixels, and a DOM layer is not
+          one of them. */}
+      {captionsAvailable && !pip && (
+        <CaptionOverlay
+          source={captionSourceAt}
+          enabled={captionsOn}
+          currentTime={surfaceTime}
+        />
+      )}
 
       {/* A blocking sheet, not a see-through veil: it carries text and a button,
           so it uses the player's own panel rather than a scrim. In light that is
@@ -3170,6 +3263,28 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                   </div>
                 )}
               </div>
+
+              {/* Only where the stream has been seen to carry captions. One
+                  rule covers every case that would otherwise need its own:
+                  a transcode has no caption source, uncaptioned programming
+                  never produces a cue, and a mid-session fall back to the
+                  transcode takes the button away again. It appears a second or
+                  so into a captioned stream, which is the cost of never
+                  offering a control that would do nothing. */}
+              {captionsAvailable && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleCaptions(); }}
+                  className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
+                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${captionsOn ? "bg-fill" : ""}`}
+                  /* Named with its key, the way the buttons either side of it
+                     are. */
+                  title={captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)"}
+                  aria-label={captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)"}
+                  aria-pressed={captionsOn}
+                >
+                  <Captions className="w-4 h-4" aria-hidden />
+                </button>
+              )}
 
               {/* Only where the API exists. Safari has no Document
                   Picture-in-Picture, so the button would promise nothing

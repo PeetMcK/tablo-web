@@ -5,6 +5,7 @@
  * testable code rather than something that needs a real Worker to exercise.
  */
 
+import type { CaptionCue } from "../captions";
 import type { DecodeOutput, DecoderStats, LibavDecoder } from "./libavClient";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
@@ -58,6 +59,14 @@ export type FromWorker =
    */
   | { type: "video"; frames: DecodedVideoFrame[]; epoch: number }
   | { type: "audio"; chunks: DecodedAudioChunk[]; epoch: number }
+  /**
+   * Caption cues, stamped like the media they belong beside.
+   *
+   * Small enough to copy rather than transfer — a cue is two numbers and a
+   * line of text — and epoch-filtered on the page for the same reason frames
+   * are: one decoded before a seek describes what the viewer just left.
+   */
+  | { type: "captions"; cues: CaptionCue[]; epoch: number }
   | { type: "stats"; stats: DecoderStats }
   /**
    * The decoder has been freed and the worker may be terminated.
@@ -99,6 +108,9 @@ export function createWorkerHandler(
     }
     if (out.audio.length) {
       post({ type: "audio", chunks: out.audio, epoch }, out.audio.map((c) => c.samples.buffer));
+    }
+    if (out.captions.length) {
+      post({ type: "captions", cues: out.captions, epoch }, []);
     }
   };
 
