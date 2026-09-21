@@ -12,16 +12,19 @@ from app.routes import series as S
 
 
 class FakeState:
-    def __init__(self, responses, active_sid="sidA"):
+    def __init__(self, responses, active_sid="sidA", batch_limit=None):
         self.responses = responses            # {(method, path): value, "objs": {...}}
         self.active_sid = active_sid
         self.is_authenticated = True
+        self.batch_limit = batch_limit        # mimic the device's 50-path cap
         self.calls = []
 
     async def request_device(self, method, path, body=""):
         self.calls.append((method, path, body))
         if path == "/batch":
             paths = json.loads(body)
+            if self.batch_limit is not None and len(paths) > self.batch_limit:
+                raise RuntimeError("batch too large")   # device 400s
             return {p: self.responses.get("objs", {}).get(p) for p in paths}
         return self.responses.get((method, path))
 
@@ -185,6 +188,26 @@ async def test_series_airings_requested_filters(monkeypatch):
     rows = await S.series_airings(guide_path="/guide/series/1",
                                   airing_state="requested")
     assert [r["state"] for r in rows] == ["scheduled"]
+
+
+@pytest.mark.asyncio
+async def test_series_airings_chunks_over_the_batch_limit(monkeypatch):
+    # 60 upcoming episodes: a single /batch would exceed the device's 50-path
+    # cap and 502. Chunked, all 60 resolve.
+    paths = [f"/guide/series/1/episodes/{i}" for i in range(60)]
+    objs = {
+        p: {"object_id": i, "episode": {"title": f"E{i}"},
+            "airing_details": {"datetime": f"2026-09-{(i % 27) + 1:02d}T00:00Z"},
+            "schedule": {"state": "scheduled", "skip_reason": "none"}}
+        for i, p in enumerate(paths)
+    }
+    fake = FakeState({("GET", "/guide/series/1/episodes"): paths, "objs": objs},
+                     batch_limit=50)
+    monkeypatch.setattr(S, "state", fake)
+    rows = await S.series_airings(guide_path="/guide/series/1", airing_state="all")
+    assert len(rows) == 60
+    batch_calls = [c for c in fake.calls if c[1] == "/batch"]
+    assert len(batch_calls) >= 2   # actually chunked, not one oversized call
 
 
 @pytest.mark.asyncio

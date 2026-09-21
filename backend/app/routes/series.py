@@ -159,6 +159,25 @@ async def _ruled_catalog_index(want_ids: set[str]) -> dict[str, dict]:
     return {k: index[k] for k in want_ids if k in index}
 
 
+async def _batch_resolve(paths: list) -> dict:
+    """Resolve device paths via `POST /batch`, chunked to the device's limit.
+
+    The device rejects a batch of more than 50 paths (`invalid_post_data`), so a
+    series with, say, 79 upcoming episodes must be resolved in chunks or the
+    whole read 400s → 502. Tolerant per chunk: a failed chunk contributes
+    nothing rather than sinking the rest.
+    """
+    out: dict = {}
+    for i in range(0, len(paths), _BATCH_CHUNK):
+        chunk = [p for p in paths[i:i + _BATCH_CHUNK] if isinstance(p, str)]
+        if not chunk:
+            continue
+        resolved = await _try("POST", "/batch", json.dumps(chunk)) or {}
+        if isinstance(resolved, dict):
+            out.update(resolved)
+    return out
+
+
 async def resolve_ruled() -> list[dict]:
     """Every series that has a recording rule, recorded or not.
 
@@ -254,8 +273,7 @@ async def _recording_now_paths() -> set[str]:
     failed read just means no card gets the live badge, never a broken page.
     """
     paths = await _try("GET", "/recordings/airings") or []
-    resolved = (await _try("POST", "/batch", json.dumps(paths[:600]))
-                if paths else {}) or {}
+    resolved = await _batch_resolve(paths)
     now: set[str] = set()
     for a in resolved.values():
         if not isinstance(a, dict):
@@ -340,8 +358,7 @@ async def _compose_schedule() -> list[dict]:
             return []
         async with sem:
             paths = await _try("GET", f"{gp}/episodes") or []
-            resolved = (await _try("POST", "/batch", json.dumps(paths[:300]))
-                        if paths else {}) or {}
+            resolved = await _batch_resolve(paths)
         rows = []
         for a in resolved.values():
             if not isinstance(a, dict):
@@ -407,16 +424,14 @@ async def _recorded_episode_objects(recordings_path: str, kind: str | None) -> l
     """
     if kind == "sports":
         paths = await _try("GET", "/recordings/airings") or []
-        resolved = (await _try("POST", "/batch", json.dumps(paths[:600]))
-                    if paths else {}) or {}
+        resolved = await _batch_resolve(paths)
         events = [v for v in resolved.values()
                   if isinstance(v, dict) and v.get("sport_path") == recordings_path]
         events.sort(key=lambda e: (e.get("airing_details") or {}).get("datetime") or "",
                     reverse=True)
         return events
     ep_paths = await _try("GET", recordings_path + "/episodes") or []
-    resolved = (await _try("POST", "/batch", json.dumps(ep_paths))
-                if ep_paths else {}) or {}
+    resolved = await _batch_resolve(ep_paths)
     # Batch answers with the key present and value null for a path it cannot
     # resolve (an episode deleted between listing and batch); filter on value.
     return [ep for ep in (resolved.get(p) for p in ep_paths) if isinstance(ep, dict)]
@@ -466,13 +481,12 @@ async def series_airings(
     try:
         paths = await state.request_device(
             "GET", f"{guide_path}/episodes") or []
-        resolved = {}
-        if paths:
-            resolved = await state.request_device(
-                "POST", "/batch", json.dumps(paths[:300])) or {}
     except Exception:
         raise HTTPException(status_code=502,
                             detail="The Tablo could not be reached.") from None
+    # Chunked to the device's 50-path batch limit — a series with 79 upcoming
+    # episodes 400s in a single batch, which used to surface as a 502.
+    resolved = await _batch_resolve(paths)
     rows = [
         _airing_row(a) for a in resolved.values()
         if isinstance(a, dict)
