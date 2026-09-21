@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Circle, CircleSlash, Play, SlidersHorizontal, Square, Trash2, X,
+  AlertTriangle, ArrowLeft, Circle, CircleSlash, Layers, Play,
+  SlidersHorizontal, Square, Trash2, X,
 } from "lucide-react";
 import { recordedSpan } from "../lib/recording";
 import {
@@ -69,6 +70,20 @@ interface Props {
    * whoever opened it.
    */
   onDeleteFailed?: (objectId: number, message: string) => void;
+  /**
+   * Open this airing's series, when there is somewhere new to go.
+   *
+   * Given the guide series path, because that is all this sheet knows; the
+   * caller turns it into whatever its own series panel needs.
+   */
+  onOpenSeries?: (guidePath: string, title: string) => void;
+  /**
+   * This sheet was opened from that series' own panel.
+   *
+   * The panel is directly behind it, so the way out is back rather than
+   * onward - and offering to open what you just came from would loop.
+   */
+  backToSeries?: boolean;
   /** Tune to this airing's channel. Only reachable while it is on air. */
   onTune: () => void;
 }
@@ -186,7 +201,8 @@ function whenLine(start: string, duration: number): string | null {
  */
 export function ShowInfo({
   channel, start, channelLabel, recordingId, posterOverride,
-  onClose, onDeleted, onDeleteConfirmed, onDeleteFailed, onTune,
+  onClose, onDeleted, onDeleteConfirmed, onDeleteFailed, onOpenSeries,
+  backToSeries, onTune,
 }: Props) {
   // Polled while the sheet is open, so what it says about a recording moves
   // rather than freezing at whatever it was when opened.
@@ -653,6 +669,34 @@ export function ShowInfo({
                   {detail.scheduled ? "Don't Record Episode" : "Record Episode"}
                 </button>
               )}
+
+              {/* The series behind this episode: back to it when that is where
+                  this sheet was opened from, onward to it otherwise. Absent
+                  for a one-off or a film, which has no series to open. */}
+              {backToSeries ? (
+                <button
+                  onClick={onClose}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                             text-sm font-semibold bg-fill-soft text-fg
+                             hover:bg-fill transition
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <ArrowLeft className="w-4 h-4 shrink-0" aria-hidden />
+                  Back to Series
+                </button>
+              ) : onOpenSeries && detail?.series?.path ? (
+                <button
+                  onClick={() => onOpenSeries(
+                    detail.series!.path, detail.title ?? "This series")}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                             text-sm font-semibold bg-fill-soft text-fg
+                             hover:bg-fill transition
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <Layers className="w-4 h-4 shrink-0" aria-hidden />
+                  Series Information
+                </button>
+              ) : null}
 
               {/* Kept on a past airing: a rule is about every episode still to
                   come, not about the one being looked at. */}

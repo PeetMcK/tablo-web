@@ -12,6 +12,7 @@ import { coveredHours, jumpDays, positionLabel } from "../lib/guideJump";
 import { ChannelLogo } from "./ChannelLogo";
 import { GuideJump } from "./GuideJump";
 import { ShowInfo } from "./ShowInfo";
+import { useSeriesDrawer } from "../lib/useSeriesDrawer";
 
 /**
  * An airing to reveal, handed in from search.
@@ -202,6 +203,8 @@ function useGridStream() {
 }
 
 export function GuideGridView({ onPlay, jumpTo }: Props) {
+  // Opening the series behind an episode, from its sheet.
+  const { openSeries, drawer: seriesDrawer } = useSeriesDrawer();
   // What is recording right now, from the same hook Live uses so the two views
   // cannot disagree about it. Keyed `(channel_identifier, start)`.
   const inProgress = useRecordingsInProgress(true);
@@ -1106,6 +1109,10 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           channel={info.channel}
           start={info.start}
           channelLabel={info.label}
+          onOpenSeries={(guidePath, title) => {
+            setInfo(null);
+            void openSeries(guidePath, title);
+          }}
           onClose={() => setInfo(null)}
           onTune={() => {
             const ch = filteredGrid.find((c) => c.identifier === info.channel);
@@ -1114,6 +1121,9 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
           }}
         />
       )}
+
+      {/* The series panel, when the sheet sent us to one. */}
+      {seriesDrawer}
 
         </div>
       </div>

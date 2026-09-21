@@ -18,6 +18,7 @@ import {
 } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { ShowInfo } from "./ShowInfo";
 import { stateMarker } from "../lib/scheduleState";
 import { RecordingPill } from "./RecordingPill";
 import { keepValue, keepFromValue, keepOptions } from "../lib/keep";
@@ -35,11 +36,12 @@ function fmtSize(bytes: number | null): string {
 }
 
 function EpisodeRow({
-  ep, checked, onCheck, onWatched, onProtect, onDelete,
+  ep, checked, onCheck, onOpen, onWatched, onProtect, onDelete,
 }: {
   ep: SeriesEpisode;
   checked: boolean;
   onCheck: (v: boolean) => void;
+  onOpen: () => void;
   onWatched: () => void;
   onProtect: () => void;
   onDelete: () => void;
@@ -57,7 +59,13 @@ function EpisodeRow({
         aria-label={`Select ${ep.title ?? "episode"}`}
         className="shrink-0"
       />
-      <div className="min-w-0 flex-1">
+      {/* The text is the way in; the checkbox and the three controls beside it
+          are not. A whole-row click would fight all four. */}
+      <button
+        onClick={onOpen}
+        className="min-w-0 flex-1 text-left rounded hover:bg-fill/60 transition px-1 -mx-1
+                   focus:outline-none focus:ring-2 focus:ring-accent"
+      >
         <div className="flex items-center gap-2">
           <span className="truncate font-medium">{ep.title ?? "Untitled"}</span>
           {se && <span className="text-fg-muted shrink-0">{se}</span>}
@@ -72,7 +80,7 @@ function EpisodeRow({
           {ep.orig_air_date ?? ""} · {fmtDuration(ep.duration)}
           {fmtSize(ep.size) && ` · ${fmtSize(ep.size)}`}
         </div>
-      </div>
+      </button>
       <button
         onClick={onWatched}
         title={ep.watched ? "Mark unwatched" : "Mark watched"}
@@ -102,11 +110,12 @@ function EpisodeRow({
 }
 
 function AiringsPane({
-  query, hasGuide, emptyLabel,
+  query, hasGuide, emptyLabel, onOpen,
 }: {
   query: { data?: SeriesAiring[]; isLoading: boolean };
   hasGuide: boolean;
   emptyLabel: string;
+  onOpen: (a: SeriesAiring) => void;
 }) {
   if (!hasGuide) {
     return (
@@ -133,7 +142,15 @@ function AiringsPane({
         return (
           <li key={a.object_id}
               className="flex items-center gap-3 py-2 text-sm border-b border-border-subtle">
-            <div className="min-w-0 flex-1">
+            {/* Every row here is an airing with a sheet of its own - what it
+                is, when, and whether it will record. */}
+            <button
+              onClick={() => onOpen(a)}
+              disabled={!a.channel_identifier || !a.datetime}
+              className="min-w-0 flex-1 text-left rounded hover:bg-fill/60 transition px-1 -mx-1
+                         disabled:hover:bg-transparent
+                         focus:outline-none focus:ring-2 focus:ring-accent"
+            >
               <div className="flex items-center gap-2">
                 <span className="truncate font-medium">{a.title ?? "Untitled"}</span>
                 {se && <span className="text-fg-muted shrink-0">{se}</span>}
@@ -157,7 +174,7 @@ function AiringsPane({
                   : ""}
                 {a.channel ? ` · ${a.channel}` : ""}
               </div>
-            </div>
+            </button>
           </li>
         );
       })}
@@ -178,6 +195,16 @@ export function SeriesDetail({
   const hasRecordings = path != null;
   const detailKey = path ?? card.guide_path ?? card.title;
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  /**
+   * The airing or episode whose sheet is open over this panel.
+   *
+   * Stacked rather than replacing: the panel is where you were, and closing
+   * the sheet has to land back on it with the list still where it was. Escape
+   * closes the sheet alone - see ShowInfo, which answers innermost-first.
+   */
+  const [sheet, setSheet] = useState<
+    { channel: string; start: string | null; recordingId?: number } | null
+  >(null);
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
   // Episodes always, even with nothing on disk. A series scheduled nightly and
   // not yet recorded had no Episodes tab at all, so the panel opened on
@@ -531,6 +558,14 @@ export function SeriesDetail({
                     key={ep.object_id}
                     ep={ep}
                     checked={selected.has(ep.object_id)}
+                    onOpen={() => setSheet({
+                      // An episode outlives its listing - the guide is pruned
+                      // at 31 days - so the recording is what answers, with
+                      // the airing laid over it when one still exists.
+                      channel: ep.channel_identifier ?? "",
+                      start: ep.datetime,
+                      recordingId: ep.object_id,
+                    })}
                     onCheck={(v) =>
                       setSelected((prev) => {
                         const next = new Set(prev);
@@ -558,6 +593,9 @@ export function SeriesDetail({
             ) : (
               <AiringsPane
                 query={tab === "upcoming" ? upcoming : conflicts}
+                onOpen={(a) => setSheet({
+                  channel: a.channel_identifier!, start: a.datetime,
+                })}
                 hasGuide={!!guidePath}
                 emptyLabel={tab === "upcoming"
                   ? "Nothing scheduled for this series."
@@ -598,6 +636,25 @@ export function SeriesDetail({
       </div>
 
       <ConfirmDialog confirmation={confirm} onClose={() => setConfirm(null)} />
+
+      {/* The sheet for whichever row was opened, over this panel rather than
+          instead of it: closing it lands back here, where the click came
+          from. "Back to Series" rather than "Series Information", because the
+          series is behind it and not somewhere else to go. */}
+      {sheet && (
+        <ShowInfo
+          channel={sheet.channel}
+          start={sheet.start}
+          recordingId={sheet.recordingId}
+          backToSeries
+          onClose={() => setSheet(null)}
+          onDeleted={() => {
+            qc.invalidateQueries({ queryKey: ["series-detail"] });
+            qc.invalidateQueries({ queryKey: ["series"] });
+          }}
+          onTune={() => setSheet(null)}
+        />
+      )}
     </div>
   );
 }

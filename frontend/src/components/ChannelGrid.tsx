@@ -10,6 +10,7 @@ import { ContentFilterMenu } from "./ContentFilterMenu";
 import { LibraryView } from "./LibraryView";
 import { RecordingsView } from "./RecordingsView";
 import { ShowInfo } from "./ShowInfo";
+import { useSeriesDrawer } from "../lib/useSeriesDrawer";
 import { GuideGridView, type GuideJumpTarget } from "./GuideGridView";
 import { AppMenu } from "./AppMenu";
 import { HeaderClock } from "./HeaderClock";
@@ -100,6 +101,8 @@ function matchesContentFilter(ch: GuideChannel, f: ContentFilter): boolean {
 }
 
 export function ChannelGrid({ onLogout }: Props) {
+  // Opening the series behind an episode, from its sheet.
+  const { openSeries, drawer: seriesDrawer } = useSeriesDrawer();
   // Read once on mount so a refresh lands on the same tab / stream. A lazy
   // useState rather than a ref: the value is needed during render.
   const [initialRoute] = useState(parseRoute);
@@ -144,7 +147,7 @@ export function ChannelGrid({ onLogout }: Props) {
   /** The Guide is the one tab laid out as a viewport rather than a document. */
   const isGuide = activeTab === "grid";
   /** Tabs laid out as a viewport (own scroll pane) rather than a document. */
-  const isViewport = isGuide || activeTab === "schedule";
+  const isViewport = isGuide || activeTab === "series";
   // Set once the user closes the restored stream, so it does not reopen.
   const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -432,6 +435,10 @@ export function ChannelGrid({ onLogout }: Props) {
           channel={cardInfo.channel}
           start={cardInfo.start}
           channelLabel={cardInfo.label}
+          onOpenSeries={(guidePath, title) => {
+            setCardInfo(null);
+            void openSeries(guidePath, title);
+          }}
           onClose={() => setCardInfo(null)}
           onTune={() => {
             const ch = channels.find(c => c.identifier === cardInfo.channel);
@@ -440,6 +447,9 @@ export function ChannelGrid({ onLogout }: Props) {
           }}
         />
       )}
+
+      {/* The series panel, when the sheet sent us to one. */}
+      {seriesDrawer}
 
       {/* The Guide is a viewport; Live TV and Library are documents.
           A guide is a fixed instrument you look into — chrome pinned, one
@@ -531,11 +541,11 @@ export function ChannelGrid({ onLogout }: Props) {
                 Library
               </button>
               <button
-                onClick={() => goToTab("schedule")}
+                onClick={() => goToTab("series")}
                 className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "schedule" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+                           ${activeTab === "series" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
-                Schedule
+                Series
               </button>
             </nav>
 
@@ -739,7 +749,7 @@ export function ChannelGrid({ onLogout }: Props) {
             </div>
           )}
 
-          {activeTab === "schedule" && (
+          {activeTab === "series" && (
             <div className="flex flex-col flex-1 min-h-0">
               <RecordingsView />
             </div>

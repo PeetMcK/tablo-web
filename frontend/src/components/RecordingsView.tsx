@@ -1,12 +1,12 @@
 /**
- * The Schedule tab — the DVR management home.
+ * The Series tab — the DVR management home.
  *
  * Three views: Series (the series I record — recorded *and* scheduled-but-
  * not-yet-recorded, with their rule/keep/counts), Upcoming (a time-ordered grid
  * of every upcoming airing of those series, state-marked so a skipped rerun is
  * visible), and Failures.
  *
- * Named Schedule rather than Recordings because the Library is literally the
+ * Named Series rather than Recordings because the Library is literally the
  * recordings; this is where you decide what becomes one. "Series" is the
  * device's own word for these - /guide/series, series_path - and stays true
  * for a series whose rule is Off but whose episodes are still on disk. Conflicts are surfaced as a banner and as a marker in
