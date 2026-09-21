@@ -15,9 +15,10 @@ import {
   log, fmt, isCached, rangesLabel, installSnapshot, timeRangesToArray,
 } from "../lib/debug";
 import {
-  airingAt, covers, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
-  planSkip, programWindow, readyRange, RECORDING_EDGE_MARGIN, SKIP_DEBOUNCE_MS,
-  type LiveAnchor,
+  airingAt, covers, describeSkipBurst, LIVE_EDGE_MARGIN, LIVE_EDGE_THRESHOLD,
+  planSkip, programWindow, readyRange, RECORDING_EDGE_MARGIN,
+  SKIP_BADGE_LINGER_MS, SKIP_DEBOUNCE_MS,
+  type LiveAnchor, type SkipBurst,
 } from "../lib/playback";
 import { nowPlayingArtwork } from "../lib/nowPlaying";
 import { cardArt } from "../lib/recording";
@@ -293,6 +294,8 @@ interface PlayerView {
   paused: boolean;
   togglePlay: () => void;
   skip: (delta: number) => void;
+  /** The run of taps being queued, or the one just committed while it lingers. */
+  skipBurst: SkipBurst | null;
   muted: boolean;
   toggleMute: () => void;
   volume: number;
@@ -510,6 +513,18 @@ export function VideoPlayer({
   // next, and a render between two fast taps would hand the second a stale one.
   const skipTargetRef = useRef<number | null>(null);
   const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The burst the badge reports: where this run of taps began, and where it
+   * has got to.
+   *
+   * Its own state rather than something derived from `pendingSeek`, because it
+   * has to outlive the queue. The seek commits the moment the taps stop, and a
+   * badge that went with it would blink out just as the picture began to move
+   * — so it lingers, and the origin it is measured against has to linger too.
+   */
+  const [skipBurst, setSkipBurst] = useState<SkipBurst | null>(null);
+  const burstFromRef = useRef<number | null>(null);
+  const badgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once playback has actually begun. Lets the surface-click unlock guard
   // tell a never-started startup (suspended context, swallow the first tap)
   // from a deliberate pause (also suspends the context, but the resume tap must
@@ -1392,22 +1407,36 @@ export function VideoPlayer({
     surfaceRef.current?.play().catch(() => {});
   }, []);
 
-  /** Drop a queued burst of skips — something else has taken the playhead. */
-  const cancelSkip = useCallback(() => {
+  /**
+   * Drop a queued burst of skips — something else has taken the playhead.
+   *
+   * `keepBadge` is for the one caller that is not "something else": committing
+   * the queue also seeks, and that seek must not wipe the badge describing the
+   * very jump it is making. Every other path — a scrub, Go Live, a resume —
+   * has moved the playhead somewhere the badge's origin says nothing about, so
+   * the badge goes with the queue.
+   */
+  const cancelSkip = useCallback((keepBadge = false) => {
     if (skipTimerRef.current !== null) clearTimeout(skipTimerRef.current);
     skipTimerRef.current = null;
     skipTargetRef.current = null;
+    if (keepBadge) return;
+    if (badgeTimerRef.current !== null) clearTimeout(badgeTimerRef.current);
+    badgeTimerRef.current = null;
+    burstFromRef.current = null;
+    setSkipBurst(null);
   }, []);
 
   useEffect(() => cancelSkip, [cancelSkip]);
 
-  const seekTo = useCallback((t: number) => {
+  const seekTo = useCallback((t: number, fromSkip = false) => {
     const s = surfaceRef.current;
     if (!s) return;
     // A scrub, a Go Live, a resume: all of them override whatever the skip
     // buttons had queued, rather than letting it land a moment later and drag
-    // the playhead back.
-    cancelSkip();
+    // the playhead back. The queue committing itself is the exception — that
+    // seek *is* the burst, so it keeps the badge (see `cancelSkip`).
+    cancelSkip(fromSkip);
     // Going anywhere puts the card away. Cleared here rather than on the
     // session saying it is playing again: pausing at the end flips the stall
     // state, which emits `playing` without anything having moved, and the card
@@ -1442,6 +1471,15 @@ export function VideoPlayer({
     skipTimerRef.current = null;
     const target = skipTargetRef.current;
     skipTargetRef.current = null;
+    // The burst is over either way, so the badge starts its count down here —
+    // before the early returns below, which end a burst just as finally as a
+    // seek does and would otherwise leave it on screen for good.
+    burstFromRef.current = null;
+    if (badgeTimerRef.current !== null) clearTimeout(badgeTimerRef.current);
+    badgeTimerRef.current = setTimeout(() => {
+      badgeTimerRef.current = null;
+      setSkipBurst(null);
+    }, SKIP_BADGE_LINGER_MS);
     if (target === null) return;
     const s = surfaceRef.current;
     if (!s) return;
@@ -1452,7 +1490,7 @@ export function VideoPlayer({
       setPendingSeek(null);
       return;
     }
-    seekTo(target);
+    seekTo(target, true);
   }, [seekTo]);
 
   const skip = useCallback((delta: number) => {
@@ -1511,6 +1549,14 @@ export function VideoPlayer({
     // The bar and the timecode follow immediately, so the control answers at
     // once while the decoder is left alone until the taps stop.
     setPendingSeek(target);
+    // Where this run began, kept until the run ends. Taken from the playhead
+    // on the first tap only: every later tap in the burst reads a
+    // `currentTime` that has not moved yet, so measuring from the latest one
+    // would report each tap's own step instead of the whole jump.
+    if (burstFromRef.current === null) burstFromRef.current = from;
+    if (badgeTimerRef.current !== null) clearTimeout(badgeTimerRef.current);
+    badgeTimerRef.current = null;
+    setSkipBurst({ from: burstFromRef.current, target });
     if (skipTimerRef.current !== null) clearTimeout(skipTimerRef.current);
     skipTimerRef.current = setTimeout(commitSkip, SKIP_DEBOUNCE_MS);
   }, [commitSkip, isLive, liveTranscoded, usingWasm, cacheState, rangeStart, rangeEnd]);
@@ -2259,7 +2305,7 @@ export function VideoPlayer({
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
-    paused, togglePlay, skip, muted, toggleMute,
+    paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
     openSeriesCard: source.kind === "recording" && !poppedOut ? openSeriesCard : null,
@@ -2446,7 +2492,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
-    paused, togglePlay, skip, muted, toggleMute,
+    paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
     openSeriesCard,
@@ -2614,6 +2660,19 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
       </div>
     );
   }
+
+  /**
+   * The queued burst, as a reading and a landing time.
+   *
+   * Net movement and where it ends up — never a tap count, because Forward and
+   * Back are configured separately and a mixed burst of twelve presses can
+   * come to nothing at all. The landing follows whatever the scrubber is
+   * labelled in: clock time on a programme bar, elapsed time everywhere else.
+   */
+  const burst = skipBurst ? describeSkipBurst(skipBurst) : null;
+  const burstLanding = skipBurst
+    ? (onProgramBar ? clockAt(skipBurst.target) : formatTime(skipBurst.target - rangeStart))
+    : null;
 
   return (
     // `dark`, unconditionally. The player is the one surface that does not
@@ -3127,6 +3186,47 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           </div>
         </div>
       </div>
+
+      {/* What the queue has added up to, while it is still gathering.
+
+          Outside the chrome layer above on purpose, and so unaffected by
+          whether the controls are up: the media keys skip without waking
+          anything — an AirPod squeeze reaches the player through the Media
+          Session API and touches nothing else — and inside the fading layer
+          this would be answering a screen nobody can see. It is also the only
+          answer there is for the half-second before the seek commits, which is
+          the whole reason the queue exists.
+
+          Net movement, not a tap count. Twelve presses that cancel out read
+          "0:00": the playhead has not moved, and saying "×12" about that is
+          counting the fingers rather than reporting the jump. */}
+      {burst && skipBurst && (
+        <div
+          role="status"
+          aria-label={burst.direction === 0
+            ? `Skipping, back where it started, at ${burstLanding}`
+            : `Skipping ${burst.direction > 0 ? "forward" : "back"} `
+              + `${formatTime(Math.abs(burst.net))} to ${burstLanding}`}
+          className={`absolute left-1/2 -translate-x-1/2 pointer-events-none
+                      flex items-center gap-2 rounded-full glass text-player-fg
+                      shadow-lg tabular-nums
+                      ${pip ? "top-2 px-2.5 py-1 text-[11px]" : "top-6 px-3.5 py-2 text-sm"}`}
+        >
+          {/* The transport's own two icons, so the badge reads as the thing
+              those buttons are doing. Nothing at all when the burst nets out —
+              an arrow over "0:00" would point somewhere it is not going. */}
+          {burst.direction < 0 && <RotateCcw className={pip ? "w-3 h-3" : "w-4 h-4"} aria-hidden />}
+          {burst.direction > 0 && <RotateCw className={pip ? "w-3 h-3" : "w-4 h-4"} aria-hidden />}
+          <span className="font-bold">
+            {burst.direction > 0 ? "+" : burst.direction < 0 ? "−" : ""}
+            {formatTime(Math.abs(burst.net))}
+          </span>
+          {/* Where it lands, which is the part worth waiting for: the offset
+              says how hard the button was pressed, this says where that puts
+              you in the programme. */}
+          <span className="text-player-fg-muted">{burstLanding}</span>
+        </div>
+      )}
     </div>
   );
 }
