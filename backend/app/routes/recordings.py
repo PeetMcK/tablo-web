@@ -303,6 +303,34 @@ async def list_recordings():
     }
 
 
+@router.get("/{object_id:int}")
+async def one_recording(object_id: int):
+    """One recording, in the shape the listing gives them.
+
+    The player takes a recording rather than an id, and until now only the
+    Library held one - so opening a recording from the Guide or a series panel
+    meant routing to the Library and landing somewhere else entirely. Fetching
+    the single record is one device read; listing the whole library to find it
+    is a walk of every recording on the device.
+
+    Declared above `/{object_id}/...` siblings and constrained to an int so it
+    cannot swallow `/in-progress` or `/storage`.
+    """
+    _require_auth()
+    try:
+        item = await state.recording_snapshot(object_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Recording not found") from None
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Library error: {e}") from None
+
+    row = _decorate(item, await _run_sync(cache.read_meta, object_id))
+    # Same artwork resolution the listing applies, so a card opened from the
+    # Guide leads with the picture the Library would have shown.
+    await _run_sync(_with_art, [row])
+    return row
+
+
 @router.get("/in-progress")
 async def recordings_in_progress():
     """What is being recorded right now, for the views that are not the Library.

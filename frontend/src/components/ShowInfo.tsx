@@ -8,9 +8,9 @@ import {
   recordingFor, recordingForSeries, useRecordingsInProgress,
 } from "../lib/useRecordingsInProgress";
 import { api } from "../api/tablo";
-import { loadResume, resumeKey } from "../lib/resume";
-import { writeRoute } from "../lib/route";
-import type { AiringDetail, SeriesRule } from "../api/tablo";
+import { loadResume, resumeKey, saveResume } from "../lib/resume";
+import { VideoPlayer } from "./VideoPlayer";
+import type { AiringDetail, Recording, SeriesRule } from "../api/tablo";
 
 interface Props {
   /** Channel identifier, as the grid holds it. */
@@ -89,8 +89,9 @@ interface Props {
   /**
    * Play the recording this sheet describes, resuming where it was left.
    *
-   * Optional because only the Library has a player of its own; everywhere
-   * else the sheet routes to it, which the router addresses by recording id.
+   * Optional, and only the Library passes it: that view owns a player already
+   * and keeps the playhead in its own URL. Everywhere else the sheet opens one
+   * over itself, so closing playback lands back on the sheet.
    */
   onWatchRecording?: (objectId: number) => void;
   /** Tune to this airing's channel. Only reachable while it is on air. */
@@ -403,6 +404,28 @@ export function ShowInfo({
     : 0;
 
   /**
+   * Playing without leaving.
+   *
+   * The player is an overlay that takes a recording rather than an id, and for
+   * a while only the Library held one - so this routed there instead, which
+   * started playback behind this sheet in a view the viewer had not asked for,
+   * and left them there when they closed it. One fetch gets the recording, and
+   * the player opens over the sheet: closing it lands back here.
+   *
+   * The Library still plays through `onWatchRecording`, because it owns a
+   * player already and keeps the playhead in its own URL.
+   */
+  const [playing, setPlaying] = useState<Recording | null>(null);
+
+  async function playHere(objectId: number) {
+    try {
+      setPlaying(await api.recording(objectId));
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : "That recording would not open.");
+    }
+  }
+
+  /**
    * Delete the recording on the Tablo, and stop offering to.
    *
    * Not optimistic, unlike the schedule writes: those can be put back by
@@ -609,10 +632,7 @@ export function ShowInfo({
             <button
               onClick={() => (onWatchRecording
                 ? onWatchRecording(watchable)
-                // No player here: the Guide and the series panel have none.
-                // The Library route does, and addresses a recording by id.
-                : writeRoute({ tab: "library",
-                               watch: { kind: "recording", id: watchable } }))}
+                : void playHere(watchable))}
               className="mt-6 w-full flex items-center justify-center gap-2
                          px-4 py-2.5 rounded-xl text-sm font-semibold
                          bg-accent text-accent-fg hover:opacity-90 transition
@@ -921,6 +941,20 @@ export function ShowInfo({
         </div>
       )}
       </div>
+
+      {/* Over the sheet, not instead of it: closing the player lands back on
+          the thing that opened it, which is the whole point of playing here
+          rather than routing to the Library. */}
+      {playing && (
+        <VideoPlayer
+          source={{ kind: "recording", recording: playing }}
+          startAt={loadResume(resumeKey("recording", playing.object_id))}
+          onPosition={(seconds) =>
+            saveResume(resumeKey("recording", playing.object_id),
+                       seconds, playing.duration)}
+          onClose={() => setPlaying(null)}
+        />
+      )}
     </div>
   );
 }

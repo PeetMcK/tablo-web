@@ -983,6 +983,15 @@ export const api = {
    * earliest row was from the 15th, while recordings from the 13th were still
    * in the library and their sheets said "Information unavailable".
    */
+  /**
+   * One recording, in the shape the player takes.
+   *
+   * The player is handed a recording, not an id, and only the Library used to
+   * hold one - so playing from the Guide or a series panel meant routing to
+   * the Library and landing somewhere else.
+   */
+  recording: (objectId: number) => req<Recording>(`/recordings/${objectId}`),
+
   recordingDetail: (objectId: number) =>
     req<AiringDetail>(`/recordings/${objectId}/detail`),
 
