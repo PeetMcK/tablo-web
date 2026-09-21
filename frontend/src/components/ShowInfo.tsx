@@ -495,7 +495,11 @@ export function ShowInfo({
       aria-label={noListing
         ? `${channelLabel ?? "Channel"} — no programme information`
         : detail?.title ?? "Show information"}
-      onClick={onClose}
+      // Dismisses this sheet and nothing behind it. When opened from a series
+      // panel the sheet renders inside it, so an un-stopped click bubbled to
+      // the panel's own outside-click and took both down - losing the place in
+      // the list the sheet was opened from.
+      onClick={(e) => { e.stopPropagation(); onClose(); }}
     >
       {/* Two boxes, and both parts matter. `relative` gives the confirmation
           something to sit over; `flex` with `max-h-full` keeps the height
