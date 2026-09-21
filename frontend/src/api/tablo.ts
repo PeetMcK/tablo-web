@@ -739,6 +739,8 @@ export interface UpcomingAiring {
 
 export interface SeriesUpdate {
   identifier: string;
+  /** Guide series path — the device's settings target (`/guide/series/NNN`). */
+  guide_path: string;
   rule?: "all" | "new" | "none";
   keep?: { rule: "all" | "none" | "count"; count?: number };
   offsets?: { start: number; end: number };

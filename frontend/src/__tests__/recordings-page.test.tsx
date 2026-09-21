@@ -155,7 +155,8 @@ describe("Series detail", () => {
     const spy = vi.spyOn(api.series, "update").mockResolvedValue({ identifier: "C1", echo: {} });
     await open();
     fireEvent.click(screen.getByRole("radio", { name: "New" }));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith({ identifier: "C1", rule: "new" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(
+      { identifier: "C1", guide_path: "/guide/series/9", rule: "new" }));
   });
 
   it("delete-all confirms then bulk-deletes unprotected", async () => {

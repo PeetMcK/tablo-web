@@ -194,8 +194,9 @@ export function SeriesDetail({
 
   const settings = data?.settings;
   const identifier = settings?.identifier ?? null;
-  const canConfigure = identifier != null;
   const guidePath = data?.meta.guide_path ?? card.guide_path ?? null;
+  // Settings write to the guide series path, so both are needed to configure.
+  const canConfigure = identifier != null && guidePath != null;
 
   // This series' upcoming airings (all states, so a rule-skipped rerun shows)
   // and its conflicts — titled, unlike the global list. Fetched only when their
@@ -252,13 +253,17 @@ export function SeriesDetail({
   });
 
   const setRule = (rule: "all" | "new" | "none") => {
-    if (identifier) update.mutate({ identifier, rule });
+    if (identifier && guidePath)
+      update.mutate({ identifier, guide_path: guidePath, rule });
   };
   const setKeep = (keep: SeriesUpdate["keep"]) => {
-    if (identifier) update.mutate({ identifier, keep });
+    if (identifier && guidePath)
+      update.mutate({ identifier, guide_path: guidePath, keep });
   };
   const applyPadding = (s: number, e: number) => {
-    if (identifier) update.mutate({ identifier, offsets: { start: s * 60, end: e * 60 } });
+    if (identifier && guidePath)
+      update.mutate({ identifier, guide_path: guidePath,
+                     offsets: { start: s * 60, end: e * 60 } });
   };
 
   const keepRule = settings?.keep.rule ?? "none";

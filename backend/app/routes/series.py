@@ -568,18 +568,21 @@ class SeriesSettingsIn(BaseModel):
     """Allow-listed series settings write. Unknown keys are rejected (422)."""
     model_config = ConfigDict(extra="forbid")
     identifier: str
+    # The device settings live on the guide *series* object, addressed by its
+    # path (`/guide/series/377`). `/guide/{identifier}` is not a resource (the
+    # device 404s it), so the client sends the guide path it already holds.
+    guide_path: str
     rule: Literal["all", "new", "none"] | None = None
     keep: KeepIn | None = None
     offsets: OffsetsIn | None = None
 
 
-async def _patch_guide(identifier: str, body: dict) -> dict:
-    """PATCH /guide/{identifier}, with one retry on the transient 999.
+async def _patch_guide(path: str, body: dict) -> dict:
+    """PATCH a guide series path, with one retry on the transient 999.
 
     One keep write was observed to return 999 then succeed on retry; a single
     retry covers it without masking a real refusal.
     """
-    path = f"/guide/{identifier}"
     status, data = await state.patch_device(path, body)
     if status == 999:
         status, data = await state.patch_device(path, body)
@@ -597,6 +600,8 @@ async def series_settings(body: SeriesSettingsIn):
     non-zero, "none" at defaults. Seconds throughout.
     """
     _require_auth()
+    if not _GUIDE_PATH.match(body.guide_path):
+        raise HTTPException(status_code=400, detail="Not a guide series path")
     echo: dict = {}
 
     schedule: dict = {}
@@ -610,14 +615,14 @@ async def series_settings(body: SeriesSettingsIn):
             "end": end,
         }
     if schedule:
-        echo["schedule"] = await _patch_guide(body.identifier,
+        echo["schedule"] = await _patch_guide(body.guide_path,
                                               {"schedule": schedule})
 
     if body.keep is not None:
         keep: dict = {"rule": body.keep.rule}
         if body.keep.rule == "count":
             keep["count"] = body.keep.count
-        echo["keep"] = await _patch_guide(body.identifier, {"keep": keep})
+        echo["keep"] = await _patch_guide(body.guide_path, {"keep": keep})
 
     if not echo:
         raise HTTPException(status_code=400, detail="No settings to change")
