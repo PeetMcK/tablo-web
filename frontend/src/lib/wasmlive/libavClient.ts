@@ -20,6 +20,7 @@
  * to start video mid-GOP.
  */
 
+import { createCaptionTrack, extractCcData, type CaptionCue } from "../captions";
 import { createTimeline, noteDecoded, noteEmitted, nextOutputPts } from "./audioTimeline";
 import libavLoader from "./vendor/libav-6.10.9.0-tablo-mpeg2.mjs";
 import glueUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs?url";
@@ -99,6 +100,13 @@ const DEFAULT_FRAME_DURATION = 1001 / 30000;
 export interface DecodeOutput {
   video: DecodedVideoFrame[];
   audio: DecodedAudioChunk[];
+  /**
+   * Captions finished in this read round.
+   *
+   * Times are in the decoder's own PTS domain, the same one `ptsSeconds`
+   * carries; the session converts to media time when it is asked for a cue.
+   */
+  captions: CaptionCue[];
 }
 
 /**
@@ -132,6 +140,17 @@ export interface DecoderStats {
    * VIDEO_DECODE_FAIL_LIMIT.
    */
   videoDropped: number;
+  /**
+   * 608 pairs extracted, and cues they produced.
+   *
+   * A stream with pairs and no cues is one whose captions are arriving and not
+   * being decoded; a stream with neither is simply uncaptioned. Without both
+   * numbers those two look identical from outside, and only one is a bug.
+   * Broadcasts carrying captions in CEA-708 alone land in the second case,
+   * which is why the counts are worth having rather than obvious.
+   */
+  captionPairs: number;
+  captionCues: number;
   audioDropped: number;
 }
 
@@ -196,6 +215,26 @@ export interface DecoderOptions {
 type Libav = any;
 type LibavFrame = any;
 type LibavStream = any;
+/**
+ * A demuxed packet. Narrower than the rest because the caption path reads it
+ * directly rather than handing it back to libav, so the fields it touches are
+ * worth naming.
+ */
+type LibavPacket = {
+  data?: Uint8Array;
+  pts?: number;
+  ptshi?: number;
+  time_base_num?: number;
+  time_base_den?: number;
+};
+
+/**
+ * `ptshi` for AV_NOPTS_VALUE, which is 0x8000000000000000 split in two.
+ *
+ * libav.js hands the high word back signed, so the "no timestamp" marker
+ * arrives as the most negative 32-bit integer rather than as a huge one.
+ */
+const NOPTS_HI = -2147483648;
 
 /**
  * Resolve a bundled asset path against wherever this is running.
@@ -292,6 +331,34 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   // a seek but does not rewrite what this session has already been through.
   let videoDropped = 0;
   let audioDropped = 0;
+  let captionPairs = 0;
+  let captionCues = 0;
+
+  /**
+   * The 608 state machine, which lives as long as this decoder does.
+   *
+   * A seek tears the decoder down and builds a new one, which is exactly the
+   * lifetime a caption parser wants: screen state from the old position must
+   * not survive into the new one, or captions resume mid sentence from where
+   * the viewer no longer is.
+   */
+  const captionTrack = createCaptionTrack();
+
+  /**
+   * A demuxed packet's presentation time, or null when it has none.
+   *
+   * Packets do not always carry their own time base, so the video stream's
+   * stands in. A packet with no PTS cannot time a caption and is skipped
+   * rather than guessed at: a caption on the wrong second is worse than one
+   * that is missing.
+   */
+  const packetSeconds = (packet: LibavPacket): number | null => {
+    if (packet.pts === undefined || packet.ptshi === NOPTS_HI) return null;
+    const num = packet.time_base_num ?? videoStream?.time_base_num;
+    const den = packet.time_base_den ?? videoStream?.time_base_den;
+    if (!num || !den) return null;
+    return ((packet.ptshi ?? 0) * 4294967296 + packet.pts) * (num / den);
+  };
 
   /**
    * Bound a call that may never return, and clean up either way.
@@ -509,10 +576,34 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       const [result, packets] = await libav.ff_read_frame_multi(fmtCtx, vpkt, {
         limit: READ_LIMIT,
       });
-      const out: DecodeOutput = { video: [], audio: [] };
+      const out: DecodeOutput = { video: [], audio: [], captions: [] };
 
       const videoPackets = videoStream ? packets[videoStream.index] ?? [] : [];
       if (videoPackets.length) {
+        // Captions come off the packets rather than the frames: this libav.js
+        // build exposes no frame side data, and the bytes are sitting in the
+        // picture's user data where the extractor can find them without it.
+        //
+        // Sorted by PTS first. MPEG-2 carries a presentation timestamp per
+        // picture, so PTS order is display order — and 608 is a command
+        // stream, which means a different thing in a different order.
+        const timed: Array<{ seconds: number; packet: LibavPacket }> = [];
+        for (const packet of videoPackets as LibavPacket[]) {
+          const seconds = packetSeconds(packet);
+          if (seconds !== null) timed.push({ seconds, packet });
+        }
+        timed.sort((a, b) => a.seconds - b.seconds);
+        for (const { seconds, packet } of timed) {
+          const data = packet.data;
+          if (!data || !data.length) continue;
+          const pairs = extractCcData(data instanceof Uint8Array ? data : new Uint8Array(data));
+          if (!pairs.length) continue;
+          captionPairs += pairs.length;
+          captionTrack.add(seconds, pairs);
+        }
+        out.captions = captionTrack.drain();
+        captionCues += out.captions.length;
+
         const fin = result === libav.AVERROR_EOF;
         let frames: LibavFrame[];
         try {
@@ -692,6 +783,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       audioChunks,
       videoDropped,
       audioDropped,
+      captionPairs,
+      captionCues,
     }),
 
     async flush() {
@@ -710,6 +803,11 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       // for the new position.
       queue = [];
       await teardown();
+      // The screen state goes with the decoder. Kept, deliberately, is the
+      // track's memory that this stream carries captions at all — a seek does
+      // not make a captioned channel uncaptioned, and a CC button that
+      // vanished and came back would flicker on every skip.
+      captionTrack.reset();
       atEof = false;
       starved = false;
       pumpError = null;

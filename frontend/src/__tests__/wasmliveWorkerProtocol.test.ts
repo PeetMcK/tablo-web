@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 import { createWorkerHandler } from "../lib/wasmlive/workerProtocol";
 import type { FromWorker } from "../lib/wasmlive/workerProtocol";
-import type { LibavDecoder } from "../lib/wasmlive/libavClient";
+import type { DecodeOutput, LibavDecoder } from "../lib/wasmlive/libavClient";
 
 const frame = {
   data: new Uint8Array(6), width: 2, height: 2,
@@ -12,18 +12,18 @@ const chunk = { samples: new Float32Array(4), sampleRate: 48000, ptsSeconds: 1 }
 
 /** A decoder that emits one frame and one chunk when anything is pushed. */
 function fakeDecoder(
-  onOutput: (out: { video: typeof frame[]; audio: typeof chunk[] }) => void,
+  onOutput: (out: DecodeOutput) => void,
   overrides: Partial<LibavDecoder> = {},
 ): LibavDecoder {
   return {
-    push: vi.fn(async () => { onOutput({ video: [frame], audio: [chunk] }); }),
+    push: vi.fn(async () => { onOutput({ video: [frame], audio: [chunk], captions: [] }); }),
     flush: vi.fn(async () => {}),
     reset: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
     stats: vi.fn(() => ({
       bytesFed: 0, bytesDelivered: 0, opened: true, bytesAtOpen: 0, msToOpen: 0,
       videoStream: true, audioStream: true, videoFrames: 0, audioChunks: 0,
-      videoDropped: 0, audioDropped: 0,
+      videoDropped: 0, audioDropped: 0, captionPairs: 0, captionCues: 0,
     })),
     ...overrides,
   };
@@ -139,9 +139,9 @@ describe("createWorkerHandler", () => {
     // position. Adopting the new epoch before the rebuild would stamp the very
     // frames the seek exists to discard with the epoch that means "keep me".
     const posted: FromWorker[] = [];
-    let emit!: (out: { video: typeof frame[]; audio: typeof chunk[] }) => void;
+    let emit!: (out: DecodeOutput) => void;
     const decoder = fakeDecoder(() => {}, {
-      reset: vi.fn(async () => { emit({ video: [frame], audio: [] }); }),
+      reset: vi.fn(async () => { emit({ video: [frame], audio: [], captions: [] }); }),
     });
     const handle = createWorkerHandler(
       async (onOutput) => { emit = onOutput; return decoder; },
