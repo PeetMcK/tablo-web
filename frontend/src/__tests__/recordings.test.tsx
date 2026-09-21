@@ -157,7 +157,8 @@ describe("LibraryView", () => {
     });
     const status = vi.spyOn(api, "recordingStatus").mockResolvedValue({
       object_id: 80888, state: "partial", progress: 0.42, duration: 12615,
-      cached_seconds: 5298, cached_ranges: [[0, 5298]], encoding: null, error: null,
+      cached_seconds: 5298, cached_ranges: [[0, 5298]], encoding: null,
+      preview: "ready", error: null,
     });
 
     renderLibrary();

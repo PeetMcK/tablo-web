@@ -1025,6 +1025,21 @@ async def recording_status(object_id: int, position: float | None = None):
         # show a bar rather than a spinner that only means "something is
         # happening".
         "encoding": cache.encoding_progress(object_id),
+        # Whether there are scrub thumbnails to ask for at all. A browser cannot
+        # read a 404 off an <img>, so the answer the player already polls for is
+        # what carries it - otherwise the strip requests a frame per hover
+        # position for the whole of a recording that has none.
+        #
+        # "ready"   - the pack is on disk here
+        # "absent"  - the device was asked and had none (damaged capture, or
+        #             still recording; re-checked every few minutes)
+        # "unknown" - nobody has asked yet. Packs are fetched lazily, so this is
+        #             the usual answer, and asking is how it resolves.
+        "preview": (
+            "ready" if cache.preview_available(object_id)
+            else "absent" if cache.preview_missing(object_id)
+            else "unknown"
+        ),
         "error": meta.error if meta else None,
     }
 
@@ -1120,9 +1135,16 @@ async def recording_preview(object_id: int, t: float = 0.0):
     #
     # One fetch at a time per recording, so a pointer sweeping the strip cannot
     # start a dozen of them.
-    if frame is None and not cache.preview_available(object_id):
+    # A device that has already said it has no pack is not asked again for a
+    # while (`preview_missing`), so a scrub across a recording with no
+    # thumbnails costs one device round-trip rather than one per frame.
+    if (
+        frame is None
+        and not cache.preview_available(object_id)
+        and not cache.preview_missing(object_id)
+    ):
         async with _preview_fetch_lock(object_id):
-            if not cache.preview_available(object_id):
+            if not cache.preview_available(object_id) and not cache.preview_missing(object_id):
                 try:
                     path, _duration = await state.resolve_recording(object_id)
                     await cache.fetch_bif(object_id, path)
