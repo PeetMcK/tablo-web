@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Play, Pause, RotateCcw, RotateCw, Volume1, Volume2, VolumeX, Maximize,
-  PictureInPicture2, Captions,
+  PictureInPicture2, ClosedCaption,
 } from "lucide-react";
 import { PictureInPictureExit } from "./icons";
 import { usePlayer } from "../hooks/usePlayer";
@@ -32,6 +32,7 @@ import {
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
 import { CaptionOverlay } from "./CaptionOverlay";
+import { CHROME_BOTTOM_BAND_PX } from "../lib/playerChrome";
 import { SeriesEndCard, type CardReason } from "./SeriesEndCard";
 
 /**
@@ -2834,6 +2835,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           source={captionSourceAt}
           enabled={captionsOn}
           currentTime={surfaceTime}
+          raised={chromeUp}
         />
       )}
 
@@ -2929,7 +2931,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
             : "linear-gradient(to bottom," +
               " rgb(var(--c-player-scrim) / var(--c-player-scrim-soft-a)) 0," +
               " rgb(var(--c-player-scrim) / 0) 88px," +
-              " rgb(var(--c-player-scrim) / 0) calc(100% - 132px)," +
+              ` rgb(var(--c-player-scrim) / 0) calc(100% - ${CHROME_BOTTOM_BAND_PX}px),` +
               " rgb(var(--c-player-scrim) / var(--c-player-scrim-a)) 100%)",
         }}
       >
@@ -3282,7 +3284,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                   aria-label={captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)"}
                   aria-pressed={captionsOn}
                 >
-                  <Captions className="w-4 h-4" aria-hidden />
+                  <ClosedCaption className="w-4 h-4" aria-hidden />
                 </button>
               )}
 

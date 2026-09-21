@@ -15,10 +15,17 @@
 import { useEffect, useState } from "react";
 
 import { DOCUMENT_FRAMES, startFrameLoop } from "../lib/playbackSurface";
+import { CHROME_BOTTOM_BAND_PX } from "../lib/playerChrome";
+
+/** Where captions sit when nothing is in their way — a television's height. */
+const RESTING_BOTTOM = "12%";
+
+/** A little air between the caption box and the top of the transport band. */
+const CLEARANCE_PX = 8;
 import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
 
 export function CaptionOverlay({
-  source, enabled, currentTime, frames = DOCUMENT_FRAMES,
+  source, enabled, currentTime, raised = false, frames = DOCUMENT_FRAMES,
 }: {
   /**
    * The current surface's captions, read fresh each frame.
@@ -34,6 +41,17 @@ export function CaptionOverlay({
   enabled: boolean;
   /** Media seconds, read fresh each frame rather than passed as a value. */
   currentTime: () => number;
+  /**
+   * Whether the player's chrome is showing, which the captions must clear.
+   *
+   * The transport sits in a band of fixed pixel height along the bottom, while
+   * captions rest at a percentage of the stage — so how much of the two
+   * overlap depends entirely on how tall the window is, and at most sizes they
+   * already half clear each other. Lifting by the whole band therefore throws
+   * the captions into the middle of the picture. What is wanted is the floor:
+   * stay where you are, unless that is inside the band.
+   */
+  raised?: boolean;
   /** Injected so a test can step the loop by hand. */
   frames?: FrameSource;
 }) {
@@ -56,7 +74,21 @@ export function CaptionOverlay({
 
   return (
     <div
-      className="absolute inset-x-0 bottom-[12%] flex justify-center pointer-events-none px-4"
+      className="absolute inset-x-0 flex justify-center pointer-events-none px-4
+                 transition-[bottom] duration-300"
+      style={{
+        // `max` rather than a lift: on a short window the resting height sits
+        // inside the transport band and the captions move up to its top edge;
+        // on a tall one they are already above it and do not move at all. Both
+        // are the same rule, and neither needs to know the window's height.
+        bottom: raised
+          ? `max(${RESTING_BOTTOM}, ${CHROME_BOTTOM_BAND_PX + CLEARANCE_PX}px)`
+          : RESTING_BOTTOM,
+      }}
+      /* The decision, not the pixels: `max()` is the presentation of it, and
+         jsdom's CSS parser drops the value outright, so this is also what a
+         test can hold on to. */
+      data-raised={raised ? "true" : "false"}
       aria-live="polite"
     >
       {/* Black box behind white text, which is what 608 specifies and what a
