@@ -9,6 +9,7 @@ import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { ShowInfo } from "./ShowInfo";
 import { CoverageStrip } from "./CoverageStrip";
+import { RecordingPill } from "./RecordingPill";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
 import { cardArt, isIncomplete, recordedSpan, strippedTime, watchedSpan } from "../lib/recording";
 import type { Coverage } from "../lib/recording";
@@ -839,16 +840,7 @@ export function LibraryView() {
                       copy needs a finished recording. */}
                   <div className="absolute top-3 left-3 flex items-start gap-1.5">
                     {isRecording(rec) ? (
-                      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-danger-solid text-[10px] font-bold text-danger-fg uppercase tracking-wider">
-                        <span className="relative flex w-2 h-2" aria-hidden>
-                          {/* The pulse is the only motion on the card, and it
-                              stops for reduced motion — where the dot alone
-                              still reads as recording. */}
-                          <span className="motion-safe:animate-ping absolute inline-flex w-full h-full rounded-full bg-danger-fg opacity-60" />
-                          <span className="relative inline-flex w-2 h-2 rounded-full bg-danger-fg" />
-                        </span>
-                        Recording
-                      </div>
+                      <RecordingPill />
                     ) : broken ? (
                       // Four seconds of an hour is not a short recording, it is a
                       // broken one. The device does not agree - `error` is null

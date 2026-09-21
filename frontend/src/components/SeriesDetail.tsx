@@ -10,14 +10,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  X, Lock, LockOpen, Eye, EyeOff, Trash2, Film, Radio,
+  X, Lock, LockOpen, Eye, EyeOff, Trash2, Film,
 } from "lucide-react";
 import {
   api, type SeriesAiring, type SeriesCard, type SeriesEpisode, type SeriesUpdate,
+  type SeriesDetail as SeriesDetailData,
 } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { stateMarker } from "../lib/scheduleState";
+import { RecordingPill } from "./RecordingPill";
 
 const KEEP_PRESETS = [1, 3, 5, 10, 20];
 
@@ -60,11 +62,7 @@ function EpisodeRow({
         <div className="flex items-center gap-2">
           <span className="truncate font-medium">{ep.title ?? "Untitled"}</span>
           {se && <span className="text-fg-muted shrink-0">{se}</span>}
-          {ep.is_recording && (
-            <span className="inline-flex items-center gap-1 text-danger shrink-0" title="Recording">
-              <Radio className="w-3.5 h-3.5" aria-hidden />
-            </span>
-          )}
+          {ep.is_recording && <RecordingPill className="shrink-0" />}
           {ep.position === 0 && !ep.watched && !ep.is_recording && (
             <span className="px-1 py-0.5 rounded bg-accent-soft text-accent-strong text-[10px] font-bold uppercase shrink-0">
               New
@@ -195,8 +193,10 @@ export function SeriesDetail({
   const settings = data?.settings;
   const identifier = settings?.identifier ?? null;
   const guidePath = data?.meta.guide_path ?? card.guide_path ?? null;
-  // Settings write to the guide series path, so both are needed to configure.
-  const canConfigure = identifier != null && guidePath != null;
+  // Settings write to the guide series path, so that alone is what's required.
+  // A series turned off has no identifier but keeps its guide_path, so it must
+  // stay configurable — otherwise turning it off would strand it off.
+  const canConfigure = guidePath != null;
 
   // This series' upcoming airings (all states, so a rule-skipped rerun shows)
   // and its conflicts — titled, unlike the global list. Fetched only when their
@@ -227,6 +227,32 @@ export function SeriesDetail({
 
   const update = useMutation({
     mutationFn: (body: SeriesUpdate) => api.series.update(body),
+    // Optimistic: reflect the new rule/keep/offsets in the drawer instantly so
+    // the segment snaps under the tap instead of waiting a device round-trip.
+    onMutate: async (body: SeriesUpdate) => {
+      await qc.cancelQueries({ queryKey: ["series-detail", detailKey] });
+      const prev = qc.getQueryData<SeriesDetailData>(["series-detail", detailKey]);
+      if (prev) {
+        const next: SeriesDetailData = {
+          ...prev,
+          settings: {
+            ...prev.settings,
+            ...(body.rule !== undefined ? { rule: body.rule } : {}),
+            ...(body.keep !== undefined
+              ? { keep: { rule: body.keep.rule, count: body.keep.count ?? null } }
+              : {}),
+            ...(body.offsets !== undefined
+              ? { offsets: { ...prev.settings.offsets, ...body.offsets } }
+              : {}),
+          },
+        };
+        qc.setQueryData(["series-detail", detailKey], next);
+      }
+      return { prev };
+    },
+    onError: (_e, _body, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["series-detail", detailKey], ctx.prev);
+    },
     onSettled: invalidate,
   });
   const bulk = useMutation({
@@ -252,18 +278,33 @@ export function SeriesDetail({
     onSettled: invalidate,
   });
 
-  const setRule = (rule: "all" | "new" | "none") => {
-    if (identifier && guidePath)
-      update.mutate({ identifier, guide_path: guidePath, rule });
-  };
   const setKeep = (keep: SeriesUpdate["keep"]) => {
-    if (identifier && guidePath)
+    if (guidePath)
       update.mutate({ identifier, guide_path: guidePath, keep });
   };
   const applyPadding = (s: number, e: number) => {
-    if (identifier && guidePath)
+    if (guidePath)
       update.mutate({ identifier, guide_path: guidePath,
                      offsets: { start: s * 60, end: e * 60 } });
+  };
+  // Turning a rule off is a confirm (see Issue 2): a scheduled-but-unrecorded
+  // series leaves the Recordings list entirely, a recorded one just stops
+  // future episodes. Setting a rule (all/new) applies immediately.
+  const setRule = (rule: "all" | "new" | "none") => {
+    if (!guidePath) return;
+    if (rule === "none") {
+      setConfirm({
+        title: `Turn off ${card.title}?`,
+        body: hasRecordings
+          ? "No more episodes will record. The episodes already recorded stay, and you can still delete them here."
+          : "Nothing has recorded yet, so turning the rule off removes this series from your Recordings until you set a rule again.",
+        confirmLabel: "Turn off",
+        danger: true,
+        onConfirm: () => update.mutate({ identifier, guide_path: guidePath, rule: "none" }),
+      });
+      return;
+    }
+    update.mutate({ identifier, guide_path: guidePath, rule });
   };
 
   const keepRule = settings?.keep.rule ?? "none";
@@ -330,8 +371,8 @@ export function SeriesDetail({
             <section className="flex flex-col gap-4">
               {!canConfigure && (
                 <p className="text-xs text-warning">
-                  This series has no active recording rule, so its settings
-                  can't be changed here — you can still clean up episodes below.
+                  This series has no guide entry, so its recording rule can't be
+                  changed here — you can still clean up episodes below.
                 </p>
               )}
               <div className="flex items-center justify-between gap-3">
@@ -539,7 +580,10 @@ export function SeriesDetail({
                   confirmLabel: "Turn off & delete all",
                   danger: true,
                   onConfirm: () => {
-                    setRule("none");
+                    // This footer has its own confirm, so write the rule
+                    // directly rather than through setRule's confirm wrapper.
+                    if (guidePath)
+                      update.mutate({ identifier, guide_path: guidePath, rule: "none" });
                     bulk.mutate("unprotected");
                   },
                 })

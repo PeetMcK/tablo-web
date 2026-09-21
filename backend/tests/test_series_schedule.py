@@ -188,6 +188,23 @@ async def test_series_airings_requested_filters(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recording_now_paths(monkeypatch):
+    ev = "/recordings/series/episodes/500"
+    fake = FakeState({
+        ("GET", "/recordings/airings"): [ev, "/recordings/series/episodes/501"],
+        "objs": {
+            ev: {"video_details": {"state": "recording"},
+                 "series_path": "/recordings/series/9"},
+            "/recordings/series/episodes/501": {
+                "video_details": {"state": "finished"},
+                "series_path": "/recordings/series/8"},
+        },
+    })
+    monkeypatch.setattr(S, "state", fake)
+    assert await S._recording_now_paths() == {"/recordings/series/9"}
+
+
+@pytest.mark.asyncio
 async def test_series_detail_sports_lists_events_not_episodes(monkeypatch):
     # A sport has no `{path}/episodes` (device 404s it); its games are events
     # found via /recordings/airings filtered on sport_path. Must not 404.

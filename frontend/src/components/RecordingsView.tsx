@@ -15,6 +15,7 @@ import { api, type SeriesCard } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { SeriesDetail } from "./SeriesDetail";
 import { ScheduleGrid } from "./ScheduleGrid";
+import { RecordingPill } from "./RecordingPill";
 
 type Segment = "recordings" | "schedule" | "failures";
 
@@ -57,6 +58,11 @@ function SeriesGridCard({ s, onOpen }: { s: SeriesCard; onOpen: () => void }) {
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-fg-subtle">
             <Film className="w-8 h-8" aria-hidden />
+          </div>
+        )}
+        {s.recording_now && (
+          <div className="absolute top-2 left-2">
+            <RecordingPill />
           </div>
         )}
         {s.conflict && (

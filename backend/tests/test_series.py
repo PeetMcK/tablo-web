@@ -383,6 +383,15 @@ def test_settings_retries_once_on_999(authed, monkeypatch):
     assert len(calls) == 2
 
 
+def test_settings_without_identifier_still_writes(authed, monkeypatch):
+    # A series turned off has no identifier but is re-ruled by guide_path.
+    calls = _capture_patch(monkeypatch)
+    r = client.patch("/api/recordings/series/settings",
+                     json={"guide_path": "/guide/series/9", "rule": "all"})
+    assert r.status_code == 200
+    assert calls == [("/guide/series/9", {"schedule": {"rule": "all"}})]
+
+
 def test_settings_rejects_non_guide_path(authed, monkeypatch):
     calls = _capture_patch(monkeypatch)
     r = client.patch("/api/recordings/series/settings",
