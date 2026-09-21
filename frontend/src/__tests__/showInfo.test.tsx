@@ -144,6 +144,25 @@ describe("ShowInfo", () => {
       .toHaveAttribute("aria-pressed", "true");
   });
 
+  it("sets the rule editor off behind a hairline", async () => {
+    // The three rule buttons are the heaviest write the sheet offers: they
+    // govern every episode still to come, and None can stop one already
+    // recording. Record Episode touches this airing alone and Series
+    // Information touches nothing, so the seam belongs directly above the
+    // editor rather than around everything the series owns.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail());
+    const { container } = render(
+      <ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
+                onOpenSeries={vi.fn()} />);
+
+    await screen.findByText("Edit Series Recording");
+    const seam = container.querySelector("[data-series-seam]");
+    expect(seam).not.toBeNull();
+    expect(seam!.className).toMatch(/border-t/);
+    expect(seam).toHaveTextContent("Edit Series Recording");
+    expect(seam).not.toHaveTextContent("Series Information");
+  });
+
   it("reverts and explains when the Tablo refuses", async () => {
     vi.spyOn(api, "airingDetail").mockResolvedValue(detail());
     vi.spyOn(api, "scheduleAiring")

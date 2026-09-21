@@ -827,32 +827,44 @@ export function ShowInfo({
               ) : null}
 
               {/* Kept on a past airing: a rule is about every episode still to
-                  come, not about the one being looked at. */}
+                  come, not about the one being looked at.
+
+                  Behind a hairline, because of the three controls in this
+                  column it is the only one that changes anything beyond the
+                  airing on screen: Record Episode takes this episode, Series
+                  Information takes the viewer somewhere, and these three
+                  buttons rewrite what the Tablo does with every episode to
+                  come - None going as far as stopping one mid-recording. The
+                  line marks that drop in weight, and it is the app's own
+                  divider token rather than a new one. */}
               {detail.series && (
-                <div className="rounded-xl bg-fill-soft p-3">
-                  <p className="flex items-center gap-3 text-sm font-semibold text-fg">
-                    <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
-                    Edit Series Recording
-                  </p>
-                  <div className="mt-3 flex gap-2">
-                    {RULES.map(({ value, label }) => {
-                      const on = detail.series?.schedule_rule === value;
-                      return (
-                        <button
-                          key={value}
-                          aria-pressed={on}
-                          disabled={pending}
-                          onClick={() => applyRule(value)}
-                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
-                                      transition disabled:opacity-60
-                                      focus:outline-none focus:ring-2 focus:ring-accent ${
-                            on ? "bg-accent text-accent-fg"
-                               : "bg-fill text-fg-secondary hover:text-fg"}`}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
+                <div data-series-seam
+                     className="mt-3 pt-3 border-t border-border-subtle">
+                  <div className="rounded-xl bg-fill-soft p-3">
+                    <p className="flex items-center gap-3 text-sm font-semibold text-fg">
+                      <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
+                      Edit Series Recording
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      {RULES.map(({ value, label }) => {
+                        const on = detail.series?.schedule_rule === value;
+                        return (
+                          <button
+                            key={value}
+                            aria-pressed={on}
+                            disabled={pending}
+                            onClick={() => applyRule(value)}
+                            className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
+                                        transition disabled:opacity-60
+                                        focus:outline-none focus:ring-2 focus:ring-accent ${
+                              on ? "bg-accent text-accent-fg"
+                                 : "bg-fill text-fg-secondary hover:text-fg"}`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               )}
