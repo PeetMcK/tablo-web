@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ShowInfo } from "../components/ShowInfo";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "../api/tablo";
 import type { AiringDetail } from "../api/tablo";
 import { saveResume, resumeKey, __resetResumeForTests } from "../lib/resume";
@@ -563,6 +564,36 @@ describe("watching what the sheet describes", () => {
 
     await screen.findByText("Jeopardy!");
     expect(screen.queryByRole("button", { name: /watch/i })).toBeNull();
+  });
+
+  it("keeps the player above the sheet, and clicks inside it out of the sheet's way", async () => {
+    // The player rendered inside the sheet's backdrop and below it: every
+    // click on the controls bubbled to the dismiss handler and shut the lot,
+    // and the picture sat under the sheet at z-50 against its z-60.
+    const onClose = vi.fn();
+    vi.spyOn(api, "recording").mockResolvedValue({
+      object_id: 86353, title: "Jeopardy!", duration: 1800,
+    } as never);
+    vi.spyOn(api, "airingDetail").mockResolvedValue(airing({ recording_id: 86353 }));
+    // The player reads through react-query, as it does in the app - App.tsx
+    // wraps everything in a provider.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <ShowInfo channel="ch1" start={SLOT} onClose={onClose} onTune={() => {}} />
+      </QueryClientProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^watch now$/i }));
+
+    const stage = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>("[data-player-layer]");
+      if (!el) throw new Error("no player layer");
+      return el;
+    });
+    fireEvent.click(stage);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-player-layer]")).toBeInTheDocument();
   });
 
   it("plays where it stands rather than sending the viewer to the Library", async () => {
