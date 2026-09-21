@@ -17,6 +17,7 @@ import {
 } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import { stateMarker } from "../lib/scheduleState";
 
 const KEEP_PRESETS = [1, 3, 5, 10, 20];
 
@@ -139,11 +140,16 @@ function AiringsPane({
               <div className="flex items-center gap-2">
                 <span className="truncate font-medium">{a.title ?? "Untitled"}</span>
                 {se && <span className="text-fg-muted shrink-0">{se}</span>}
-                {a.skip_reason && a.skip_reason !== "none" && (
-                  <span className="px-1.5 py-0.5 rounded bg-warning-soft text-warning text-[11px] font-semibold shrink-0">
-                    {a.skip_reason}
-                  </span>
-                )}
+                {(() => {
+                  const m = stateMarker(a.state, a.skip_reason);
+                  return (
+                    <span className={
+                      "px-1.5 py-0.5 rounded text-[11px] font-semibold shrink-0 " + m.className
+                    }>
+                      {m.label}
+                    </span>
+                  );
+                })()}
               </div>
               <div className="text-[11px] text-fg-muted tabular-nums">
                 {when
@@ -170,25 +176,33 @@ export function SeriesDetail({
 }) {
   const qc = useQueryClient();
   const path = card.recordings_path;
+  // A ruled series with nothing on disk yet has no recordings_path; open its
+  // detail by guide path instead. No episodes to browse or bulk-delete.
+  const hasRecordings = path != null;
+  const detailKey = path ?? card.guide_path ?? card.title;
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
-  const [tab, setTab] = useState<"episodes" | "upcoming" | "conflicts">("episodes");
+  const [tab, setTab] = useState<"episodes" | "upcoming" | "conflicts">(
+    hasRecordings ? "episodes" : "upcoming",
+  );
 
   const { data, isLoading } = useQuery({
-    queryKey: ["series-detail", path],
-    queryFn: () => api.series.detail(path),
+    queryKey: ["series-detail", detailKey],
+    queryFn: () =>
+      path ? api.series.detail(path) : api.series.detailByGuide(card.guide_path!),
   });
 
   const settings = data?.settings;
   const identifier = settings?.identifier ?? null;
   const canConfigure = identifier != null;
-  const guidePath = data?.meta.guide_path ?? null;
+  const guidePath = data?.meta.guide_path ?? card.guide_path ?? null;
 
-  // This series' scheduled / conflicted airings — titled (unlike the global
-  // list). Fetched only when their tab is open and the series has a guide path.
+  // This series' upcoming airings (all states, so a rule-skipped rerun shows)
+  // and its conflicts — titled, unlike the global list. Fetched only when their
+  // tab is open and the series has a guide path.
   const upcoming = useQuery({
-    queryKey: ["series-airings", guidePath, "requested"],
-    queryFn: () => api.series.airings(guidePath!, "requested"),
+    queryKey: ["series-airings", guidePath, "all"],
+    queryFn: () => api.series.airings(guidePath!, "all"),
     enabled: tab === "upcoming" && !!guidePath,
   });
   const conflicts = useQuery({
@@ -206,7 +220,7 @@ export function SeriesDetail({
   const endMin = pad?.end ?? Math.round((settings?.offsets.end || 0) / 60);
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["series-detail", path] });
+    qc.invalidateQueries({ queryKey: ["series-detail", detailKey] });
     qc.invalidateQueries({ queryKey: ["series"] });
   };
 
@@ -216,7 +230,7 @@ export function SeriesDetail({
   });
   const bulk = useMutation({
     mutationFn: (filter: "watched" | "unprotected") =>
-      api.series.bulkDelete(path, filter),
+      api.series.bulkDelete(path!, filter),
     onSettled: invalidate,
   });
   const watched = useMutation({
@@ -407,7 +421,9 @@ export function SeriesDetail({
               <Segmented<"episodes" | "upcoming" | "conflicts">
                 value={tab}
                 options={[
-                  { value: "episodes", label: "Episodes" },
+                  ...(hasRecordings
+                    ? [{ value: "episodes" as const, label: "Episodes" }]
+                    : []),
                   { value: "upcoming", label: "Upcoming" },
                   { value: "conflicts", label: "Conflicts" },
                 ]}
@@ -508,7 +524,7 @@ export function SeriesDetail({
             Turning the rule off alone is the "Off" segment above, so this is
             only the combination — stop future recordings AND delete what's
             here. Hidden when the series has no rule to turn off. */}
-        {!isLoading && canConfigure && (
+        {!isLoading && canConfigure && hasRecordings && (
           <div className="shrink-0 flex justify-end p-3 border-t border-border-subtle bg-surface-raised">
             <button
               onClick={() =>

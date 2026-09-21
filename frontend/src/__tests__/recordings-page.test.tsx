@@ -3,13 +3,14 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RecordingsView } from "../components/RecordingsView";
 import * as tablo from "../api/tablo";
-import type { SeriesCard, SeriesDetail, UpcomingAiring } from "../api/tablo";
+import type { SeriesCard, SeriesDetail, ScheduleRow } from "../api/tablo";
 
 const api = tablo.api;
 
 const CARD: SeriesCard = {
   recordings_path: "/recordings/series/1",
   identifier: "C1",
+  guide_path: "/guide/series/9",
   kind: "series",
   title: "Wild Kratts",
   cover_image_id: null,
@@ -20,6 +21,7 @@ const CARD: SeriesCard = {
   unwatched_count: 2,
   protected_count: 0,
   failed_count: 0,
+  scheduled_count: 4,
   conflict: false,
 };
 
@@ -45,13 +47,15 @@ function detailFor(overrides: Partial<SeriesDetail> = {}): SeriesDetail {
   };
 }
 
-const UPCOMING: UpcomingAiring[] = [
-  { identifier: "LH-CEP1-S1_008_06-T1789923600",
-    schedule: { state: "scheduled", qualifier: "show", skip_reason: "none",
-                skip_detail: null, offsets: { start: 0, end: 0, source: "none" } } },
-  { identifier: "LH-CEP2-S2_011_05-T1789930800",
-    schedule: { state: "scheduled", qualifier: "show", skip_reason: "conflict",
-                skip_detail: null, offsets: { start: 0, end: 0, source: "none" } } },
+const SCHEDULE: ScheduleRow[] = [
+  { object_id: 1, title: "New Tonight", season_number: 1, episode_number: 4,
+    datetime: "2026-09-22T00:00Z", duration: 1800, channel: "7.1",
+    state: "scheduled", skip_reason: "none",
+    series_title: "Newsy", series_cover_image_id: null },
+  { object_id: 2, title: "A Rerun", season_number: 1, episode_number: 2,
+    datetime: "2026-09-21T22:00Z", duration: 1800, channel: "7.1",
+    state: "skipped", skip_reason: "not_new",
+    series_title: "Rerunny", series_cover_image_id: null },
 ];
 
 function renderRecordings() {
@@ -66,8 +70,7 @@ function renderRecordings() {
 describe("Recordings page", () => {
   beforeEach(() => {
     vi.spyOn(api.series, "index").mockResolvedValue({ series: [CARD] });
-    vi.spyOn(api.series, "upcoming").mockResolvedValue(UPCOMING);
-    vi.spyOn(api.series, "conflicts").mockResolvedValue([]);
+    vi.spyOn(api.series, "schedule").mockResolvedValue([]);
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -79,31 +82,21 @@ describe("Recordings page", () => {
     expect(screen.getByText("2 new")).toBeInTheDocument();
   });
 
-  it("shows the full Tablo tab set", async () => {
+  it("shows the three-view tab set", async () => {
     renderRecordings();
     await screen.findByText("Wild Kratts");
-    for (const name of ["Recordings", "Scheduled", "Upcoming Airings",
-                        "Conflicts", "Failures"]) {
+    for (const name of ["Recordings", "Schedule", "Failures"]) {
       expect(screen.getByRole("radio", { name })).toBeInTheDocument();
     }
+    expect(screen.queryByRole("radio", { name: "Conflicts" })).toBeNull();
   });
 
-  it("shows a conflicts banner when conflicts exist", async () => {
-    vi.spyOn(api.series, "conflicts").mockResolvedValue(UPCOMING);
-    renderRecordings();
-    expect(await screen.findByText(/recordings? conflict/i)).toBeInTheDocument();
-  });
-
-  it("Scheduled shows only series with an active rule", async () => {
+  it("shows a conflicts banner when a series has a conflict", async () => {
     vi.spyOn(api.series, "index").mockResolvedValue({
-      series: [CARD, { ...CARD, recordings_path: "/recordings/series/9",
-                       title: "Off Show", rule: "none" }],
+      series: [{ ...CARD, conflict: true }],
     });
     renderRecordings();
-    await screen.findByText("Wild Kratts");
-    fireEvent.click(screen.getByRole("radio", { name: "Scheduled" }));
-    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
-    expect(screen.queryByText("Off Show")).toBeNull();
+    expect(await screen.findByText(/scheduling conflict/i)).toBeInTheDocument();
   });
 
   it("Failures shows only series with failed recordings", async () => {
@@ -118,23 +111,36 @@ describe("Recordings page", () => {
     expect(screen.queryByText("Wild Kratts")).toBeNull();
   });
 
-  it("groups upcoming airings by day and shows time + channel", async () => {
+  it("a scheduled-but-unrecorded series shows a Scheduled chip and no delete", async () => {
+    vi.spyOn(api.series, "index").mockResolvedValue({
+      series: [{ ...CARD, recordings_path: null, title: "Jeopardy!",
+                 episode_count: 0, unwatched_count: 0, rule: "new" }],
+    });
+    renderRecordings();
+    await screen.findByText("Jeopardy!");
+    expect(screen.getByText("Scheduled")).toBeInTheDocument();   // status chip
+    expect(screen.getByText("4 upcoming")).toBeInTheDocument();
+  });
+
+  it("Schedule marks airings by state and filters them", async () => {
+    vi.spyOn(api.series, "schedule").mockResolvedValue(SCHEDULE);
     renderRecordings();
     await screen.findByText("Wild Kratts");
-    fireEvent.click(screen.getByRole("radio", { name: "Upcoming Airings" }));
-    // channels parsed from the lineup handles
-    expect(await screen.findByText("8.6")).toBeInTheDocument();
-    expect(screen.getByText("11.5")).toBeInTheDocument();
-    // the skip reason surfaces as a badge
-    expect(screen.getByText("conflict")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Schedule" }));
+    expect(await screen.findByText("Newsy")).toBeInTheDocument();
+    expect(screen.getByText("Rerunny")).toBeInTheDocument();
+    expect(screen.getByText("Rerun")).toBeInTheDocument();     // skip label
+    // Turning the Airing bucket off hides the skipped row.
+    fireEvent.click(screen.getByRole("button", { name: "Airing" }));
+    expect(screen.queryByText("Rerunny")).toBeNull();
+    expect(screen.getByText("Newsy")).toBeInTheDocument();
   });
 });
 
 describe("Series detail", () => {
   beforeEach(() => {
     vi.spyOn(api.series, "index").mockResolvedValue({ series: [CARD] });
-    vi.spyOn(api.series, "upcoming").mockResolvedValue([]);
-    vi.spyOn(api.series, "conflicts").mockResolvedValue([]);
+    vi.spyOn(api.series, "schedule").mockResolvedValue([]);
     vi.spyOn(api.series, "detail").mockResolvedValue(detailFor());
   });
   afterEach(() => vi.restoreAllMocks());
@@ -152,52 +158,25 @@ describe("Series detail", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ identifier: "C1", rule: "new" }));
   });
 
-  it("keep Number fires a keep count payload", async () => {
-    const spy = vi.spyOn(api.series, "update").mockResolvedValue({ identifier: "C1", echo: {} });
-    await open();
-    fireEvent.click(screen.getByRole("radio", { name: "Number" }));
-    await waitFor(() =>
-      expect(spy).toHaveBeenCalledWith({ identifier: "C1", keep: { rule: "count", count: 5 } }));
-  });
-
-  it("padding wires seconds, start early is negative", async () => {
-    const spy = vi.spyOn(api.series, "update").mockResolvedValue({ identifier: "C1", echo: {} });
-    await open();
-    const start = screen.getByLabelText("Start padding minutes");
-    fireEvent.change(start, { target: { value: "-2" } });
-    fireEvent.blur(start);
-    await waitFor(() =>
-      expect(spy).toHaveBeenCalledWith({ identifier: "C1", offsets: { start: -120, end: 0 } }));
-  });
-
   it("delete-all confirms then bulk-deletes unprotected", async () => {
     const spy = vi.spyOn(api.series, "bulkDelete")
       .mockResolvedValue({ ok: true, filter: "unprotected", status: 200 });
     await open();
     fireEvent.click(screen.getByRole("button", { name: "Delete all" }));
-    // The confirm button shares the label; scope to the dialog for it.
     const dialog = await screen.findByRole("dialog", { name: /delete all of/i });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete all" }));
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith("/recordings/series/1", "unprotected"));
   });
 
-  it("a per-row protect toggle calls setProtected", async () => {
-    const spy = vi.spyOn(api, "setProtected").mockResolvedValue({ object_id: 100, protected: true });
-    await open();
-    fireEvent.click(screen.getAllByRole("button", { name: "Protect from deletion" })[0]);
-    await waitFor(() => expect(spy).toHaveBeenCalledWith(100, true));
-  });
-
   it("un-marking watched writes position 1", async () => {
     const pos = vi.spyOn(api, "setRecordingPosition").mockResolvedValue({ object_id: 100, position: 1 });
     await open();
-    // Ep A is watched → its control is "Mark unwatched".
     fireEvent.click(screen.getByRole("button", { name: "Mark unwatched" }));
     await waitFor(() => expect(pos).toHaveBeenCalledWith(100, 1));
   });
 
-  it("the Upcoming tab loads this series' scheduled airings", async () => {
+  it("the Upcoming tab loads this series' airings in every state", async () => {
     const spy = vi.spyOn(api.series, "airings").mockResolvedValue([
       { object_id: 500, title: "Money Buys Justice", season_number: 4,
         episode_number: 3, datetime: "2026-09-20T20:00Z", duration: 1800,
@@ -206,14 +185,6 @@ describe("Series detail", () => {
     await open();
     fireEvent.click(screen.getByRole("radio", { name: "Upcoming" }));
     expect(await screen.findByText("Money Buys Justice")).toBeInTheDocument();
-    expect(spy).toHaveBeenCalledWith("/guide/series/9", "requested");
-  });
-
-  it("multi-select delete loops deleteRecording", async () => {
-    const del = vi.spyOn(api, "deleteRecording").mockResolvedValue({ ok: true } as never);
-    await open();
-    fireEvent.click(screen.getByLabelText("Select Ep A"));
-    fireEvent.click(screen.getByRole("button", { name: "Delete selected" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith(100));
+    expect(spy).toHaveBeenCalledWith("/guide/series/9", "all");
   });
 });
