@@ -1,10 +1,15 @@
 /**
- * The Recordings tab — the DVR management home.
+ * The Schedule tab — the DVR management home.
  *
- * Three views: Recordings (the series I record — recorded *and* scheduled-but-
- * not-yet-recorded, with their rule/keep/counts), Schedule (a time-ordered grid
+ * Three views: Series (the series I record — recorded *and* scheduled-but-
+ * not-yet-recorded, with their rule/keep/counts), Upcoming (a time-ordered grid
  * of every upcoming airing of those series, state-marked so a skipped rerun is
- * visible), and Failures. Conflicts are surfaced as a banner and as a marker in
+ * visible), and Failures.
+ *
+ * Named Schedule rather than Recordings because the Library is literally the
+ * recordings; this is where you decide what becomes one. "Series" is the
+ * device's own word for these - /guide/series, series_path - and stays true
+ * for a series whose rule is Off but whose episodes are still on disk. Conflicts are surfaced as a banner and as a marker in
  * the Schedule grid rather than a tab of their own. Tapping a series card opens
  * its detail (settings + episode cleanup).
  */
@@ -18,11 +23,11 @@ import { ScheduleGrid } from "./ScheduleGrid";
 import { RecordingPill } from "./RecordingPill";
 import { keepLabel } from "../lib/keep";
 
-type Segment = "recordings" | "schedule" | "failures";
+type Segment = "series" | "upcoming" | "failures";
 
 const TABS: { value: Segment; label: string }[] = [
-  { value: "recordings", label: "Recordings" },
-  { value: "schedule", label: "Schedule" },
+  { value: "series", label: "Series" },
+  { value: "upcoming", label: "Upcoming" },
   { value: "failures", label: "Failures" },
 ];
 
@@ -129,7 +134,7 @@ function SeriesGrid({
 }
 
 export function RecordingsView() {
-  const [segment, setSegment] = useState<Segment>("recordings");
+  const [segment, setSegment] = useState<Segment>("series");
   const [selected, setSelected] = useState<SeriesCard | null>(null);
 
   const series = useQuery({ queryKey: ["series"], queryFn: api.series.index });
@@ -140,14 +145,16 @@ export function RecordingsView() {
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
+      {/* No page title. The nav says which section this is and the switch
+          below says which view - a heading here said "Recordings" a third
+          time inside the same hundred pixels. */}
       <div className="flex items-center gap-3 shrink-0">
-        <h1 className="text-xl font-bold shrink-0">Recordings</h1>
         <div className="overflow-x-auto -mx-1 px-1">
           <Segmented<Segment>
             value={segment}
             options={TABS}
             onChange={setSegment}
-            label="Recordings view"
+            label="Schedule view"
           />
         </div>
       </div>
@@ -158,9 +165,9 @@ export function RecordingsView() {
           <span>
             {conflictCount} series {conflictCount === 1 ? "has" : "have"} a scheduling conflict.
           </span>
-          {segment !== "schedule" && (
+          {segment !== "upcoming" && (
             <button
-              onClick={() => setSegment("schedule")}
+              onClick={() => setSegment("upcoming")}
               className="ml-auto font-semibold underline underline-offset-2"
             >
               Review
@@ -173,12 +180,12 @@ export function RecordingsView() {
           active view scrolls. `pb-6` keeps the last row off the bottom edge,
           `-mx-1 px-1` gives focus rings room without a clip. */}
       <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1 pb-6">
-        {series.isLoading && segment !== "schedule" ? (
+        {series.isLoading && segment !== "upcoming" ? (
           <p className="text-fg-muted py-8 text-center">Loading…</p>
-        ) : segment === "recordings" ? (
+        ) : segment === "series" ? (
           <SeriesGrid list={all} empty="No series recordings yet."
                       onOpen={setSelected} />
-        ) : segment === "schedule" ? (
+        ) : segment === "upcoming" ? (
           <ScheduleGrid />
         ) : (
           <SeriesGrid list={failed} empty="No failed recordings."

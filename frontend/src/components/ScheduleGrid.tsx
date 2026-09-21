@@ -1,7 +1,7 @@
 /**
- * The Schedule tab — a time-ordered grid of every upcoming airing of the series
- * I record, each marked with its real record state. Unlike the series-card
- * Recordings view, this makes the gap visible: an episode a "new" rule skips
+ * The Upcoming view — a time-ordered grid of every upcoming airing of the
+ * series I record, each marked with its real record state. Unlike the
+ * series-card Series view, this makes the gap visible: an episode a "new" rule skips
  * shows as "Rerun / Won't record" rather than silently not appearing.
  *
  * Scoped to ruled series (not the whole 4000-row lineup — that is the Guide).
