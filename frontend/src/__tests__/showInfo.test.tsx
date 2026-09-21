@@ -640,7 +640,13 @@ describe("watching what the sheet describes", () => {
       object_id: 86353, title: "Jeopardy!", duration: 1800,
     } as never);
     vi.spyOn(api, "airingDetail").mockResolvedValue(airing({ recording_id: 86353 }));
-    render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
+    // The player this opens reads through react-query, so it needs the provider
+    // App.tsx gives it in the app; without one it throws past the assertions.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />
+      </QueryClientProvider>);
 
     fireEvent.click(await screen.findByRole("button", { name: /^watch now$/i }));
 
