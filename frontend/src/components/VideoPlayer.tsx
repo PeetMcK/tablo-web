@@ -571,6 +571,17 @@ export function VideoPlayer({
   const [liveEncoded, setLiveEncoded] = useState<number | null>(null);
   /** Last scrub-preview frame that finished decoding. */
   const [shownPreview, setShownPreview] = useState<string | null>(null);
+  /**
+   * Whether this recording has thumbnails at all.
+   *
+   * Not every one does: a damaged capture never gets a snap grid built on the
+   * device (`clean: false`, `size: 0`), and one still being written has no pack
+   * until minutes after it ends. The status poll reports it, and a frame that
+   * fails to load says the same thing sooner — a browser cannot read the 404
+   * off an `<img>`, only that nothing arrived.
+   */
+  const [previewState, setPreviewState] =
+    useState<"ready" | "absent" | "unknown">("unknown");
   // Media listeners are attached once on mount, so they need a live view of the
   // ranges rather than the value captured in that first closure.
   const cachedRangesRef = useRef<[number, number][]>([]);
@@ -1241,7 +1252,11 @@ export function VideoPlayer({
   // Live has no stored thumbnail pack; recordings do.
   const previewId = isLive ? null : source.recording.object_id;
   const previewAt = scrubAt ?? hoverAt;
-  const previewSrc = previewId !== null && previewAt !== null
+  // Nothing is asked for once the server has said there is no pack. A scrub
+  // otherwise requests a frame every few pixels for the whole length of a
+  // recording that has none - forty 404s in ten seconds, each one answered from
+  // a device session that could only ever say no.
+  const previewSrc = previewId !== null && previewAt !== null && previewState !== "absent"
     ? previewUrl(previewId, previewAt)
     : null;
 
@@ -1259,9 +1274,18 @@ export function VideoPlayer({
     let live = true;
     const img = new Image();
     img.onload = () => { if (live) setShownPreview(previewSrc); };
+    // A frame that does not arrive is taken as "this recording has none", which
+    // the next status poll either confirms or undoes. Optimistic on purpose:
+    // the poll is three seconds away and a drag asks for dozens of frames in
+    // that time.
+    img.onerror = () => { if (live) setPreviewState("absent"); };
     img.src = previewSrc;
     return () => { live = false; };
   }, [previewSrc]);
+
+  // Whether thumbnails exist is a property of the recording, so a new one
+  // starts out unknown rather than inheriting the last one's answer.
+  useEffect(() => { setPreviewState("unknown"); }, [sourceKey]);
 
   // ------------------------------------------------- transcode progress poll
   useEffect(() => {
@@ -1286,6 +1310,10 @@ export function VideoPlayer({
         setCachedRanges(s.cached_ranges ?? []);
         setCachedSeconds(secs);
         setEncodingAt(s.encoding ?? null);
+        // The authority on whether there are thumbnails: it also undoes a
+        // latch made from a frame that failed for some other reason, and picks
+        // up the pack a recording gets minutes after it finishes.
+        if (s.preview) setPreviewState(s.preview);
         if (s.state === "complete") clearInterval(id);
       } catch {
         /* transient - keep polling */

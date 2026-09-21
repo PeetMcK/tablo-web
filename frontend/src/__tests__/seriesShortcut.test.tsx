@@ -90,7 +90,8 @@ describe("the show's name in the player", () => {
     vi.spyOn(api, "stopStream").mockResolvedValue({ ok: true });
     vi.spyOn(api, "recordingStatus").mockResolvedValue({
       object_id: REC.object_id, state: "complete", progress: 1, duration: 12615,
-      cached_seconds: 12615, cached_ranges: [[0, 12615]], encoding: null, error: null,
+      cached_seconds: 12615, cached_ranges: [[0, 12615]], encoding: null,
+      preview: "ready", error: null,
     });
     vi.spyOn(api, "recordings").mockResolvedValue({
       recordings: [REC, OTHER], returned: 2, total: 2, offline_only: 0,

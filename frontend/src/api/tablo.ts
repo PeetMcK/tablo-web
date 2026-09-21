@@ -446,6 +446,15 @@ export interface RecordingStatus {
   cached_ranges: [number, number][];
   /** The window playback is blocked on, while one is being encoded. */
   encoding: EncodingProgress | null;
+  /**
+   * Whether there are scrub thumbnails to ask for at all.
+   *
+   * "absent" means the device itself has none — a damaged capture never gets a
+   * snap grid built, and one still being written has no pack yet. A browser
+   * cannot read a 404 off an `<img>`, so this is how the strip learns to stop
+   * requesting a frame per hover position.
+   */
+  preview: "ready" | "absent" | "unknown";
   error: string | null;
 }
 

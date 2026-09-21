@@ -2504,3 +2504,104 @@ def test_storage_reports_what_the_app_actually_occupies(tmp_path):
     assert s["artwork_bytes"] == len(JPEG)
     assert s["preview_bytes"] == 64
     assert s["disk_bytes"] == s["total_bytes"] + len(JPEG) + 64
+
+
+# ---------------------------------------------------------------------------
+# Recordings the device has no pack for at all
+# ---------------------------------------------------------------------------
+
+def test_a_device_with_no_pack_is_asked_once_not_once_per_frame(tmp_path):
+    """Not every recording has thumbnails. A damaged one never gets a snap grid
+    built - measured on object 74776, which the device reports as `clean:
+    false`, `size: 0`, `has_snap_grid: false` and hands out a watch session with
+    both bif urls null.
+
+    A pointer crossing the strip asks for a frame every few pixels, and each of
+    those used to open its own device watch session to discover the same null
+    url: forty device round-trips in ten seconds, for nothing.
+    """
+    asked: list[str] = []
+
+    async def starter(path):
+        asked.append(path)
+        return {"bif_url_hd": None, "bif_url_sd": None}
+
+    c = TranscodeCache(session_starter=starter, root=tmp_path, budget_bytes=10**9)
+
+    assert asyncio.run(c.fetch_bif(66220, "/recordings/sports/events/66220")) is False
+    assert asyncio.run(c.fetch_bif(66220, "/recordings/sports/events/66220")) is False
+
+    assert asked == ["/recordings/sports/events/66220"], "asked the device twice"
+    assert c.preview_missing(66220) is True
+
+
+def test_a_pack_published_later_is_still_picked_up(tmp_path, monkeypatch):
+    """The refusal is remembered, not final. The device publishes a pack within
+    about five minutes of a recording ending, so a "no" only holds for a while.
+    """
+    offer: dict = {"bif_url_hd": None}
+
+    async def starter(_path):
+        return dict(offer)
+
+    monkeypatch.setattr(
+        "app.transcode_cache._http_get",
+        lambda _url: _bif([(0, b"\xff\xd8late-frame")]),
+    )
+
+    c = TranscodeCache(session_starter=starter, root=tmp_path, budget_bytes=10**9)
+    assert asyncio.run(c.fetch_bif(66220, "/recordings/x/66220")) is False
+
+    offer["bif_url_hd"] = "http://device/bif"
+    # Still inside the window: the device is not asked again.
+    assert asyncio.run(c.fetch_bif(66220, "/recordings/x/66220")) is False
+
+    # Aged out, which is what the window does on its own.
+    c._bif_refused.clear()
+
+    assert asyncio.run(c.fetch_bif(66220, "/recordings/x/66220")) is True
+    assert c.preview_frame(66220, 0) == b"\xff\xd8late-frame"
+    assert c.preview_missing(66220) is False
+
+
+def _scrubbing_a_recording_with_no_pack(tmp_path, monkeypatch) -> list[str]:
+    """The preview route, against a device that offers no thumbnails."""
+    from app.routes import recordings as rec
+
+    asked: list[str] = []
+
+    async def starter(path):
+        asked.append(path)
+        return {"bif_url_hd": None, "bif_url_sd": None}
+
+    async def resolve(object_id):
+        return f"/recordings/sports/events/{object_id}", 4116
+
+    c = TranscodeCache(session_starter=starter, root=tmp_path, budget_bytes=10**9)
+    monkeypatch.setattr(rec, "cache", c)
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    return asked
+
+
+def test_scrubbing_a_recording_with_no_thumbnails_asks_the_device_once(
+    tmp_path, monkeypatch,
+):
+    asked = _scrubbing_a_recording_with_no_pack(tmp_path, monkeypatch)
+
+    for t in (10, 20, 30, 40):
+        assert client.get(f"/api/recordings/74776/preview?t={t}").status_code == 404
+
+    assert asked == ["/recordings/sports/events/74776"]
+
+
+def test_status_says_there_is_no_preview_to_ask_for(tmp_path, monkeypatch):
+    """The player cannot read a 404 off an <img>, so the answer it polls for
+    anyway has to carry it. Without this the strip keeps requesting a frame per
+    hover position for the whole of a recording that has none."""
+    _scrubbing_a_recording_with_no_pack(tmp_path, monkeypatch)
+
+    assert client.get("/api/recordings/74776/status").json()["preview"] == "unknown"
+    client.get("/api/recordings/74776/preview?t=10")
+
+    assert client.get("/api/recordings/74776/status").json()["preview"] == "absent"

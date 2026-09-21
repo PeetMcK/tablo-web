@@ -327,6 +327,16 @@ WATCH_IDLE_TIMEOUT = 45
 _BIF_MAGIC = b"\x89BIF\r\n\x1a\n"
 _BIF_SENTINEL = 0xFFFFFFFF
 
+# How long a device saying "no pack" is taken at its word.
+#
+# Two recordings get that answer: one still being written, and one the device
+# never built a snap grid for at all (a damaged capture - `clean: false`,
+# `size: 0`). The first becomes available within about five minutes of the
+# recording ending, and the second never does, so the answer is remembered
+# rather than final: long enough that a scrub costs one device round-trip
+# instead of forty, short enough that a pack published later is still picked up.
+BIF_REFUSAL_TTL = 300
+
 
 def _http_get(url: str, timeout: int = 120) -> bytes:
     with urllib.request.urlopen(url, timeout=timeout) as r:
@@ -435,6 +445,9 @@ class TranscodeCache:
         self._rate: dict[int, deque[tuple[float, int, float, float]]] = {}
         # Parsed BIF indices, so a scrub does not re-read the header per frame.
         self._bif_cache: dict[int, list[tuple[int, int, int]]] = {}
+        # object_id -> when the device last offered no pack for it. See
+        # BIF_REFUSAL_TTL.
+        self._bif_refused: dict[int, float] = {}
         # Shared across every prefetch loop. Created lazily: there is no running
         # event loop at import time.
         self._prefetch_slots: asyncio.Semaphore | None = None
@@ -658,10 +671,16 @@ class TranscodeCache:
         dest = self.bif_path(object_id)
         if dest.exists():
             return True
+        if self.preview_missing(object_id):
+            return False
         try:
             session = await self._start_session(path)
             url = session.get("bif_url_hd") or session.get("bif_url_sd")
             if not url:
+                # Remembered, so a pointer sweeping the strip does not spend a
+                # device session per frame discovering the same null url.
+                self._bif_refused[int(object_id)] = time.monotonic()
+                print(f"[cache] {object_id} bif: device offers none", flush=True)
                 return False
             data = await asyncio.to_thread(_http_get, url)
             if not data.startswith(_BIF_MAGIC):
@@ -671,6 +690,7 @@ class TranscodeCache:
             tmp = dest.with_suffix(".bif.part")
             tmp.write_bytes(data)
             tmp.replace(dest)
+            self._bif_refused.pop(int(object_id), None)
             frames = struct.unpack("<I", data[12:16])[0]
             print(f"[cache] {object_id} bif: {frames} frames, "
                   f"{len(data) / 1024**2:.1f} MB", flush=True)
@@ -769,6 +789,24 @@ class TranscodeCache:
 
     def preview_available(self, object_id: int) -> bool:
         return self.bif_path(object_id).exists()
+
+    def preview_missing(self, object_id: int) -> bool:
+        """The device was asked for this pack recently and had none to give.
+
+        Distinct from "not here yet": packs are fetched lazily, on the first
+        frame anybody asks for, so an absent one usually only means nobody has
+        scrubbed this recording yet. This says the device itself has nothing -
+        which is the answer for a recording still being written, and the
+        permanent answer for one whose capture was damaged and never got a snap
+        grid built.
+        """
+        at = self._bif_refused.get(int(object_id))
+        if at is None:
+            return False
+        if time.monotonic() - at >= BIF_REFUSAL_TTL:
+            del self._bif_refused[int(object_id)]
+            return False
+        return not self.preview_available(object_id)
 
     def export_path(self, object_id: int) -> Path:
         return self.dir_for(object_id) / "export.mp4"
