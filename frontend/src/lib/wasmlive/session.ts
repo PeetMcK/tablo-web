@@ -458,6 +458,17 @@ export function createSession(deps: SessionDeps): LiveSession {
       } else if (!(decoderStats as { videoFrames?: number }).videoFrames && stats.videoFrames) {
         log.wasm(`first frames decoded`, stats);
       }
+      // Said on the rise, not on arrival. The decoder drops a refused batch
+      // and keeps going — that is what makes a damaged recording playable —
+      // but a drop nobody sees is a decision made on the viewer's behalf and
+      // never reported. Tied to the counts moving so it stays one line per
+      // spot of damage rather than one per segment.
+      const before = decoderStats as { videoDropped?: number; audioDropped?: number } | null;
+      const droppedBefore = (before?.videoDropped ?? 0) + (before?.audioDropped ?? 0);
+      const droppedNow = (stats.videoDropped ?? 0) + (stats.audioDropped ?? 0);
+      if (droppedNow > droppedBefore) {
+        log.warn(`damaged batch dropped — decoding continues`, stats);
+      }
       decoderStats = stats as unknown as Record<string, unknown>;
       return;
     }

@@ -49,8 +49,9 @@ async function decodeFixture(path: string = FIXTURE) {
     await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
   }
   await decoder.flush();
+  const stats = decoder.stats();
   await decoder.close();
-  return { video, audio };
+  return { video, audio, stats };
 }
 
 describe("libavClient", () => {
@@ -140,6 +141,19 @@ describe("libavClient", () => {
     expect(video.length).toBeGreaterThan(20);
     expect(video[0].width).toBe(1920);
     expect(audio.length).toBeGreaterThan(0);
+  });
+
+  it("counts the batches it drops, so tolerated damage is not invisible",
+    { timeout: 120_000 }, async () => {
+    // Surviving a refused packet silently is its own trap: a session that
+    // dropped media looks exactly like one that decoded everything. The count
+    // is what turns "it played" into "it played, and here is what it cost".
+    const clean = await decodeFixture();
+    expect(clean.stats.videoDropped).toBe(0);
+    expect(clean.stats.audioDropped).toBe(0);
+
+    const damaged = await decodeFixture(DAMAGED);
+    expect(damaged.stats.videoDropped).toBeGreaterThan(0);
   });
 
   it("can be reset mid-stream and decode again", { timeout: 120_000 }, async () => {
