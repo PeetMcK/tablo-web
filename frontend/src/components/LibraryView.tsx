@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Info, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -1080,20 +1080,6 @@ export function LibraryView() {
                         </span>
                       )}
                     </h3>
-                    {/* The way into everything the card has no room for —
-                        artwork, synopsis, rating, and the record controls. On
-                        every card: the sheet asks the device about the
-                        recording rather than the guide about its airing, so
-                        there is always something to open. */}
-                    <button
-                      onClick={() => setInfoFor(rec)}
-                      className="shrink-0 -mt-0.5 p-1 rounded-lg text-fg-muted
-                                 hover:text-fg hover:bg-fill transition"
-                      title="Show information"
-                      aria-label={`Information about ${rec.title ?? "this recording"}`}
-                    >
-                      <Info className="w-4 h-4" aria-hidden />
-                    </button>
                   </div>
                   {rec.subtitle && (
                     <p className="text-xs font-medium text-accent truncate">{rec.subtitle}</p>
@@ -1300,17 +1286,22 @@ export function LibraryView() {
                         // once a click on the strip could leave behind a
                         // position from a three-hour film, which then opened a
                         // half-hour show past its end.
-                        onClick={() => {
-                          if (!playable) return;
-                          setStartMode("resume");
-                          setPlaying(rec);
-                        }}
-                        disabled={!playable}
-                        className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center hover:bg-accent hover:text-accent-fg transition text-fg-faint disabled:opacity-30 disabled:hover:bg-fill-soft
+                        onClick={() => setInfoFor(rec)}
+                        className="w-8 h-8 rounded-full bg-fill-soft flex items-center justify-center hover:bg-accent hover:text-accent-fg transition text-fg-faint
                                    enabled:hover:scale-110 enabled:active:scale-95"
-                        aria-label={`Play ${rec.title ?? "recording"}`}
+                        title="Show information"
+                        aria-label={`Information about ${rec.title ?? "this recording"}`}
                       >
-                        <Play className="w-4 h-4" fill="currentColor" aria-hidden />
+                        {/* The Live card's mark, at the Live card's
+                            proportions: three quarters of the puck, so the
+                            ring is the glyph rather than a small thing
+                            floating in a big disc. */}
+                        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" strokeWidth={1.6}
+                             strokeLinecap="round" aria-hidden>
+                          <circle cx="12" cy="12" r="9.6" />
+                          <path d="M12 11.1v5.6M12 7.5v.2" />
+                        </svg>
                       </button>
                     </div>
                   </div>

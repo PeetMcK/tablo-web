@@ -268,8 +268,12 @@ describe("LibraryView", () => {
     );
 
     renderLibrary();
-    const buttons = await screen.findAllByRole("button", { name: /play nfl football/i });
-    buttons.forEach((b) => expect(b).toBeEnabled());
+    // Its entry points are the in-progress card's own chips - Live, Resume,
+    // From start - rather than a plain Play: the action row's round control is
+    // Information now, and the picture keeps the Play.
+    for (const name of [/^live$/i, /^from start$/i]) {
+      expect(await screen.findByRole("button", { name })).toBeEnabled();
+    }
   });
 
   it("will not keep a recording that is still being written", async () => {
@@ -382,9 +386,8 @@ describe("the library's controls answer the pointer", () => {
   it("grows each round control under the pointer and presses it on click", async () => {
     await controls();
 
-    // The artwork carries the same label as the round play control, so the
-    // last match is the one in the button row.
-    for (const name of [/^Play NFL Football$/, /^Keep NFL Football offline$/,
+    for (const name of [/^Information about NFL Football$/,
+                        /^Keep NFL Football offline$/,
                         /^Delete cached video of NFL Football$/]) {
       const button = screen.getAllByRole("button", { name }).at(-1)!;
       expect(button.className).toMatch(/enabled:hover:scale-110/);
@@ -793,6 +796,26 @@ describe("reaching a recording's information", () => {
     // Keyed by the identifier and the scheduled start, which is how the guide
     // addresses the very same airing.
     expect(airing).toHaveBeenCalledWith("S34654_008_01", REC.start);
+  });
+
+  it("offers exactly one way into the sheet, in the card's action row", async () => {
+    // The row ended in a second Play, which the hover overlay already offers
+    // across the whole picture. Information had no such twin - it was a 16px
+    // glyph beside the title - so the row is where it belongs, and there is
+    // one of it rather than two.
+    const airing = vi.spyOn(api, "airingDetail").mockRejectedValue(new Error("no"));
+    vi.spyOn(api, "recordingDetail").mockRejectedValue(new Error("no"));
+    renderWith(withChannel());
+    await screen.findByText("NFL Football");
+
+    // One Play, on the picture, where a pointer already expects it.
+    expect(screen.getAllByRole("button", { name: /^play /i })).toHaveLength(1);
+
+    const info = screen.getAllByRole("button", { name: /information about/i });
+    expect(info).toHaveLength(1);
+    fireEvent.click(info[0]);
+
+    await waitFor(() => expect(airing).toHaveBeenCalled());
   });
 
   it("drops the card the moment delete is confirmed, not when the Tablo answers", async () => {
