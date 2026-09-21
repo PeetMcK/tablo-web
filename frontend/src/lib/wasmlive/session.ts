@@ -1208,6 +1208,23 @@ export function createSession(deps: SessionDeps): LiveSession {
       takenThrough,
       captionsSeen,
       captionCues: cues.length,
+      /**
+       * The span the queued cues cover, against the time they are asked about.
+       *
+       * Three numbers rather than one because the failure they diagnose is a
+       * mismatch, not an absence: cues arriving correctly and never being
+       * found because the decoder runs ahead of the playhead, or because the
+       * two are counting in different domains. Raw, in the decoder's PTS, so
+       * it can be compared against what a cue carries.
+       */
+      captionWindow: cues.length
+        ? [cues[0].startSeconds, cues[cues.length - 1].endSeconds]
+        : null,
+      captionAsksAt: (deps.audio.clockSeconds ?? 0),
+      captionRecent: cues.slice(-6).map((c) => [
+        Number(c.startSeconds.toFixed(2)), Number(c.endSeconds.toFixed(2)),
+        c.text.slice(0, 18),
+      ]),
       // Whether the transport is waiting on the network or on its own pacing.
       // Answering that took a temporary instrumented build on 2026-09-17; it
       // should not need one again.

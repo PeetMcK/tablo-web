@@ -11,6 +11,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { createSession } from "../lib/wasmlive/session";
+import { createWasmSurface } from "../lib/wasmlive/wasmSurface";
 import type { SessionDeps } from "../lib/wasmlive/session";
 import type { CaptionCue } from "../lib/captions";
 
@@ -171,5 +172,24 @@ describe("the session's captions", () => {
     expect(h.session.captions.at(37)).toBeNull();
     // The channel is still captioned; only the position changed.
     expect(h.session.captions.available).toBe(true);
+  });
+});
+
+describe("the surface exposes the session's captions", () => {
+  it("passes the caption source through createWasmSurface", async () => {
+    const h = harness();
+    await h.session.start();
+    h.anchor(36);
+    h.captions([HELLO]);
+
+    // The player reads captions off the surface, not the session. Two
+    // delegating layers stand between them - `createWasmSurface` here, and the
+    // property-by-property forwarding in `open.ts` - and because `captions` is
+    // optional on `PlaybackSurface`, a layer that forgets it still typechecks.
+    // It was forgotten in `open.ts` once, and the only symptom was a feature
+    // that worked everywhere except in the running app.
+    const surface = createWasmSurface(h.session);
+    expect(surface.captions?.available).toBe(true);
+    expect(surface.captions?.at(37)?.text).toBe("HELLO");
   });
 });

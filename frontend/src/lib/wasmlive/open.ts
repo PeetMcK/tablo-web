@@ -191,6 +191,12 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
   const surface = createWasmSurface(session);
   // Delegated property by property rather than spread: spreading would read
   // each getter once and hand back a frozen snapshot of the clock.
+  //
+  // Anything added to `PlaybackSurface` has to be added here too, and an
+  // *optional* member will not fail the typecheck if it is forgotten — which
+  // is exactly how `captions` was left off this list once already. The symptom
+  // is a feature that works everywhere except through this door: the session
+  // decoded captions, and the player saw a surface that had none.
   return {
     play: () => surface.play(),
     pause: () => surface.pause(),
@@ -204,6 +210,7 @@ export async function openWasmSurface(options: OpenOptions): Promise<PlaybackSur
     get volume() { return surface.volume; },
     setVolume: (volume: number) => surface.setVolume(volume),
     get error() { return surface.error; },
+    get captions() { return surface.captions; },
     diagnostics: () => surface.diagnostics(),
     on: (event, handler) => surface.on(event, handler),
     setFrameSource: (next: FrameSource) => loop.setFrameSource(next),

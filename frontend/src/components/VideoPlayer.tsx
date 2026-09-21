@@ -2246,6 +2246,12 @@ export function VideoPlayer({
       cachedRanges: rangesLabel(cachedRangesRef.current),
       atCachedPoint: isCached(s?.currentTime ?? 0, cachedRangesRef.current),
       mediaError: s?.error ?? null,
+      // The caption the overlay would be drawing, asked exactly as the overlay
+      // asks it. Worth having permanently: cues arriving and no caption on
+      // screen is otherwise indistinguishable from no cues at all, and the two
+      // have nothing in common.
+      captionNow: s?.captions?.at(s.currentTime ?? 0)?.text ?? null,
+      captionSurface: Boolean(s?.captions),
       // Whatever the implementation in use can say about itself: readyState
       // and buffered ranges for hls, decode and present counts for wasm.
       ...(s?.diagnostics() ?? {}),
