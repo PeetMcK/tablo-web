@@ -714,6 +714,15 @@ export interface SeriesSettings {
   rule: "all" | "new" | "none";
   keep: { rule: string; count: number | null };
   offsets: { start: number; end: number; source: string };
+  /** Guide channel path the rule is pinned to, or null for all channels. */
+  channel_path: string | null;
+}
+
+/** One channel a series airs on — a choice for pinning its rule. */
+export interface ChannelOption {
+  path: string;
+  call_sign: string | null;
+  number: string | null;
 }
 
 export interface SeriesDetail {
@@ -766,6 +775,8 @@ export interface SeriesUpdate {
   rule?: "all" | "new" | "none";
   keep?: { rule: "all" | "none" | "count"; count?: number };
   offsets?: { start: number; end: number };
+  /** Pin to a guide channel path, or null for all channels. */
+  channel_path?: string | null;
 }
 
 export const api = {
@@ -1170,6 +1181,11 @@ export const api = {
     conflicts: () => req<UpcomingAiring[]>("/recordings/conflicts"),
 
     schedule: () => req<ScheduleRow[]>("/recordings/schedule"),
+
+    channels: (guidePath: string) =>
+      req<ChannelOption[]>(
+        `/recordings/series/channels?guide_path=${encodeURIComponent(guidePath)}`,
+      ),
 
     airings: (guidePath: string, state: "requested" | "conflicted" | "all") =>
       req<SeriesAiring[]>(

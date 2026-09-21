@@ -211,6 +211,27 @@ async def test_series_airings_chunks_over_the_batch_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_series_channels_distinct_sorted(monkeypatch):
+    eps = ["/guide/series/1/episodes/1", "/guide/series/1/episodes/2",
+           "/guide/series/1/episodes/3"]
+    def ch(path, cs, maj, minor):
+        return {"airing_details": {"channel": {"path": path,
+                "channel": {"call_sign": cs, "major": maj, "minor": minor}}}}
+    fake = FakeState({
+        ("GET", "/guide/series/1/episodes"): eps,
+        "objs": {
+            eps[0]: ch("/guide/channels/9", "PBS", 11, 1),
+            eps[1]: ch("/guide/channels/5", "KSPS", 7, 1),
+            eps[2]: ch("/guide/channels/5", "KSPS", 7, 1),   # dup -> collapsed
+        },
+    })
+    monkeypatch.setattr(S, "state", fake)
+    out = await S.series_channels(guide_path="/guide/series/1")
+    assert [o["path"] for o in out] == ["/guide/channels/5", "/guide/channels/9"]
+    assert out[0]["call_sign"] == "KSPS" and out[0]["number"] == "7.1"
+
+
+@pytest.mark.asyncio
 async def test_recording_now_paths(monkeypatch):
     ev = "/recordings/series/episodes/500"
     fake = FakeState({
