@@ -1355,6 +1355,44 @@ def test_in_progress_lists_only_what_is_recording(monkeypatch):
     assert row["recorded_seconds"] == pytest.approx(30 * 60 - 1259, abs=5)
 
 
+def test_one_recording_answers_in_the_shape_the_player_takes(monkeypatch):
+    """The player is handed a recording, not an id.
+
+    Opening it from the Guide or a series panel means fetching that one
+    recording; listing the whole library to find it is a device walk per click.
+    """
+    from app.routes import recordings as rec
+
+    async def snapshot(object_id):
+        assert object_id == 80888
+        return AppState._recording_fields(DEVICE_RECORDING)
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "recording_snapshot", snapshot)
+
+    r = client.get("/api/recordings/80888")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object_id"] == 80888
+    assert body["title"] == "NFL Football"
+    # Decorated like a listing row, because that is what the player reads.
+    assert "cache_state" in body
+    assert "pinned" in body
+
+
+def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
+    from app.routes import recordings as rec
+
+    async def snapshot(object_id):
+        raise KeyError(object_id)
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "recording_snapshot", snapshot)
+
+    assert client.get("/api/recordings/999999").status_code == 404
+
+
 def test_in_progress_carries_the_guide_series_it_belongs_to(monkeypatch):
     """So the sheet can tell that *this* series is the one recording.
 

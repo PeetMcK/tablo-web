@@ -565,15 +565,21 @@ describe("watching what the sheet describes", () => {
     expect(screen.queryByRole("button", { name: /watch/i })).toBeNull();
   });
 
-  it("takes the viewer to the recording when the host cannot play it", async () => {
-    // The Guide and the series panel have no player of their own; the Library
-    // route does, and the router already addresses a recording by id.
+  it("plays where it stands rather than sending the viewer to the Library", async () => {
+    // Routing there started the player behind this sheet, in another view, and
+    // closing it left the viewer somewhere they had not chosen to be. The
+    // player is an overlay that takes a recording - so the sheet fetches the
+    // one it describes and opens it here.
+    const fetched = vi.spyOn(api, "recording").mockResolvedValue({
+      object_id: 86353, title: "Jeopardy!", duration: 1800,
+    } as never);
     vi.spyOn(api, "airingDetail").mockResolvedValue(airing({ recording_id: 86353 }));
     render(<ShowInfo channel="ch1" start={SLOT} onClose={() => {}} onTune={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^watch now$/i }));
 
-    expect(window.location.hash).toBe("#/library/rec/86353");
+    await waitFor(() => expect(fetched).toHaveBeenCalledWith(86353));
+    expect(window.location.hash).not.toContain("library");
   });
 });
 
