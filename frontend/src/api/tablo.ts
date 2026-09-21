@@ -663,6 +663,8 @@ export interface SeriesCard {
   /** Upcoming airings queued to record, from the device's show_counts. */
   scheduled_count: number;
   conflict: boolean;
+  /** An episode/game of this series is being recorded right now. */
+  recording_now: boolean;
 }
 
 /** One row of the cross-series Schedule feed: a titled upcoming airing with its
@@ -738,7 +740,8 @@ export interface UpcomingAiring {
 }
 
 export interface SeriesUpdate {
-  identifier: string;
+  /** Absent for a series with no current rule; the write keys on guide_path. */
+  identifier?: string | null;
   /** Guide series path — the device's settings target (`/guide/series/NNN`). */
   guide_path: string;
   rule?: "all" | "new" | "none";

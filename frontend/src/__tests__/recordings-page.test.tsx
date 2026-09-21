@@ -23,6 +23,7 @@ const CARD: SeriesCard = {
   failed_count: 0,
   scheduled_count: 4,
   conflict: false,
+  recording_now: false,
 };
 
 function detailFor(overrides: Partial<SeriesDetail> = {}): SeriesDetail {
@@ -122,6 +123,15 @@ describe("Recordings page", () => {
     expect(screen.getByText("4 upcoming")).toBeInTheDocument();
   });
 
+  it("shows a RECORDING pill on a series recording now", async () => {
+    vi.spyOn(api.series, "index").mockResolvedValue({
+      series: [{ ...CARD, title: "Live One", recording_now: true }],
+    });
+    renderRecordings();
+    await screen.findByText("Live One");
+    expect(screen.getByText("Recording")).toBeInTheDocument();
+  });
+
   it("Schedule marks airings by state and filters them", async () => {
     vi.spyOn(api.series, "schedule").mockResolvedValue(SCHEDULE);
     renderRecordings();
@@ -157,6 +167,18 @@ describe("Series detail", () => {
     fireEvent.click(screen.getByRole("radio", { name: "New" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith(
       { identifier: "C1", guide_path: "/guide/series/9", rule: "new" }));
+  });
+
+  it("turning the rule Off asks to confirm first", async () => {
+    const spy = vi.spyOn(api.series, "update").mockResolvedValue({ identifier: "C1", echo: {} });
+    await open();
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
+    // Not written yet — a confirm dialog stands in the way.
+    expect(spy).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("dialog", { name: /turn off/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(
+      { identifier: "C1", guide_path: "/guide/series/9", rule: "none" }));
   });
 
   it("delete-all confirms then bulk-deletes unprotected", async () => {

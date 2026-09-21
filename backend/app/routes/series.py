@@ -224,7 +224,7 @@ async def resolve_ruled() -> list[dict]:
 
 
 def _card(*, recordings_path, identifier, guide_path, kind, title,
-          cover_image_id, rule, keep, offsets, counts) -> dict:
+          cover_image_id, rule, keep, offsets, counts, recording_now=False) -> dict:
     """The one card shape the Recordings grid consumes."""
     return {
         "recordings_path": recordings_path,
@@ -242,7 +242,29 @@ def _card(*, recordings_path, identifier, guide_path, kind, title,
         "failed_count": counts.get("failed_count", 0),
         "scheduled_count": counts.get("scheduled_count", 0),
         "conflict": (counts.get("conflicted_count", 0) or 0) > 0,
+        "recording_now": recording_now,
     }
+
+
+async def _recording_now_paths() -> set[str]:
+    """Recordings-show paths that have an episode/game recording right now.
+
+    The global `/recordings/airings` lists in-progress and finished airings;
+    each carries a `series_path`/`sport_path` back to its show. Best-effort — a
+    failed read just means no card gets the live badge, never a broken page.
+    """
+    paths = await _try("GET", "/recordings/airings") or []
+    resolved = (await _try("POST", "/batch", json.dumps(paths[:600]))
+                if paths else {}) or {}
+    now: set[str] = set()
+    for a in resolved.values():
+        if not isinstance(a, dict):
+            continue
+        if (a.get("video_details") or {}).get("state") == "recording":
+            parent = a.get("series_path") or a.get("sport_path")
+            if parent:
+                now.add(parent)
+    return now
 
 
 async def _compose_series_index() -> list[dict]:
@@ -259,6 +281,7 @@ async def _compose_series_index() -> list[dict]:
     ruled = await resolve_ruled()
     ruled_recpaths = {r["recordings_path"] for r in ruled if r.get("recordings_path")}
     rec_paths = await _try("GET", "/recordings/shows") or []
+    recording_now = await _recording_now_paths()
     sem = asyncio.Semaphore(8)
 
     async def _meta(path: str) -> dict | None:
@@ -275,6 +298,7 @@ async def _compose_series_index() -> list[dict]:
             cover_image_id=r["cover_image_id"],
             rule=r["rule"], keep=r["keep"], offsets=r["offsets"],
             counts=r.get("show_counts") or {},
+            recording_now=r.get("recordings_path") in recording_now,
         )
         for r in ruled
     ]
@@ -292,6 +316,7 @@ async def _compose_series_index() -> list[dict]:
             cover_image_id=_img(show.get("cover_image")),
             rule="none", keep=meta.get("keep") or dict(_DEFAULT_KEEP),
             offsets=dict(_DEFAULT_OFFSETS), counts=meta.get("show_counts") or {},
+            recording_now=path in recording_now,
         )
 
     extra = await asyncio.gather(*[_unruled_card(p) for p in rec_paths])
@@ -586,7 +611,9 @@ class OffsetsIn(BaseModel):
 class SeriesSettingsIn(BaseModel):
     """Allow-listed series settings write. Unknown keys are rejected (422)."""
     model_config = ConfigDict(extra="forbid")
-    identifier: str
+    # Optional: a series that currently has no rule (turned off) has no
+    # identifier, but can still be re-ruled — the write keys on guide_path.
+    identifier: str | None = None
     # The device settings live on the guide *series* object, addressed by its
     # path (`/guide/series/377`). `/guide/{identifier}` is not a resource (the
     # device 404s it), so the client sends the guide path it already holds.
