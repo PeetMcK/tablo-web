@@ -84,12 +84,26 @@ describe("Recordings page", () => {
   });
 
   it("shows the three-view tab set", async () => {
+    // Series, not "Recordings": the list holds a series whose rule is Off with
+    // episodes on disk as readily as one scheduled and not yet recorded, and
+    // "Recordings" collided with the Library, which is literally that. Series
+    // is also the device's own word - /guide/series, series_path, SeriesCard.
     renderRecordings();
     await screen.findByText("Wild Kratts");
-    for (const name of ["Recordings", "Schedule", "Failures"]) {
+    for (const name of ["Series", "Upcoming", "Failures"]) {
       expect(screen.getByRole("radio", { name })).toBeInTheDocument();
     }
     expect(screen.queryByRole("radio", { name: "Conflicts" })).toBeNull();
+  });
+
+  it("does not repeat its own name as a heading", async () => {
+    // The nav says where you are and the active tab says which view; a page
+    // title said "Recordings" a third time in the same hundred pixels.
+    renderRecordings();
+    await screen.findByText("Wild Kratts");
+
+    expect(screen.queryByRole("heading", { name: /^recordings$/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^schedule$/i })).toBeNull();
   });
 
   it("shows a conflicts banner when a series has a conflict", async () => {
@@ -132,11 +146,11 @@ describe("Recordings page", () => {
     expect(screen.getByText("Recording")).toBeInTheDocument();
   });
 
-  it("Schedule marks airings by state and filters them", async () => {
+  it("Upcoming marks airings by state and filters them", async () => {
     vi.spyOn(api.series, "schedule").mockResolvedValue(SCHEDULE);
     renderRecordings();
     await screen.findByText("Wild Kratts");
-    fireEvent.click(screen.getByRole("radio", { name: "Schedule" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Upcoming" }));
     expect(await screen.findByText("Newsy")).toBeInTheDocument();
     expect(screen.getByText("Rerunny")).toBeInTheDocument();
     expect(screen.getByText("Rerun")).toBeInTheDocument();     // skip label
@@ -250,7 +264,11 @@ describe("Series detail", () => {
         channel: "KUFM", state: "scheduled", skip_reason: "none" },
     ]);
     await open();
-    fireEvent.click(screen.getByRole("radio", { name: "Upcoming" }));
+    // Scoped to the panel: the page behind it has an Upcoming tab of its own
+    // now, and the two mean the same thing at different scopes - everything
+    // upcoming, against this series' upcoming.
+    const panel = screen.getByRole("dialog");
+    fireEvent.click(within(panel).getByRole("radio", { name: "Upcoming" }));
     expect(await screen.findByText("Money Buys Justice")).toBeInTheDocument();
     expect(spy).toHaveBeenCalledWith("/guide/series/9", "all");
   });

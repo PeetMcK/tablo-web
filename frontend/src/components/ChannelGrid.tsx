@@ -144,7 +144,7 @@ export function ChannelGrid({ onLogout }: Props) {
   /** The Guide is the one tab laid out as a viewport rather than a document. */
   const isGuide = activeTab === "grid";
   /** Tabs laid out as a viewport (own scroll pane) rather than a document. */
-  const isViewport = isGuide || activeTab === "recordings";
+  const isViewport = isGuide || activeTab === "schedule";
   // Set once the user closes the restored stream, so it does not reopen.
   const [restoreDone, setRestoreDone] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -531,11 +531,11 @@ export function ChannelGrid({ onLogout }: Props) {
                 Library
               </button>
               <button
-                onClick={() => goToTab("recordings")}
+                onClick={() => goToTab("schedule")}
                 className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "recordings" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+                           ${activeTab === "schedule" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
-                Recordings
+                Schedule
               </button>
             </nav>
 
@@ -739,7 +739,7 @@ export function ChannelGrid({ onLogout }: Props) {
             </div>
           )}
 
-          {activeTab === "recordings" && (
+          {activeTab === "schedule" && (
             <div className="flex flex-col flex-1 min-h-0">
               <RecordingsView />
             </div>
