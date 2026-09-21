@@ -192,6 +192,49 @@ export function planSkip(
 }
 
 /**
+ * How long the burst badge stays up after the seek has been committed.
+ *
+ * The badge is the only answer the viewer gets while the taps are still
+ * landing, and a badge that vanished the instant the decoder was handed the
+ * target would blink out just as the picture was about to move. Long enough to
+ * read where it went, short enough to be gone before it is furniture.
+ */
+export const SKIP_BADGE_LINGER_MS = 700;
+
+/** A run of skip taps: where it started, and where it has got to. */
+export interface SkipBurst {
+  from: number;
+  target: number;
+}
+
+/** What a burst amounts to: whole seconds moved, and which way. */
+export interface SkipBurstReadout {
+  net: number;
+  direction: -1 | 0 | 1;
+}
+
+/**
+ * What a run of skip taps has added up to.
+ *
+ * Net movement, not a tap count. The two directions are configured separately
+ * - a commercial forward, a missed line back - so with the defaults three
+ * forward taps and nine back are twelve presses and a playhead that never
+ * left. "×12" would be a true count of a thing nobody did.
+ *
+ * Measured against the clamped target, so taps pressed into an edge report the
+ * ground actually covered rather than the distance asked for. Rounded to whole
+ * seconds: `from` is read off the surface mid-frame, and an unrounded burst
+ * that netted out shows a backward arrow over "0:00".
+ */
+export function describeSkipBurst({ from, target }: SkipBurst): SkipBurstReadout {
+  // `|| 0` for the sign of zero: rounding a burst that drifted backwards by a
+  // hundredth gives -0, which formats as "-0:00" and reads as a jump that did
+  // not happen. It swallows a NaN from an unreadable clock the same way.
+  const net = Math.round(target - from) || 0;
+  return { net, direction: net > 0 ? 1 : net < 0 ? -1 : 0 };
+}
+
+/**
  * Ties the media timeline to the wall clock.
  *
  * A live stream's `currentTime` counts from the start of its FFmpeg session,

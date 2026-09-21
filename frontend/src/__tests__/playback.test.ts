@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import {
-  airingAt, clampSkip, LIVE_EDGE_MARGIN, mediaAt, planSkip, programWindow,
-  readyRange, RECORDING_EDGE_MARGIN, SEGMENT_SECONDS,
+  airingAt, clampSkip, describeSkipBurst, LIVE_EDGE_MARGIN, mediaAt, planSkip,
+  programWindow, readyRange, RECORDING_EDGE_MARGIN, SEGMENT_SECONDS,
 } from "../lib/playback";
 
 describe("readyRange", () => {
@@ -319,5 +319,47 @@ describe("queuing a flurry of skips", () => {
     // nothing. Deliberately close to the end: the margin is tuned by eye
     // against how "the end" should feel, not by segment arithmetic.
     expect(1283 - t!).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * What a run of skip taps has added up to.
+ *
+ * Net movement, not a tap count: the two directions are different sizes, so
+ * with the defaults three forward taps and nine back are twelve presses and no
+ * movement at all. A count would say "×12" about a playhead that never left.
+ */
+describe("describeSkipBurst", () => {
+  it("reads a forward burst as the ground it covered", () => {
+    expect(describeSkipBurst({ from: 300, target: 450 }))
+      .toEqual({ net: 150, direction: 1 });
+  });
+
+  it("reads a backward burst as negative", () => {
+    expect(describeSkipBurst({ from: 300, target: 210 }))
+      .toEqual({ net: -90, direction: -1 });
+  });
+
+  it("nets a mixed burst out to nothing", () => {
+    // Three forward (3 × 30) against nine back (9 × 10): twelve presses, and
+    // the playhead is exactly where it started.
+    expect(describeSkipBurst({ from: 1800, target: 1800 }))
+      .toEqual({ net: 0, direction: 0 });
+  });
+
+  it("measures the clamped landing, not the taps' intent", () => {
+    // Ten forward taps against the end of a recording: `planSkip` pinned every
+    // one of them to the edge, so the honest reading is the four seconds the
+    // playhead actually moved — not the five minutes that was asked for.
+    expect(describeSkipBurst({ from: 3596, target: 3600 }))
+      .toEqual({ net: 4, direction: 1 });
+  });
+
+  it("rounds to whole seconds, so a drifting clock cannot show a signed zero", () => {
+    // `from` is read off the surface mid-frame, so a burst that netted out can
+    // land a few hundredths away. Rounded, that stays "0:00" with no arrow
+    // rather than flickering a backward one.
+    expect(describeSkipBurst({ from: 300.21, target: 300 }))
+      .toEqual({ net: 0, direction: 0 });
   });
 });
