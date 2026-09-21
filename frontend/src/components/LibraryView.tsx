@@ -790,13 +790,14 @@ export function LibraryView() {
                       );
                     }
 
-                    const chip = "flex items-center gap-1.5 pl-2.5 pr-3.5 h-8 rounded-full text-[11px] font-bold"
+                    const chip = "flex items-center gap-2 pl-3 pr-4 h-10 rounded-full text-xs font-bold"
                       + " shadow-lg hover:scale-105 active:scale-95 transition-all duration-150";
                     return (
-                      // `py-12` keeps the button stack clear of the top badge
+                      // `py-10` keeps the button stack clear of the top badge
                       // row and the bottom progress/time row — the top chip used
-                      // to butt right against the CACHED/offline cluster.
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 py-12
+                      // to butt right against the CACHED/offline cluster — while
+                      // leaving room for all three chips (Live/Resume/From start).
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 py-10
                                       bg-scrim-soft opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
                         {/* Order top-to-bottom: Live (the frontier of what is
                             recording now), Resume (where you left off), From
@@ -808,7 +809,7 @@ export function LibraryView() {
                             className={`${chip} glass text-media-fg hover:bg-fill`}
                             title="Jump to what is being recorded right now"
                           >
-                            <Radio className="w-3.5 h-3.5" aria-hidden />
+                            <Radio className="w-4 h-4" aria-hidden />
                             Live
                           </button>
                         )}
@@ -817,7 +818,7 @@ export function LibraryView() {
                             onClick={() => { setStartMode("resume"); setPlaying(rec); }}
                             className={`${chip} accent-gradient text-brand-fg hover:shadow-2xl hover:brightness-110`}
                           >
-                            <Play className="w-3.5 h-3.5" fill="currentColor" aria-hidden />
+                            <Play className="w-4 h-4" fill="currentColor" aria-hidden />
                             Resume {formatClock(at)}
                           </button>
                         )}
@@ -827,7 +828,7 @@ export function LibraryView() {
                             ? `${chip} glass text-media-fg hover:bg-fill`
                             : `${chip} accent-gradient text-brand-fg hover:shadow-2xl hover:brightness-110`}
                         >
-                          <Play className="w-3.5 h-3.5" fill="currentColor" aria-hidden />
+                          <Play className="w-4 h-4" fill="currentColor" aria-hidden />
                           From start
                         </button>
                       </div>
