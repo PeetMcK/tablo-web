@@ -20,6 +20,10 @@ import type { DecodedAudioChunk, DecodedVideoFrame } from "../lib/wasmlive/types
 // Paths from the package root, which is where vitest runs. The wasm binary is
 // bundled as an asset in the browser; node needs to be told where it is.
 const FIXTURE = resolve("src/lib/wasmlive/__fixtures__/1080i-1s.ts.bin");
+// One second of the same broadcast with a damaged MPEG-2 video packet in it:
+// segment 15 of recording 94912, byte for byte. ffmpeg itself refuses that
+// packet ("slice below image (122 >= 68)") and decodes the other 27 frames.
+const DAMAGED = resolve("src/lib/wasmlive/__fixtures__/1080i-damaged-1s.ts.bin");
 const WASM = pathToFileURL(
   resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm"),
 ).href;
@@ -29,7 +33,7 @@ const GLUE = pathToFileURL(
   resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs"),
 ).href;
 
-async function decodeFixture() {
+async function decodeFixture(path: string = FIXTURE) {
   // Output arrives through the callback as it is decoded, not as a return
   // value: frames must reach the screen when they exist, not when the next
   // segment happens to arrive.
@@ -40,7 +44,7 @@ async function decodeFixture() {
     onOutput: (out) => { video.push(...out.video); audio.push(...out.audio); },
   });
 
-  const bytes = new Uint8Array(readFileSync(FIXTURE));
+  const bytes = new Uint8Array(readFileSync(path));
   for (let at = 0; at < bytes.length; at += 64 * 1024) {
     await decoder.push(bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length)));
   }
@@ -122,6 +126,20 @@ describe("libavClient", () => {
     // And on the same timeline as the picture, which is what makes lip sync a
     // property of the design rather than something to keep correcting.
     expect(audio[0].ptsSeconds).toBeCloseTo(video[0].ptsSeconds, 0);
+  });
+
+  it("survives a damaged video packet", { timeout: 120_000 }, async () => {
+    // Damage in the video elementary stream is routine in an OTA recording:
+    // libav's send_packet refuses the packet with AVERROR_INVALIDDATA, which
+    // used to throw out of the pump and end the session - picture, sound and
+    // all - on one bad frame. ffmpeg's own CLI skips that packet and carries
+    // on, and so must this: the decoder resyncs at the next key frame.
+    const { video, audio } = await decodeFixture(DAMAGED);
+
+    // 27 frames survive the refusal in ffmpeg; allow for the partial GOP.
+    expect(video.length).toBeGreaterThan(20);
+    expect(video[0].width).toBe(1920);
+    expect(audio.length).toBeGreaterThan(0);
   });
 
   it("can be reset mid-stream and decode again", { timeout: 120_000 }, async () => {
