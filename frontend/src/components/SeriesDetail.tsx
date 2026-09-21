@@ -20,8 +20,7 @@ import { Segmented } from "./ui/controls";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { stateMarker } from "../lib/scheduleState";
 import { RecordingPill } from "./RecordingPill";
-
-const KEEP_PRESETS = [1, 3, 5, 10, 20];
+import { keepValue, keepFromValue, keepOptions } from "../lib/keep";
 
 function fmtDuration(seconds: number): string {
   const m = Math.round(seconds / 60);
@@ -307,7 +306,6 @@ export function SeriesDetail({
     update.mutate({ identifier, guide_path: guidePath, rule });
   };
 
-  const keepRule = settings?.keep.rule ?? "none";
 
   const deleteSelected = () => {
     for (const id of selected) del.mutate(id);
@@ -390,39 +388,30 @@ export function SeriesDetail({
               </div>
 
               <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-semibold">Keep</span>
-                <Segmented<"all" | "none" | "count">
-                  value={keepRule as "all" | "none" | "count"}
-                  options={[
-                    { value: "all", label: "All" },
-                    { value: "count", label: "Number" },
-                    { value: "none", label: "None" },
-                  ]}
-                  onChange={(r) =>
-                    setKeep(r === "count"
-                      ? { rule: "count", count: settings?.keep.count ?? 5 }
-                      : { rule: r })}
-                  label="Keep rule"
-                />
-              </div>
-              {keepRule === "count" && (
-                <div className="flex flex-wrap gap-1.5 justify-end">
-                  {KEEP_PRESETS.map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => setKeep({ rule: "count", count: n })}
-                      disabled={!canConfigure}
-                      className={`px-2.5 py-1 rounded-lg text-sm font-medium border transition disabled:opacity-50 ${
-                        settings?.keep.count === n
-                          ? "bg-accent text-accent-fg border-accent"
-                          : "border-border bg-fill-soft text-fg-secondary hover:text-fg"
-                      }`}
-                    >
-                      {n}
-                    </button>
-                  ))}
+                <div className="flex flex-col items-end gap-0.5">
+                  <span className="text-sm font-semibold">Keep</span>
+                  <span className="text-[11px] text-fg-muted">
+                    {keepValue(settings?.keep) === "auto"
+                      ? "Auto-delete oldest"
+                      : keepValue(settings?.keep) === "all"
+                        ? "Never auto-delete"
+                        : "Newest only"}
+                  </span>
                 </div>
-              )}
+                <select
+                  value={keepValue(settings?.keep)}
+                  disabled={!canConfigure}
+                  onChange={(e) => setKeep(keepFromValue(e.target.value))}
+                  aria-label="Keep limit"
+                  className="rounded-lg border border-border bg-fill-soft px-2.5 py-1.5 text-sm
+                             font-medium text-fg disabled:opacity-50 focus:outline-none
+                             focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  {keepOptions(settings?.keep).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
 
               {/* Padding */}
               <div className="flex items-center justify-between gap-3">

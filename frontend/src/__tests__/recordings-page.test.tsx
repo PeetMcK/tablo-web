@@ -79,7 +79,7 @@ describe("Recordings page", () => {
     renderRecordings();
     expect(await screen.findByText("Wild Kratts")).toBeInTheDocument();
     expect(screen.getByText("All")).toBeInTheDocument();
-    expect(screen.getByText("Keep 5")).toBeInTheDocument();
+    expect(screen.getByText("Last 5")).toBeInTheDocument();
     expect(screen.getByText("2 new")).toBeInTheDocument();
   });
 

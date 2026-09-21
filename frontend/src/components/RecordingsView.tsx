@@ -16,6 +16,7 @@ import { Segmented } from "./ui/controls";
 import { SeriesDetail } from "./SeriesDetail";
 import { ScheduleGrid } from "./ScheduleGrid";
 import { RecordingPill } from "./RecordingPill";
+import { keepLabel } from "../lib/keep";
 
 type Segment = "recordings" | "schedule" | "failures";
 
@@ -24,12 +25,6 @@ const TABS: { value: Segment; label: string }[] = [
   { value: "schedule", label: "Schedule" },
   { value: "failures", label: "Failures" },
 ];
-
-function keepLabel(keep: SeriesCard["keep"]): string {
-  if (keep.rule === "all") return "Keep all";
-  if (keep.rule === "count" && keep.count != null) return `Keep ${keep.count}`;
-  return "Keep none";
-}
 
 const ruleLabel: Record<SeriesCard["rule"], string> = {
   all: "All", new: "New", none: "Off",
