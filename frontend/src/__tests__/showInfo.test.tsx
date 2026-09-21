@@ -494,6 +494,41 @@ describe("the confirmation sits over the card", () => {
   });
 });
 
+describe("opening the sheet", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("waits for the whole card rather than showing its buttons first", async () => {
+    // The actions come from the id its opener already holds, so they rendered
+    // instantly while the title, artwork and description waited on the fetch -
+    // a bare pair of buttons, then the card popping in around them.
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "recordingDetail").mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, "airingDetail").mockReturnValue(new Promise(() => {}));
+
+    render(<ShowInfo channel="ch1" start="2026-09-20T22:15Z" recordingId={74776}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /watch now/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /delete recording/i })).toBeNull();
+  });
+
+  it("shows the card once, complete, when the answers arrive", async () => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "airingLive").mockRejectedValue(new Error("offline"));
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      title: "NFL Football", recording_id: 74776,
+    }));
+
+    render(<ShowInfo channel="ch1" start="2026-09-20T22:15Z" recordingId={74776}
+                     onClose={() => {}} onTune={() => {}} />);
+
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /watch now/i })).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
 describe("watching what the sheet describes", () => {
   const SLOT = "2026-09-21T22:00Z";
   const airing = (over = {}) => detail({
