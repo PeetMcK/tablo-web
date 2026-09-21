@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, ArrowLeft, Circle, CircleSlash, Layers, Play,
+  AlertTriangle, ArrowLeft, ChevronRight, Circle, CircleSlash, Layers, Play,
   SlidersHorizontal, Square, Trash2, X,
 } from "lucide-react";
 import { recordedSpan } from "../lib/recording";
@@ -768,6 +768,11 @@ export function ShowInfo({
                 >
                   <Layers className="w-4 h-4 shrink-0" aria-hidden />
                   Series Information
+                  {/* It sits in a column of buttons that toggle things - record
+                      this episode, set the rule - and looked like one more of
+                      them. The chevron says this one goes somewhere. */}
+                  <ChevronRight className="w-4 h-4 shrink-0 ml-auto text-fg-muted"
+                                aria-hidden />
                 </button>
               ) : null}
 
