@@ -199,6 +199,50 @@ describe("Series detail", () => {
     await waitFor(() => expect(pos).toHaveBeenCalledWith(100, 1));
   });
 
+  it("keeps the Episodes tab on a series with nothing recorded yet", async () => {
+    // Jeopardy! is scheduled nightly and has recorded nothing: it had no
+    // Episodes tab at all, so the panel opened on Upcoming and the section
+    // that says "none yet" simply did not exist. An absent tab reads as a
+    // different kind of series rather than an empty one.
+    const scheduled: SeriesCard = {
+      ...CARD, recordings_path: null, title: "Jeopardy!",
+      episode_count: 0, unwatched_count: 0,
+    };
+    vi.spyOn(api.series, "index").mockResolvedValue({ series: [scheduled] });
+    vi.spyOn(api.series, "detailByGuide").mockResolvedValue(
+      detailFor({ meta: { title: "Jeopardy!", genres: [], description: "d",
+                          cover_image_id: null, kind: "series",
+                          guide_path: "/guide/series/9" },
+                  episodes: [] }));
+
+    renderRecordings();
+    fireEvent.click(await screen.findByText("Jeopardy!"));
+
+    expect(await screen.findByRole("radio", { name: "Episodes" })).toBeInTheDocument();
+    expect(screen.getByText("Episodes (0)")).toBeInTheDocument();
+  });
+
+  it("says nothing is recorded rather than showing an empty list", async () => {
+    const scheduled: SeriesCard = {
+      ...CARD, recordings_path: null, title: "Jeopardy!", episode_count: 0,
+    };
+    vi.spyOn(api.series, "index").mockResolvedValue({ series: [scheduled] });
+    vi.spyOn(api.series, "detailByGuide").mockResolvedValue(
+      detailFor({ meta: { title: "Jeopardy!", genres: [], description: "d",
+                          cover_image_id: null, kind: "series",
+                          guide_path: "/guide/series/9" },
+                  episodes: [] }));
+
+    renderRecordings();
+    fireEvent.click(await screen.findByText("Jeopardy!"));
+    await screen.findByText("Episodes (0)");
+
+    expect(screen.getByText(/nothing recorded yet/i)).toBeInTheDocument();
+    // Nothing to act on, so the bulk actions stay away.
+    expect(screen.queryByRole("button", { name: /delete all/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /delete watched/i })).toBeNull();
+  });
+
   it("the Upcoming tab loads this series' airings in every state", async () => {
     const spy = vi.spyOn(api.series, "airings").mockResolvedValue([
       { object_id: 500, title: "Money Buys Justice", season_number: 4,
