@@ -3113,3 +3113,21 @@ def test_a_window_with_no_codec_still_encodes(tmp_path, monkeypatch):
     cmd = _run_one_window(tmp_path, monkeypatch, codec=None)
 
     assert cmd[cmd.index("-c:v") + 1] != "copy"
+
+
+def test_a_copied_window_that_comes_out_the_wrong_shape_is_re_encoded(
+        tmp_path, monkeypatch):
+    """`build_playlist` publishes the segment names before anything is made, so
+    the files have to be the files it named: one fewer leaves the playlist
+    pointing at a 404, one more hides that content from playback entirely.
+    Copying cannot force keyframes, so the shape is checked rather than
+    assumed, and a source whose keyframes fall elsewhere degrades to exactly
+    what it does today."""
+    expected = segments_in_window(GAME, 7)
+    cmds = _run_one_window(tmp_path, monkeypatch, codec="h264",
+                           segments=expected - 1)
+
+    assert len(cmds) == 2
+    assert cmds[0][cmds[0].index("-c:v") + 1] == "copy"
+    assert cmds[1][cmds[1].index("-c:v") + 1] != "copy"
+    assert "-force_key_frames" in cmds[1]
