@@ -59,6 +59,12 @@ def _decorate(item: dict, meta=None) -> dict:
     wire = cache.transfer_rate(oid)
     if wire > 0:
         item["rate"] = {**item["rate"], "mbps": round(wire * 8 / 1e6, 2)}
+    # And for a transcode, the speed is content appearing - watched every six
+    # seconds as FFmpeg finalises a segment, rather than every sixty as a
+    # window completes.
+    produced = cache.produced_rate(oid)
+    if produced > 0:
+        item["rate"] = {**item["rate"], "realtime": round(produced, 2)}
     # Computed here rather than in the browser: a copied recording's size is
     # known before it starts, so its wait is arithmetic over bytes, and only
     # this side knows how many have arrived.

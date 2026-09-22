@@ -17,6 +17,7 @@ from app.state import AppState
 from app.transcode_cache import (
     _BIF_MAGIC,
     MAX_ONDEMAND_WINDOWS,
+    PRODUCED_SAMPLES,
     RATE_SAMPLES,
     SEGMENT_SECONDS,
     WINDOW_SECONDS,
@@ -3508,3 +3509,63 @@ def test_the_estimate_falls_back_to_content_when_the_size_is_unknown(tmp_path):
 
     # 8472s of content, none cached, at 36x -> ~235s.
     assert c.eta(66220) == pytest.approx(8472 / 36, rel=0.2)
+
+
+# ---------------------------------------------------------------------------
+# Watching a transcode progress
+#
+# A transcode's output size is nobody's to know until it exists, so bytes
+# cannot say how far along it is - but the content it has produced can, and
+# FFmpeg finalises a segment every six seconds rather than a window every
+# sixty.
+# ---------------------------------------------------------------------------
+
+def _finalised(c, oid, w, n_segments, window_seconds=60):
+    """A window mid-flight: `n_segments` finalised, listed in its own index."""
+    wd = c.window_dir(oid, w)
+    wd.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for n in range(n_segments):
+        (wd / f"seg_{n:02d}.ts").write_bytes(b"x")
+        lines.append(f"#EXTINF:6.0,\nseg_{n:02d}.ts")
+    (wd / "index.m3u8").write_text("#EXTM3U\n" + "\n".join(lines) + "\n")
+
+
+def test_produced_seconds_counts_segments_not_whole_windows(tmp_path):
+    """A window is a minute; a segment is six seconds. Counting only finished
+    windows makes progress lurch once a minute and leaves the rate it feeds
+    sampled just as coarsely."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=600)
+    _mark_done(c, 66220, 0)          # a whole window: 60s
+    _finalised(c, 66220, 1, 4)       # four segments of the next: 24s
+
+    assert c.produced_seconds(66220) == pytest.approx(84.0, abs=0.1)
+
+
+def test_produced_seconds_does_not_count_past_the_window_it_is_in(tmp_path):
+    """A finished window is its own length, however many segments it holds -
+    the last window of a recording is usually short."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=75)
+    _mark_done(c, 66220, 0)
+    _finalised(c, 66220, 1, 6)       # 36s of segments in a 15s window
+
+    assert c.produced_seconds(66220) == pytest.approx(75.0, abs=0.1)
+
+
+def test_the_transcode_estimate_uses_content_it_has_watched_being_made(tmp_path):
+    """Runtime left, over how fast runtime is appearing: 600s recording, 84s
+    produced, and 12s of content appearing every second -> 43s."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=600)
+    _mark_done(c, 66220, 0)
+    _finalised(c, 66220, 1, 4)
+    now = time.monotonic()
+    # Ten seconds ago it had produced 84 - 120 = -36... so start from nothing:
+    # 84s of content has appeared over the last seven seconds.
+    c._produced[66220] = deque([(now - 7.0, 0.0)], maxlen=PRODUCED_SAMPLES)
+
+    eta = c.eta(66220)
+
+    assert eta == pytest.approx((600 - 84) / (84 / 7), rel=0.15)
