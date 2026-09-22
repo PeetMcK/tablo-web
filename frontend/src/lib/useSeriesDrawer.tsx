@@ -11,7 +11,7 @@
  * ordinary case for a series with no rule and nothing recorded, where the
  * panel is how you give it one.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api, type SeriesCard } from "../api/tablo";
 import { SeriesDetail } from "../components/SeriesDetail";
 
@@ -45,6 +45,8 @@ function cardFromPath(path: string, title: string): SeriesCard {
 
 export function useSeriesDrawer() {
   const [card, setCard] = useState<SeriesCard | null>(null);
+  /** The path the panel on screen was opened for, or null once it is closed. */
+  const opened = useRef<string | null>(null);
 
   /**
    * Open the panel for a show, named by either of its two paths.
@@ -55,6 +57,14 @@ export function useSeriesDrawer() {
    * are on the index card, so either finds it.
    */
   async function openSeries(path: string, title: string) {
+    // Open on what the caller already knows, in the same beat as the click.
+    // The index below is a round trip over every series on the box, and
+    // waiting for it before drawing anything left the control looking dead
+    // rather than busy — the panel has its own "fetching" state, which is the
+    // honest thing to show while this resolves.
+    setCard(cardFromPath(path, title));
+    opened.current = path;
+
     // A plain fetch rather than the query cache: this hook is called from the
     // Guide and Live, whose components carry no QueryClient of their own, and
     // requiring one of them to get here would be the tail wagging the dog.
@@ -67,11 +77,18 @@ export function useSeriesDrawer() {
     } catch {
       // The index is an optimisation, not a requirement.
     }
-    setCard(known ?? cardFromPath(path, title));
+    // Only if this is still the panel on screen: a slow index landing after
+    // the viewer has closed the panel, or opened another show's, must not
+    // reopen or replace it.
+    if (!known || opened.current !== path) return;
+    setCard(known);
   }
 
   const drawer = card
-    ? <SeriesDetail card={card} onClose={() => setCard(null)} />
+    ? <SeriesDetail
+        card={card}
+        onClose={() => { opened.current = null; setCard(null); }}
+      />
     : null;
 
   return { openSeries, drawer };
