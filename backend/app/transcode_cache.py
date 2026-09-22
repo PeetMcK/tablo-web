@@ -388,6 +388,23 @@ RATE_WINDOW_SECONDS = 30.0
 RATE_IDLE_AFTER = 180.0
 
 
+def eta_seconds(duration: float, cached: float, realtime: float) -> float | None:
+    """How long an offline copy still has to run, or None where nothing honest
+    can be said.
+
+    `realtime` is output seconds per wall second - the same figure the card
+    shows as "5.5x" - so this is the remaining content divided by it. The
+    frontend renders the same arithmetic; keeping it here too is what lets the
+    log say what the screen says, and what makes a prediction checkable against
+    the clock afterwards.
+    """
+    if not (duration > 0) or not (realtime > 0):
+        return None
+    # Windows overrun their nominal length, so what is cached can pass the
+    # recording's duration. That is finished, not negative time remaining.
+    return max(0.0, duration - cached) / realtime
+
+
 class CacheState(str, Enum):
     ABSENT = "absent"
     PARTIAL = "partial"
@@ -487,6 +504,10 @@ class TranscodeCache:
         # Shared across every prefetch loop. Created lazily: there is no running
         # event loop at import time.
         self._prefetch_slots: asyncio.Semaphore | None = None
+        #: When the current run of windows began, per recording, so the line
+        #: printed at the end can be compared against the estimates printed
+        #: along the way. Cleared when the copy completes.
+        self._fill_started: dict[int, float] = {}
         # Directory creation is lazy: this object is constructed at import time,
         # and CI imports the app on a runner with no /data volume.
 
@@ -1620,6 +1641,7 @@ class TranscodeCache:
         # expire ~3.5 minutes out and a window encodes in well under that, so no
         # separate refresh loop is needed.
         t0 = asyncio.get_event_loop().time()
+        self._fill_started.setdefault(object_id, time.monotonic())
         session = await self._start_session(path)
         playlist_url = session.get("playlist_url")
         if not playlist_url:
@@ -1817,14 +1839,37 @@ class TranscodeCache:
         size_mb = size_bytes / 1024**2
         samples = self._rate.setdefault(object_id, deque(maxlen=RATE_SAMPLES))
         samples.append((time.monotonic(), size_bytes, elapsed, length))
+        # Where the whole download has got to, alongside this one window: the
+        # aggregate rate and the estimate built on it are what the card shows,
+        # and printing them beside a timestamp is what makes the estimate
+        # checkable against the clock rather than merely plausible.
+        meta_now = self.read_meta(object_id)
+        total_seconds = meta_now.source_duration if meta_now else 0
+        done_seconds = self.cached_seconds(object_id)
+        overall = self.rate(object_id)
+        eta = eta_seconds(total_seconds, done_seconds, overall["realtime"])
+        progress = (done_seconds / total_seconds * 100) if total_seconds else 0.0
         print(f"[cache] {object_id} w{w} done rc={rc} in {elapsed:.1f}s "
               f"({produced} segs, {size_mb:.0f} MB, {length / max(elapsed, 0.001):.1f}x realtime, "
-              f"{size_bytes * 8 / max(elapsed, 0.001) / 1e6:.1f} Mb/s)",
+              f"{size_bytes * 8 / max(elapsed, 0.001) / 1e6:.1f} Mb/s) "
+              f"| {progress:.0f}% overall {overall['realtime']:.1f}x "
+              f"{overall['mbps']:.1f} Mb/s"
+              + (f", eta {eta / 60:.1f} min" if eta is not None else ", eta —"),
               flush=True)
         # The window's source was scaffolding: it has been cut into segments,
         # and keeping it would double what a copied window costs on disk.
         (wd / "source.ts").unlink(missing_ok=True)
         (wd / ".done").write_text(_now())
+
+        # The end of the run, said once: how long it actually took, against
+        # every "eta" printed on the way here.
+        if total_seconds and self.windows_done(object_id) >= window_count(total_seconds):
+            began = self._fill_started.pop(object_id, None)
+            if began is not None:
+                took = time.monotonic() - began
+                print(f"[cache] {object_id} complete: "
+                      f"{window_count(total_seconds)} windows in {took / 60:.1f} min "
+                      f"({total_seconds / max(took, 0.001):.1f}x overall)", flush=True)
         # Any export built earlier no longer matches what is cached.
         self.export_path(object_id).unlink(missing_ok=True)
 

@@ -3412,3 +3412,17 @@ def test_a_window_that_comes_out_short_still_goes_to_the_encoder(tmp_path, monke
 
     assert len(cmds) == 2
     assert cmds[1][cmds[1].index("-c:v") + 1] != "copy"
+
+
+def test_eta_seconds_matches_what_the_card_shows(tmp_path):
+    """One formula, so the line in the log and the number on screen cannot
+    drift apart: what is left to make, over how fast it is being made."""
+    from app.transcode_cache import eta_seconds
+
+    # 2h21m recording, 23m done, 5.5x: (8472-1380)/5.5 = 1289s.
+    assert eta_seconds(8472, 1380, 5.5) == pytest.approx(1289.5, abs=1)
+    # Nothing honest to say without a rate, or without a length.
+    assert eta_seconds(8472, 0, 0) is None
+    assert eta_seconds(0, 0, 5) is None
+    # Windows overrun their nominal length, so cached can pass duration.
+    assert eta_seconds(8472, 8500, 5.5) == 0
