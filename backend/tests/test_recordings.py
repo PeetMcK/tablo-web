@@ -2886,3 +2886,35 @@ def test_a_kept_copy_still_names_its_show(monkeypatch, tmp_path):
     d = client.get("/api/recordings/66220/detail").json()
 
     assert d["show_path"] == "/recordings/sports/63558"
+
+
+def test_the_device_codec_label_is_projected():
+    """`container_format` is the device's word for the video codec, and it is
+    the only field that separates an H.264 recording from an MPEG-2 one — the
+    dimensions are the device's intent rather than what it wrote. Measured
+    2026-09-22: recording 94904 claims 1920x1080 and its segments are 1280x720
+    h264, while every other recording on the device is mpeg2."""
+    from app.state import AppState
+
+    mpeg2 = AppState._recording_fields(
+        {"object_id": 1, "path": "/recordings/series/episodes/1",
+         "video_details": {"container_format": "mpeg2", "height": 1080,
+                           "flags": ["interlaced"]}})
+    h264 = AppState._recording_fields(
+        {"object_id": 2, "path": "/recordings/sports/events/2",
+         "video_details": {"container_format": "mpeg4", "height": 1080,
+                           "flags": []}})
+
+    assert mpeg2["codec"] == "mpeg2"
+    assert h264["codec"] == "h264"
+
+
+def test_an_unrecognised_codec_label_is_no_codec_at_all():
+    """A format nobody has seen must not be guessed at: null takes the MPEG-2
+    path, which is what 38 of the 39 recordings on the device are."""
+    from app.state import AppState
+
+    assert AppState._recording_fields(
+        {"object_id": 3, "video_details": {"container_format": "hevc"}})["codec"] is None
+    assert AppState._recording_fields(
+        {"object_id": 4, "video_details": {}})["codec"] is None
