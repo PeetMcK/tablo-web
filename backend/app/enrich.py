@@ -44,27 +44,34 @@ def schedule(limit: int = 100) -> None:
 
 
 async def _run(limit: int) -> dict:
-    # Fetch a wide set of untagged titles, then drop the ones already looked up
-    # (fresh in the cache) so the run advances to titles we have not seen — a
-    # cached non-movie stays untagged, and without this it would be re-selected
-    # every run and block the window. `limit` caps the *network* lookups.
+    # A guide refresh (INSERT OR REPLACE from the device) wipes the enriched
+    # `kind`, so every run must first RE-APPLY cached movie verdicts — no
+    # network — to re-tag what a refresh un-tagged. Only titles with no fresh
+    # verdict at all are looked up (capped by `limit`); cached non-movies are
+    # skipped so the network window advances to genuinely new titles.
     all_titles = await asyncio.to_thread(store.untagged_titles, 2000)
+    movies = await asyncio.to_thread(store.cached_movie_verdicts)
     fresh = await asyncio.to_thread(store.fresh_title_keys)
+
+    retagged = 0
     seen: set[str] = set()
     todo: list[str] = []
     for t in all_titles:
         key = store.normalize_title(t)
-        if key in fresh or key in seen:
+        if key in seen:
             continue
         seen.add(key)
-        todo.append(t)
-        if len(todo) >= limit:
-            break
-    if not todo:
-        return {"checked": 0, "tagged": 0, "remaining": 0}
+        if key in movies:                       # cached movie -> re-tag now
+            n = await asyncio.to_thread(
+                store.apply_movie_verdict, t,
+                movies[key]["genres"], movies[key]["overview"])
+            if n:
+                retagged += 1
+        elif key not in fresh and len(todo) < limit:
+            todo.append(t)                       # unknown -> look up (capped)
 
     sem = asyncio.Semaphore(4)
-    stats = {"checked": 0, "tagged": 0}
+    stats = {"checked": 0, "tagged": 0, "retagged": retagged}
     client = httpx.AsyncClient()
 
     async def one(title: str) -> None:
@@ -88,8 +95,6 @@ async def _run(limit: int) -> dict:
         await asyncio.gather(*[one(t) for t in todo])
     finally:
         await client.aclose()
-    # How many untagged titles remain uncached after this run (roughly), so a
-    # caller/loop knows whether to run again.
     remaining = max(0, len([t for t in all_titles
                             if store.normalize_title(t) not in fresh]) - len(todo))
     stats["remaining"] = remaining
