@@ -5,7 +5,7 @@ import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
 import { Inbox, Search, X } from "lucide-react";
 import { useMediaQuery } from "../lib/useMediaQuery";
-import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import type { ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { LibraryView } from "./LibraryView";
 import { RecordingsView } from "./RecordingsView";
@@ -654,35 +654,14 @@ export function ChannelGrid({ onLogout }: Props) {
                           ${isViewport ? "pb-0 sm:pb-10 min-h-0 flex flex-col" : "pb-10"}`}>
           {activeTab === "live" && (
             <>
-              {/* Content type filter chips */}
-              {/* Wrapping, for the reason the guide's chips wrap: as a
-                  hidden-scrollbar scroller the last of the eight ran off the
-                  edge with nothing to say it was there. `mb-4` so the gap
-                  below them is the same 16px the top of the page now uses. */}
-              {/* And below a phone's width they are not a row at all but one
-                  pill-and-popover, the same control the guide collapses to. */}
-              <div data-filter-menu className="sm:hidden mb-4">
+              {/* The content filter, as one control at every width — the same
+                  pill-and-popover the guide and the Library use, and the same
+                  one this page used to collapse to on a phone. Eight chips
+                  spent a full row saying what the trigger says in 120px, and
+                  read as eight things to decide rather than one.
+                  `mb-4` so the gap below is the 16px the top of the page uses. */}
+              <div data-filter-menu className="mb-4">
                 <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
-              </div>
-
-              <div data-filter-chips className="hidden sm:flex flex-wrap gap-2 mb-4">
-                {CONTENT_FILTERS.map(f => (
-                  <button
-                    key={f.id}
-                    onClick={() => setContentFilter(f.id)}
-                    className={`touch-target shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
-                      ${contentFilter === f.id
-                        /* Flat accent, not the ramp — see GuideGridView's copy
-                           of this chip: no foreground clears 4.5:1 against both
-                           brand stops, and this one carries a label. */
-                        ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
-                        : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
-                      }`}
-                  >
-                    <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
-                    <span>{f.label}</span>
-                  </button>
-                ))}
               </div>
 
               {isLoading && !channels.length ? (

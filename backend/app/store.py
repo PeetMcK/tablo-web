@@ -1275,6 +1275,49 @@ END_MARGIN = 60.0
 
 
 # ---------------------------------------------------------------------------
+# Show genres — what a recording is about, cached per show record
+# ---------------------------------------------------------------------------
+
+def show_genres_for(paths: list[str]) -> dict[str, list[str]]:
+    """The genres already known for each of these show paths.
+
+    Keyed by `/recordings/series/{id}` or `/recordings/sports/{id}` — the path
+    a recording carries — because that is what the Library has in hand. A path
+    missing from the answer has never been read, which is a different thing
+    from a show the device describes with no genres at all: that one is stored
+    as an empty list and never asked about again.
+
+    One query for the listing, like `recording_art_for` beside it: a round trip
+    per recording was the shape this replaced.
+    """
+    if not paths:
+        return {}
+    out: dict[str, list[str]] = {}
+    # Chunked, because SQLite's variable limit is 999 and a large library can
+    # exceed it — the same guard `recording_art_for` uses.
+    for i in range(0, len(paths), 500):
+        chunk = paths[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for row in db.query(
+            f"SELECT show_path, genres FROM show_genres WHERE show_path IN ({marks})",
+            tuple(chunk),
+        ):
+            out[row["show_path"]] = json.loads(row["genres"]) if row["genres"] else []
+    return out
+
+
+def save_show_genres(show_path: str, genres: list[str]) -> None:
+    """Remember what a show is about. Genres do not change, so this is written
+    once per show and read from then on."""
+    db.execute(
+        "INSERT INTO show_genres(show_path, genres, fetched_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(show_path) DO UPDATE SET genres=excluded.genres, "
+        "    fetched_at=excluded.fetched_at",
+        (show_path, json.dumps(genres or []), time.time()),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Title lookup — the TMDb movie-enrichment cache
 # ---------------------------------------------------------------------------
 

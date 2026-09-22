@@ -46,6 +46,8 @@ function rec(over: Partial<Recording> & { object_id: number }): Recording {
     channel: null,
     scan: null,
     interlaced: false,
+    kind: "episode",
+    genres: [],
     ...over,
   };
 }

@@ -499,7 +499,8 @@ describe("revealing an airing the search found", () => {
     const { rerender, container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
 
-    fireEvent.click(screen.getByRole("button", { name: /streaming/i }));
+    fireEvent.click(screen.getByRole("button", { name: /all/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /streaming/i }));
     expect(screen.queryByText("Hour 0")).not.toBeInTheDocument();
 
     rerender(<GuideGridView onPlay={() => {}} jumpTo={jump(6)} />);
@@ -912,52 +913,19 @@ describe("dragging across the listings", () => {
   });
 });
 
-describe("the content filter pills", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("wraps rather than running off under the jump control", async () => {
-    // They were a horizontal scroller with the scrollbar hidden, so at any
-    // width that could not hold all eight the last of them ran under the NOW
-    // pill and off the edge — measured at 809px of pills in 553px of room,
-    // with nothing to say the rest were there. Eight short pills fit on two
-    // lines at any width worth supporting.
-    mockStream(longChannel(24));
-    render(<GuideGridView onPlay={() => {}} />);
-    await screen.findByText("Hour 0");
-
-    const pills = screen.getByRole("button", { name: /Movies/ }).parentElement!;
-    expect(pills.className).toMatch(/flex-wrap/);
-    expect(pills.className).not.toMatch(/overflow-x-auto/);
-  });
-
-  it("keeps every filter reachable", async () => {
-    mockStream(longChannel(24));
-    const { container } = render(<GuideGridView onPlay={() => {}} />);
-    await screen.findByText("Hour 0");
-
-    // Scoped to the chips: the collapsed control beside them names whichever
-    // filter is in force, so an unscoped search for "All" finds both.
-    const chips = within(container.querySelector<HTMLElement>("[data-filter-chips]")!);
-    for (const label of ["All", "Movies", "Sports", "News", "Reality",
-                         "Documentary", "Broadcast", "Streaming"]) {
-      expect(chips.getByRole("button", { name: new RegExp(label) })).toBeInTheDocument();
-    }
-  });
-});
-
 /**
- * Three widths, three shapes, in order as the window narrows:
+ * The toolbar is two controls on one line: the content filter, and NOW with
+ * the date jump against the right edge.
  *
- *   wide      chips on one line, NOW and the date jump at the right of it
- *   narrower  NOW and the date jump drop to their own line under the chips,
- *             and the chips wrap onto as many lines as they need
- *   phone     the chips become one pill-and-popover, and all three share a line
+ * It used to be a row of eight chips that wrapped onto two and three lines as
+ * the window narrowed, and became a single pill-and-popover on a phone. The
+ * chips are gone at every width — 809px of row to say what the trigger says in
+ * 120px — so the shapes they needed are gone with them.
  *
- * jsdom applies none of this — there is no CSS here — so what these hold is
- * the class contract that expresses it. The widths themselves were checked in
- * a real browser.
+ * jsdom applies no CSS, so what these hold is the class contract. The widths
+ * themselves were checked in a real browser.
  */
-describe("the filter row as the window narrows", () => {
+describe("the filter row", () => {
   afterEach(() => vi.restoreAllMocks());
 
   async function row() {
@@ -965,7 +933,6 @@ describe("the filter row as the window narrows", () => {
     const { container } = render(<GuideGridView onPlay={() => {}} />);
     await screen.findByText("Hour 0");
     return {
-      chips: container.querySelector<HTMLElement>("[data-filter-chips]")!,
       menu: container.querySelector<HTMLElement>("[data-filter-menu]")!,
       outer: container.querySelector<HTMLElement>("[data-filter-row]")!,
       controls: container.querySelector<HTMLElement>("[data-filter-controls]")!,
@@ -973,58 +940,48 @@ describe("the filter row as the window narrows", () => {
   }
 
   it("keeps NOW and the date jump against the right edge at every width", async () => {
-    // They are right-aligned at full width because the chips take the room
-    // beside them. Dropping to a line of their own, or onto a phone's single
-    // line, they were left-packed against the filter control — so the pair
-    // moved twice as the window narrowed instead of staying where the eye
-    // last had them.
+    // `ml-auto` is one rule for every line they can end up on: take whatever
+    // is left of the row. Without it the pair sat left once the row wrapped,
+    // so it crossed the toolbar as the window narrowed.
     const { controls } = await row();
 
-    // One rule for every line it can end up on: take whatever is left of the
-    // row. Beside the chips that is the space they do not use; wrapped onto
-    // its own line it is the whole of it.
     expect(controls.className).toMatch(/\bml-auto\b/);
   });
 
-  it("hands the chips over to one control at phone width", async () => {
-    const { chips, menu } = await row();
+  it("offers the filters as one control rather than a row of chips", async () => {
+    const { menu } = await row();
 
-    expect(chips.className).toMatch(/\bhidden\b/);
-    expect(chips.className).toMatch(/\bsm:flex\b/);
-    expect(menu.className).toMatch(/\bsm:hidden\b/);
+    expect(document.querySelector("[data-filter-chips]")).toBeNull();
+    // Shown at every width now, not only below `sm`.
+    expect(menu.className).not.toMatch(/\bsm:hidden\b/);
+    expect(within(menu).getByRole("button", { name: /All/ })).toBeInTheDocument();
   });
 
-  it("wraps the chips rather than scrolling them out of reach", async () => {
-    const { chips } = await row();
-
-    expect(chips.className).toMatch(/flex-wrap/);
-    expect(chips.className).not.toMatch(/overflow-x-auto/);
-  });
-
-  it("drops the jump control to its own line by collision, not by width", async () => {
-    // What decides it is Streaming and NOW meeting, which is not a width — so
-    // the row wraps and `min-w-max` keeps the chips one line while one fits,
-    // leaving the controls nowhere but the next line at the moment the two
-    // would crowd. `xl` was a guess at that point and a poor one: it stacked
-    // them with 164px of the row still empty.
-    const { outer, chips } = await row();
+  it("still lets the pair break onto two lines rather than overlap", async () => {
+    // One control and a jump no longer crowd each other at any width worth
+    // supporting, but the row is not the place to assert that they cannot.
+    const { outer } = await row();
 
     expect(outer.className).toMatch(/flex-wrap/);
     expect(outer.className).not.toMatch(/flex-col/);
-    expect(outer.className).not.toMatch(/\bxl:|min-\[1140px\]/);
-    // 16px between them, twice the gap between NOW and the date pill: they
-    // break apart before they touch, not after.
-    expect(outer.className).toMatch(/gap-x-4/);
-    // Only while a single line of chips fits at all; below that they wrap.
-    expect(chips.className).toMatch(/min-\[880px\]:min-w-max/);
   });
 
-  it("filters from the collapsed control too", async () => {
-    // One OTA channel, so asking for Streaming empties the grid — the same
-    // assertion the chips are held to.
+  it("keeps every filter reachable", async () => {
+    const { menu } = await row();
+    fireEvent.click(within(menu).getByRole("button", { name: /All/ }));
+
+    for (const label of ["All", "Movies", "Sports", "News", "Reality",
+                         "Documentary", "Broadcast", "Streaming"]) {
+      expect(within(menu).getByRole("menuitemradio", { name: new RegExp(label) }))
+        .toBeInTheDocument();
+    }
+  });
+
+  it("filters the grid from that control", async () => {
+    // One OTA channel, so asking for Streaming empties the grid.
     const { menu } = await row();
 
-    fireEvent.click(within(menu).getByRole("button"));
+    fireEvent.click(within(menu).getByRole("button", { name: /All/ }));
     fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Streaming/ }));
 
     expect(screen.queryByText("Hour 0")).not.toBeInTheDocument();

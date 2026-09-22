@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { GuideChannel, GridChannel, Program } from "../api/tablo";
+import {
+  recordingMatchesFilter, type FilterableRecording,
+} from "../lib/contentFilters";
 
 // ── replicated filter logic (mirrors ChannelGrid.tsx / GuideGridView.tsx) ──
 
@@ -145,5 +148,58 @@ describe("channelMatchesFilter (Guide Grid)", () => {
   it("no match if no airings have the right genre", () => {
     const ch = makeGrid("ota", [{ kind: "episode", genres: ["Comedy"] }]);
     expect(channelMatchesFilter(ch, "news")).toBe(false);
+  });
+});
+
+
+// ── recordingMatchesFilter, imported rather than replicated ──
+//
+// The Library filters recordings, not channels, so this one is the real
+// function: there is a single copy of it in `lib/contentFilters`, and a test
+// against a hand-copied duplicate would only ever test the copy.
+
+describe("recordingMatchesFilter (Library)", () => {
+  function rec(over: Partial<FilterableRecording> = {}): FilterableRecording {
+    return { kind: "episode", genres: [], channel: { kind: "ota" }, ...over };
+  }
+
+  it("all passes everything", () => {
+    expect(recordingMatchesFilter(rec({ kind: null, channel: null }), "all")).toBe(true);
+  });
+
+  it("files a film by its kind, which is all a film has", () => {
+    // No show record behind one, so no genres either - matching on genre alone
+    // would drop every film out of the filter named after it.
+    expect(recordingMatchesFilter(rec({ kind: "movie" }), "movies")).toBe(true);
+    expect(recordingMatchesFilter(rec({ kind: "episode" }), "movies")).toBe(false);
+  });
+
+  it("takes a game either from its kind or from the show's genres", () => {
+    expect(recordingMatchesFilter(rec({ kind: "sport" }), "sports")).toBe(true);
+    expect(recordingMatchesFilter(
+      rec({ kind: "episode", genres: ["Sports non-event"] }), "sports")).toBe(true);
+    expect(recordingMatchesFilter(rec({ genres: ["Comedy"] }), "sports")).toBe(false);
+  });
+
+  it("reads the genres of the show an episode belongs to", () => {
+    const doc = rec({ genres: ["Documentary", "History"] });
+    expect(recordingMatchesFilter(doc, "documentary")).toBe(true);
+    expect(recordingMatchesFilter(doc, "news")).toBe(false);
+  });
+
+  it("files Broadcast and Streaming by the station it was recorded from", () => {
+    expect(recordingMatchesFilter(rec(), "ota")).toBe(true);
+    expect(recordingMatchesFilter(rec(), "fast")).toBe(false);
+    expect(recordingMatchesFilter(rec({ channel: { kind: "ott" } }), "fast")).toBe(true);
+  });
+
+  it("drops a card that knows nothing rather than guessing at it", () => {
+    // An offline copy snapshotted before these fields existed. It falls out of
+    // every filter but All, which is the honest answer.
+    const blank = rec({ kind: null, genres: [], channel: null });
+    for (const f of ["movies", "sports", "news", "reality",
+                     "documentary", "ota", "fast"] as const) {
+      expect(recordingMatchesFilter(blank, f)).toBe(false);
+    }
   });
 });
