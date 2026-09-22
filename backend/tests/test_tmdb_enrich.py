@@ -175,6 +175,28 @@ async def test_enrich_skips_cached_and_advances(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_enrich_reapplies_cached_movie_without_network(monkeypatch):
+    # A guide refresh wipes the enriched kind; the next run must re-tag the
+    # movie from cache with no TMDb call.
+    _seed_airing("Cached Movie")   # untagged (as if just refreshed)
+    store.save_title_verdict(store.normalize_title("Cached Movie"),
+                             {"media_type": "movie", "genres": ["Crime"],
+                              "overview": "A heist."})
+    calls = []
+
+    async def fake_classify(title, year=None, client=None):
+        calls.append(title)
+        return {"media_type": "none"}
+    monkeypatch.setattr(tmdb, "classify_title", fake_classify)
+
+    stats = await enrich.enrich_untagged()
+    assert calls == []                 # no network for a cached title
+    assert stats["retagged"] == 1
+    row = db.query_one("SELECT kind FROM guide_airing WHERE title='Cached Movie'")
+    assert row["kind"] == "movieAiring"
+
+
+@pytest.mark.asyncio
 async def test_enrich_skips_without_key(monkeypatch):
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
     monkeypatch.setattr(tmdb, "_KEY_FILE", "/nonexistent/themoviedb")

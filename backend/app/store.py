@@ -1332,6 +1332,23 @@ def fresh_title_keys(now: float | None = None,
     return fresh
 
 
+def cached_movie_verdicts(now: float | None = None,
+                          positive_ttl: float = 30 * 86400) -> dict[str, dict]:
+    """Fresh movie verdicts, keyed by normalised title. Used to re-tag airings
+    from cache after a guide refresh wipes the enriched `kind` (save_guide does
+    INSERT OR REPLACE from the device, which carries no type) — no network."""
+    now = now if now is not None else time.time()
+    out: dict[str, dict] = {}
+    for r in db.query("SELECT title_key, genres, overview, checked_at "
+                      "FROM title_lookup WHERE media_type = 'movie'"):
+        if (now - (r["checked_at"] or 0)) < positive_ttl:
+            out[r["title_key"]] = {
+                "genres": json.loads(r["genres"]) if r["genres"] else [],
+                "overview": r["overview"],
+            }
+    return out
+
+
 def untagged_titles(limit: int = 1000) -> list[str]:
     """Distinct guide titles that could be a movie but carry no type: no `kind`,
     no episode marker, no series. These are what the grid shows as a live event
