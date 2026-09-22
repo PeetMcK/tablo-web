@@ -10,11 +10,18 @@
  * It steps on animation frames rather than on the player's `timeupdate`, which
  * fires about four times a second — enough for a scrubber, visibly late for
  * roll-up captions that advance a word at a time.
+ *
+ * Two layouts, one component. A cue from CEA-608 has only the bottom rows to
+ * work with and is drawn where captions have always been drawn; a cue from
+ * CEA-708 carries the window the broadcaster placed, and is drawn there.
  */
 
 import { useEffect, useState } from "react";
 
+import { placeInSafeArea } from "../lib/captions/safeArea";
+import type { PositionedCue } from "../lib/captions";
 import { DOCUMENT_FRAMES, startFrameLoop } from "../lib/playbackSurface";
+import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
 import { CHROME_BOTTOM_BAND_PX } from "../lib/playerChrome";
 
 /** Where captions sit when nothing is in their way — a television's height. */
@@ -22,7 +29,21 @@ const RESTING_BOTTOM = "12%";
 
 /** A little air between the caption box and the top of the transport band. */
 const CLEARANCE_PX = 8;
-import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
+
+/**
+ * How far up the frame a positioned window has to be before the transport
+ * stops being its problem.
+ *
+ * Below this, a broadcaster's window is in the same territory as the scrubber
+ * and gets the same treatment as an unpositioned caption; above it, the
+ * controls are nowhere near and moving the caption would be the surprising
+ * thing.
+ */
+const NEAR_BOTTOM_PERCENT = 75;
+
+const boxClasses =
+  "max-w-[80%] rounded px-3 py-1 text-white text-base sm:text-lg md:text-xl " +
+  "font-medium leading-snug text-center";
 
 export function CaptionOverlay({
   source, enabled, currentTime, raised = false, frames = DOCUMENT_FRAMES,
@@ -55,22 +76,79 @@ export function CaptionOverlay({
   /** Injected so a test can step the loop by hand. */
   frames?: FrameSource;
 }) {
-  const [text, setText] = useState<string | null>(null);
+  const [cue, setCue] = useState<PositionedCue | null>(null);
 
   useEffect(() => {
-    if (!enabled) { setText(null); return; }
+    if (!enabled) { setCue(null); return; }
     const loop = startFrameLoop(() => {
-      const next = source()?.at(currentTime())?.text ?? null;
+      const next = source()?.at(currentTime()) ?? null;
       // Compared inside the setter rather than against a captured value: an
       // unchanged caption must not re-render sixty times a second, and the
       // effect does not re-run to give us a fresh one to compare against.
-      setText((was) => (was === next ? was : next));
+      setCue((was) => (was?.text === next?.text && was?.region === next?.region ? was : next));
       return true;
     }, frames);
     return () => loop.stop();
   }, [source, enabled, currentTime, frames]);
 
-  if (!enabled || !text) return null;
+  if (!enabled || !cue?.text) return null;
+
+  /*
+   * Colour, under a readability floor.
+   *
+   * A window the broadcaster marks transparent is drawn on the overlay's own
+   * background instead. Captions are tuned for a living-room television and
+   * are routinely unreadable over a bright browser page, and an unreadable
+   * caption is worse than a plainly-styled one.
+   */
+  const style = cue.style;
+  const background = style?.background && style.background !== "transparent"
+    ? style.background
+    : undefined;
+  const textStyle: React.CSSProperties = {
+    color: style?.foreground || undefined,
+    fontStyle: style?.italic ? "italic" : undefined,
+    textDecoration: style?.underline ? "underline" : undefined,
+  };
+
+  const box = (
+    <div
+      className={`${boxClasses} ${background ? "" : "bg-black/75"}`}
+      style={{ ...textStyle, backgroundColor: background }}
+    >
+      {cue.text.split("\n").map((row, i) => (
+        <p key={i}>{row}</p>
+      ))}
+    </div>
+  );
+
+  if (cue.region) {
+    const placement = placeInSafeArea(
+      cue.region.anchor, cue.region.xPercent, cue.region.yPercent,
+    );
+    // A window the broadcaster put down by the scrubber gets the same lift an
+    // unpositioned caption does; one higher up is left where it was asked to
+    // be, because the controls are nowhere near it.
+    const nearBottom = cue.region.yPercent >= NEAR_BOTTOM_PERCENT;
+    const lift = raised && nearBottom ? ` translateY(-${CHROME_BOTTOM_BAND_PX}px)` : "";
+
+    return (
+      <div
+        className="absolute flex justify-center pointer-events-none px-4
+                   transition-transform duration-300"
+        style={{
+          left: placement.left,
+          top: placement.top,
+          transform: `${placement.transform}${lift}`,
+        }}
+        data-raised={raised && nearBottom ? "true" : "false"}
+        data-positioned="true"
+        aria-live="polite"
+      >
+        {box}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -89,17 +167,10 @@ export function CaptionOverlay({
          jsdom's CSS parser drops the value outright, so this is also what a
          test can hold on to. */
       data-raised={raised ? "true" : "false"}
+      data-positioned="false"
       aria-live="polite"
     >
-      {/* Black box behind white text, which is what 608 specifies and what a
-          television draws. Sized against the viewport rather than fixed: the
-          player runs from a phone to a fullscreen desktop. */}
-      <div className="max-w-[80%] rounded px-3 py-1 bg-black/75 text-white
-                      text-base sm:text-lg md:text-xl font-medium leading-snug text-center">
-        {text.split("\n").map((row, i) => (
-          <p key={i}>{row}</p>
-        ))}
-      </div>
+      {box}
     </div>
   );
 }
