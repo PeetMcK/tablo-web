@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import guide_images, store
+from .. import enrich, guide_images, store
 from ..log_buffer import recent_logs
 from ..state import _run_sync, state
 
@@ -94,6 +94,15 @@ async def get_guide():
         return await state.get_guide_data()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Guide error: {e}")
+
+
+@router.post("/guide-grid/enrich")
+async def enrich_guide():
+    """Run the TMDb movie enrichment now (also runs automatically after a guide
+    refresh). Returns run counts, or a skip reason without a key."""
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await enrich.enrich_untagged()
 
 
 @router.get("/guide-grid/stream")

@@ -71,6 +71,36 @@ function longChannel(hours: number): GridChannel[] {
   }];
 }
 
+describe("GuideGridView airing subtitle", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function typed(): GridChannel[] {
+    const top = new Date();
+    top.setMinutes(0, 0, 0);
+    const air = (title: string, hourOffset: number, kind: string | null) => ({
+      title, description: null,
+      start: new Date(top.getTime() + hourOffset * 3600_000).toISOString(),
+      duration: 3600, genres: [], kind,
+    });
+    return [{
+      identifier: "ch1", call_sign: "MVSGLD", major: 8, minor: 7, network: "FAST",
+      kind: "ota", display_name: "MOVIES GOLD", logo_url: null,
+      airings: [air("The Next Three Days", 0, null),
+                air("Big Game", 1, "sportEvent"),
+                air("Some Film", 2, "movieAiring")],
+    }];
+  }
+
+  it("labels a movie 'Movie' and reserves 'Live TV Event' for events", async () => {
+    mockStream(typed());
+    render(<GuideGridView onPlay={() => {}} />);
+    await screen.findByText("The Next Three Days");
+    expect(screen.queryAllByText("Live TV Event")).toHaveLength(1); // only the sport
+    expect(screen.getByText("Movie")).toBeInTheDocument();          // movieAiring
+    // The untagged one shows no subtitle (was wrongly "Live TV Event").
+  });
+});
+
 describe("GuideGridView timeline extent", () => {
   afterEach(() => vi.restoreAllMocks());
 
