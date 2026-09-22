@@ -1141,9 +1141,17 @@ export function LibraryView() {
                         className="z-20 w-7 h-7 rounded-full glass flex items-center justify-center
                                    text-media-fg hover:bg-fill transition"
                       >
+                        {/* The glyph shows the STATE, not the act: a closed
+                            lock means this recording is protected, an open one
+                            means it is not. Drawing the act instead — an open
+                            lock on a protected recording, because clicking
+                            opens it — is defensible and still reads, at a
+                            glance, as "unprotected". The eye beside it and the
+                            episode rows in the series panel already answer
+                            this way. */}
                         {rec.protected
-                          ? <LockOpen className="w-3.5 h-3.5" aria-hidden />
-                          : <Lock className="w-3.5 h-3.5" aria-hidden />}
+                          ? <Lock className="w-3.5 h-3.5" aria-hidden />
+                          : <LockOpen className="w-3.5 h-3.5" aria-hidden />}
                       </button>
                     </div>
                   )}

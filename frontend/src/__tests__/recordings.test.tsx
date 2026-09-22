@@ -1144,6 +1144,24 @@ describe("what the artwork offers", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith(90203, true));
   });
 
+  it("draws the lock the recording is in, not the one the click makes", async () => {
+    // A protected recording wears a CLOSED lock. Drawing the act instead — an
+    // open lock, because clicking opens it — reads at a glance as
+    // "unprotected", which is the opposite of the truth.
+    renderWith({ ...FINISHED, object_id: 90211, protected: true });
+
+    const toggle = await screen.findByRole("button", { name: "Remove protection" });
+    expect(toggle.querySelector(".lucide-lock")).toBeTruthy();
+    expect(toggle.querySelector(".lucide-lock-open")).toBeNull();
+  });
+
+  it("draws an open lock on one that is not protected", async () => {
+    renderWith({ ...FINISHED, object_id: 90212, protected: false });
+
+    const toggle = await screen.findByRole("button", { name: "Protect from deletion" });
+    expect(toggle.querySelector(".lucide-lock-open")).toBeTruthy();
+  });
+
   it("a downloading keep shows a cancel control that cancels", async () => {
     const cancel = vi.spyOn(api, "cancelKeep")
       .mockResolvedValue({ pinned: false, canceled: true });
