@@ -1097,8 +1097,10 @@ export function VideoPlayer({
             openSurface(r.stream_url);
           }
         } else {
-          // A recording is the same MPEG-2 and AC-3 the live path decodes, so
-          // when this browser can decode it there is no reason to transcode:
+          // A recording is *usually* the same MPEG-2 and AC-3 the live path
+          // decodes — the exception is one the box encoded itself, which is
+          // H.264 and handled above by `wasmLiveEligible` refusing it. For the
+          // MPEG-2 ones, a browser that can decode has no reason to transcode:
           // it plays from what the device already has, costs no encoder, and
           // keeps its own sample aspect rather than relying on one to carry it.
           // The transcode is what *caching* is for.
@@ -1111,7 +1113,8 @@ export function VideoPlayer({
           const keptOffline = current.recording.offline_only
             || (current.recording.pinned && current.recording.cache_state === "complete");
 
-          const eligibility = wasmLiveEligible(window, localStorage, "ota");
+          const eligibility = wasmLiveEligible(
+            window, localStorage, "ota", current.recording.codec);
           if (eligibility.eligible && !keptOffline) {
             try {
               // Every recording is an index, finished or not: the device
@@ -1256,6 +1259,29 @@ export function VideoPlayer({
             }
           }
           setUsingWasm(false);
+
+          // H.264 needs no encoder at all. The browser decodes the picture the
+          // device already wrote - measured 2026-09-22, hls.js plays its
+          // segments and seeks across them untouched - and the backend
+          // converts only the AC-3 that no browser but Safari will decode.
+          // Transcoding here would decode H.264 to re-encode it as worse
+          // H.264, spend a core doing it, and lose the original.
+          if (current.recording.codec === "h264") {
+            const raw = await api.watchRecordingVod(current.recording.object_id);
+            if (cancelled) {
+              api.stopStream(raw.session_id).catch(() => {});
+              return;
+            }
+            log.player(`open recording ${current.recording.object_id} as h264`, {
+              session: raw.session_id, url: raw.stream_url,
+              duration: fmt(raw.duration), segments: raw.segments,
+              audio: "swapped to aac",
+            });
+            setSessionId(raw.session_id);
+            openSurface(raw.stream_url);
+            setLoading(false);
+            return;
+          }
 
           const t0 = performance.now();
           const r = await api.watchRecording(current.recording.object_id);
