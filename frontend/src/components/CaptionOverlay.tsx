@@ -18,9 +18,10 @@
  * `allAt` on the source.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { placeInSafeArea, windowWidthPercent } from "../lib/captions/safeArea";
+import { placeInSafeArea, restingBottomPx, windowWidthPercent }
+  from "../lib/captions/safeArea";
 import type { PositionedCue } from "../lib/captions";
 import { DOCUMENT_FRAMES, startFrameLoop } from "../lib/playbackSurface";
 import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
@@ -194,6 +195,15 @@ function Window({
   // unpositioned 608 screen is centred, as captions have always been.
   const align = cue.region && !floor ? cue.region.align : "center";
 
+  /** Where a positioned window goes; null for a screen drawn along the floor. */
+  const region = cue.region;
+  const placement = useMemo(
+    () => (region && !floor
+      ? placeInSafeArea(region.anchor, region.xPercent, region.yPercent)
+      : null),
+    [region, floor],
+  );
+
   /**
    * How far the box actually intrudes into the transport band, in pixels.
    *
@@ -211,17 +221,31 @@ function Window({
   useLayoutEffect(() => {
     const element = boxRef.current;
     if (!element) return;
-    if (!raised) { setOverlap(0); return; }
+    if (!raised || !placement) { setOverlap(0); return; }
 
     const measure = () => {
       const stage = element.offsetParent as HTMLElement | null;
       const stageRect = stage?.getBoundingClientRect();
       if (!stageRect?.height) return;
 
-      const rect = element.getBoundingClientRect();
-      // Back out the lift already applied, or each measurement would be of
-      // the box in its lifted position and the two would chase each other.
-      const next = liftToClearChrome(rect.bottom + overlap, stageRect.bottom);
+      // Where the box sits when nothing has moved it, worked out rather than
+      // read off the page. Reading it off the page is wrong precisely while
+      // it matters: the box has a transition, so a measurement taken during
+      // one catches it partway, the lift computed from it is short, applying
+      // that lift starts another transition, and the next measurement is
+      // shorter still. Measured on ABC, a caption overlapping the controls by
+      // forty-eight pixels climbed a hundred and fifty-two - the whole band,
+      // by a different route than the rule this replaced.
+      //
+      // A transform does not change a box's size, so its height is the one
+      // thing safe to measure mid-flight; the rest is the placement's own
+      // arithmetic.
+      const height = element.getBoundingClientRect().height;
+      if (!height) return;
+      const bottom = restingBottomPx(
+        stageRect.top, stageRect.height, placement, height,
+      );
+      const next = liftToClearChrome(bottom, stageRect.bottom);
       setOverlap((was) => (Math.abs(was - next) > 1 ? next : was));
     };
 
@@ -230,7 +254,7 @@ function Window({
     // controls at one size may not at another.
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [raised, overlap, cue.text, cue.region, floor]);
+  }, [raised, placement, cue.text, floor]);
 
   const box = (
     <div
@@ -256,10 +280,7 @@ function Window({
     </div>
   );
 
-  if (cue.region && !floor) {
-    const placement = placeInSafeArea(
-      cue.region.anchor, cue.region.xPercent, cue.region.yPercent,
-    );
+  if (cue.region && !floor && placement) {
     // The window's own width, in the broadcaster's cells. Without it the box
     // shrinks to its text and both the shape and the anchoring go wrong.
     const width = `${windowWidthPercent(cue.region.columns, cue.region.gridColumns)}%`;
