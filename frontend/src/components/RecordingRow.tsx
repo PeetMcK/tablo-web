@@ -226,8 +226,11 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
                                bg-success-solid text-[9px] font-bold text-success-fg
                                uppercase tracking-wider tabular-nums">
                 <CheckCircle2 className="w-3 h-3" aria-hidden />
+                {/* "Cached" is the word the card uses for this exact badge,
+                    and one thing with two names is two things to anyone
+                    reading the page. */}
                 {rec.cache_state === "complete"
-                  ? "Kept"
+                  ? "Cached"
                   : `${Math.round(rec.cache_progress * 100)}%`}
               </span>
             ) : rec.cache_state === "complete" ? (
@@ -264,61 +267,17 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
           </span>
       </button>
 
-      {/* The card's own four, at the end of the row and in the order they are
-          reached for: what is this, keep it, drop the copy, save the file.
+      {/* The card's own four, at the end of the row, and in the card's own
+          order: save the file, drop the copy, keep it — then information, on
+          the outside edge where the row itself ends. It is the one of the four
+          that does nothing irreversible, and the one the whole row already
+          does, so it is the safe thing under a hand that overshoots.
 
           All four always drawn, and disabled rather than absent when one does
           not apply — a cluster that changes width from row to row leaves
           nothing to aim down a column at, and "nothing is cached here" is
           worth saying rather than hiding. */}
       <span data-row-actions className="shrink-0 flex items-center gap-1 pl-1">
-        {/* Lit by a hover anywhere on the row, because a click anywhere on the
-            row is what it does: the button is the row's click, named.
-
-            The direct hover carries `!` so it wins outright. Both rules are
-            the same specificity — `.group:hover .x` and `.x:hover` — which
-            leaves the winner to whichever Tailwind emits last, and that is not
-            something this component should depend on. */}
-        <button
-          onClick={onInfo}
-          aria-label={`Information about ${title}`}
-          title="Show information"
-          className={ACTION + " text-fg-faint group-hover:bg-fill group-hover:text-fg"
-            + " hover:!bg-accent hover:!text-accent-fg"}
-        >
-          {/* The Live card's mark at the Live card's proportions: the ring is
-              the glyph, rather than a small thing floating in a big disc. */}
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden>
-            <circle cx="12" cy="12" r="9.6" />
-            <path d="M12 11.1v5.6M12 7.5v.2" />
-          </svg>
-        </button>
-
-        <button
-          onClick={() => onKeep(!rec.pinned)}
-          disabled={!keepable}
-          aria-label={rec.pinned ? `Stop keeping ${title}` : `Keep ${title} offline`}
-          title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
-          className={ACTION + (rec.pinned
-            ? " bg-success-soft text-success hover:bg-success-soft-strong"
-            : " text-fg-faint hover:bg-fill hover:text-fg-secondary")}
-        >
-          {rec.pinned
-            ? <CheckCircle2 className="w-4 h-4" aria-hidden />
-            : <Download className="w-4 h-4" aria-hidden />}
-        </button>
-
-        <button
-          onClick={onDeleteCache}
-          disabled={!cached}
-          aria-label={`Delete cached video of ${title}`}
-          title={cached ? "Delete cached video" : "Nothing is cached here"}
-          className={ACTION + " text-fg-faint hover:bg-danger-soft hover:text-danger"}
-        >
-          <Trash2 className="w-4 h-4" aria-hidden />
-        </button>
-
         {/* A plain link, not a fetch: the browser owns the download, so a 7 GB
             file streams to disk instead of being buffered in a tab. Only once
             the whole copy exists — half a transcode is not a file. */}
@@ -342,6 +301,54 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
             <FileDown className="w-4 h-4" aria-hidden />
           </span>
         )}
+
+        <button
+          onClick={onDeleteCache}
+          disabled={!cached}
+          aria-label={`Delete cached video of ${title}`}
+          title={cached ? "Delete cached video" : "Nothing is cached here"}
+          className={ACTION + " text-fg-faint hover:bg-danger-soft hover:text-danger"}
+        >
+          <Trash2 className="w-4 h-4" aria-hidden />
+        </button>
+
+        <button
+          onClick={() => onKeep(!rec.pinned)}
+          disabled={!keepable}
+          aria-label={rec.pinned ? `Stop keeping ${title}` : `Keep ${title} offline`}
+          title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
+          className={ACTION + (rec.pinned
+            ? " bg-success-soft text-success hover:bg-success-soft-strong"
+            : " text-fg-faint hover:bg-fill hover:text-fg-secondary")}
+        >
+          {rec.pinned
+            ? <CheckCircle2 className="w-4 h-4" aria-hidden />
+            : <Download className="w-4 h-4" aria-hidden />}
+        </button>
+
+        {/* Last, on the row's outside edge. Lit by a hover anywhere on the
+            row, because a click anywhere on the row is what it does: the
+            button is the row's own click, named.
+
+            The direct hover carries `!` so it wins outright. Both rules are
+            the same specificity — `.group:hover .x` and `.x:hover` — which
+            leaves the winner to whichever Tailwind emits last, and that is not
+            something this component should depend on. */}
+        <button
+          onClick={onInfo}
+          aria-label={`Information about ${title}`}
+          title="Show information"
+          className={ACTION + " text-fg-faint group-hover:bg-fill group-hover:text-fg"
+            + " hover:!bg-accent hover:!text-accent-fg"}
+        >
+          {/* The Live card's mark at the Live card's proportions: the ring is
+              the glyph, rather than a small thing floating in a big disc. */}
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden>
+            <circle cx="12" cy="12" r="9.6" />
+            <path d="M12 11.1v5.6M12 7.5v.2" />
+          </svg>
+        </button>
       </span>
 
       {/* How far in the viewer is, on the row's own bottom edge. Deliberately

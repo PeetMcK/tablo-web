@@ -111,10 +111,12 @@ describe("what a row says", () => {
     expect(screen.getByText(/Incomplete/i)).toBeInTheDocument();
   });
 
-  it("says when a copy is kept here", () => {
+  it("says when a copy is cached here", () => {
+    // The card's word for this badge, and the page has one vocabulary.
     row({ pinned: true, cache_state: "complete", cache_progress: 1 });
 
-    expect(screen.getByText(/^Kept$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Cached$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Kept$/i)).toBeNull();
   });
 
   it("says how far a copy has got while it is still arriving", () => {
@@ -227,14 +229,16 @@ describe("what a row can do to a recording", () => {
     [...document.querySelectorAll("[data-row-actions] > *")]
       .map(el => el.getAttribute("aria-label") ?? "");
 
-  it("carries information, keep, delete and save, in that order", () => {
+  it("carries save, delete, keep and information, in that order", () => {
+    // Information last, on the outside edge: it is the one of the four that
+    // does nothing irreversible, and the one the whole row already does.
     row({ pinned: true, cache_state: "complete" });
 
     expect(cluster()).toEqual([
-      expect.stringMatching(/Information about Jeopardy!/),
-      expect.stringMatching(/Stop keeping Jeopardy!/),
-      expect.stringMatching(/Delete cached video/),
       expect.stringMatching(/Save Jeopardy!/),
+      expect.stringMatching(/Delete cached video/),
+      expect.stringMatching(/Stop keeping Jeopardy!/),
+      expect.stringMatching(/Information about Jeopardy!/),
     ]);
   });
 
