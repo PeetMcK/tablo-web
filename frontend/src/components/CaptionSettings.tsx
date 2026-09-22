@@ -56,16 +56,20 @@ export function CaptionSettings({
       const panel = panelRef.current;
       if (panel && !panel.contains(event.target as Node)) onClose();
     };
-    document.addEventListener("keydown", onKey, true);
+    // The document this panel is in, which in the picture-in-picture pop-out
+    // is not the tab's - listening on the tab's would leave the panel deaf to
+    // every key and click in the window it is actually showing in.
+    const host = panelRef.current?.ownerDocument ?? document;
+    host.addEventListener("keydown", onKey, true);
     // Captured, and on the next tick: the click that opened this panel is
     // still travelling and would otherwise close it again immediately.
     const timer = setTimeout(() => {
-      document.addEventListener("pointerdown", onPointer, true);
+      host.addEventListener("pointerdown", onPointer, true);
     }, 0);
     return () => {
       clearTimeout(timer);
-      document.removeEventListener("keydown", onKey, true);
-      document.removeEventListener("pointerdown", onPointer, true);
+      host.removeEventListener("keydown", onKey, true);
+      host.removeEventListener("pointerdown", onPointer, true);
     };
   }, [onClose]);
 
@@ -109,7 +113,13 @@ export function CaptionSettings({
       role="menu"
       aria-label="Caption settings"
       onClick={(event) => event.stopPropagation()}
-      className="absolute bottom-full right-0 mb-2 w-56 rounded-lg glass
+      /* Sized to the window it is in, which in the pop-out is small: a panel
+         taller than its window is clipped at the top, and the first thing
+         clipped is the heading that says what the choices are for. `vh` here
+         is the pop-out's own viewport, since this is rendered in that
+         document. */
+      className="absolute bottom-full right-0 mb-2 w-56 max-w-[calc(100vw-1rem)]
+                 max-h-[70vh] overflow-y-auto overscroll-contain rounded-lg glass
                  shadow-lg ring-1 ring-white/10 divide-y divide-white/10
                  pointer-events-auto z-20"
     >
