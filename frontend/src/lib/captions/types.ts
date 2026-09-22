@@ -47,3 +47,42 @@ export interface CcData {
   cea608: CcPair[];
   dtvcc: CcPair[];
 }
+
+/** Which point of a caption window is pinned to its position. */
+export type CaptionAnchor =
+  | "top-left" | "top-center" | "top-right"
+  | "middle-left" | "middle-center" | "middle-right"
+  | "bottom-left" | "bottom-center" | "bottom-right";
+
+/**
+ * A caption that knows where the broadcaster put it.
+ *
+ * 608 has only the bottom rows to work with, so its cues carry no region and
+ * render where they always have. 708 anchors a window somewhere in the frame,
+ * which is the one thing it offers that 608 cannot.
+ */
+export interface PositionedCue extends CaptionCue {
+  region?: {
+    anchor: CaptionAnchor;
+    /** Position of the anchor point, as a percentage of the safe area. */
+    xPercent: number;
+    yPercent: number;
+    /** The window's size in character cells, as the broadcaster declared it. */
+    rows: number;
+    columns: number;
+  };
+  /**
+   * Styling, where the broadcaster set any.
+   *
+   * Taken from the first styled run of the cue. 708 allows style to change
+   * mid-line; carrying that faithfully would mean rendering runs rather than a
+   * string, which is not what these broadcasts need - measured on ABC, every
+   * pen attribute arrives at its default.
+   */
+  style?: {
+    foreground?: string;
+    background?: string;
+    italic?: boolean;
+    underline?: boolean;
+  };
+}

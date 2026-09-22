@@ -20,7 +20,9 @@
  * to start video mid-GOP.
  */
 
-import { createCaptionTrack, extractCcData, type CaptionCue } from "../captions";
+import {
+  createCaptionTrack, createCea708Track, extractCcData, type PositionedCue,
+} from "../captions";
 import { createTimeline, noteDecoded, noteEmitted, nextOutputPts } from "./audioTimeline";
 import libavLoader from "./vendor/libav-6.10.9.0-tablo-mpeg2.mjs";
 import glueUrl from "./vendor/libav-6.10.9.0-tablo-mpeg2.wasm.mjs?url";
@@ -101,12 +103,17 @@ export interface DecodeOutput {
   video: DecodedVideoFrame[];
   audio: DecodedAudioChunk[];
   /**
-   * Captions finished in this read round.
+   * Captions finished in this read round, by the standard that produced them.
+   *
+   * Both are decoded from every picture. Which one a viewer sees is the
+   * session's decision, not this module's - 708 carries placement and is
+   * preferred where it speaks, 608 is the floor that always works.
    *
    * Times are in the decoder's own PTS domain, the same one `ptsSeconds`
    * carries; the session converts to media time when it is asked for a cue.
    */
-  captions: CaptionCue[];
+  captions: PositionedCue[];
+  captions708: PositionedCue[];
 }
 
 /**
@@ -345,6 +352,14 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   const captionTrack = createCaptionTrack();
 
   /**
+   * The 708 decoder, which runs alongside rather than instead.
+   *
+   * A stream that carries no 708 simply never produces a cue here, which is
+   * exactly the signal the session latches on.
+   */
+  const caption708Track = createCea708Track();
+
+  /**
    * A demuxed packet's presentation time, or null when it has none.
    *
    * Packets do not always carry their own time base, so the video stream's
@@ -576,7 +591,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       const [result, packets] = await libav.ff_read_frame_multi(fmtCtx, vpkt, {
         limit: READ_LIMIT,
       });
-      const out: DecodeOutput = { video: [], audio: [], captions: [] };
+      const out: DecodeOutput = { video: [], audio: [], captions: [], captions708: [] };
 
       const videoPackets = videoStream ? packets[videoStream.index] ?? [] : [];
       if (videoPackets.length) {
@@ -597,18 +612,18 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           const data = packet.data;
           if (!data || !data.length) continue;
           const pairs = extractCcData(data instanceof Uint8Array ? data : new Uint8Array(data));
-          if (!pairs.cea608.length) continue;
           captionPairs += pairs.cea608.length;
-          captionTrack.add(seconds, pairs.cea608);
+          if (pairs.cea608.length) captionTrack.add(seconds, pairs.cea608);
+          if (pairs.dtvcc.length) caption708Track.add(seconds, pairs.dtvcc);
         }
         // At end of stream there is no later picture coming to settle the
         // order, so whatever is still held has to go in as it stands — the
         // alternative is losing the last second of captions on every
         // recording.
-        out.captions = result === libav.AVERROR_EOF
-          ? captionTrack.flush()
-          : captionTrack.drain();
-        captionCues += out.captions.length;
+        const atEndOfStream = result === libav.AVERROR_EOF;
+        out.captions = atEndOfStream ? captionTrack.flush() : captionTrack.drain();
+        out.captions708 = atEndOfStream ? caption708Track.flush() : caption708Track.drain();
+        captionCues += out.captions.length + out.captions708.length;
 
         const fin = result === libav.AVERROR_EOF;
         let frames: LibavFrame[];
@@ -814,6 +829,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
       // not make a captioned channel uncaptioned, and a CC button that
       // vanished and came back would flicker on every skip.
       captionTrack.reset();
+      caption708Track.reset();
       atEof = false;
       starved = false;
       pumpError = null;

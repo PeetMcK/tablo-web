@@ -5,7 +5,7 @@
  * testable code rather than something that needs a real Worker to exercise.
  */
 
-import type { CaptionCue } from "../captions";
+import type { PositionedCue } from "../captions";
 import type { DecodeOutput, DecoderStats, LibavDecoder } from "./libavClient";
 import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
 
@@ -21,6 +21,9 @@ import type { DecodedAudioChunk, DecodedVideoFrame } from "./types";
  * carries one, `video_refresh` drops frames whose serial is stale, and
  * `get_clock` returns NAN rather than a time from the old position.
  */
+/** Which standard a batch of cues was decoded from. */
+export type CaptionStandard = "cea608" | "cea708";
+
 export type ToWorker =
   | { type: "open" }
   | { type: "segment"; bytes: ArrayBuffer; epoch: number }
@@ -66,7 +69,7 @@ export type FromWorker =
    * line of text — and epoch-filtered on the page for the same reason frames
    * are: one decoded before a seek describes what the viewer just left.
    */
-  | { type: "captions"; cues: CaptionCue[]; epoch: number }
+  | { type: "captions"; cues: PositionedCue[]; epoch: number; source: CaptionStandard }
   | { type: "stats"; stats: DecoderStats }
   /**
    * The decoder has been freed and the worker may be terminated.
@@ -110,7 +113,10 @@ export function createWorkerHandler(
       post({ type: "audio", chunks: out.audio, epoch }, out.audio.map((c) => c.samples.buffer));
     }
     if (out.captions.length) {
-      post({ type: "captions", cues: out.captions, epoch }, []);
+      post({ type: "captions", cues: out.captions, epoch, source: "cea608" }, []);
+    }
+    if (out.captions708.length) {
+      post({ type: "captions", cues: out.captions708, epoch, source: "cea708" }, []);
     }
   };
 
