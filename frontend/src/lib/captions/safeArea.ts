@@ -35,15 +35,33 @@ export const SAFE_AREA_PERCENT = 80;
 export const WINDOW_COLUMNS_16_9 = 42;
 
 /**
+ * The CEA-608 display grid: 15 rows of 32 columns.
+ *
+ * 608 is not the positionless standard this app first took it for. A
+ * Preamble Address Code carries a row and an indent, the parser tracks both,
+ * and flattening the screen to a string threw them away - so every 608
+ * caption was drawn bottom-centre whatever the broadcaster asked for.
+ *
+ * (The vendored parser allocates 100 columns per row to tolerate overflow.
+ * The standard's displayable width is 32, which is what a position means.)
+ */
+export const SCREEN_COLUMNS_608 = 32;
+export const SCREEN_ROWS_608 = 15;
+
+/**
  * How wide a window of `columns` character cells is, as a percentage of the
  * stage.
  *
  * Of the stage and not of the safe area, because that is the unit CSS wants
  * back. A full-width window is the whole safe area and no more.
  */
-export function windowWidthPercent(columns: number): number {
-  const cells = Math.max(1, Math.min(WINDOW_COLUMNS_16_9, columns));
-  return (cells / WINDOW_COLUMNS_16_9) * SAFE_AREA_PERCENT;
+export function windowWidthPercent(
+  columns: number,
+  gridColumns: number = WINDOW_COLUMNS_16_9,
+): number {
+  const grid = Math.max(1, gridColumns);
+  const cells = Math.max(1, Math.min(grid, columns));
+  return (cells / grid) * SAFE_AREA_PERCENT;
 }
 
 export interface Placement {

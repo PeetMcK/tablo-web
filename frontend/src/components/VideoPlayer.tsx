@@ -3338,27 +3338,34 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                 )}
               </div>
 
-              {/* Only where the stream has been seen to carry captions. One
-                  rule covers every case that would otherwise need its own:
+              {/* Always in the row, live only once a cue has been seen.
+                  Captions take a second or so to prove themselves — the first
+                  cue is what `captionsAvailable` waits for — and a button that
+                  appeared partway through the controls shifting sideways
+                  underneath the pointer. Present and dimmed says "this stream
+                  has no captions" where an absent button said nothing at all,
+                  and the row stops moving. One rule still covers every case:
                   a transcode has no caption source, uncaptioned programming
-                  never produces a cue, and a mid-session fall back to the
-                  transcode takes the button away again. It appears a second or
-                  so into a captioned stream, which is the cost of never
-                  offering a control that would do nothing. */}
-              {captionsAvailable && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); toggleCaptions(); }}
-                  className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
-                  ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${captionsOn ? "bg-fill" : ""}`}
-                  /* Named with its key, the way the buttons either side of it
-                     are. */
-                  title={captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)"}
-                  aria-label={captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)"}
-                  aria-pressed={captionsOn}
-                >
-                  <ClosedCaption className="w-4 h-4" aria-hidden />
-                </button>
-              )}
+                  never produces a cue, and a fall back to the transcode
+                  mid-session dims the button again. */}
+              <button
+                onClick={(e) => { e.stopPropagation(); if (captionsAvailable) toggleCaptions(); }}
+                disabled={!captionsAvailable}
+                className={`rounded-lg glass text-player-fg flex items-center justify-center transition
+                ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${captionsOn ? "bg-fill" : ""}
+                ${captionsAvailable ? "hover:bg-fill" : "opacity-40 cursor-default"}`}
+                /* Named with its key, the way the buttons either side of it
+                   are. */
+                title={captionsAvailable
+                  ? (captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)")
+                  : "No closed captions on this stream"}
+                aria-label={captionsAvailable
+                  ? (captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)")
+                  : "No closed captions on this stream"}
+                aria-pressed={captionsOn}
+              >
+                <ClosedCaption className="w-4 h-4" aria-hidden />
+              </button>
 
               {/* Only where the API exists. Safari has no Document
                   Picture-in-Picture, so the button would promise nothing

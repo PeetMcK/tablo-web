@@ -80,6 +80,15 @@ export interface PositionedCue extends CaptionCue {
     rows: number;
     columns: number;
     /**
+     * The grid `columns` is counted in: 42 across for a 16:9 CEA-708 window,
+     * 32 for a CEA-608 screen.
+     *
+     * Carried rather than assumed because the two standards count in
+     * different units and mixing them is exactly the mistake that made every
+     * 708 caption five times too narrow.
+     */
+    gridColumns: number;
+    /**
      * How the broadcaster justified the text inside the window.
      *
      * A window is wider than its text, so where the text sits within it is a

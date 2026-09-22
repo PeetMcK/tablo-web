@@ -148,7 +148,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([{
       startSeconds: 0, endSeconds: 9, text: "OVER HERE",
-      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 4, columns: 32, align: "center" },
+      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
 
     const { container } = render(
@@ -182,7 +182,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([{
       startSeconds: 0, endSeconds: 9, text: "OFF SCREEN",
-      region: { anchor: "top-left", xPercent: 400, yPercent: -50, rows: 4, columns: 32, align: "center" },
+      region: { anchor: "top-left", xPercent: 400, yPercent: -50, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
 
     const { container } = render(
@@ -239,11 +239,11 @@ describe("CaptionOverlay", () => {
   it("lifts a window placed down by the transport, and leaves a high one alone", () => {
     const low = source([{
       startSeconds: 0, endSeconds: 9, text: "LOW",
-      region: { anchor: "bottom-left", xPercent: 10, yPercent: 99, rows: 4, columns: 32, align: "center" },
+      region: { anchor: "bottom-left", xPercent: 10, yPercent: 99, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
     const high = source([{
       startSeconds: 0, endSeconds: 9, text: "HIGH",
-      region: { anchor: "top-left", xPercent: 10, yPercent: 10, rows: 4, columns: 32, align: "center" },
+      region: { anchor: "top-left", xPercent: 10, yPercent: 10, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
 
     const a = manualFrames();
@@ -272,7 +272,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([{
       startSeconds: 0, endSeconds: 9, text: "A LINE THE BROADCASTER SIZED",
-      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 2, columns: 32, align: "left" },
+      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 2, columns: 32, gridColumns: 42, align: "left" },
     }]);
 
     const { container } = render(
@@ -299,11 +299,11 @@ describe("CaptionOverlay", () => {
     const { src, seek } = source([
       {
         startSeconds: 0, endSeconds: 9, text: "SPEAKER",
-        region: { anchor: "bottom-left", xPercent: 10, yPercent: 90, rows: 2, columns: 32, align: "left" },
+        region: { anchor: "bottom-left", xPercent: 10, yPercent: 90, rows: 2, columns: 32, gridColumns: 42, align: "left" },
       },
       {
         startSeconds: 0, endSeconds: 9, text: "TITLE",
-        region: { anchor: "top-right", xPercent: 90, yPercent: 10, rows: 1, columns: 16, align: "right" },
+        region: { anchor: "top-right", xPercent: 90, yPercent: 10, rows: 1, columns: 16, gridColumns: 42, align: "right" },
       },
     ]);
 
@@ -320,7 +320,7 @@ describe("CaptionOverlay", () => {
     const { src, seek } = source(
       [{
         startSeconds: 0, endSeconds: 9, text: "FROM 708",
-        region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 1, columns: 32, align: "center" },
+        region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 1, columns: 32, gridColumns: 42, align: "center" },
       }],
       [{ startSeconds: 0, endSeconds: 9, text: "FROM 608" }],
     );

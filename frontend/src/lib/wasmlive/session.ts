@@ -1297,6 +1297,24 @@ export function createSession(deps: SessionDeps): LiveSession {
         Number(c.startSeconds.toFixed(2)), Number(c.endSeconds.toFixed(2)),
         c.text.slice(0, 18),
       ]),
+      /* Both standards at the playhead, side by side. The pair decode the
+         same words from the same bytes, so a difference here is this app's
+         doing and not the broadcaster's - which is how a 708 window five
+         times too narrow was caught. Geometry included, because placement is
+         the half that cannot be checked by reading the screen. */
+      captionCompare: (() => {
+        const raw = (deps.audio.clockSeconds ?? 0) - (ptsOffset ?? 0);
+        const describe = (queue: PositionedCue[]) =>
+          onScreen(queue, raw).map((c) => ({
+            text: c.text.slice(0, 40),
+            where: c.region
+              ? `${c.region.anchor}@${Math.round(c.region.xPercent)},${Math.round(c.region.yPercent)}`
+              : "unplaced",
+            cells: c.region ? `${c.region.columns}/${c.region.gridColumns}` : null,
+            align: c.region?.align ?? null,
+          }));
+        return { cea608: describe(cues), cea708: describe(cues708) };
+      })(),
       // Whether the transport is waiting on the network or on its own pacing.
       // Answering that took a temporary instrumented build on 2026-09-17; it
       // should not need one again.

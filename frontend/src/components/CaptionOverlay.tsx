@@ -148,10 +148,12 @@ export function CaptionOverlay({
           badge={badge}
           tint={tint}
           raised={raised}
-          /* In compare mode a 608 cue has no window of its own and would sit
-             exactly where an unpositioned caption sits — on top of whichever
-             708 window is down there. Dropped to the floor of the frame so
-             the two can be read at the same time. */
+          /* Both standards now carry a position, and when they agree - which
+             is the point - their boxes land on top of each other and neither
+             can be read. So while comparing, 608 is pinned to the floor and
+             708 keeps its window. Placement is still comparable, through the
+             geometry each box carries in the DOM; what the floor buys is two
+             legible boxes instead of one illegible one. */
           floor={shown.comparing && badge === "608"}
         />
       ))}
@@ -217,7 +219,7 @@ function Window({
     );
     // The window's own width, in the broadcaster's cells. Without it the box
     // shrinks to its text and both the shape and the anchoring go wrong.
-    const width = `${windowWidthPercent(cue.region.columns)}%`;
+    const width = `${windowWidthPercent(cue.region.columns, cue.region.gridColumns)}%`;
     // A window the broadcaster put down by the scrubber gets the same lift an
     // unpositioned caption does; one higher up is left where it was asked to
     // be, because the controls are nowhere near it.

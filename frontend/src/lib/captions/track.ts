@@ -10,7 +10,8 @@
 
 import Cea608Parser, { type CaptionScreen, type CueSink } from "./cea608";
 import { createReorderBuffer, REORDER_SECONDS } from "./reorder";
-import type { CaptionCue, CcPair } from "./types";
+import type { CcPair, PositionedCue } from "./types";
+import { SCREEN_COLUMNS_608, SCREEN_ROWS_608 } from "./safeArea";
 
 /**
  * Records what the parser produces.
@@ -22,8 +23,56 @@ import type { CaptionCue, CcPair } from "./types";
  * is already recorded; upstream's version exists to push into a hls.js
  * timeline controller, which we have none of.
  */
+/**
+ * Where on its grid a 608 screen has put its words.
+ *
+ * A Preamble Address Code carries a row and an indent and the parser has
+ * tracked both all along; `getDisplayText` flattened them away, so every 608
+ * caption was drawn bottom-centre whatever the broadcaster asked. What comes
+ * back is the block the rows actually occupy: the first row used, the
+ * leftmost column any of them starts at, and how far the longest reaches.
+ *
+ * Null when the screen is blank, which the caller already treats as nothing
+ * to draw.
+ */
+function regionOfScreen(screen: CaptionScreen): PositionedCue["region"] | undefined {
+  let top: number | null = null;
+  let bottom = 0;
+  let indent = Number.POSITIVE_INFINITY;
+  let right = 0;
+
+  screen.rows.forEach((row, index) => {
+    const text = row.getTextString();
+    if (!text.trim()) return;
+    const first = text.search(/\S/);
+    const last = text.replace(/\s+$/, "").length;
+    if (top === null) top = index;
+    bottom = index;
+    if (first >= 0 && first < indent) indent = first;
+    if (last > right) right = last;
+  });
+
+  if (top === null || !Number.isFinite(indent)) return undefined;
+
+  const firstRow: number = top;
+  return {
+    // A 608 screen grows downward from the row it starts on, so the row it
+    // starts on is the point to pin: anchoring the bottom would slide the
+    // whole block up as a roll-up fills.
+    anchor: "top-left",
+    xPercent: Math.max(0, Math.min(100, (indent / SCREEN_COLUMNS_608) * 100)),
+    yPercent: Math.max(0, Math.min(100, (firstRow / SCREEN_ROWS_608) * 100)),
+    rows: bottom - firstRow + 1,
+    columns: Math.max(1, right - indent),
+    gridColumns: SCREEN_COLUMNS_608,
+    // 608 has no justification of its own: the indent *is* the position, and
+    // the words run left from it.
+    align: "left",
+  };
+}
+
 class CueCollector implements CueSink {
-  readonly cues: CaptionCue[] = [];
+  readonly cues: PositionedCue[] = [];
 
   newCue(startSeconds: number, endSeconds: number, screen: CaptionScreen): void {
     // A cue with no length is never on screen, and one with no start is the
@@ -37,13 +86,16 @@ class CueCollector implements CueSink {
     // the overlay achieves by finding no cue rather than by drawing nothing.
     if (!text) return;
 
+    const region = regionOfScreen(screen);
+
     const last = this.cues[this.cues.length - 1];
     if (last && last.startSeconds === startSeconds) {
       last.endSeconds = endSeconds;
       last.text = text;
+      last.region = region;
       return;
     }
-    this.cues.push({ startSeconds, endSeconds, text });
+    this.cues.push({ startSeconds, endSeconds, text, region });
   }
 
   dispatchCue(): void {}
@@ -63,12 +115,12 @@ export interface CaptionTrack {
    */
   add(seconds: number, pairs: readonly CcPair[]): void;
   /** Cues completed since the last call. Each is handed out once. */
-  drain(): CaptionCue[];
+  drain(): PositionedCue[];
   /**
    * Feed everything held, then drain. For end of stream, where there is no
    * later picture coming to settle the order.
    */
-  flush(): CaptionCue[];
+  flush(): PositionedCue[];
   /**
    * Whether this stream has ever carried captions.
    *
