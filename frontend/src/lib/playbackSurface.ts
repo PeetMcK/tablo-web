@@ -7,7 +7,7 @@
  * the rest of the player learning that anything changed.
  */
 
-import type { CaptionCue } from "./captions";
+import type { PositionedCue } from "./captions";
 
 export type SurfaceEvent =
   | "ready" | "timeupdate" | "waiting" | "playing" | "paused" | "ended" | "error"
@@ -28,8 +28,14 @@ export interface CaptionSource {
    * with no captions never offers a control that would do nothing.
    */
   readonly available: boolean;
-  /** The cue covering this media time, or null. */
-  at(mediaSeconds: number): CaptionCue | null;
+  /**
+   * The cue covering this media time, or null.
+   *
+   * Positioned where the stream carried CEA-708, which says where the
+   * broadcaster put the window; without a region where it carried only 608,
+   * which has nothing but the bottom rows.
+   */
+  at(mediaSeconds: number): PositionedCue | null;
   on(event: "change", handler: () => void): () => void;
 }
 
