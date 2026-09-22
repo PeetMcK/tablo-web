@@ -603,6 +603,28 @@ export function detailToMessage(detail: unknown): string {
   return "";
 }
 
+/**
+ * A refusal that still knows which refusal it was.
+ *
+ * The message is what a person reads; the status is what the caller has to
+ * branch on, and a bare `Error` threw it away. The one that matters is 404:
+ * for a thing the viewer has just deleted, "not found" is the request
+ * succeeding, and a caller that cannot tell it from a fault retries it and
+ * reports an outage - which is exactly what the series panel did after
+ * "Turn off & delete all".
+ */
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Whether a rejection is the server saying the thing is not there. */
+export function isGone(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 404;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: { "Content-Type": "application/json" },
@@ -610,7 +632,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(detailToMessage(err.detail) || res.statusText);
+    throw new ApiError(res.status,
+                       detailToMessage(err.detail) || res.statusText);
   }
   return res.json();
 }

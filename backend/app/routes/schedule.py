@@ -11,6 +11,7 @@ doing something unintended. See docs/tablo-api.md.
 
 import asyncio
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -87,6 +88,19 @@ async def live_state(channel: str = Query(...), start: str = Query(...)):
 
     try:
         airing = await state.request_device("GET", handles["airing_path"])
+    except httpx.HTTPStatusError as e:
+        # The device answered, and what it said was "no such airing". The mirror
+        # outlives the guide it copied - an airing that has already aired leaves
+        # the device, while the row a sheet was opened from stays here - so this
+        # is routine rather than a fault. Answering 502 "The Tablo could not be
+        # reached" diagnoses an outage on a device that just replied, which is
+        # the one thing the status is for.
+        if e.response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="The Tablo no longer has this airing.") from None
+        raise HTTPException(status_code=502,
+                            detail="The Tablo could not be reached.") from None
     except Exception:
         raise HTTPException(status_code=502,
                             detail="The Tablo could not be reached.") from None
