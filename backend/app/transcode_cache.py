@@ -596,14 +596,38 @@ class TranscodeCache:
         if not encoding and now - samples[-1][0] > RATE_IDLE_AFTER:
             return idle
 
-        seconds = sum(s[2] for s in samples)
-        if seconds <= 0:
+        # Wall clock across the samples, not the sum of their elapsed times.
+        #
+        # Windows run several at a time, so their elapsed times overlap and
+        # adding them up describes one window rather than the download.
+        # Measured on a real fill: the card read 5x and 11 Mb/s while six
+        # windows were in flight and the device was really handing over closer
+        # to 60 Mb/s - the readout was out by the concurrency factor, and so
+        # was every estimate built on it.
+        #
+        # The span between the first and last completion is the honest
+        # denominator, and what landed *within* it is everything but the first
+        # sample - that one marks the span's start rather than falling inside
+        # it.
+        if len(samples) > 1:
+            span = samples[-1][0] - samples[0][0]
+            within = list(samples)[1:]
+        else:
+            span = 0.0
+            within = []
+        if span <= 0:
+            # One sample, or several that finished in the same instant: its own
+            # elapsed time is the only denominator there is.
+            span = sum(s[2] for s in samples)
+            within = list(samples)
+        if span <= 0:
             return idle
-        written = sum(s[1] for s in samples)
-        produced = sum(s[3] for s in samples)
+
+        written = sum(s[1] for s in within)
+        produced = sum(s[3] for s in within)
         return {
-            "mbps": round(written * 8 / seconds / 1e6, 2),
-            "realtime": round(produced / seconds, 2),
+            "mbps": round(written * 8 / span / 1e6, 2),
+            "realtime": round(produced / span, 2),
         }
 
     def heartbeat(self, object_id: int, position: float | None = None) -> None:

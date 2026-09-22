@@ -667,6 +667,42 @@ def test_rate_is_reported_from_completed_windows(tmp_path):
     assert rate["realtime"] == pytest.approx(1.67, abs=0.05)
 
 
+def test_rate_counts_windows_that_ran_at_the_same_time_only_once(tmp_path):
+    """Six windows run at once, so their elapsed times overlap.
+
+    Adding them up says one window's speed and calls it the download's:
+    measured on a real fill, the card read 5x and 11 Mb/s while the device was
+    actually handing over six windows at a time - the readout was out by the
+    concurrency factor, and the "time left" built on it was out by the same.
+
+    Here six windows of 60s each land two seconds apart, each having taken 12s
+    of its own. The first marks the start of the span rather than falling
+    inside it, so five landed across ten seconds of wall clock: 300s of video
+    in 10s, which is 30x - not the 5x that summing their elapsed times gives.
+    """
+    c = _cache(tmp_path)
+    now = time.monotonic()
+    c._rate[66220] = deque([
+        (now - 10.0 + 2.0 * i, 15 * 1024**2, 12.0, 60.0) for i in range(6)
+    ])
+
+    rate = c.rate(66220)
+
+    assert rate["realtime"] == pytest.approx(30.0, abs=1.0)
+    # And the bytes tell the same story: 75 MB (those five windows) across ten
+    # seconds is ~63 Mb/s, not the ~10 Mb/s of one window alone.
+    assert rate["mbps"] == pytest.approx(62.9, abs=2.0)
+
+
+def test_rate_from_a_single_window_is_that_window(tmp_path):
+    """Nothing to compare it against yet, so its own elapsed time is the only
+    honest denominator."""
+    c = _cache(tmp_path)
+    c._rate[66220] = deque([(time.monotonic(), 27 * 1024**2, 36.0, 60.0)])
+
+    assert c.rate(66220)["realtime"] == pytest.approx(1.67, abs=0.05)
+
+
 def test_rate_survives_the_gap_between_window_completions(tmp_path):
     """A sample only lands when a window finishes, and that takes 35-40s.
 
