@@ -931,7 +931,7 @@ export function ShowInfo({
       {confirming && (
         <div
           className="confirm-backdrop absolute inset-0 z-10 flex items-center
-                     justify-center rounded-3xl bg-scrim/80 backdrop-blur-[2px] p-6"
+                     justify-center rounded-3xl bg-scrim backdrop-blur-[2px] p-6"
           onClick={() => setConfirming(null)}
         >
           <div
