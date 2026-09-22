@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -27,7 +27,8 @@ import {
 } from "../lib/skip";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
 import {
-  createHlsSurface, DOCUMENT_FRAMES, type CaptionSource, type PlaybackSurface,
+  createHlsSurface, DOCUMENT_FRAMES, type CaptionSource, type FrameSource,
+  type PlaybackSurface,
 } from "../lib/playbackSurface";
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
@@ -2727,6 +2728,25 @@ function NowPlaying({
  * here is presentation; the state and the handlers belong to VideoPlayer.
  */
 function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
+  /**
+   * Animation frames from whichever window this stage is in.
+   *
+   * A document that is not on screen runs none, and while the pop-out has the
+   * screen the tab is that document. Read from the stage's own node rather
+   * than passed in, because the stage is the thing that knows where it
+   * rendered.
+   */
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [frames, setFrames] = useState<FrameSource>(DOCUMENT_FRAMES);
+  useLayoutEffect(() => {
+    const host = stageRef.current?.ownerDocument.defaultView;
+    if (!host || host === window) { setFrames(DOCUMENT_FRAMES); return; }
+    setFrames({
+      request: (callback: FrameRequestCallback) => host.requestAnimationFrame(callback),
+      cancel: (handle: number) => host.cancelAnimationFrame(handle),
+    });
+  }, [pip]);
+
   const {
     rootRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
@@ -2930,7 +2950,13 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     // as well as its own player-* family, which pinning the player tokens alone
     // would have missed. No call site in this file needs to know.
     <div
-      ref={rootRef}
+      ref={(node) => {
+        // Two refs on one node: the player's, which is shared by both roots,
+        // and this stage's own, which is how it finds out which window it
+        // rendered in.
+        stageRef.current = node;
+        (rootRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+      }}
       // The pointer goes with the chrome. A cursor left sitting over the
       // picture is the one piece of interface that never faded, and on a
       // fullscreen frame it is the only thing on screen that is not the
@@ -2959,10 +2985,16 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
         className="w-full h-full"
       />
 
-      {/* Over the picture, under the chrome. Not rendered into the pop-out:
-          that window is fed a mirror of canvas pixels, and a DOM layer is not
-          one of them. */}
-      {captionsAvailable && !pip && (
+      {/* Over the picture, under the chrome — in the pop-out too.
+          Picture-in-picture here is a document of its own with its own React
+          root, not a video element mirrored into an OS window, so a DOM layer
+          belongs in it as much as the chrome around it does. What the pop-out
+          cannot carry is the tab's animation frames: that document is the
+          hidden one while the pop-out has the screen, and a hidden document
+          runs no frames at all. The overlay steps on frames, so it is handed
+          the window it is actually being drawn in — the same move the canvas
+          makes through `setFrameSource`. */}
+      {captionsAvailable && (
         <CaptionOverlay
           source={captionSourceAt}
           enabled={captionsOn}
@@ -2971,6 +3003,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           compare={captionCompareRequested()}
           placement={captionPreferences.placement}
           standard={captionPreferences.standard}
+          frames={frames}
         />
       )}
 
