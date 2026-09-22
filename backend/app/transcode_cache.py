@@ -345,7 +345,8 @@ def _http_get(url: str, timeout: int = 120) -> bytes:
         return r.read()
 
 
-def _http_get_range(url: str, first: int, last: int, timeout: int = 180) -> bytes:
+def _http_get_range(url: str, first: int, last: int, timeout: int = 180,
+                    on_bytes: "Callable[[int], None] | None" = None) -> bytes:
     """One byte range of one device file, inclusive of both ends.
 
     The device publishes a recording as byte ranges of a handful of large
@@ -354,10 +355,23 @@ def _http_get_range(url: str, first: int, last: int, timeout: int = 180) -> byte
     sixty round trips the box answers slowly under load - measured 2026-09-22,
     sixteen concurrent segment readers pushed its ping from 3ms to 85ms and the
     fill *down* to 4.3 Mb/s, while a single bulk range read held 41 Mb/s.
+
+    Read in chunks rather than in one call so `on_bytes` sees the transfer as
+    it happens. Counting only completed windows made a step function out of a
+    smooth thing: a window's bytes all landed on the instant it finished, and
+    the readout jumped however steady the wire was.
     """
     req = urllib.request.Request(url, headers={"Range": f"bytes={first}-{last}"})
+    out = bytearray()
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        while True:
+            chunk = r.read(TRANSFER_CHUNK)
+            if not chunk:
+                break
+            out += chunk
+            if on_bytes is not None:
+                on_bytes(len(chunk))
+    return bytes(out)
 
 
 # Completed windows kept for the throughput readout.
@@ -377,6 +391,16 @@ RATE_SAMPLES = 64
 # seconds is long enough to contain a few bursts without being so long that a
 # download slowing down takes a minute to show it.
 RATE_WINDOW_SECONDS = 30.0
+
+# How much of a range read to take at a time. Big enough that the syscalls are
+# irrelevant beside the network, small enough that a 15 MB window is a few
+# dozen samples rather than one.
+TRANSFER_CHUNK = 512 * 1024
+
+# Chunks kept for the transfer readout. Thirty seconds of a fast fill at half a
+# megabyte a chunk is a few thousand; this bounds that without truncating the
+# window at any rate worth reporting.
+TRANSFER_SAMPLES = 8192
 
 # No window has landed in this long, and nothing is encoding, so report idle
 # rather than a stale average.
@@ -427,6 +451,10 @@ class CacheMeta:
     #: re-encoded - the offline copy is trying to produce exactly what the
     #: device already holds - and everything else takes the encoder.
     source_codec: str | None = None
+    #: What the device says this recording weighs. A copied recording lands at
+    #: that size - nothing is re-encoded - so it is what the progress and the
+    #: estimate are really about. None for anything the device did not say.
+    source_bytes: int | None = None
     created_at: str = field(default_factory=_now)
     last_access: str = field(default_factory=_now)
     error: str | None = None
@@ -508,6 +536,16 @@ class TranscodeCache:
         #: printed at the end can be compared against the estimates printed
         #: along the way. Cleared when the copy completes.
         self._fill_started: dict[int, float] = {}
+        #: Bytes off the wire, as they land: (when, how many). This is the
+        #: transfer itself rather than the windows made out of it, which is
+        #: what makes the throughput readout steady and the estimate honest.
+        self._bytes: dict[int, deque[tuple[float, int]]] = {}
+        #: Recent answers from `entry_bytes`, which walks every file a cache
+        #: entry owns. Progress and the estimate both ask for it, and the
+        #: library asks for those every couple of seconds per card - a 142
+        #: window copy is ~1400 files, so without this a listing would stat
+        #: hundreds of thousands of times a minute.
+        self._bytes_seen: dict[int, tuple[float, int]] = {}
         # Directory creation is lazy: this object is constructed at import time,
         # and CI imports the app on a runner with no /data volume.
 
@@ -579,6 +617,11 @@ class TranscodeCache:
         meta = self.read_meta(object_id)
         if meta is None or not meta.source_duration:
             return 0.0
+        if meta.source_bytes:
+            # A copy lands at the size the device reports, so the fraction on
+            # disk is the real answer - and it moves continuously rather than
+            # in steps of one window.
+            return min(1.0, self.entry_bytes_cached(object_id) / meta.source_bytes)
         return min(1.0, self.windows_done(object_id) / window_count(meta.source_duration))
 
     def cached_ranges(self, object_id: int) -> list[list[float]]:
@@ -607,6 +650,53 @@ class TranscodeCache:
 
     def cached_seconds(self, object_id: int) -> float:
         return sum(e - s for s, e in self.cached_ranges(object_id))
+
+    def _note_bytes(self, object_id: int, count: int, at: float | None = None) -> None:
+        """Record bytes arriving for a recording."""
+        samples = self._bytes.setdefault(object_id, deque(maxlen=TRANSFER_SAMPLES))
+        samples.append((at if at is not None else time.monotonic(), count))
+
+    def transfer_rate(self, object_id: int) -> float:
+        """Bytes per second off the wire over the last RATE_WINDOW_SECONDS.
+
+        Zero when nothing has arrived in that window, which is the honest
+        answer for a download that is between windows or has stopped.
+        """
+        samples = self._bytes.get(object_id)
+        if not samples:
+            return 0.0
+        now = time.monotonic()
+        start = now - RATE_WINDOW_SECONDS
+        within = [s for s in samples if s[0] >= start]
+        if not within:
+            return 0.0
+        # Measured over what the fill has actually had, so a run younger than
+        # the window is not divided by time before it began.
+        span = now - max(start, within[0][0])
+        if span < 1.0:
+            return 0.0
+        return sum(count for _at, count in within) / span
+
+    def eta(self, object_id: int) -> float | None:
+        """Seconds until this offline copy is finished, or None if unknowable.
+
+        Two different questions wearing the same coat. A copied recording is a
+        transfer: the device says what it weighs, nothing re-encodes it, so
+        what is left is bytes on the wire and the answer is arithmetic. A
+        transcode's output size is nobody's to know until it exists, so that
+        one is still content produced over how fast it is being produced.
+        """
+        meta = self.read_meta(object_id)
+        if meta is None:
+            return None
+        if meta.source_bytes:
+            per_second = self.transfer_rate(object_id)
+            if per_second > 0:
+                return max(
+                    0.0, meta.source_bytes - self.entry_bytes_cached(object_id)) / per_second
+            return None
+        return eta_seconds(meta.source_duration, self.cached_seconds(object_id),
+                           self.rate(object_id)["realtime"])
 
     def rate(self, object_id: int) -> dict[str, float]:
         """Current throughput for a recording being cached.
@@ -1057,6 +1147,21 @@ class TranscodeCache:
                 swept.append(oid)
         return swept
 
+    def entry_bytes_cached(self, object_id: int, ttl: float = 2.0) -> int:
+        """`entry_bytes`, answered from a moment ago where that will do.
+
+        Two seconds is below the poll interval and far below anything a person
+        would notice on a progress bar, while being enough to collapse a
+        listing's worth of directory walks into one apiece.
+        """
+        seen = self._bytes_seen.get(object_id)
+        now = time.monotonic()
+        if seen is not None and now - seen[0] < ttl:
+            return seen[1]
+        total = self.entry_bytes(object_id)
+        self._bytes_seen[object_id] = (now, total)
+        return total
+
     def entry_bytes(self, object_id: int) -> int:
         d = self.dir_for(object_id)
         if not d.exists():
@@ -1240,7 +1345,8 @@ class TranscodeCache:
     # ------------------------------------------------------------------
 
     async def register(self, object_id: int, path: str, source_duration: int,
-                       codec: str | None = None) -> CacheMeta:
+                       codec: str | None = None,
+                       size: int | None = None) -> CacheMeta:
         """Make the recording playable: write metadata and start background fill.
 
         Returns as soon as the playlist can be built — which is immediately, since
@@ -1254,11 +1360,12 @@ class TranscodeCache:
                 self.make_room(estimated)
                 meta = CacheMeta(
                     object_id=object_id, path=path, source_duration=source_duration,
-                    source_codec=codec,
+                    source_codec=codec, source_bytes=size,
                 )
                 self.write_meta(meta)
             elif (meta.source_duration != source_duration or meta.path != path
-                  or (codec is not None and meta.source_codec != codec)):
+                  or (codec is not None and meta.source_codec != codec)
+                  or (size is not None and meta.source_bytes != size)):
                 # Update the facts in place. Replacing the record wholesale here
                 # silently cleared `pinned`, which made the recording eligible
                 # for eviction - and an offline copy that had been explicitly
@@ -1272,6 +1379,8 @@ class TranscodeCache:
                 meta.path = path
                 if codec is not None:
                     meta.source_codec = codec
+                if size is not None:
+                    meta.source_bytes = size
                 self.write_meta(meta)
             else:
                 self.touch(object_id)
@@ -1614,7 +1723,9 @@ class TranscodeCache:
         try:
             with dest.open("wb") as out:
                 for url, first, last in runs:
-                    out.write(await asyncio.to_thread(_http_get_range, url, first, last))
+                    out.write(await asyncio.to_thread(
+                        _http_get_range, url, first, last, 180,
+                        lambda n, oid=object_id: self._note_bytes(oid, n)))
         except Exception as e:
             dest.unlink(missing_ok=True)
             print(f"[cache] {object_id} w{w} range read failed ({e}) — "
@@ -1847,8 +1958,18 @@ class TranscodeCache:
         total_seconds = meta_now.source_duration if meta_now else 0
         done_seconds = self.cached_seconds(object_id)
         overall = self.rate(object_id)
-        eta = eta_seconds(total_seconds, done_seconds, overall["realtime"])
-        progress = (done_seconds / total_seconds * 100) if total_seconds else 0.0
+        eta = self.eta(object_id)
+        wire = self.transfer_rate(object_id)
+        if wire > 0:
+            # What is actually coming off the wire, measured as it lands,
+            # rather than inferred from windows finishing.
+            overall = {**overall, "mbps": round(wire * 8 / 1e6, 2)}
+        if meta_now is not None and meta_now.source_bytes:
+            # A copy lands at the size the device reports, so progress is the
+            # honest fraction of it on disk rather than a count of windows.
+            progress = self.entry_bytes(object_id) / meta_now.source_bytes * 100
+        else:
+            progress = (done_seconds / total_seconds * 100) if total_seconds else 0.0
         print(f"[cache] {object_id} w{w} done rc={rc} in {elapsed:.1f}s "
               f"({produced} segs, {size_mb:.0f} MB, {length / max(elapsed, 0.001):.1f}x realtime, "
               f"{size_bytes * 8 / max(elapsed, 0.001) / 1e6:.1f} Mb/s) "

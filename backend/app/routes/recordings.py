@@ -54,6 +54,15 @@ def _decorate(item: dict, meta=None) -> dict:
     item["cached_seconds"] = cache.cached_seconds(oid)
     # Live throughput, so a download reads as working rather than just "7%".
     item["rate"] = cache.rate(oid)
+    # Where the wire rate is known it is the truer number: measured as bytes
+    # land rather than inferred from windows finishing.
+    wire = cache.transfer_rate(oid)
+    if wire > 0:
+        item["rate"] = {**item["rate"], "mbps": round(wire * 8 / 1e6, 2)}
+    # Computed here rather than in the browser: a copied recording's size is
+    # known before it starts, so its wait is arithmetic over bytes, and only
+    # this side knows how many have arrived.
+    item["eta_seconds"] = cache.eta(oid)
     # Scrub-preview thumbnails, fetched from the device and kept locally.
     item["has_preview"] = cache.preview_available(oid)
     item.setdefault("offline_only", False)

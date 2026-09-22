@@ -1192,6 +1192,11 @@ class AppState:
             # The player has to know before it opens one, and only the device
             # can say.
             "codec": _VIDEO_CODECS.get(vd.get("container_format")),
+            # How big it is on the device. For a recording that is copied
+            # rather than re-encoded, that is also how big the offline copy
+            # will be - which turns "how long is left" from an estimate into
+            # arithmetic over bytes.
+            "size": vd.get("size"),
         }
 
     @staticmethod

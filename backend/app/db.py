@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -375,6 +375,17 @@ ALTER TABLE recording ADD COLUMN source_codec TEXT;
 """
 
 
+# Version 12 records how big the thing being copied is.
+#
+# A copied recording lands at the size the device already reports, so progress
+# and time-remaining become arithmetic over bytes rather than an estimate from
+# content produced. Nullable: a row without it falls back to that estimate,
+# which is what every row did before.
+_SCHEMA_V12 = """
+ALTER TABLE recording ADD COLUMN source_bytes INTEGER;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -471,6 +482,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V10)
             if version < 11:
                 conn.executescript(_SCHEMA_V11)
+            if version < 12:
+                conn.executescript(_SCHEMA_V12)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

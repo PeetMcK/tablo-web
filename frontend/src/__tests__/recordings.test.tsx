@@ -71,7 +71,7 @@ const REC: Recording = {
   channel: { identifier: "S34654_008_01", call_sign: "KTMFABC", network: "ABC", number: "23.1", kind: "ota" },
   scan: "720p",
   interlaced: false,
-  codec: "mpeg2",
+  codec: "mpeg2", size: null,
   image_url: null, cover_frame: null,
   kind: "sport", genres: ["Football"],
   has_preview: false,
@@ -289,6 +289,23 @@ describe("LibraryView", () => {
     renderLibrary();
 
     expect(await screen.findByText(/37m left/)).toBeInTheDocument();
+  });
+
+  it("prefers the server's estimate to its own arithmetic", async () => {
+    // For a copied recording the server knows the finished size and counts
+    // the bytes arriving, so its answer is arithmetic where this side can
+    // only estimate from content produced.
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{
+        ...REC, cache_state: "partial", cache_progress: 0.4, pinned: true,
+        cached_seconds: 1380, rate: { mbps: 62, realtime: 5 },
+        eta_seconds: 132,
+      }],
+    }));
+    renderLibrary();
+
+    // 132s, not the 37m its own formula would have produced from realtime.
+    expect(await screen.findByText(/2m left/)).toBeInTheDocument();
   });
 
   it("offers no estimate before there is a rate to divide by", async () => {

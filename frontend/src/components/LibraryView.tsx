@@ -1405,7 +1405,11 @@ export function LibraryView() {
                               {/* What the other two numbers are for: when this
                                   stops needing to be watched. */}
                               {(() => {
-                                const eta = cacheEta(
+                                // The server's answer where it has one: for a
+                                // copy it knows the finished size and counts
+                                // the bytes, which is arithmetic rather than
+                                // the estimate this falls back to.
+                                const eta = rec.eta_seconds ?? cacheEta(
                                   rec.duration, rec.cached_seconds, rec.rate.realtime);
                                 return eta === null ? null
                                   : eta < 60 ? " · under a minute left"
