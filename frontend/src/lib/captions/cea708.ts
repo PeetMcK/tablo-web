@@ -84,7 +84,23 @@ function regionOf(cue: Cue): PositionedCue["region"] {
     yPercent: Math.max(0, Math.min(100, yPercent)),
     rows: region.height,
     columns: region.width,
+    align: alignOf(cue),
   };
+}
+
+/**
+ * Where the text sits inside its window.
+ *
+ * Shaka reports FULL justification as CENTER, which is its own simplification
+ * and the right one here: a browser cannot justify a caption line to a cell
+ * grid, and stretching the words to both edges of the window would look
+ * nothing like a television.
+ */
+function alignOf(cue: Cue): "left" | "center" | "right" {
+  const value = String(cue.textAlign || "").toLowerCase();
+  if (value.includes("left") || value === "start") return "left";
+  if (value.includes("right") || value === "end") return "right";
+  return "center";
 }
 
 export interface Cea708Track {

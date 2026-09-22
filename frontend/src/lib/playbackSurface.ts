@@ -36,6 +36,24 @@ export interface CaptionSource {
    * which has nothing but the bottom rows.
    */
   at(mediaSeconds: number): PositionedCue | null;
+  /**
+   * Every window on screen at this media time, not just one of them.
+   *
+   * CEA-708 is a window model: a broadcaster may have several up at once - a
+   * speaker's line bottom-left and a title top-right - and each is its own
+   * cue. `at` answers with one, which drops the rest, and that is what "708
+   * keeps skipping information" turned out to be. 608 has no windows, so its
+   * screen is a single cue and this returns exactly what `at` does.
+   */
+  allAt(mediaSeconds: number): PositionedCue[];
+  /**
+   * Both decoders' answers at once, for comparing them. Diagnostic only.
+   *
+   * Normal playback shows one standard - whichever the stream latched onto.
+   * This reports what each would have drawn, so the two can be put on screen
+   * together and the difference looked at rather than reasoned about.
+   */
+  compareAt(mediaSeconds: number): { cea608: PositionedCue[]; cea708: PositionedCue[] };
   on(event: "change", handler: () => void): () => void;
 }
 

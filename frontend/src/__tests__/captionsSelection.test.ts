@@ -88,7 +88,7 @@ function harness(overrides: Partial<SessionDeps> = {}) {
 const AT_608: PositionedCue = { startSeconds: 36, endSeconds: 39, text: "from 608" };
 const AT_708: PositionedCue = {
   startSeconds: 36, endSeconds: 39, text: "from 708",
-  region: { anchor: "bottom-left", xPercent: 50, yPercent: 99, rows: 4, columns: 32 },
+  region: { anchor: "bottom-left", xPercent: 50, yPercent: 99, rows: 4, columns: 32, align: "center" },
 };
 
 describe("choosing between 608 and 708", () => {

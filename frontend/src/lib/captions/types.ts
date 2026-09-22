@@ -67,9 +67,25 @@ export interface PositionedCue extends CaptionCue {
     /** Position of the anchor point, as a percentage of the safe area. */
     xPercent: number;
     yPercent: number;
-    /** The window's size in character cells, as the broadcaster declared it. */
+    /**
+     * The window's size in character cells, as the broadcaster declared it.
+     *
+     * Not decoration: the window's width is what makes a caption look like a
+     * caption. Drawn to its content instead, a block the broadcaster sized at
+     * 32 cells of a 210-cell frame becomes a narrow plate that re-wraps its
+     * own lines, and its anchor then lands the wrong part of the wrong box in
+     * the right place. Which is what "708 renders off-centre for no reason"
+     * was.
+     */
     rows: number;
     columns: number;
+    /**
+     * How the broadcaster justified the text inside the window.
+     *
+     * A window is wider than its text, so where the text sits within it is a
+     * decision the broadcaster made and not one to guess at.
+     */
+    align: "left" | "center" | "right";
   };
   /**
    * Styling, where the broadcaster set any.

@@ -21,6 +21,31 @@ import type { CaptionAnchor } from "./types";
  */
 export const SAFE_AREA_PERCENT = 80;
 
+/**
+ * How many characters wide a full-width 16:9 caption window is, per CEA-708-E.
+ *
+ * Two grids are easy to confuse and were: a window is *anchored* on a 210x75
+ * grid of the frame, but its own `colCount` is a count of character cells,
+ * which tops out at 42 across for 16:9. Sizing a window by dividing its
+ * columns into 210 therefore makes every caption about five times too narrow
+ * - a 32-column block came out at 12% of the frame - and the text then
+ * re-wraps inside a sliver, which is what "708 renders too narrow and
+ * off-centre" was. The anchor arithmetic was right the whole time.
+ */
+export const WINDOW_COLUMNS_16_9 = 42;
+
+/**
+ * How wide a window of `columns` character cells is, as a percentage of the
+ * stage.
+ *
+ * Of the stage and not of the safe area, because that is the unit CSS wants
+ * back. A full-width window is the whole safe area and no more.
+ */
+export function windowWidthPercent(columns: number): number {
+  const cells = Math.max(1, Math.min(WINDOW_COLUMNS_16_9, columns));
+  return (cells / WINDOW_COLUMNS_16_9) * SAFE_AREA_PERCENT;
+}
+
 export interface Placement {
   /** CSS `left`, as a percentage of the stage. */
   left: string;

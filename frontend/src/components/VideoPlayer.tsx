@@ -32,6 +32,7 @@ import {
 import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
 import { CaptionOverlay } from "./CaptionOverlay";
+import { captionCompareRequested } from "../lib/captions/compareMode";
 import { CHROME_BOTTOM_BAND_PX } from "../lib/playerChrome";
 import { SeriesEndCard, type CardReason } from "./SeriesEndCard";
 
@@ -2906,6 +2907,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           enabled={captionsOn}
           currentTime={surfaceTime}
           raised={chromeUp}
+          compare={captionCompareRequested()}
         />
       )}
 
