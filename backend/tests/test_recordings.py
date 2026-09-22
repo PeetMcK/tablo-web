@@ -15,6 +15,7 @@ from app import store
 from app.main import app
 from app.state import AppState
 from app.transcode_cache import (
+    RATE_SAMPLES,
     _BIF_MAGIC,
     MAX_ONDEMAND_WINDOWS,
     SEGMENT_SECONDS,
@@ -667,6 +668,37 @@ def test_rate_is_reported_from_completed_windows(tmp_path):
     assert rate["realtime"] == pytest.approx(1.67, abs=0.05)
 
 
+def test_rate_holds_steady_across_the_bursts_it_is_made_of(tmp_path):
+    """Windows finish in clumps, and the readout must not swing with them.
+
+    Six run at once and land within a second or two of each other, then
+    nothing lands for ten seconds while the next six run. Measured against a
+    window of the last few samples, that reads as hundreds of times realtime
+    inside a burst and a fraction of it between - the same download, reported
+    as two different numbers a second apart.
+
+    Counting what a fixed stretch of time produced is steady by construction.
+    Here three bursts of six 60s windows land ten seconds apart: 1080s of
+    video in thirty seconds, which is 36x, and it stays 36x whether the
+    question is asked during a burst or in the gap after one.
+    """
+    c = _cache(tmp_path)
+    now = time.monotonic()
+    samples = []
+    for burst in range(3):
+        landed = now - 30.0 + burst * 10.0
+        for i in range(6):
+            samples.append((landed + i * 0.3, 15 * 1024**2, 12.0, 60.0))
+    c._rate[66220] = deque(samples, maxlen=RATE_SAMPLES)
+
+    rate = c.rate(66220)
+
+    assert rate["realtime"] == pytest.approx(36.0, abs=2.0)
+    # The bytes agree: eighteen windows of 15 MiB across those thirty seconds
+    # is somewhere near 75 Mb/s, and nowhere near one window's ~10.
+    assert rate["mbps"] == pytest.approx(75.0, abs=8.0)
+
+
 def test_rate_counts_windows_that_ran_at_the_same_time_only_once(tmp_path):
     """Six windows run at once, so their elapsed times overlap.
 
@@ -676,9 +708,8 @@ def test_rate_counts_windows_that_ran_at_the_same_time_only_once(tmp_path):
     concurrency factor, and the "time left" built on it was out by the same.
 
     Here six windows of 60s each land two seconds apart, each having taken 12s
-    of its own. The first marks the start of the span rather than falling
-    inside it, so five landed across ten seconds of wall clock: 300s of video
-    in 10s, which is 30x - not the 5x that summing their elapsed times gives.
+    of its own. That is 360s of video landing across the ten seconds since the
+    oldest of them - 36x, not the 5x that summing their elapsed times gives.
     """
     c = _cache(tmp_path)
     now = time.monotonic()
@@ -688,10 +719,10 @@ def test_rate_counts_windows_that_ran_at_the_same_time_only_once(tmp_path):
 
     rate = c.rate(66220)
 
-    assert rate["realtime"] == pytest.approx(30.0, abs=1.0)
-    # And the bytes tell the same story: 75 MB (those five windows) across ten
-    # seconds is ~63 Mb/s, not the ~10 Mb/s of one window alone.
-    assert rate["mbps"] == pytest.approx(62.9, abs=2.0)
+    assert rate["realtime"] == pytest.approx(36.0, abs=1.0)
+    # And the bytes tell the same story: 90 MB across those ten seconds is
+    # ~75 Mb/s, not the ~10 Mb/s of one window alone.
+    assert rate["mbps"] == pytest.approx(75.5, abs=2.0)
 
 
 def test_rate_from_a_single_window_is_that_window(tmp_path):
