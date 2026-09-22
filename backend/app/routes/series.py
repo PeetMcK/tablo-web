@@ -521,16 +521,22 @@ async def _schedule_channel_path(guide_path: str | None) -> str | None:
 
 
 async def _series_detail_by_guide(guide_path: str) -> dict:
-    """Detail for a ruled series with nothing recorded yet — keyed on its guide
-    series path. Meta/settings come from the ruled+catalog join; there are no
-    on-disk episodes to list."""
+    """Detail for a series with nothing recorded — keyed on its guide series
+    path. There are no on-disk episodes to list either way.
+
+    Two sources, in order. A *ruled* series is answered from the ruled+catalog
+    join, which is the only place its rule, keep and offsets live. Anything
+    else is answered from the device's own guide record: a show with no rule
+    and nothing recorded is most of the guide, and it is exactly what opening
+    a sheet from the Guide or from Live asks about. Reading only the ruled set
+    left every ordinary show with a sheet that never opened.
+    """
     if not _GUIDE_PATH.match(guide_path):
         raise HTTPException(status_code=400, detail="Not a guide series path")
     r = next((x for x in await resolve_ruled()
               if x.get("guide_path") == guide_path), None)
     if not r:
-        raise HTTPException(status_code=404,
-                            detail=f"Series {guide_path} not found")
+        return await _series_detail_from_guide_record(guide_path)
     return {
         "meta": {
             "title": r["title"],
@@ -548,6 +554,45 @@ async def _series_detail_by_guide(guide_path: str) -> dict:
             "channel_path": await _schedule_channel_path(guide_path),
         },
         "counts": r.get("show_counts") or {},
+        "episodes": [],
+    }
+
+
+async def _series_detail_from_guide_record(guide_path: str) -> dict:
+    """The sheet for a show nobody records: straight off the guide record.
+
+    The device nests the title-bearing object under the noun for its kind —
+    `series`, `sport`, `movie` — which `_show_of` already knows how to read,
+    so this is the same projection the recorded path builds, minus everything
+    that only exists once something has been recorded.
+
+    Settings are the "off" defaults rather than a guess. The identifier is
+    carried through where the record has one, because it is what a write needs
+    to turn a rule ON from this very sheet — that is the thing a viewer is
+    most likely here to do.
+    """
+    record = await _try("GET", guide_path)
+    if not record:
+        raise HTTPException(status_code=404,
+                            detail=f"Series {guide_path} not found")
+    show = _show_of(record)
+    return {
+        "meta": {
+            "title": show.get("title") or "Untitled",
+            "genres": show.get("genres") or [],
+            "description": show.get("description"),
+            "cover_image_id": (show.get("cover_image") or {}).get("image_id"),
+            "kind": _kind_of_guide(guide_path),
+            "guide_path": guide_path,
+        },
+        "settings": {
+            "identifier": record.get("identifier"),
+            "rule": "none",
+            "keep": record.get("keep") or dict(_DEFAULT_KEEP),
+            "offsets": dict(_DEFAULT_OFFSETS),
+            "channel_path": await _schedule_channel_path(guide_path),
+        },
+        "counts": record.get("show_counts") or {},
         "episodes": [],
     }
 
