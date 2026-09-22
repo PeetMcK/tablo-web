@@ -7,7 +7,7 @@
  * you would do about it.
  */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 
 import { RecordingRow } from "../components/RecordingRow";
 import type { Recording } from "../api/tablo";
@@ -66,6 +66,8 @@ function row(over: Partial<Recording> = {}, handlers: {
   onInfo?: () => void;
   onKeep?: (on: boolean) => void;
   onDeleteCache?: () => void;
+  onWatched?: (on: boolean) => void;
+  onProtect?: (on: boolean) => void;
 } = {}) {
   return render(
     <RecordingRow
@@ -74,6 +76,8 @@ function row(over: Partial<Recording> = {}, handlers: {
       onInfo={handlers.onInfo ?? (() => {})}
       onKeep={handlers.onKeep ?? (() => {})}
       onDeleteCache={handlers.onDeleteCache ?? (() => {})}
+      onWatched={handlers.onWatched ?? (() => {})}
+      onProtect={handlers.onProtect ?? (() => {})}
     />,
   );
 }
@@ -229,12 +233,14 @@ describe("what a row can do to a recording", () => {
     [...document.querySelectorAll("[data-row-actions] > *")]
       .map(el => el.getAttribute("aria-label") ?? "");
 
-  it("carries save, delete, keep and information, in that order", () => {
-    // Information last, on the outside edge: it is the one of the four that
-    // does nothing irreversible, and the one the whole row already does.
+  it("carries every control in one order, whatever a row has", () => {
+    // Information last, on the outside edge: it is the one that does nothing
+    // irreversible, and the one the whole row already does.
     row({ pinned: true, cache_state: "complete" });
 
     expect(cluster()).toEqual([
+      expect.stringMatching(/Mark Jeopardy! watched/),
+      expect.stringMatching(/Protect Jeopardy! from deletion/),
       expect.stringMatching(/Save Jeopardy!/),
       expect.stringMatching(/Delete cached video/),
       expect.stringMatching(/Stop keeping Jeopardy!/),
@@ -296,15 +302,73 @@ describe("what a row can do to a recording", () => {
     expect(onDeleteCache).toHaveBeenCalledTimes(1);
   });
 
-  it("carries only keep and information when nothing is cached", () => {
-    // Most of a library is this row. Two controls that apply beat four with
-    // half of them greyed out.
+  it("carries watched, protect, keep and information when nothing is cached", () => {
+    // Most of a library is this row. What is missing from it are the two
+    // controls that need something on disk, not the two that never do.
     row({ cache_state: "absent" });
 
     expect(cluster()).toEqual([
+      expect.stringMatching(/Mark Jeopardy! watched/),
+      expect.stringMatching(/Protect Jeopardy! from deletion/),
       expect.stringMatching(/Keep Jeopardy! offline/),
       expect.stringMatching(/Information about Jeopardy!/),
     ]);
+  });
+
+  it("marks a recording watched, and unwatched once it is", () => {
+    const onWatched = vi.fn();
+    const { unmount } = row({}, { onWatched });
+
+    fireEvent.click(screen.getByRole("button", { name: /Mark Jeopardy! watched/ }));
+    expect(onWatched).toHaveBeenCalledWith(true);
+    unmount();
+
+    row({ watched: true }, { onWatched });
+    fireEvent.click(screen.getByRole("button", { name: /Mark Jeopardy! unwatched/ }));
+    expect(onWatched).toHaveBeenLastCalledWith(false);
+  });
+
+  it("protects a recording, and unprotects one that is", () => {
+    const onProtect = vi.fn();
+    const { unmount } = row({}, { onProtect });
+
+    fireEvent.click(screen.getByRole("button", { name: /Protect Jeopardy! from deletion/ }));
+    expect(onProtect).toHaveBeenCalledWith(true);
+    unmount();
+
+    row({ protected: true }, { onProtect });
+    fireEvent.click(screen.getByRole("button", { name: /Remove protection from Jeopardy!/ }));
+    expect(onProtect).toHaveBeenLastCalledWith(false);
+  });
+
+  it("says which state each toggle is in", () => {
+    row({ watched: true, protected: true });
+
+    expect(screen.getByRole("button", { name: /Mark Jeopardy! unwatched/ }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Remove protection/ }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("draws the lock the recording is in, not the one the click makes", () => {
+    // A closed lock means protected. Drawing the act instead reads, at a
+    // glance, as the opposite of the truth.
+    row({ protected: true });
+    const locked = screen.getByRole("button", { name: /Remove protection/ });
+    expect(locked.querySelector(".lucide-lock")).toBeTruthy();
+
+    cleanup();
+    row({ protected: false });
+    expect(screen.getByRole("button", { name: /Protect Jeopardy! from deletion/ })
+      .querySelector(".lucide-lock-open")).toBeTruthy();
+  });
+
+  it("offers neither toggle while the file is still growing", () => {
+    // Neither applies to something still being written.
+    row({ state: "recording", recorded_seconds: 60 });
+
+    expect(screen.getByRole("button", { name: /Mark Jeopardy! watched/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Protect Jeopardy!/ })).toBeDisabled();
   });
 
   it("saves the file once the whole copy exists", () => {
@@ -319,6 +383,8 @@ describe("what a row can do to a recording", () => {
     row({ cache_state: "partial", cache_progress: 0.4 });
 
     expect(cluster()).toEqual([
+      expect.stringMatching(/Mark Jeopardy! watched/),
+      expect.stringMatching(/Protect Jeopardy! from deletion/),
       expect.stringMatching(/Delete cached video/),
       expect.stringMatching(/Keep Jeopardy! offline/),
       expect.stringMatching(/Information about Jeopardy!/),

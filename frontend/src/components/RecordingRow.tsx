@@ -21,7 +21,8 @@
  * view render cards or rows from the same section list.
  */
 import {
-  CheckCircle2, CloudOff, Download, FileDown, Lock, Play, Trash2,
+  CheckCircle2, CloudOff, Download, Eye, EyeOff, FileDown, Lock, LockOpen,
+  Play, Trash2,
 } from "lucide-react";
 
 import { downloadUrl, type Recording } from "../api/tablo";
@@ -52,6 +53,10 @@ interface Props {
   onKeep: (on: boolean) => void;
   /** Drop the transcoded copy, leaving the recording on the Tablo. */
   onDeleteCache: () => void;
+  /** Mark watched, or put it back to unwatched. */
+  onWatched: (on: boolean) => void;
+  /** Protect from deletion, or let it be deleted again. */
+  onProtect: (on: boolean) => void;
 }
 
 /** `8.1 CBS`, or whichever half the device gave us, or nothing. */
@@ -83,7 +88,9 @@ function lengthLabel(rec: Recording): string {
   return formatDuration(rec.duration);
 }
 
-export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Props) {
+export function RecordingRow({
+  rec, onPlay, onInfo, onKeep, onDeleteCache, onWatched, onProtect,
+}: Props) {
   const title = rec.title || "Untitled Recording";
   const live = isRecording(rec);
   const playable = isPlayable(rec);
@@ -252,13 +259,9 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
                 <CloudOff className="w-3.5 h-3.5" aria-hidden />
               </span>
             )}
-            {rec.protected && (
-              <span className="shrink-0 flex items-center text-warning"
-                    title="Protected from deletion"
-                    aria-label="Protected from deletion">
-                <Lock className="w-3.5 h-3.5" aria-hidden />
-              </span>
-            )}
+            {/* No lock chip here any more: the protect TOGGLE at the end of
+                the row already draws the state it is in, and one recording
+                wearing two locks is two things to read. */}
           </span>
 
           <span className={`truncate text-[11px] tabular-nums
@@ -279,6 +282,42 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
           right-aligned, so the buttons that are there still line up down the
           page whatever else a row has. */}
       <span data-row-actions className="shrink-0 flex items-center gap-1 pl-1">
+        {/* Watched and protect lead: they are the two that apply to every
+            recording whatever is on disk, and the two a viewer reaches for
+            without having thought about caching at all. Each draws the STATE
+            it is in — an open eye is unwatched, a closed lock is protected —
+            with the act in the name rather than the glyph. Neither applies to
+            a file still being written. */}
+        <button
+          onClick={() => onWatched(!rec.watched)}
+          disabled={live}
+          aria-pressed={rec.watched}
+          aria-label={rec.watched ? `Mark ${title} unwatched` : `Mark ${title} watched`}
+          title={rec.watched ? "Mark unwatched" : "Mark watched"}
+          className={ACTION + " text-fg-faint hover:bg-fill hover:text-fg"}
+        >
+          {rec.watched
+            ? <EyeOff className="w-4 h-4" aria-hidden />
+            : <Eye className="w-4 h-4" aria-hidden />}
+        </button>
+
+        <button
+          onClick={() => onProtect(!rec.protected)}
+          disabled={live}
+          aria-pressed={rec.protected}
+          aria-label={rec.protected
+            ? `Remove protection from ${title}`
+            : `Protect ${title} from deletion`}
+          title={rec.protected ? "Remove protection" : "Protect from deletion"}
+          className={ACTION + (rec.protected
+            ? " text-warning hover:bg-warning-soft"
+            : " text-fg-faint hover:bg-fill hover:text-fg")}
+        >
+          {rec.protected
+            ? <Lock className="w-4 h-4" aria-hidden />
+            : <LockOpen className="w-4 h-4" aria-hidden />}
+        </button>
+
         {/* A plain link, not a fetch: the browser owns the download, so a 7 GB
             file streams to disk instead of being buffered in a tab. Only once
             the whole copy exists — half a transcode is not a file. */}
