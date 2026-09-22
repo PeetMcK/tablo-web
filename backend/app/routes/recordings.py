@@ -761,6 +761,10 @@ def _offline_detail(object_id: int) -> dict:
         "skip_reason": None,
         "recording_id": object_id,
         "series": None,
+        # What this is an instalment of, in the recordings namespace: the panel
+        # opens by this when there is no guide airing left to name the show —
+        # which for a copy the Tablo has deleted is always.
+        "show_path": info.get("series_path") or info.get("sport_path"),
         "channel": {
             "identifier": ch.get("identifier"),
             "call_sign": ch.get("call_sign"),
@@ -876,11 +880,17 @@ async def recording_detail(object_id: int):
         "schedule_state": None,
         "skip_reason": None,
         "recording_id": object_id,
-        # Deliberately null even though `show_path` is in hand. The series
-        # controls write through `(channel, start)` against the guide mirror,
+        # Deliberately null even though the show path is in hand. The series
+        # *controls* write through `(channel, start)` against the guide mirror,
         # and this path is `/recordings/series/{id}` - a different namespace. An
         # Edit Series Recording box that cannot write is worse than none.
         "series": None,
+        # The panel, though, is a different question from the controls: it
+        # reads a show by its recordings path, which is exactly this. Handed
+        # over so the sheet can offer "Series Information" for a recording
+        # whose airing the guide no longer holds - most games within days, and
+        # every recording eventually.
+        "show_path": record.get("series_path") or record.get("sport_path"),
         "channel": {
             "identifier": ch.get("channel_identifier"),
             "call_sign": ch.get("call_sign"),

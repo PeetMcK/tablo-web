@@ -857,7 +857,9 @@ class AppState:
                     if c_path:
                         channel_airing_map[c_path] = {
                             "title": ad.get("show_title"),
-                            "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
+                            "description": (a.get("episode", {}).get("description")
+                                            or a.get("event", {}).get("description")
+                                            or a.get("series", {}).get("description")),
                             "start": start_str,
                             "duration": duration,
                             "genres": ad.get("genres") or [],
@@ -951,7 +953,8 @@ class AppState:
                             # Kept so the Live card can resolve its poster from
                             # the mirror. `_airing_row` already keeps it on the
                             # grid path; this was the only builder discarding it.
-                            "series_path": a.get("series_path"),
+                            # A game's is its `sport_path` — see `_show_path`.
+                            "series_path": AppState._show_path(a),
                         }
             except Exception:
                 continue
@@ -1382,8 +1385,16 @@ class AppState:
 
     @staticmethod
     def _series_row(data: dict) -> dict:
-        """One series record, as the mirror stores it."""
-        s = data.get("series") or {}
+        """One series record, as the mirror stores it.
+
+        Under whichever noun the device used: a `/guide/sports/{id}` record
+        nests its title, description and cover under `sport` where a series
+        nests them under `series`. Reading only the latter stored a row of
+        nulls for every sport — which is what the mirror would now fill with,
+        since sport paths reach it (see `_show_path`). A sport carries no
+        `series_rating`, and null is the honest answer there.
+        """
+        s = data.get("series") or data.get("sport") or {}
         keep = data.get("keep") or {}
 
         def image_id(key: str):
@@ -1506,6 +1517,24 @@ class AppState:
         }
 
     @staticmethod
+    def _show_path(a: dict) -> str | None:
+        """The show an airing belongs to, whichever noun the device files it under.
+
+        `series_path` for an episode, `sport_path` for a game. The device means
+        the same thing by both — `/guide/sports/{id}` carries a title, a
+        description, a cover and its own schedule rule, and the Tablo's own app
+        heads a game's sheet "Series Recording Scheduled" over the league's
+        picture — but only the first was ever read here. The consequence was
+        that every sport airing reached the mirror with a null show path, so
+        the info sheet had nothing to offer "Series Information" for: measured
+        on a real mirror, 0 of 79 `sportEvent` rows carried one, while the
+        Series tab listed the NFL with five games recorded.
+
+        A film has neither, which is right: there is no show behind it.
+        """
+        return a.get("series_path") or a.get("sport_path")
+
+    @staticmethod
     def _airing_row(a: dict) -> dict:
         """One guide airing, as the mirror stores it.
 
@@ -1521,20 +1550,27 @@ class AppState:
         """
         ad = a.get("airing_details") or {}
         ep = a.get("episode") or {}
+        event = a.get("event") or {}
         sched = a.get("schedule") or {}
         return {
             "title": ad.get("show_title"),
-            "description": ep.get("description") or (a.get("series") or {}).get("description"),
+            "description": (ep.get("description") or event.get("description")
+                            or (a.get("series") or {}).get("description")),
             "start": ad.get("datetime"),
             "duration": ad.get("duration"),
             "genres": ad.get("genres") or [],
             "kind": ad.get("event_type"),
-            # Displayed by the show sheet.
-            "episode_title": ep.get("title"),
+            # Displayed by the show sheet. A game keeps the matchup where an
+            # episode keeps its title - "Colts at Chiefs" is what `event.title`
+            # holds, and the sheet had been showing games with no subtitle at
+            # all for want of reading it.
+            "episode_title": ep.get("title") or event.get("title"),
             "season_number": ep.get("season_number"),
             "episode_number": ep.get("number"),
             "orig_air_date": ep.get("orig_air_date"),
-            "series_path": a.get("series_path"),
+            # A game's `sport_path` lands here too - see `_show_path`. The
+            # column is named for the common case, not for the only one.
+            "series_path": AppState._show_path(a),
             # Captured, not yet exposed - see docs/tablo-api.md.
             "airing_path": a.get("path"),
             "schedule_state": sched.get("state"),

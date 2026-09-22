@@ -993,3 +993,86 @@ describe("ShowInfo on a recording", () => {
   });
 });
 
+
+
+/**
+ * A game is an episode of its sport, and now says so.
+ *
+ * The device files an NFL game under `/guide/sports/{id}` and its recordings
+ * under `/recordings/sports/{id}`, carries a title, a cover and a schedule rule
+ * on both, and its own app heads a game's sheet "Series Recording Scheduled".
+ * Our sheet offered nothing: the guide mirror read only `series_path`, so a
+ * game reached it with no show at all.
+ */
+describe("the route from a programme to the show behind it", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("opens a game's sport the way an episode opens its series", async () => {
+    const open = vi.fn();
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      title: "NFL Football",
+      episode_title: "Green Bay Packers at Minnesota Vikings",
+      series: { path: "/guide/sports/38763", schedule_rule: "all" },
+    }));
+    render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
+                     onOpenSeries={open} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /series information/i }));
+
+    expect(open).toHaveBeenCalledWith("/guide/sports/38763", "NFL Football");
+  });
+
+  it("uses the recording's own show path over the guide's", async () => {
+    // The two name the same show in different namespaces, and only one of them
+    // is still true a week later: the guide holds no airing for a game once it
+    // has been played, where the recording keeps its `sport_path` for life.
+    const open = vi.fn();
+    vi.spyOn(api, "recordingDetail").mockResolvedValue(detail({
+      title: "NFL Football",
+      recording_id: 66220,
+      show_path: "/recordings/sports/63558",
+      series: { path: "/guide/sports/38763", schedule_rule: "all" },
+    }));
+    render(<ShowInfo channel="ch1" start={null} recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} onOpenSeries={open} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /series information/i }));
+
+    expect(open).toHaveBeenCalledWith("/recordings/sports/63558", "NFL Football");
+  });
+
+  it("still offers the show when nothing about the airing is left", async () => {
+    // `schedulable` is an airing's word, and the seam used to require it - so a
+    // recording whose airing had aged out of the guide lost the route to its
+    // own show along with the ability to schedule something already past.
+    const open = vi.fn();
+    vi.spyOn(api, "recordingDetail").mockResolvedValue(detail({
+      title: "NFL Football",
+      recording_id: 66220,
+      schedulable: false,
+      past: true,
+      series: null,
+      show_path: "/recordings/sports/63558",
+    }));
+    render(<ShowInfo channel="ch1" start={null} recordingId={66220}
+                     onClose={() => {}} onTune={() => {}} onOpenSeries={open} />);
+
+    expect(await screen.findByRole("button", { name: /series information/i }))
+      .toBeInTheDocument();
+    // And no rule editor with it: nothing here can be scheduled.
+    expect(screen.queryByText("Edit Series Recording")).toBeNull();
+  });
+
+  it("offers nothing for a programme that belongs to no show", async () => {
+    // A film. There is nothing behind it to open, and a button that opened an
+    // empty panel would be worse than none.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      title: "Knives Out", series: null, show_path: null,
+    }));
+    render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
+                     onOpenSeries={vi.fn()} />);
+
+    await screen.findByText("Knives Out");
+    expect(screen.queryByRole("button", { name: /series information/i })).toBeNull();
+  });
+});

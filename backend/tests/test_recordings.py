@@ -2797,3 +2797,48 @@ def test_a_film_needs_no_show_record_to_be_filed_as_one(monkeypatch):
     assert card["kind"] == "movie"
     assert card["genres"] == []
     assert asked == []
+
+
+def test_a_recordings_sheet_names_the_show_it_belongs_to(monkeypatch):
+    """The durable route to the show panel.
+
+    `series` stays null here on purpose - the series *controls* write through
+    the guide mirror, which this path is not in - but the panel reads a show by
+    its recordings path, and that is on the recording itself for as long as the
+    recording exists. The guide airing behind a game is gone within days, and
+    with it the only route the sheet used to have.
+    """
+    _device_serving(
+        monkeypatch,
+        {"/recordings/sports/events/66220": DEVICE_GAME,
+         "/recordings/sports/63558": DEVICE_SPORT},
+        "/recordings/sports/events/66220",
+    )
+
+    d = client.get("/api/recordings/66220/detail").json()
+
+    assert d["show_path"] == "/recordings/sports/63558"
+    assert d["series"] is None
+
+
+def test_a_kept_copy_still_names_its_show(monkeypatch, tmp_path):
+    """The device cannot be asked about one - that is the point of pinning it -
+    so the snapshot taken when it was pinned has to carry the path."""
+    from app.routes import recordings as rec
+
+    c = _cache(tmp_path)
+    meta = _register(c, oid=66220)
+    meta.pinned = True
+    meta.info = AppState._recording_fields(DEVICE_GAME)
+    c.write_meta(meta)
+
+    async def resolve(_oid):
+        raise KeyError("recording 66220 not found")
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec, "cache", c)
+
+    d = client.get("/api/recordings/66220/detail").json()
+
+    assert d["show_path"] == "/recordings/sports/63558"
