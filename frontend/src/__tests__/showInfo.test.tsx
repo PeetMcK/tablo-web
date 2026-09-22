@@ -140,16 +140,16 @@ describe("ShowInfo", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^set rule$/i }));
 
     await waitFor(() => expect(schedule).toHaveBeenCalledWith("ch1", "s", "new"));
-    expect(await screen.findByRole("button", { name: /^new$/i }))
-      .toHaveAttribute("aria-pressed", "true");
+    // And with that the series is recording, so the editor hands over: the
+    // rule is a Series Information matter from here. The REC line says what
+    // took, so the control does not simply vanish without an answer.
+    await waitFor(() => expect(screen.queryByText("Edit Series Recording")).toBeNull());
+    expect(await screen.findByText(/REC ·/)).toBeInTheDocument();
   });
 
-  it("sets the rule editor off behind a hairline", async () => {
-    // The three rule buttons are the heaviest write the sheet offers: they
-    // govern every episode still to come, and None can stop one already
-    // recording. Record Episode touches this airing alone and Series
-    // Information touches nothing, so the seam belongs directly above the
-    // editor rather than around everything the series owns.
+  it("puts what reaches past this airing under the hairline", async () => {
+    // The seam is scope, the way the Tablo app draws it: what acts on this
+    // episode above the line, what acts on the series below it.
     vi.spyOn(api, "airingDetail").mockResolvedValue(detail());
     const { container } = render(
       <ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
@@ -160,7 +160,55 @@ describe("ShowInfo", () => {
     expect(seam).not.toBeNull();
     expect(seam!.className).toMatch(/border-t/);
     expect(seam).toHaveTextContent("Edit Series Recording");
-    expect(seam).not.toHaveTextContent("Series Information");
+    expect(seam).toHaveTextContent("Series Information");
+    expect(seam).not.toHaveTextContent("Record Episode");
+  });
+
+  it("offers the rule editor only for a series it is not recording yet", async () => {
+    // Setting a series up from an episode is a fair thing to do here. Changing
+    // one that is already running is a series-level act, and it has a proper
+    // home: the drawer behind Series Information, which carries Keep and the
+    // channel pin as well.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      series: { path: "/guide/series/6472", schedule_rule: "all" },
+    }));
+    render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
+                     onOpenSeries={vi.fn()} />);
+
+    await screen.findByText("Finding Your Roots");
+    expect(screen.queryByText("Edit Series Recording")).toBeNull();
+    expect(screen.getByRole("button", { name: /series information/i }))
+      .toBeInTheDocument();
+  });
+
+  it("does not offer the series rule from a finished recording", async () => {
+    // A card about something already on the drive is the wrong place to hold a
+    // control that can stop tonight's recording.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      past: true, scheduled: true, recording_id: 86353,
+    }));
+    render(<ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
+                     onOpenSeries={vi.fn()} />);
+
+    await screen.findByText("Finding Your Roots");
+    expect(screen.queryByText("Edit Series Recording")).toBeNull();
+  });
+
+  it("keeps Delete with the episode actions, above the seam", async () => {
+    // It ends one recording and nothing else, so it belongs with Watch rather
+    // than stranded under the series block at the foot of the sheet.
+    vi.spyOn(api, "airingDetail").mockResolvedValue(detail({
+      past: true, scheduled: true, recording_id: 86353,
+    }));
+    const { container } = render(
+      <ShowInfo channel="ch1" start="s" onClose={() => {}} onTune={() => {}}
+                onOpenSeries={vi.fn()} />);
+
+    const del = await screen.findByRole("button", { name: /delete recording/i });
+    const seam = container.querySelector("[data-series-seam]")!;
+    expect(seam).not.toContainElement(del);
+    expect(del.compareDocumentPosition(seam))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("reverts and explains when the Tablo refuses", async () => {
@@ -312,137 +360,32 @@ describe("a recording in progress, from the sheet", () => {
   });
 });
 
-describe("turning a series off while one of its episodes records", () => {
-  // Measured on a real device 2026-09-18: with an episode recording, setting
-  // the series rule to None stopped the tuner within twelve seconds, and the
-  // ninety seconds already captured stayed in the library as a stub.
-  const SERIES = "/guide/series/6137";
-  const LIVE_ELSEWHERE = {
-    object_id: 86323, channel_identifier: "ch2", start: "2026-09-18T06:30Z",
-    duration: 1800, recording_started: "2026-09-18T06:40:18Z",
-    recorded_seconds: 600, expected_seconds: 1182, title: "NHK Newsline",
-    series_path: SERIES,
-  };
-
-  /** The sheet is a future episode; the recording is a different one. */
-  const upcoming = (over = {}) => detail({
-    title: "NHK Newsline", start: "2026-09-19T06:30Z", duration: 1800,
-    airing_now: false, scheduled: true, past: false,
-    series: { path: SERIES, schedule_rule: "all" },
-    ...over,
-  });
-
-  beforeEach(() => {
-    vi.spyOn(api, "inProgressRecordings")
-      .mockResolvedValue({ recordings: [LIVE_ELSEWHERE] });
-  });
-  afterEach(() => vi.restoreAllMocks());
-
-  it("warns instead of silently stopping the tuner", async () => {
-    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-
-    expect(rule).not.toHaveBeenCalled();
-    expect(await screen.findByText(/an episode is recording now/i)).toBeInTheDocument();
-    expect(screen.getByText(/10m of 30m/i)).toBeInTheDocument();
-  });
-
-  it("stops it when that is what was asked for", async () => {
-    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    const airing = vi.spyOn(api, "scheduleAiring").mockResolvedValue(upcoming());
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^stop it$/i }));
-
-    await waitFor(() => expect(rule).toHaveBeenCalledWith("ch1", "2026-09-19T06:30Z", "none"));
-    expect(airing).not.toHaveBeenCalled();
-  });
-
-  it("does not offer to keep the episode, because keeping splits it in two", async () => {
-    // Measured: rescheduling the airing after the rule write does not resume
-    // the capture, it starts a second one - leaving a stub of what was caught
-    // before the rule change and a separate recording of the rest. Two
-    // recordings of one episode is worse than an honest stop.
-    vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    await screen.findByRole("alertdialog");
-
-    expect(screen.queryByRole("button", { name: /keep this one/i })).toBeNull();
-  });
-
-  it("says plainly that the recording stops", async () => {
-    vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(/stops it at once/i);
-    expect(dialog).toHaveTextContent(/stays in your library/i);
-  });
-
-  it("leaves another series' recording out of it", async () => {
-    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({
-      recordings: [{ ...LIVE_ELSEWHERE, series_path: "/guide/series/999" }],
-    });
-    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-
-    await waitFor(() => expect(rule).toHaveBeenCalled());
-  });
-
-  it("does not warn when turning the series on", async () => {
-    // All and New do not stop a tuner, and a warning on them would train
-    // people to dismiss the one that matters.
-    const rule = vi.spyOn(api, "scheduleSeries").mockResolvedValue(upcoming());
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^new$/i }));
-
-    await waitFor(() => expect(rule).toHaveBeenCalledWith("ch1", "2026-09-19T06:30Z", "new"));
-  });
-});
+/* The rule buttons no longer live on this card once a series is recording -
+   the sheet offers them only to start a series off - so the suite that covered
+   turning one off mid-capture moved with the control, to
+   recordings-page.test.tsx ("says plainly that turning the rule off stops a
+   recording in flight" and its neighbours). */
 
 describe("the confirmation sits over the card", () => {
+  // Raised here by Record Episode on something already airing - recording it
+  // starts at once and catches only the rest. Any of the sheet's questions
+  // would do; what these cover is how the question behaves over the card.
   const SERIES = "/guide/series/6137";
-  const LIVE = {
-    object_id: 86323, channel_identifier: "ch2", start: "2026-09-18T06:30Z",
-    duration: 1800, recording_started: "2026-09-18T06:40:18Z",
-    recorded_seconds: 600, expected_seconds: 1182, title: "NHK Newsline",
-    series_path: SERIES,
-  };
-  const upcoming = () => detail({
+  const onAir = () => detail({
     title: "NHK Newsline", start: "2026-09-19T06:30Z", duration: 1800,
-    airing_now: false, scheduled: true, past: false,
-    series: { path: SERIES, schedule_rule: "all" },
+    airing_now: true, scheduled: false, past: false,
+    series: { path: SERIES, schedule_rule: "none" },
   });
 
-  async function raise() {
-    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={() => {}} onTune={() => {}} />);
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    return await screen.findByRole("alertdialog");
+  async function raise(onClose: () => void = () => {}) {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(onAir());
+    vi.spyOn(api, "scheduleAiring").mockResolvedValue(onAir());
+    const view = render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                                  onClose={onClose} onTune={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /record episode/i }));
+    await screen.findByRole("alertdialog");
+    return view;
   }
 
   afterEach(() => vi.restoreAllMocks());
@@ -450,29 +393,34 @@ describe("the confirmation sits over the card", () => {
   it("asks in a dialog of its own, not a banner that shifts the card", async () => {
     // As a banner it pushed the artwork and everything under it down the sheet,
     // so the card jumped at the moment attention was needed on the question.
-    const dialog = await raise();
+    await raise();
 
-    expect(dialog).toHaveTextContent(/an episode is recording now/i);
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/record this episode\?/i);
     // The card is still there underneath, unmoved.
     expect(screen.getByText("NHK Newsline")).toBeInTheDocument();
   });
 
   it("puts the safe way out under the cursor, not the destructive one", async () => {
     // A confirmation that opens with the destructive button focused is one
-    // stray Return away from ending a recording.
-    await raise();
+    // stray Return away from losing a recording. Raised from Delete rather
+    // than Record Episode: only a destructive question defaults to Cancel,
+    // and an ordinary one should still open on its action.
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    vi.spyOn(api, "airingDetail").mockResolvedValue(
+      detail({ title: "NHK Newsline", recording_id: 86353, past: true }));
+    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
+                     onClose={() => {}} onTune={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /delete recording/i }));
+    await screen.findByRole("alertdialog");
 
     expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
   });
 
   it("cancels the question on Escape without closing the sheet", async () => {
     const onClose = vi.fn();
-    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                     onClose={onClose} onTune={() => {}} />);
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    await screen.findByRole("alertdialog");
+    await raise(onClose);
 
     fireEvent.keyDown(document, { key: "Escape" });
 
@@ -484,7 +432,7 @@ describe("the confirmation sits over the card", () => {
   it("still closes the sheet on Escape when nothing is being asked", async () => {
     const onClose = vi.fn();
     vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
+    vi.spyOn(api, "airingDetail").mockResolvedValue(onAir());
     render(<ShowInfo channel="ch1" start="2026-09-19T06:30Z"
                      onClose={onClose} onTune={() => {}} />);
     await screen.findByText("NHK Newsline");
@@ -498,13 +446,7 @@ describe("the confirmation sits over the card", () => {
     // The click lands inside the sheet's bounds; closing the whole sheet would
     // throw away the decision rather than dismissing the question.
     const onClose = vi.fn();
-    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [LIVE] });
-    vi.spyOn(api, "airingDetail").mockResolvedValue(upcoming());
-    const { container } = render(
-      <ShowInfo channel="ch1" start="2026-09-19T06:30Z"
-                onClose={onClose} onTune={() => {}} />);
-    fireEvent.click(await screen.findByRole("button", { name: /^none$/i }));
-    await screen.findByRole("alertdialog");
+    const { container } = await raise(onClose);
 
     fireEvent.click(container.querySelector(".confirm-backdrop")!);
 
@@ -702,12 +644,12 @@ describe("what the sheet knows when it opens", () => {
     await screen.findByText("Jeopardy!");
 
     await waitFor(() => expect(live).toHaveBeenCalledWith("ch1", SLOT));
-    // The stale REC line is gone, and the rule the device reports is the one
-    // shown as chosen.
+    // The stale REC line is gone. The device says the series records All, so
+    // the rule is not this card's to edit - that is the drawer's job now, and
+    // the inline editor stays away.
     await waitFor(() =>
       expect(screen.queryByText(/REC · RECORD/i)).toBeNull());
-    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
-      "aria-pressed", "true");
+    expect(screen.queryByText("Edit Series Recording")).toBeNull();
   });
 
   it("keeps what the mirror said when the device will not answer", async () => {
@@ -1020,8 +962,9 @@ describe("ShowInfo on a recording", () => {
     // The device's description of the programme.
     expect(await screen.findByText("NFL Football")).toBeInTheDocument();
     expect(screen.queryByText("Stale guide title")).toBeNull();
-    // The guide's answers about what can be done to it.
-    expect(screen.getByRole("button", { name: /^all$/i })).toBeInTheDocument();
+    // The guide's answers about what can be done to it: it is scheduled, and
+    // the scope the guide reports is the one named.
+    expect(screen.getByText(/all episodes/i)).toBeInTheDocument();
     // Watching, though, goes to the recording rather than the broadcast: it is
     // already being written and plays from its first moment, so this starts at
     // the beginning instead of joining half way, and costs no tuner.

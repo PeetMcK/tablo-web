@@ -5,10 +5,11 @@ import {
 } from "lucide-react";
 import { recordedSpan } from "../lib/recording";
 import {
-  recordingFor, recordingForSeries, useRecordingsInProgress,
+  recordingFor, useRecordingsInProgress,
 } from "../lib/useRecordingsInProgress";
 import { api } from "../api/tablo";
 import { loadResume, resumeKey, saveResume } from "../lib/resume";
+import { formatDuration } from "../lib/format";
 import { VideoPlayer } from "./VideoPlayer";
 import type { AiringDetail, Recording, SeriesRule } from "../api/tablo";
 
@@ -96,18 +97,6 @@ interface Props {
   onWatchRecording?: (objectId: number) => void;
   /** Tune to this airing's channel. Only reachable while it is on air. */
   onTune: () => void;
-}
-
-/**
- * Runtime as `1h 0m`, matching LibraryView's own rendering.
- *
- * Lowercase h/m deliberately: in a metadata row of uppercase-ish tokens,
- * `1H 0M` reads as units of something other than time.
- */
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 /**
@@ -380,19 +369,6 @@ export function ShowInfo({
   const captured = recording ? recordedSpan(recording) : null;
 
   /**
-   * An episode of this series on a tuner right now — any episode, not this one.
-   *
-   * Measured on a real device 2026-09-18: setting the rule to None stopped a
-   * recording in flight within twelve seconds, and the ninety seconds already
-   * captured stayed in the library as a stub. So the rule buttons can end a
-   * recording of something the sheet is not even showing, which is why this
-   * asks about the series rather than about the airing.
-   */
-  const seriesRecording = detail?.series
-    ? recordingForSeries(inProgress, detail.series.path)
-    : null;
-
-  /**
    * Which recording this sheet can delete.
    *
    * The opener's answer wins over the airing's. A Library card knows exactly
@@ -475,26 +451,11 @@ export function ShowInfo({
       () => api.scheduleSeries(channel, start!, value),
     );
 
-    if (value === "none" && seriesRecording?.channel_identifier) {
-      const what = seriesRecording.title ?? "An episode";
-      const so_far = formatDuration(seriesRecording.recorded_seconds ?? 0);
-      // No offer to save the episode. Rescheduling the airing afterwards does
-      // not resume the capture - it starts a second one, leaving a stub of
-      // what was caught before the rule change and a separate recording of the
-      // rest. Measured on a real device: a cancelled hour came back as 5m and
-      // 55m, two rows in the library. An honest stop beats that.
-      setConfirming({
-        label: "An episode is recording now.",
-        detail: `“${what}” — ${so_far} of ${formatDuration(seriesRecording.duration)} `
-          + "captured. Setting the rule to None stops it at once. What was "
-          + "captured stays in your library; the rest is not recorded.",
-        action: "Stop it",
-        destructive: true,
-        run: setIt,
-      });
-      return;
-    }
-
+    // No "this stops a recording in flight" question here any more: these
+    // buttons are offered only while the series rule is None, so None cannot
+    // be the thing being turned off. That warning moved to the series drawer,
+    // which is where a running rule is changed now - see SeriesDetail's
+    // setRule.
     guard(
       value !== "none" && !!detail?.airing_now && !detail?.scheduled,
       "Record this series?",
@@ -747,19 +708,22 @@ export function ShowInfo({
             </div>
           )}
 
-          {detail?.schedulable && (
+          {/* Everything that begins and ends with this one airing: what it is
+              doing, whether it records, and the copy it left behind. The
+              series controls follow, behind a hairline. */}
+          {(detail?.schedulable || deletable != null) && (
             <div className="mt-6 space-y-2">
               {/* A past airing reports what happened. `scheduled` stays true
                   after an airing has recorded, so describing its scope in the
                   future tense left a programme that finished hours ago labelled
                   with an intent - and, with the series rule at None,
                   contradicting the control directly beneath it. */}
-              {detail.scheduled && detail.past && (
+              {detail?.scheduled && detail.past && (
                 <p className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
                   Recorded
                 </p>
               )}
-              {detail.scheduled && !detail.past && !recording && (
+              {detail?.scheduled && !detail.past && !recording && (
                 <p className="text-xs font-semibold uppercase tracking-wide text-warning">
                   REC · {recordScope(detail)}
                 </p>
@@ -767,7 +731,7 @@ export function ShowInfo({
 
               {/* Gated on `past`, never on `airing_now`: that is false for
                   everything upcoming, which is most of what anyone records. */}
-              {!detail.past && (
+              {detail?.schedulable && !detail.past && (
                 <button
                   disabled={pending}
                   onClick={() => guard(
@@ -791,6 +755,85 @@ export function ShowInfo({
                     : <Circle className="w-4 h-4 shrink-0" aria-hidden />}
                   {detail.scheduled ? "Don't Record Episode" : "Record Episode"}
                 </button>
+              )}
+
+              {/* What this airing left behind, and the way to be rid of it.
+
+                  Not gated on `schedulable`: a recording outlives the schedule
+                  handles of the airing that made it, and something already on
+                  the drive is still deletable when scheduling it again is not.
+
+                  Deletion is on the Tablo, not here - the Library's own trash
+                  button drops the transcoded copy and leaves the recording on
+                  the device, which is a different promise and was the only one
+                  the app could keep until now. */}
+              {deletable != null && (
+                <button
+                  disabled={pending}
+                  onClick={() => setConfirming({
+                    label: "Delete this recording?",
+                    detail: `“${detail?.title ?? "This recording"}” is removed from the `
+                      + "Tablo, freeing its space. This cannot be undone.",
+                    action: "Delete",
+                    destructive: true,
+                    run: () => void deleteRecording(deletable),
+                  })}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
+                             text-sm font-semibold bg-fill-soft text-danger
+                             hover:bg-fill transition disabled:opacity-60
+                             focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <Trash2 className="w-4 h-4 shrink-0" aria-hidden />
+                  Delete Recording
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Past this line, nothing is about the airing on screen.
+
+              The Tablo app draws the same seam in the same place, and its
+              recorded-episode sheet is the proof: no rule editor there at all,
+              and the line still falls above Series Information. */}
+          {detail?.schedulable && (detail.series || backToSeries) && (
+            <div data-series-seam
+                 className="mt-3 pt-3 border-t border-border-subtle space-y-2">
+
+              {/* Only to start a series off. Once it is recording, the rule is
+                  a Series Information matter: the drawer holds Keep and the
+                  channel pin beside it, and a rule already running is not
+                  something to change in passing from one episode's card.
+
+                  Gone entirely on a finished recording, where a control that
+                  can stop tonight's recording has no business at all. */}
+              {detail.series && detail.series.schedule_rule === "none"
+                && deletable == null && (
+                <div className="rounded-xl bg-fill-soft p-3">
+                  <p className="flex items-center gap-3 text-sm font-semibold text-fg">
+                    <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
+                    Edit Series Recording
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    {RULES.map(({ value, label }) => {
+                      const on = detail.series?.schedule_rule === value;
+                      return (
+                        <button
+                          key={value}
+                          aria-pressed={on}
+                          disabled={pending}
+                          onClick={() => applyRule(value)}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
+                                      transition disabled:opacity-60
+                                      focus:outline-none focus:ring-2 focus:ring-accent ${
+                            on ? "bg-accent text-accent-fg"
+                               : "bg-fill text-fg-secondary hover:text-fg"}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
 
               {/* The series behind this episode: back to it when that is where
@@ -825,83 +868,7 @@ export function ShowInfo({
                                 aria-hidden />
                 </button>
               ) : null}
-
-              {/* Kept on a past airing: a rule is about every episode still to
-                  come, not about the one being looked at.
-
-                  Behind a hairline, because of the three controls in this
-                  column it is the only one that changes anything beyond the
-                  airing on screen: Record Episode takes this episode, Series
-                  Information takes the viewer somewhere, and these three
-                  buttons rewrite what the Tablo does with every episode to
-                  come - None going as far as stopping one mid-recording. The
-                  line marks that drop in weight, and it is the app's own
-                  divider token rather than a new one. */}
-              {detail.series && (
-                <div data-series-seam
-                     className="mt-3 pt-3 border-t border-border-subtle">
-                  <div className="rounded-xl bg-fill-soft p-3">
-                    <p className="flex items-center gap-3 text-sm font-semibold text-fg">
-                      <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
-                      Edit Series Recording
-                    </p>
-                    <div className="mt-3 flex gap-2">
-                      {RULES.map(({ value, label }) => {
-                        const on = detail.series?.schedule_rule === value;
-                        return (
-                          <button
-                            key={value}
-                            aria-pressed={on}
-                            disabled={pending}
-                            onClick={() => applyRule(value)}
-                            className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold
-                                        transition disabled:opacity-60
-                                        focus:outline-none focus:ring-2 focus:ring-accent ${
-                              on ? "bg-accent text-accent-fg"
-                                 : "bg-fill text-fg-secondary hover:text-fg"}`}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
-
             </div>
-          )}
-
-          {/* What this airing left behind, and the way to be rid of it.
-
-              Outside the `schedulable` block on purpose: a recording outlives
-              the schedule handles of the airing that made it, and something
-              already on the drive is still deletable when scheduling it again
-              is not.
-
-              Deletion is on the Tablo, not here - the Library's own trash
-              button drops the transcoded copy and leaves the recording on the
-              device, which is a different promise and was the only one the app
-              could keep until now. */}
-          {deletable != null && (
-            <button
-              disabled={pending}
-              onClick={() => setConfirming({
-                label: "Delete this recording?",
-                detail: `“${detail?.title ?? "This recording"}” is removed from the `
-                  + "Tablo, freeing its space. This cannot be undone.",
-                action: "Delete",
-                destructive: true,
-                run: () => void deleteRecording(deletable),
-              })}
-              className="mt-6 w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
-                         text-sm font-semibold bg-fill-soft text-danger
-                         hover:bg-fill transition disabled:opacity-60
-                         focus:outline-none focus:ring-2 focus:ring-accent"
-            >
-              <Trash2 className="w-4 h-4 shrink-0" aria-hidden />
-              Delete Recording
-            </button>
           )}
 
           {writeError && (

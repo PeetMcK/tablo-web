@@ -199,6 +199,51 @@ describe("Series detail", () => {
       { identifier: "C1", guide_path: "/guide/series/9", rule: "none" }));
   });
 
+  it("says plainly that turning the rule off stops a recording in flight", async () => {
+    // Measured on a real device 2026-09-18: with an episode recording, setting
+    // the rule to None stopped the tuner within twelve seconds and left the
+    // ninety seconds already captured in the library as a stub.
+    //
+    // This warning used to live on the episode sheet's own rule buttons. Those
+    // are gone once a series is recording - the rule is a drawer matter now -
+    // so the warning has to be here, or it is nowhere. The gentler wording
+    // below ("the episodes already recorded stay") is true and beside the
+    // point when a tuner is mid-capture.
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({
+      recordings: [{
+        object_id: 86323, channel_identifier: "ch2",
+        start: "2026-09-18T06:30Z", duration: 1800,
+        recording_started: "2026-09-18T06:40:18Z",
+        recorded_seconds: 600, expected_seconds: 1182,
+        title: "Creature Power", series_path: "/guide/series/9",
+      }],
+    });
+    const spy = vi.spyOn(api.series, "update")
+      .mockResolvedValue({ identifier: "C1", echo: {} });
+    await open();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /recording now/i });
+    expect(dialog).toHaveTextContent("Creature Power");
+    expect(dialog).toHaveTextContent(/stops it at once/i);
+    expect(spy).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /stop it/i }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(
+      { identifier: "C1", guide_path: "/guide/series/9", rule: "none" }));
+  });
+
+  it("keeps the gentler wording when nothing is on a tuner", async () => {
+    vi.spyOn(api, "inProgressRecordings").mockResolvedValue({ recordings: [] });
+    await open();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /turn off/i });
+    expect(dialog).not.toHaveTextContent(/recording now/i);
+  });
+
   it("delete-all confirms then bulk-deletes unprotected", async () => {
     const spy = vi.spyOn(api.series, "bulkDelete")
       .mockResolvedValue({ ok: true, filter: "unprotected", status: 200 });
