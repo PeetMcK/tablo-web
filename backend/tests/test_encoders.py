@@ -155,3 +155,62 @@ def test_a_square_pixel_source_is_left_alone():
     from app.transcode_cache import square_pixels_filter
     # Nothing here hardcodes a shape - the expression is evaluated per input.
     assert all("1280" not in f and "480" not in f for f in square_pixels_filter())
+
+
+# ---------------------------------------------------------------------------
+# Bits per pixel, which is what sharpness actually is
+# ---------------------------------------------------------------------------
+
+def test_a_tall_picture_is_brought_down_to_the_cap():
+    """The device's own transcode looked sharper than ours while using *fewer*
+    bits, because it covers far fewer pixels with them:
+
+        Tablo   1280x720  29.97   1.98 Mbps   0.0718 bits/px
+        ours    1920x1080 59.94   2.49 Mbps   0.0200 bits/px
+
+    Both were High profile with B-frames by then, so the settings had already
+    converged - the gap was the four and a half times pixel rate.
+    """
+    from app.transcode_cache import height_cap_filter
+    assert height_cap_filter(720) == [r"scale=-2:min(ih\,720)"]
+    # The comma belongs to `min()`, not to the filter list. Unescaped, FFmpeg
+    # reads `720)` as a filter of its own and the whole graph fails to parse.
+    assert r"\," in height_cap_filter(720)[0]
+
+
+def test_the_cap_can_be_turned_off():
+    from app.transcode_cache import height_cap_filter
+    assert height_cap_filter(-1) == []
+
+
+def test_the_cap_runs_after_the_squaring(monkeypatch):
+    """Anamorphic SD has to reach its real shape before anything measures its
+    height, and the hardware upload has to come last of all."""
+    from app.transcode_cache import height_cap_filter, square_pixels_filter
+    monkeypatch.delenv("TRANSCODE_DEINTERLACE", raising=False)
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_vaapi")
+    chain = [*deinterlace_filter(), *square_pixels_filter(),
+             *height_cap_filter(720), *encoder_profile().filters]
+
+    assert chain.index("setsar=1") < chain.index(r"scale=-2:min(ih\,720)")
+    assert chain.index(r"scale=-2:min(ih\,720)") < chain.index("hwupload")
+
+
+def test_the_hardware_encoder_asks_for_the_devices_sharpness(monkeypatch):
+    """`-q:v 55` is 0.0756 bits/px on 720p60, against the device's 0.0718.
+    At the 40 we shipped it was 0.0246, which is the softness that started
+    this. Swept on 30s of real 720p60 with the rest of the profile in place."""
+    monkeypatch.delenv("TRANSCODE_QUALITY", raising=False)
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
+    flags = encoder_profile().flags
+
+    assert flags[flags.index("-q:v") + 1] == "55"
+
+
+def test_quality_stays_overridable(monkeypatch):
+    """Three times the bitrate is a real cost, and someone may want the disk."""
+    monkeypatch.setenv("TRANSCODE_QUALITY", "45")
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
+    flags = encoder_profile().flags
+
+    assert flags[flags.index("-q:v") + 1] == "45"

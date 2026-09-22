@@ -237,6 +237,27 @@ def test_live_uses_the_selected_hardware_encoder(monkeypatch):
     assert "-a53cc" in cmd
 
 
+def test_live_keeps_its_own_bitrate_and_no_reordering(monkeypatch):
+    """Live shares the recordings profile, and the recordings profile was
+    tuned for a file written once and read later: `-q:v 55` to match the
+    device's own sharpness, at roughly three times the bitrate, and B-frames
+    to pay for some of it. Neither suits a stream being pushed at a player in
+    real time - reordering makes the encoder hold frames back, and live has no
+    slack above realtime. Both are re-set after the profile, where FFmpeg lets
+    the last one win."""
+    monkeypatch.delenv("TRANSCODE_QUALITY", raising=False)
+    monkeypatch.setenv("TRANSCODE_VIDEO_ENCODER", "h264_videotoolbox")
+    cmd = stream.live_ffmpeg_cmd(stream.TRANSCODE_DIR / "deadbeef",
+                                 "http://device/stream/pl.m3u8?token")
+
+    def last_value(flag: str) -> str:
+        """The winning one: FFmpeg takes the last of a repeated option."""
+        return cmd[len(cmd) - cmd[::-1].index(flag)]
+
+    assert last_value("-q:v") == "40"
+    assert last_value("-bf") == "0"
+
+
 def test_live_defaults_to_libx264(monkeypatch):
     """With no encoder configured (the container case) live stays on x264."""
     monkeypatch.delenv("TRANSCODE_VIDEO_ENCODER", raising=False)

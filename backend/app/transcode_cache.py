@@ -144,12 +144,30 @@ def _profiles() -> dict[str, EncoderProfile]:
         #
         # -realtime 0 lets it run flat out rather than pacing to wall clock;
         # -allow_sw 1 falls back to software instead of failing when the engine
-        # is unavailable. q:v 40 was chosen by measurement - 55 produced files
-        # two thirds larger than x264 for no visible gain.
+        # is unavailable.
+        #
+        # q:v 55 is the Tablo's own sharpness, arrived at by measurement rather
+        # than taste. Its transcode spends 0.0718 bits per pixel; swept over
+        # 30s of 720p60 with the rest of this profile in place:
+        #
+        #     q:v 40   1.36 Mbps   0.0246 bits/px    (what we shipped)
+        #     q:v 55   4.18 Mbps   0.0756 bits/px    <- the Tablo's figure
+        #     q:v 60   5.68 Mbps   0.1027 bits/px
+        #     q:v 70  11.19 Mbps   0.2026 bits/px
+        #
+        # 40 was picked back when it was compared against x264 at the same
+        # resolution and looked like a fair trade. It was not being compared
+        # against the device, and the device wins at 40 - visibly, on a face
+        # against a curtain.
+        #
+        # The bitrate this implies is real: roughly three times what q:v 40
+        # produced. It buys the picture the device gets while keeping twice
+        # its frame rate, and `TRANSCODE_QUALITY` dials it back for anyone who
+        # would rather have the disk.
         "h264_videotoolbox": EncoderProfile(
             name="h264_videotoolbox",
             flags=["-realtime", "0", "-allow_sw", "1", "-a53cc", "0",
-                   "-q:v", q or "40", "-profile:v", "high",
+                   "-q:v", q or "55", "-profile:v", "high",
                    *B_FRAME_FLAGS],
         ),
         # Intel/AMD on Linux. UNVERIFIED - no VAAPI hardware was available to
@@ -343,6 +361,41 @@ def square_pixels_filter() -> list[str]:
     cent.
     """
     return ["scale=trunc(iw*sar/2)*2:ih", "setsar=1"]
+
+
+#: The tallest picture we encode. Anything above it is brought down to it.
+MAX_HEIGHT = int(os.environ.get("TRANSCODE_MAX_HEIGHT", "720"))
+
+
+def height_cap_filter(max_height: int = 0) -> list[str]:
+    """Bring a taller picture down to `MAX_HEIGHT`, and leave the rest alone.
+
+    Sharpness is bits per pixel, and a bitrate spread over more pixels buys
+    fewer for each of them. Measured against the Tablo's own transcode of a
+    game, which is what this is trying to look like:
+
+        Tablo   1280x720  29.97   1.98 Mbps   0.0718 bits/px
+        ours    1920x1080 59.94   2.49 Mbps   0.0200 bits/px
+
+    Every encoder setting had by then converged - both High profile, both
+    using B-frames - and the picture was still softer, because the same
+    bitrate was covering four and a half times the pixel rate. 1080i is the
+    source that makes this worth doing: each field carries 1920x540, so the
+    1080 lines a deinterlacer produces are half interpolated. Bringing them to
+    720 discards detail that was invented rather than broadcast, and spends
+    what it saves on the pixels that remain.
+
+    The 720p60 channels are already at the cap and pass through untouched, as
+    does SD - `-2` keeps the aspect and an even width, which H.264 chroma
+    subsampling requires. It runs after `square_pixels_filter`, so anamorphic
+    SD is measured at its real shape rather than its coded one.
+    """
+    cap = max_height or MAX_HEIGHT
+    if cap <= 0:
+        return []
+    # The comma is inside a filter *expression*, where FFmpeg would otherwise
+    # read it as the end of this filter.
+    return [rf"scale=-2:min(ih\,{cap})"]
 
 
 def encoder_profile() -> EncoderProfile:
@@ -2051,7 +2104,7 @@ class TranscodeCache:
             # nothing a filter would fix.
             filters = [] if copying else [
                 *deinterlace_filter(interlaced=interlaced),
-                *square_pixels_filter(), *prof.filters]
+                *square_pixels_filter(), *height_cap_filter(), *prof.filters]
             return [
                 "ffmpeg", "-y",
                 # Device-controlled URLs get no 'file'. A local window source is
