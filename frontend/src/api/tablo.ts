@@ -614,9 +614,12 @@ export function detailToMessage(detail: unknown): string {
  * "Turn off & delete all".
  */
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  status: number;
+
+  constructor(status: number, message: string) {
     super(message);
     this.name = "ApiError";
+    this.status = status;
   }
 }
 
