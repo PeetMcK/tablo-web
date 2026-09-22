@@ -38,6 +38,14 @@ export declare class Cea708Service {
    * completed. Called repeatedly while the packet has data left.
    */
   handleCea708ControlCode(packet: DtvccPacket): ClosedCaption[];
+  /**
+   * What every visible window is showing at `pts`, without disturbing it.
+   *
+   * Ours, not Shaka's: upstream only ever emits a caption as it leaves the
+   * screen, which is too late for a player decoding barely ahead of its own
+   * playhead. See the note on the implementation.
+   */
+  snapshotVisibleWindows(pts: number): ClosedCaption[];
   /** Drop all window state. For a seek or a discontinuity. */
   clear(): void;
 }

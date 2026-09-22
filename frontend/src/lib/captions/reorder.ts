@@ -26,6 +26,15 @@ export interface ReorderBuffer<T> {
   /** Offer an item at its presentation time. */
   add(seconds: number, item: T): void;
   /**
+   * Note a picture that carried nothing, so its time still settles what is
+   * held.
+   *
+   * Without it the window only moves when bytes arrive, and a stream that
+   * goes quiet leaves its last bytes stuck until the next caption - which for
+   * DTVCC, whose pairs come in bursts, was seconds at a time.
+   */
+  advance(seconds: number): void;
+  /**
    * Everything old enough that nothing earlier can still arrive, oldest
    * first. Half a second is well past any display reordering distance — a
    * handful of frames — and costs nothing visible, because the decoder
@@ -34,6 +43,11 @@ export interface ReorderBuffer<T> {
   take(): Array<Held<T>>;
   /** Everything held, settled or not. For end of stream. */
   takeAll(): Array<Held<T>>;
+  /**
+   * The time up to which everything has been handed over, or null before any
+   * picture has been seen. What a decoder's screen state may be asked about.
+   */
+  readonly settledThrough: number | null;
   reset(): void;
 }
 
@@ -60,6 +74,12 @@ export function createReorderBuffer<T>(
     add(seconds: number, item: T) {
       pending.push({ seconds, item });
       if (seconds > newest) newest = seconds;
+    },
+    advance(seconds: number) {
+      if (seconds > newest) newest = seconds;
+    },
+    get settledThrough() {
+      return newest === Number.NEGATIVE_INFINITY ? null : newest - windowSeconds;
     },
     take: () => drainTo(newest - windowSeconds),
     takeAll: () => drainTo(Number.POSITIVE_INFINITY),

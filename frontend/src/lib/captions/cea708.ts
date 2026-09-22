@@ -15,7 +15,7 @@ import { DtvccPacketBuilder, DtvccPacketBuilder_DTVCC_PACKET_DATA }
   from "./shaka/dtvccPacketBuilder";
 import { Cea708Service } from "./shaka/cea708Service";
 import type { Cue } from "./shaka/cue";
-import { createReorderBuffer } from "./reorder";
+import { createReorderBuffer, REORDER_SECONDS } from "./reorder";
 import type { CaptionAnchor, CcPair, PositionedCue } from "./types";
 
 /** The service these broadcasts carry. See the design note. */
@@ -113,6 +113,18 @@ export function createCea708Track(): Cea708Track {
   let seen = false;
   /** Ties between bytes sharing a timestamp, which the builder sorts on. */
   let order = 0;
+  const collect = (caption: { cue: Cue }) => {
+    const text = textOf(caption.cue);
+    if (!text) return;
+    seen = true;
+    cues.push({
+      startSeconds: caption.cue.startTime,
+      endSeconds: caption.cue.endTime,
+      text,
+      region: regionOf(caption.cue),
+      style: styleOf(caption.cue),
+    });
+  };
 
   /**
    * Feed settled pairs, then decode whatever packets completed.
@@ -151,16 +163,7 @@ export function createCea708Track(): Cea708Track {
         if (serviceNumber === SERVICE_NUMBER) {
           while (packet.getPosition() - start < blockSize) {
             for (const caption of service.handleCea708ControlCode(packet)) {
-              const text = textOf(caption.cue);
-              if (!text) continue;
-              seen = true;
-              cues.push({
-                startSeconds: caption.cue.startTime,
-                endSeconds: caption.cue.endTime,
-                text,
-                region: regionOf(caption.cue),
-                style: styleOf(caption.cue),
-              });
+              collect(caption);
             }
           }
         } else {
@@ -171,7 +174,19 @@ export function createCea708Track(): Cea708Track {
     builder.clearBuiltPackets();
   };
 
-  const takeCues = () => {
+  /**
+   * Add what is on screen to what has just left it.
+   *
+   * Upstream emits a caption only as it is taken down, which is after the
+   * playhead has already reached it - see `snapshotVisibleWindows`. The
+   * snapshot goes last so that within one round a window's take-down cue is
+   * followed by nothing for that window, and a window still up ends its cue
+   * at the time decoded through rather than in the past.
+   */
+  const takeCues = (through: number | null) => {
+    if (through !== null) {
+      for (const caption of service.snapshotVisibleWindows(through)) collect(caption);
+    }
     const out = cues;
     cues = [];
     return out;
@@ -179,6 +194,11 @@ export function createCea708Track(): Cea708Track {
 
   return {
     add(seconds: number, pairs: readonly CcPair[]) {
+      // Every picture, carrying bytes or not: its time is what settles the
+      // bytes already held and what the windows are asked about. DTVCC pairs
+      // arrive in bursts, so a track told only about the pictures that carry
+      // them sees time stand still between bursts.
+      pending.advance(seconds);
       for (const pair of pairs) {
         // 2 and 3 only: 0 and 1 are the 608 fields and have their own track.
         if (pair.field < 2) continue;
@@ -188,12 +208,15 @@ export function createCea708Track(): Cea708Track {
 
     drain() {
       consume(pending.take());
-      return takeCues();
+      return takeCues(pending.settledThrough);
     },
 
     flush() {
+      const through = pending.settledThrough;
       consume(pending.takeAll());
-      return takeCues();
+      // Everything held has gone in, so the windows can be asked about the
+      // last picture rather than about the settled boundary behind it.
+      return takeCues(through === null ? null : through + REORDER_SECONDS);
     },
 
     get seen() { return seen; },
