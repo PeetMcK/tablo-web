@@ -3206,7 +3206,7 @@ def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None):
 def test_a_copied_window_pulls_the_device_in_one_request(tmp_path, monkeypatch):
     """Sixty one-second segments are one contiguous run of one file, so the
     whole window is a single read rather than sixty round trips."""
-    cmd, ranges, _ = _copy_window_with_device(tmp_path, monkeypatch)
+    _cmd, ranges, _ = _copy_window_with_device(tmp_path, monkeypatch)
 
     assert len(ranges) == 1
     url, first, last = ranges[0]
