@@ -20,21 +20,38 @@
  * knows nothing about fetching, grouping or filtering. That is what lets the
  * view render cards or rows from the same section list.
  */
-import { CheckCircle2, CloudOff, Lock, Play } from "lucide-react";
+import {
+  CheckCircle2, CloudOff, Download, FileDown, Lock, Play, Trash2,
+} from "lucide-react";
 
-import type { Recording } from "../api/tablo";
+import { downloadUrl, type Recording } from "../api/tablo";
 import { formatDuration } from "../lib/format";
 import {
   cardArt, coverageOf, isIncomplete, isPlayable, isRecording, resumeFor,
 } from "../lib/recording";
 import { RecordingPill } from "./RecordingPill";
 
+/**
+ * One control in the row's cluster.
+ *
+ * Round and 32px like the card's, but flat until hovered: four filled discs
+ * per row, forty rows down a page, is a column of buttons rather than a
+ * library.
+ */
+const ACTION = "shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
+  + " transition disabled:opacity-30 disabled:pointer-events-none"
+  + " focus:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+
 interface Props {
   rec: Recording;
-  /** The row's own click. Resumes, as a card's artwork does. */
+  /** The picture's click. Resumes, as a card's artwork does. */
   onPlay: () => void;
-  /** The ⋮, which opens the sheet holding everything else. */
+  /** The rest of the row, and the ⓘ: the sheet holding everything else. */
   onInfo: () => void;
+  /** Keep an offline copy, or stop keeping one. */
+  onKeep: (on: boolean) => void;
+  /** Drop the transcoded copy, leaving the recording on the Tablo. */
+  onDeleteCache: () => void;
 }
 
 /** `8.1 CBS`, or whichever half the device gave us, or nothing. */
@@ -66,10 +83,15 @@ function lengthLabel(rec: Recording): string {
   return formatDuration(rec.duration);
 }
 
-export function RecordingRow({ rec, onPlay, onInfo }: Props) {
+export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Props) {
   const title = rec.title || "Untitled Recording";
   const live = isRecording(rec);
   const playable = isPlayable(rec);
+  // Caching copies the whole thing, so unlike playback this really does need a
+  // finished recording. An offline copy is keepable by definition: it is one.
+  const keepable = rec.offline_only || (!live && !rec.error);
+  const cached = rec.cache_state !== "absent";
+  const whole = rec.cache_state === "complete";
   // Inferred from how little of the slot exists, not reported: the device
   // called none of the three measured failures an error.
   const broken = !live && isIncomplete(coverageOf(rec));
@@ -102,7 +124,9 @@ export function RecordingRow({ rec, onPlay, onInfo }: Props) {
         onClick={onPlay}
         disabled={!playable}
         aria-label={`Play ${title}`}
-        className="shrink-0 py-2 rounded-lg focus:outline-none
+        // `group/art`, not the row's `group`: the mark belongs to the picture,
+        // and one on every row the pointer crosses is a page of triangles.
+        className="group/art shrink-0 py-2 rounded-lg focus:outline-none
                    focus-visible:ring-2 focus-visible:ring-accent
                    disabled:cursor-not-allowed disabled:opacity-60"
       >
@@ -136,7 +160,8 @@ export function RecordingRow({ rec, onPlay, onInfo }: Props) {
             </span>
           )}
 
-          {/* The frame is the play button, and on hover it says so.
+          {/* The picture is the play button, and hovering the picture — not
+              the row — is what says so.
 
               One mark, not the card's three chips: a card has room to ask
               whether you mean the live edge, where you left off, or the
@@ -151,7 +176,7 @@ export function RecordingRow({ rec, onPlay, onInfo }: Props) {
               data-play-mark
               aria-hidden
               className="absolute inset-0 flex items-center justify-center bg-scrim-soft
-                         opacity-0 group-hover:opacity-100 group-focus-within:opacity-100
+                         opacity-0 group-hover/art:opacity-100 group-focus-visible/art:opacity-100
                          transition-opacity"
             >
               <span className="flex items-center justify-center w-6 h-6 rounded-full
@@ -166,10 +191,12 @@ export function RecordingRow({ rec, onPlay, onInfo }: Props) {
 
       {/* Everything that is not the picture opens the sheet: what this is,
           when it was on, how far in you are — the questions the sheet answers
-          — and from there Play, Delete, Keep and the series behind it. */}
+          — and from there the series behind it. Named "Read about" rather
+          than "Information about" so it and the ⓘ button, which do the same
+          thing, are still two distinguishable names to anyone listening. */}
       <button
         onClick={onInfo}
-        aria-label={`Information about ${title}`}
+        aria-label={`Read about ${title}`}
         className="min-w-0 flex-1 flex flex-col gap-0.5 py-2 text-left rounded-lg
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
@@ -236,6 +263,86 @@ export function RecordingRow({ rec, onPlay, onInfo }: Props) {
             {facts}
           </span>
       </button>
+
+      {/* The card's own four, at the end of the row and in the order they are
+          reached for: what is this, keep it, drop the copy, save the file.
+
+          All four always drawn, and disabled rather than absent when one does
+          not apply — a cluster that changes width from row to row leaves
+          nothing to aim down a column at, and "nothing is cached here" is
+          worth saying rather than hiding. */}
+      <span data-row-actions className="shrink-0 flex items-center gap-1 pl-1">
+        {/* Lit by a hover anywhere on the row, because a click anywhere on the
+            row is what it does: the button is the row's click, named.
+
+            The direct hover carries `!` so it wins outright. Both rules are
+            the same specificity — `.group:hover .x` and `.x:hover` — which
+            leaves the winner to whichever Tailwind emits last, and that is not
+            something this component should depend on. */}
+        <button
+          onClick={onInfo}
+          aria-label={`Information about ${title}`}
+          title="Show information"
+          className={ACTION + " text-fg-faint group-hover:bg-fill group-hover:text-fg"
+            + " hover:!bg-accent hover:!text-accent-fg"}
+        >
+          {/* The Live card's mark at the Live card's proportions: the ring is
+              the glyph, rather than a small thing floating in a big disc. */}
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden>
+            <circle cx="12" cy="12" r="9.6" />
+            <path d="M12 11.1v5.6M12 7.5v.2" />
+          </svg>
+        </button>
+
+        <button
+          onClick={() => onKeep(!rec.pinned)}
+          disabled={!keepable}
+          aria-label={rec.pinned ? `Stop keeping ${title}` : `Keep ${title} offline`}
+          title={rec.pinned ? "Kept offline — click to stop keeping" : "Keep offline"}
+          className={ACTION + (rec.pinned
+            ? " bg-success-soft text-success hover:bg-success-soft-strong"
+            : " text-fg-faint hover:bg-fill hover:text-fg-secondary")}
+        >
+          {rec.pinned
+            ? <CheckCircle2 className="w-4 h-4" aria-hidden />
+            : <Download className="w-4 h-4" aria-hidden />}
+        </button>
+
+        <button
+          onClick={onDeleteCache}
+          disabled={!cached}
+          aria-label={`Delete cached video of ${title}`}
+          title={cached ? "Delete cached video" : "Nothing is cached here"}
+          className={ACTION + " text-fg-faint hover:bg-danger-soft hover:text-danger"}
+        >
+          <Trash2 className="w-4 h-4" aria-hidden />
+        </button>
+
+        {/* A plain link, not a fetch: the browser owns the download, so a 7 GB
+            file streams to disk instead of being buffered in a tab. Only once
+            the whole copy exists — half a transcode is not a file. */}
+        {whole ? (
+          <a
+            href={downloadUrl(rec.object_id)}
+            download
+            aria-label={`Save ${title} as an MP4 file`}
+            title="Save as a single MP4 file"
+            className={ACTION + " text-fg-faint hover:bg-fill hover:text-fg"}
+          >
+            <FileDown className="w-4 h-4" aria-hidden />
+          </a>
+        ) : (
+          <span
+            aria-label={`Save ${title} as an MP4 file`}
+            aria-disabled="true"
+            title="Keep it offline first — there is no file to save yet"
+            className={ACTION + " text-fg-disabled"}
+          >
+            <FileDown className="w-4 h-4" aria-hidden />
+          </span>
+        )}
+      </span>
 
       {/* How far in the viewer is, on the row's own bottom edge. Deliberately
           not the CoverageStrip: that is an interactive scrubber with a preview,

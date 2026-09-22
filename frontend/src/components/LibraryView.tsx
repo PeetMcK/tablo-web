@@ -856,6 +856,31 @@ export function LibraryView() {
                   rec={rec}
                   onPlay={() => { setStartMode("resume"); setPlaying(rec); }}
                   onInfo={() => setInfoFor(rec)}
+                  // The same two mutations the card's own controls call, and
+                  // the same confirmations in front of them: a row deleting
+                  // the last copy of something without asking would be a
+                  // different, worse control wearing the same icon.
+                  onKeep={(on) => {
+                    if (on) { keep.mutate({ id: rec.object_id, on: true }); return; }
+                    setConfirmation({
+                      title: `Stop keeping "${rec.title ?? "this recording"}" offline?`,
+                      body: rec.offline_only
+                        ? "The Tablo no longer has this recording, so the copy cannot be remade once it is reclaimed."
+                        : "The cached video stays until space is needed, then it is reclaimed automatically.",
+                      confirmLabel: "Stop keeping",
+                      danger: rec.offline_only,
+                      onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
+                    });
+                  }}
+                  onDeleteCache={() => setConfirmation({
+                    title: `Delete the cached video of "${rec.title ?? "this recording"}"?`,
+                    body: rec.offline_only
+                      ? "The Tablo no longer has this recording. Deleting it here removes the only copy."
+                      : "It can be cached again from the Tablo.",
+                    confirmLabel: "Delete cache",
+                    danger: true,
+                    onConfirm: () => control.mutate({ id: rec.object_id, action: "delete" }),
+                  })}
                 />
               );
             }

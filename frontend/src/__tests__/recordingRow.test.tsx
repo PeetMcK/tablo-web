@@ -62,13 +62,18 @@ function rec(over: Partial<Recording> = {}): Recording {
 }
 
 function row(over: Partial<Recording> = {}, handlers: {
-  onPlay?: () => void; onInfo?: () => void;
+  onPlay?: () => void;
+  onInfo?: () => void;
+  onKeep?: (on: boolean) => void;
+  onDeleteCache?: () => void;
 } = {}) {
   return render(
     <RecordingRow
       rec={rec(over)}
       onPlay={handlers.onPlay ?? (() => {})}
       onInfo={handlers.onInfo ?? (() => {})}
+      onKeep={handlers.onKeep ?? (() => {})}
+      onDeleteCache={handlers.onDeleteCache ?? (() => {})}
     />,
   );
 }
@@ -154,7 +159,7 @@ describe("what a row does", () => {
     const onInfo = vi.fn();
     row({}, { onPlay, onInfo });
 
-    fireEvent.click(screen.getByRole("button", { name: /Information about/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Read about Jeopardy!/ }));
 
     expect(onInfo).toHaveBeenCalledTimes(1);
     expect(onPlay).not.toHaveBeenCalled();
@@ -165,7 +170,7 @@ describe("what a row does", () => {
     // describes are the same gesture.
     row({ subtitle: "Temple of Tigers", title: "Wild Kratts" });
 
-    const sheet = screen.getByRole("button", { name: /Information about Wild Kratts/ });
+    const sheet = screen.getByRole("button", { name: /Read about Wild Kratts/ });
     expect(sheet).toHaveTextContent(/Wild Kratts/);
     expect(sheet).toHaveTextContent(/Temple of Tigers/);
     expect(sheet).toHaveTextContent(/8\.1 CBS/);
@@ -185,17 +190,17 @@ describe("what a row does", () => {
     const mark = container.querySelector("[data-play-mark]")!;
     expect(mark).toBeTruthy();
     expect(mark.getAttribute("aria-hidden")).toBe("true");
-    // Hidden until the row is hovered or focused — the frame is artwork at
-    // rest, and a permanent triangle over every picture is a page of
-    // triangles.
+    // Hidden until the PICTURE is hovered, not the row: the frame is artwork
+    // at rest, and a triangle lighting up on every row the pointer crosses is
+    // a page of triangles.
     expect(mark.className).toMatch(/opacity-0/);
-    expect(mark.className).toMatch(/group-hover:opacity-100/);
+    expect(mark.className).toMatch(/group-hover\/art:opacity-100/);
+    expect(mark.className).not.toMatch(/(?<!\/art)\bgroup-hover:opacity-100/);
   });
 
   it("offers one way in, not three", () => {
     // A card offers Live / Resume / From start because it has room to ask.
-    // A row resumes, and the sheet behind the ⋮ is where the other answers
-    // live.
+    // A row resumes, and the sheet is where the other answers live.
     row({ position: 937, state: "recording", recorded_seconds: 600 });
 
     expect(screen.queryByText(/From start/i)).toBeNull();
@@ -207,6 +212,107 @@ describe("what a row does", () => {
     const { container } = row({ error: "tuner_conflict" });
 
     expect(container.querySelector("[data-play-mark]")).toBeNull();
+  });
+});
+
+/**
+ * The four controls the card carries, at the end of the row.
+ *
+ * All four are always drawn, and disabled rather than absent when one does
+ * not apply: a cluster that changes width from row to row leaves nothing to
+ * aim down, and "nothing is cached here" is worth saying rather than hiding.
+ */
+describe("what a row can do to a recording", () => {
+  const cluster = () =>
+    [...document.querySelectorAll("[data-row-actions] > *")]
+      .map(el => el.getAttribute("aria-label") ?? "");
+
+  it("carries information, keep, delete and save, in that order", () => {
+    row({ pinned: true, cache_state: "complete" });
+
+    expect(cluster()).toEqual([
+      expect.stringMatching(/Information about Jeopardy!/),
+      expect.stringMatching(/Stop keeping Jeopardy!/),
+      expect.stringMatching(/Delete cached video/),
+      expect.stringMatching(/Save Jeopardy!/),
+    ]);
+  });
+
+  it("opens the sheet from the information button", () => {
+    const onInfo = vi.fn();
+    row({}, { onInfo });
+
+    fireEvent.click(screen.getByRole("button", { name: /Information about Jeopardy!/ }));
+
+    expect(onInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("lights the information button when the row is hovered", () => {
+    // Clicking anywhere on the row does what this button does, so the row's
+    // hover has to point at it.
+    row();
+
+    const info = screen.getByRole("button", { name: /Information about Jeopardy!/ });
+    expect(info.className).toMatch(/group-hover:bg-fill/);
+    // And its own hover still wins over the row's.
+    expect(info.className).toMatch(/hover:!bg-accent/);
+  });
+
+  it("keeps a copy offline", () => {
+    const onKeep = vi.fn();
+    row({}, { onKeep });
+
+    fireEvent.click(screen.getByRole("button", { name: /Keep Jeopardy! offline/ }));
+
+    expect(onKeep).toHaveBeenCalledWith(true);
+  });
+
+  it("offers to stop keeping one that is kept", () => {
+    const onKeep = vi.fn();
+    row({ pinned: true, cache_state: "complete" }, { onKeep });
+
+    fireEvent.click(screen.getByRole("button", { name: /Stop keeping Jeopardy!/ }));
+
+    expect(onKeep).toHaveBeenCalledWith(false);
+  });
+
+  it("will not keep something still being written", () => {
+    // Caching copies the whole thing, and the whole thing does not exist yet.
+    row({ state: "recording", recorded_seconds: 60 });
+
+    expect(screen.getByRole("button", { name: /Keep Jeopardy! offline/ })).toBeDisabled();
+  });
+
+  it("deletes the cached video when there is one", () => {
+    const onDeleteCache = vi.fn();
+    row({ cache_state: "complete" }, { onDeleteCache });
+
+    fireEvent.click(screen.getByRole("button", { name: /Delete cached video/ }));
+
+    expect(onDeleteCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("has nothing to delete when nothing is cached", () => {
+    row({ cache_state: "absent" });
+
+    expect(screen.getByRole("button", { name: /Delete cached video/ })).toBeDisabled();
+  });
+
+  it("saves the file once the whole copy exists", () => {
+    row({ cache_state: "complete" });
+
+    expect(screen.getByRole("link", { name: /Save Jeopardy!/ }))
+      .toHaveAttribute("href", expect.stringContaining("/api/recordings/1/"));
+  });
+
+  it("offers no file to save while there is only part of one", () => {
+    row({ cache_state: "partial", cache_progress: 0.4 });
+
+    // A link to something nothing can serve is worse than a control that
+    // says not yet.
+    expect(screen.queryByRole("link", { name: /Save Jeopardy!/ })).toBeNull();
+    expect(screen.getByLabelText(/Save Jeopardy!/))
+      .toHaveAttribute("aria-disabled", "true");
   });
 });
 
