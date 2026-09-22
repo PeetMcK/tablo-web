@@ -7,6 +7,7 @@ The device is stubbed with a fake `state` whose `request_device` answers by
 import json
 
 import pytest
+from fastapi import HTTPException
 
 from app.routes import series as S
 
@@ -286,3 +287,53 @@ async def test_series_detail_by_guide_path_no_recordings(monkeypatch):
     assert d["settings"]["rule"] == "new"
     assert d["settings"]["identifier"] == "IDA"
     assert d["episodes"] == []
+
+
+@pytest.mark.asyncio
+async def test_series_detail_for_a_series_nobody_records(monkeypatch):
+    """A show with no rule and nothing recorded is most of the guide.
+
+    Opening one from the Guide or from Live has only its guide path to go on,
+    and the ruled set — which is what a scheduled-but-unrecorded series is
+    found in — does not contain it. Answering 404 there left every ordinary
+    show in the guide with a sheet that never opened.
+    """
+    fake = FakeState({
+        ("GET", "/guide/shows?state=requested&lh"): RULED,
+        ("GET", "/guide/shows"): CATALOG,
+        ("GET", "/guide/series/77"): {
+            "identifier": "IDZ",
+            "series": {"title": "Nature", "description": "Wildlife films.",
+                       "genres": ["Documentary"],
+                       "cover_image": {"image_id": 77}},
+            "show_counts": {"scheduled_count": 4},
+        },
+        "objs": OBJS,
+    })
+    monkeypatch.setattr(S, "state", fake)
+
+    d = await S.series_detail(recordings_path=None, guide_path="/guide/series/77")
+
+    assert d["meta"]["title"] == "Nature"
+    assert d["meta"]["description"] == "Wildlife films."
+    assert d["meta"]["genres"] == ["Documentary"]
+    assert d["meta"]["cover_image_id"] == 77
+    assert d["meta"]["kind"] == "series"
+    # Nothing is scheduled for it, and the sheet's controls have to say so
+    # rather than inherit some other series' rule.
+    assert d["settings"]["rule"] == "none"
+    assert d["settings"]["identifier"] == "IDZ"
+    assert d["settings"]["keep"] == {"rule": "none", "count": None}
+    assert d["episodes"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_guide_path_the_device_does_not_know_is_a_404(monkeypatch):
+    fake = FakeState({("GET", "/guide/shows?state=requested&lh"): RULED,
+                      ("GET", "/guide/shows"): CATALOG, "objs": OBJS})
+    monkeypatch.setattr(S, "state", fake)
+
+    with pytest.raises(HTTPException) as caught:
+        await S.series_detail(recordings_path=None, guide_path="/guide/series/404")
+
+    assert caught.value.status_code == 404
