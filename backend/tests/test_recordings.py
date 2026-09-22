@@ -3131,3 +3131,126 @@ def test_a_copied_window_that_comes_out_the_wrong_shape_is_re_encoded(
     assert cmds[0][cmds[0].index("-c:v") + 1] == "copy"
     assert cmds[1][cmds[1].index("-c:v") + 1] != "copy"
     assert "-force_key_frames" in cmds[1]
+
+
+# ---------------------------------------------------------------------------
+# How a copied window reaches the device
+#
+# Measured 2026-09-22 against the real box: sixteen concurrent one-second
+# segment readers dragged the whole fill down to 4.3 Mb/s and its ping from
+# 3ms to 85ms, while a single bulk byte-range read held 41 Mb/s over a far
+# worse link. The device is good at sequential reads and bad at queues.
+# ---------------------------------------------------------------------------
+
+_DEVICE_MASTER = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=10000000\n/stream/pls.m3u8?tok\n"
+
+
+def _device_variant(n: int = 520, size: int = 1000) -> str:
+    """A device playlist: one-second segments, contiguous byte ranges, one file."""
+    lines = ["#EXTM3U", "#EXT-X-VERSION:4", "#EXT-X-MEDIA-SEQUENCE:1"]
+    for i in range(n):
+        lines.append("#EXTINF:1.000,")
+        lines.append(f"#EXT-X-BYTERANGE:{size}@{i * size}")
+        lines.append("/stream/segw.ts?a")
+    lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines) + "\n"
+
+
+def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None):
+    """Run window 7 with the device and FFmpeg stubbed. Returns (argv, ranges, cache)."""
+    from app import transcode_cache as tc
+
+    ranges = []
+
+    def fake_get(url, timeout=120):
+        if "pls.m3u8" in url:
+            return (variant if variant is not None else _device_variant()).encode()
+        return _DEVICE_MASTER.encode()
+
+    def fake_range(url, first, last, timeout=180):
+        ranges.append((url, first, last))
+        return b"X" * (last - first + 1)
+
+    monkeypatch.setattr(tc, "_http_get", fake_get)
+    monkeypatch.setattr(tc, "_http_get_range", fake_range)
+
+    async def fake_session(path):
+        return {"playlist_url": "http://device/stream/master.m3u8?tok"}
+
+    c = TranscodeCache(session_starter=fake_session, root=tmp_path, budget_bytes=10**12)
+    asyncio.run(c.register(80888, "/recordings/x/80888", GAME, codec=codec))
+
+    real_exec = asyncio.create_subprocess_exec
+    cmds = []
+
+    async def fake_exec(*cmd, cwd=None, **kw):
+        cmds.append(list(cmd))
+        from pathlib import Path as P
+        for n in range(segments_in_window(GAME, 7)):
+            (P(cwd) / f"seg_{n:02d}.ts").write_bytes(b"x")
+
+        class P0:
+            returncode = 0
+            async def wait(self):
+                return 0
+        return P0()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    try:
+        asyncio.run(c.ensure_window(80888, 7, "/recordings/x/80888", GAME))
+    finally:
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", real_exec)
+    return cmds[0], ranges, c
+
+
+def test_a_copied_window_pulls_the_device_in_one_request(tmp_path, monkeypatch):
+    """Sixty one-second segments are one contiguous run of one file, so the
+    whole window is a single read rather than sixty round trips."""
+    cmd, ranges, _ = _copy_window_with_device(tmp_path, monkeypatch)
+
+    assert len(ranges) == 1
+    url, first, last = ranges[0]
+    assert url.endswith("/stream/segw.ts?a")
+    # Window 7 is 420-480s, and the read starts a pre-roll early.
+    assert first == 417 * 1000
+    assert last == 480 * 1000 - 1
+
+
+def test_a_copied_window_is_cut_from_disk_not_from_the_device(tmp_path, monkeypatch):
+    cmd, _ranges, _ = _copy_window_with_device(tmp_path, monkeypatch)
+
+    assert cmd[cmd.index("-i") + 1].endswith("source.ts")
+    assert "http" not in cmd[cmd.index("-i") + 1]
+    # Only the file it just wrote may be opened.
+    assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
+    # The window still begins where the playlist says it does: the read started
+    # three seconds early and the output seek crosses that.
+    assert cmd[cmd.index("-ss") + 1] == "3.000"
+
+
+def test_the_window_source_is_not_kept(tmp_path, monkeypatch):
+    """It is scaffolding: keeping it would double what a copy costs on disk."""
+    _cmd, _ranges, c = _copy_window_with_device(tmp_path, monkeypatch)
+
+    assert not (c.window_dir(80888, 7) / "source.ts").exists()
+    assert c.window_ready(80888, 7)
+
+
+def test_an_encoded_window_still_streams_from_the_device(tmp_path, monkeypatch):
+    """FFmpeg has to decode it anyway, so holding a window on disk first buys
+    nothing."""
+    cmd, ranges, _ = _copy_window_with_device(tmp_path, monkeypatch, codec="mpeg2")
+
+    assert ranges == []
+    assert cmd[cmd.index("-i") + 1].startswith("http://")
+
+
+def test_a_device_index_that_cannot_be_read_streams_as_before(tmp_path, monkeypatch):
+    """A playlist without byte ranges, or one that will not parse, must not
+    stop a window being made - it just costs the round trips it always did."""
+    no_ranges = "#EXTM3U\n#EXT-X-VERSION:4\n#EXTINF:1.000,\n/stream/seg1.ts\n#EXT-X-ENDLIST\n"
+    cmd, ranges, c = _copy_window_with_device(tmp_path, monkeypatch, variant=no_ranges)
+
+    assert ranges == []
+    assert cmd[cmd.index("-i") + 1].startswith("http://")
+    assert c.window_ready(80888, 7)

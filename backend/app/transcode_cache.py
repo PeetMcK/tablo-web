@@ -38,8 +38,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from urllib.parse import urljoin
 
 from . import store
+from .vod_index import parse_vod_playlist
 
 CACHE_ROOT = Path(os.environ.get("TRANSCODE_CACHE_DIR", "/data/cache/recordings"))
 CACHE_BUDGET_BYTES = int(float(os.environ.get("TRANSCODE_CACHE_GB", "250")) * 1024**3)
@@ -340,6 +342,21 @@ BIF_REFUSAL_TTL = 300
 
 def _http_get(url: str, timeout: int = 120) -> bytes:
     with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read()
+
+
+def _http_get_range(url: str, first: int, last: int, timeout: int = 180) -> bytes:
+    """One byte range of one device file, inclusive of both ends.
+
+    The device publishes a recording as byte ranges of a handful of large
+    files, so a whole window is usually one contiguous read. That matters: a
+    window is sixty one-second segments, and asking for them one at a time is
+    sixty round trips the box answers slowly under load - measured 2026-09-22,
+    sixteen concurrent segment readers pushed its ping from 3ms to 85ms and the
+    fill *down* to 4.3 Mb/s, while a single bulk range read held 41 Mb/s.
+    """
+    req = urllib.request.Request(url, headers={"Range": f"bytes={first}-{last}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
@@ -1455,6 +1472,82 @@ class TranscodeCache:
             self._resume_background()
         return self.window_ready(object_id, w)
 
+    async def _fetch_window_source(
+        self, object_id: int, w: int, playlist_url: str,
+        first_second: float, last_second: float, wd: Path,
+    ) -> Path | None:
+        """Pull this window's bytes off the device in as few reads as possible.
+
+        Returns the local file FFmpeg should read, or None when the device's
+        playlist cannot be used that way and the window should stream from it
+        as it always has.
+
+        The device serves a recording as byte ranges of a few large files, and
+        a window is a contiguous run of them, so this is normally a single
+        request. It replaces sixty - one per one-second segment - which is the
+        difference between a read the box is good at and a queue it is not:
+        measured 2026-09-22 against this device, sixteen concurrent segment
+        readers dragged the whole fill down to 4.3 Mb/s and its ping up to
+        85ms, while one bulk range read sustained 41 Mb/s over a far worse
+        link.
+        """
+        try:
+            master = (await asyncio.to_thread(_http_get, playlist_url)).decode()
+            variant = next(
+                (ln.strip() for ln in master.splitlines()
+                 if ln.strip() and not ln.startswith("#")), None)
+            if not variant:
+                return None
+            variant_url = urljoin(playlist_url, variant)
+            text = (await asyncio.to_thread(_http_get, variant_url)).decode()
+            index = parse_vod_playlist(text, variant_url)
+        except Exception as e:
+            print(f"[cache] {object_id} w{w} could not read the device index "
+                  f"({e}) — streaming instead", flush=True)
+            return None
+
+        # Which segments cover the span, by the playlist's own clock.
+        wanted: list = []
+        at = 0.0
+        for seg in index.segments:
+            if seg.byte_range is None:
+                return None
+            if at + seg.duration > first_second and at < last_second:
+                wanted.append((at, seg))
+            at += seg.duration
+            if at >= last_second:
+                break
+        if not wanted:
+            return None
+
+        # Contiguous runs of one file, which is what the device's layout
+        # normally gives: one request for the whole window.
+        runs: list[tuple[str, int, int]] = []
+        for _at, seg in wanted:
+            url, (first, last) = seg.url, seg.byte_range
+            if runs and runs[-1][0] == url and runs[-1][2] + 1 == first:
+                runs[-1] = (url, runs[-1][1], last)
+            else:
+                runs.append((url, first, last))
+
+        dest = wd / "source.ts"
+        try:
+            with dest.open("wb") as out:
+                for url, first, last in runs:
+                    out.write(await asyncio.to_thread(_http_get_range, url, first, last))
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            print(f"[cache] {object_id} w{w} range read failed ({e}) — "
+                  "streaming instead", flush=True)
+            return None
+
+        megabytes = dest.stat().st_size / 1024**2
+        print(f"[cache] {object_id} w{w} pulled {megabytes:.0f} MB in "
+              f"{len(runs)} request(s)", flush=True)
+        # Where the file actually begins - a segment boundary at or before the
+        # span asked for. The caller seeks the difference.
+        return (dest, wanted[0][0]) if dest.stat().st_size else None
+
     async def _encode_window(
         self, object_id: int, w: int, path: str, duration: int, on_demand: bool = False
     ) -> None:
@@ -1504,16 +1597,22 @@ class TranscodeCache:
                 *deinterlace_filter(), *square_pixels_filter(), *prof.filters]
             return [
                 "ffmpeg", "-y",
-                # 'file' is deliberately excluded: input_url is device-controlled.
-                "-protocol_whitelist", "http,https,tcp,tls",
+                # Device-controlled URLs get no 'file'. A local window source is
+                # ours - written by `_fetch_window_source` into this window's own
+                # directory - and is then the only thing FFmpeg is asked to open.
+                "-protocol_whitelist", "file" if local else "http,https,tcp,tls",
                 *([] if copying else prof.pre_input),
                 # Fast input seek to just before the window. Measured flat (~5s)
-                # regardless of offset.
-                "-ss", f"{seek_to:.3f}",
-                "-i", playlist_url,
+                # regardless of offset. A local source holds only this window's
+                # span, so there is nothing to seek past on the way in.
+                *([] if local else ["-ss", f"{seek_to:.3f}"]),
+                "-i", str(local[0]) if local else playlist_url,
                 # Accurate output seek across the pre-roll, so the window begins on
-                # cleanly decoded frames rather than mid-GOP artefacts.
-                *(["-ss", f"{preroll:.3f}"] if preroll > 0 else []),
+                # cleanly decoded frames rather than mid-GOP artefacts. Against a
+                # local source the pre-roll is however much of the file precedes
+                # the window: the device's segment boundary landed at or before it.
+                *(["-ss", f"{start - local[1]:.3f}"] if local and start > local[1] else
+                  ["-ss", f"{preroll:.3f}"] if preroll > 0 and not local else []),
                 "-t", f"{length:.3f}",
                 # Each window is encoded independently, so without this every window's
                 # output would start at PTS ~0 and the player would snap back to the
@@ -1573,6 +1672,14 @@ class TranscodeCache:
                 self._procs.pop((object_id, w), None)
                 log.close()
 
+        # Copying reads the device once, in bulk, and then works from disk.
+        # Encoding still streams the playlist: FFmpeg has to decode it anyway,
+        # so holding a whole window on disk first buys nothing.
+        local = None
+        if copying:
+            local = await self._fetch_window_source(
+                object_id, w, playlist_url, seek_to, start + length, wd)
+
         rc = await run(build_cmd(copying))
         expected = segments_in_window(duration, w)
 
@@ -1622,6 +1729,9 @@ class TranscodeCache:
               f"({produced} segs, {size_mb:.0f} MB, {length / max(elapsed, 0.001):.1f}x realtime, "
               f"{size_bytes * 8 / max(elapsed, 0.001) / 1e6:.1f} Mb/s)",
               flush=True)
+        # The window's source was scaffolding: it has been cut into segments,
+        # and keeping it would double what a copied window costs on disk.
+        (wd / "source.ts").unlink(missing_ok=True)
         (wd / ".done").write_text(_now())
         # Any export built earlier no longer matches what is cached.
         self.export_path(object_id).unlink(missing_ok=True)
