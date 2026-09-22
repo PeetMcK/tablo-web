@@ -236,36 +236,30 @@ describe("CaptionOverlay", () => {
     expect(inner.style.textDecoration).toBe("underline");
   });
 
-  it("lifts a window placed down by the transport, and leaves a high one alone", () => {
-    const low = source([{
+  it("does not lift a window when there is no layout to say it overlaps", () => {
+    // jsdom lays nothing out, so every box measures zero and nothing can be
+    // shown to overlap the transport. Not lifting is the right answer to
+    // that: the old rule guessed from the broadcaster's anchor and threw
+    // captions a hundred and fifty pixels up the picture to clear a bar they
+    // were nowhere near. What decides the lift now is `liftToClearChrome`,
+    // which is tested on its own numbers.
+    const { frames, step } = manualFrames();
+    const { src, seek } = source([{
       startSeconds: 0, endSeconds: 9, text: "LOW",
-      region: { anchor: "bottom-left", xPercent: 10, yPercent: 99, rows: 4, columns: 32, gridColumns: 42, align: "center" },
-    }]);
-    const high = source([{
-      startSeconds: 0, endSeconds: 9, text: "HIGH",
-      region: { anchor: "top-left", xPercent: 10, yPercent: 10, rows: 4, columns: 32, gridColumns: 42, align: "center" },
+      region: {
+        anchor: "bottom-left", xPercent: 10, yPercent: 99,
+        rows: 4, columns: 32, gridColumns: 42, align: "center",
+      },
     }]);
 
-    const a = manualFrames();
-    const lowRender = render(
-      <CaptionOverlay source={() => low.src} enabled raised currentTime={() => 0} frames={a.frames} />,
+    const { container } = render(
+      <CaptionOverlay source={() => src} enabled raised currentTime={() => 0} frames={frames} />,
     );
-    low.seek(1);
-    a.step();
-    expect(
-      (lowRender.container.querySelector('[aria-live="polite"]') as HTMLElement)
-        .getAttribute("data-raised"),
-    ).toBe("true");
+    seek(1);
+    step();
 
-    const b = manualFrames();
-    const highRender = render(
-      <CaptionOverlay source={() => high.src} enabled raised currentTime={() => 0} frames={b.frames} />,
-    );
-    high.seek(1);
-    b.step();
-    expect(
-      (highRender.container.querySelector('[data-positioned="true"][data-raised="false"]')),
-    ).toBeTruthy();
+    const box = container.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(box.getAttribute("data-raised")).toBe("false");
   });
 
   it("gives a window the width the broadcaster declared", () => {
