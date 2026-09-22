@@ -360,10 +360,23 @@ def _http_get_range(url: str, first: int, last: int, timeout: int = 180) -> byte
         return r.read()
 
 
-# Completed windows kept for the throughput readout. Each covers WINDOW_SECONDS
-# of output, so six is roughly the last minute of encoding - long enough to ride
-# out a slow device seek, short enough to still read as "live".
-RATE_SAMPLES = 6
+# Completed windows kept for the throughput readout.
+#
+# Enough to cover RATE_WINDOW_SECONDS at any plausible speed: windows finish in
+# clumps of however many run at once, and a copied window can take a couple of
+# seconds, so thirty seconds of a fast fill is dozens of them. Older samples
+# cost a little memory and are ignored by the arithmetic below.
+RATE_SAMPLES = 64
+
+# The stretch of time the readout describes.
+#
+# Windows land in bursts - several finish within a second or two, then nothing
+# for ten seconds while the next lot run - so measuring "the last few samples"
+# swings wildly depending on where in that cycle the question is asked.
+# Counting what a fixed stretch produced is steady by construction, and thirty
+# seconds is long enough to contain a few bursts without being so long that a
+# download slowing down takes a minute to show it.
+RATE_WINDOW_SECONDS = 30.0
 
 # No window has landed in this long, and nothing is encoding, so report idle
 # rather than a stale average.
@@ -596,7 +609,8 @@ class TranscodeCache:
         if not encoding and now - samples[-1][0] > RATE_IDLE_AFTER:
             return idle
 
-        # Wall clock across the samples, not the sum of their elapsed times.
+        # What a fixed stretch of wall clock produced, not the sum of the
+        # windows' own elapsed times.
         #
         # Windows run several at a time, so their elapsed times overlap and
         # adding them up describes one window rather than the download.
@@ -609,17 +623,25 @@ class TranscodeCache:
         # denominator, and what landed *within* it is everything but the first
         # sample - that one marks the span's start rather than falling inside
         # it.
-        if len(samples) > 1:
-            span = samples[-1][0] - samples[0][0]
-            within = list(samples)[1:]
-        else:
+        oldest = samples[0][0]
+        window_start = now - RATE_WINDOW_SECONDS
+        within = [s for s in samples if s[0] >= window_start]
+        # A fill that started less than the window ago is measured over what it
+        # has actually had: dividing its output by a stretch of time that
+        # includes minutes before it began would halve the number for no reason.
+        span = now - max(window_start, oldest)
+        # Too short a stretch says nothing: a sample landing this instant would
+        # divide a minute of video by no time at all and report millions. Two
+        # seconds is below any real burst cycle, so this only catches the
+        # degenerate case rather than the concurrency it is meant to measure.
+        if span < 2.0:
             span = 0.0
-            within = []
-        if span <= 0:
-            # One sample, or several that finished in the same instant: its own
-            # elapsed time is the only denominator there is.
-            span = sum(s[2] for s in samples)
+        if not within or span <= 0:
+            # Nothing has landed in the window yet - the first windows of a run
+            # can be most of a minute away from finishing. Their own elapsed
+            # time is the only denominator there is.
             within = list(samples)
+            span = sum(s[2] for s in samples)
         if span <= 0:
             return idle
 
