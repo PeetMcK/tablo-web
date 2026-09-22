@@ -296,10 +296,15 @@ describe("what a row can do to a recording", () => {
     expect(onDeleteCache).toHaveBeenCalledTimes(1);
   });
 
-  it("has nothing to delete when nothing is cached", () => {
+  it("carries only keep and information when nothing is cached", () => {
+    // Most of a library is this row. Two controls that apply beat four with
+    // half of them greyed out.
     row({ cache_state: "absent" });
 
-    expect(screen.getByRole("button", { name: /Delete cached video/ })).toBeDisabled();
+    expect(cluster()).toEqual([
+      expect.stringMatching(/Keep Jeopardy! offline/),
+      expect.stringMatching(/Information about Jeopardy!/),
+    ]);
   });
 
   it("saves the file once the whole copy exists", () => {
@@ -310,13 +315,15 @@ describe("what a row can do to a recording", () => {
   });
 
   it("offers no file to save while there is only part of one", () => {
+    // Half a transcode is not a file, but it is something to drop.
     row({ cache_state: "partial", cache_progress: 0.4 });
 
-    // A link to something nothing can serve is worse than a control that
-    // says not yet.
-    expect(screen.queryByRole("link", { name: /Save Jeopardy!/ })).toBeNull();
-    expect(screen.getByLabelText(/Save Jeopardy!/))
-      .toHaveAttribute("aria-disabled", "true");
+    expect(cluster()).toEqual([
+      expect.stringMatching(/Delete cached video/),
+      expect.stringMatching(/Keep Jeopardy! offline/),
+      expect.stringMatching(/Information about Jeopardy!/),
+    ]);
+    expect(screen.queryByLabelText(/Save Jeopardy!/)).toBeNull();
   });
 });
 
