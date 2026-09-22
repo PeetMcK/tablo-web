@@ -8,9 +8,11 @@ import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilter
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { OptionMenu } from "./OptionMenu";
 import {
-  LIBRARY_GROUPS, LIBRARY_SORTS, arrange,
-  type LibraryGroup, type LibrarySort,
+  LIBRARY_GROUPS, LIBRARY_LAYOUTS, LIBRARY_SORTS, arrange,
+  type LibraryGroup, type LibraryLayout, type LibrarySort,
 } from "../lib/libraryLayout";
+import { LayoutToggle } from "./LayoutToggle";
+import { RecordingRow } from "./RecordingRow";
 import { usePref } from "../lib/usePref";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { formatAired } from "../lib/format";
@@ -20,26 +22,10 @@ import { useSeriesDrawer } from "../lib/useSeriesDrawer";
 import { CoverageStrip } from "./CoverageStrip";
 import { RecordingPill } from "./RecordingPill";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
-import { cardArt, isIncomplete, recordedSpan, strippedTime, watchedSpan } from "../lib/recording";
-import type { Coverage } from "../lib/recording";
-
-/**
- * Whether there is something to play.
- *
- * A recording still being written plays fine: the device serves it as HLS from
- * the first moment, which is how its own app lets you start a show that is
- * still recording. Verified against a recording in progress - `state:
- * recording`, `duration: 0` - which still answered `POST .../watch` with a
- * playlist. This used to refuse them on the assumption that a transcode needs
- * a complete file, and the result was the one thing the device is best at
- * being the one thing we could not do.
- */
-function isPlayable(rec: Recording): boolean {
-  // An offline copy plays regardless of what the device reports — it may not
-  // be on the device at all any more.
-  if (rec.offline_only) return true;
-  return !rec.error;
-}
+import {
+  cardArt, coverageOf, isIncomplete, isPlayable, isRecording, recordedSpan,
+  resumeFor, strippedTime, watchedSpan,
+} from "../lib/recording";
 
 /**
  * Whether an offline copy can be made.
@@ -53,23 +39,6 @@ function isKeepable(rec: Recording): boolean {
 }
 
 /**
- * A recording as the coverage bar sees it.
- *
- * The one subtlety is which number is "captured": while recording the server
- * derives it, and once finished `duration` *is* it — the device replaces the
- * slot with the real length at that moment, which is why `slot_seconds` exists
- * separately.
- */
-function coverageOf(rec: Recording): Coverage {
-  return {
-    start: rec.start,
-    duration: rec.slot_seconds,
-    recording_started: rec.recording_started,
-    recorded_seconds: isRecording(rec) ? rec.recorded_seconds : rec.duration,
-  };
-}
-
-/**
  * How far playback must move before the device is told again, in seconds.
  *
  * Measured from the device's own app, which writes every ~7.5 seconds of media
@@ -79,11 +48,6 @@ function coverageOf(rec: Recording): Coverage {
  * write nothing at all.
  */
 const DEVICE_POSITION_STEP = 7;
-
-/** Still being written, and so still growing under anyone watching it. */
-function isRecording(rec: Recording): boolean {
-  return rec.state === "recording";
-}
 
 /**
  * Which point a card asked the player to open at.
@@ -119,43 +83,6 @@ function progressTitle(rec: Recording): string {
     total ? `Expected to capture ${formatDuration(total)} of it.` : null,
     "Elapsed time is derived from that start, not measured from the file.",
   ].filter(Boolean).join(" ");
-}
-
-/**
- * The saved position for a recording, or 0.
- *
- * Read at render because the in-progress card labels its own button with it —
- * "Resume 12:20" rather than "From start" — and that label has to be right
- * before anything is playing. The player's own resume point is still read once
- * per recording, where feeding it back on every tick used to reload the stream.
- */
-function resumeFor(rec: Recording): number {
-  const ours = loadResume(resumeKey("recording", rec.object_id));
-  // The device's own position, which its app writes and ours now does too.
-  // Whichever is further in wins, and only here — once playing, our writes go
-  // to the device unconditionally, so a deliberate rewind sticks rather than
-  // being compared away.
-  //
-  // Neither side carries a timestamp: `user_info` is exactly
-  // {position, watched, protected}, so there is no honest last-writer-wins to
-  // implement. Taking the greater is right in the cases that happen — watched
-  // on the phone then opened here, or the reverse — and taking the device
-  // wholesale would have rewound eleven recordings, Saturday Night Live from
-  // 21:36 back to 33 seconds.
-  //
-  // Clamped to what exists: a position captured while the programme was still
-  // recording can outrun the media once it finishes and is cut short, and
-  // "greater wins" would otherwise enshrine it.
-  const theirs = rec.position ?? 0;
-  const furthest = Math.max(ours, theirs);
-  // `position:1` is the sentinel we write to un-mark watched without the device
-  // dropping the recording back to New (setting position>0 clears watched, and
-  // position 0 + not-watched reads as New). It is not a real resume point, so
-  // it must never surface a "Resume 0:01" — one second is nothing to resume to.
-  // Genuine positions (10s, 20s, …) are left alone: sub-30s resumes are wanted.
-  if (furthest <= 1) return 0;
-  const limit = isRecording(rec) ? (rec.recorded_seconds ?? 0) : rec.duration;
-  return limit > 0 ? Math.min(furthest, limit) : furthest;
 }
 
 /** A position as `12:20`, or `1:02:20` past the hour. */
@@ -201,6 +128,7 @@ function formatDuration(seconds: number): string {
 /** What each stored layout preference is allowed to be — the menus themselves. */
 const GROUP_IDS = LIBRARY_GROUPS.map(g => g.id);
 const SORT_IDS = LIBRARY_SORTS.map(s => s.id);
+const LAYOUT_IDS = LIBRARY_LAYOUTS.map(l => l.id);
 
 function dayTint(iso: string, alpha?: number): string {
   const d = new Date(iso);
@@ -250,6 +178,16 @@ export function LibraryView() {
     "library.group", "day", GROUP_IDS);
   const [sortBy, setSortBy] = usePref<LibrarySort>(
     "library.sort", "newest", SORT_IDS);
+  /**
+   * Cards or rows.
+   *
+   * Cards is the fallback because cards is what this page has always been, and
+   * because it is the answer that is never wrong: a first paint in the layout
+   * someone did not choose is a worse greeting than one in the layout everyone
+   * knows.
+   */
+  const [layout, setLayout] = usePref<LibraryLayout>(
+    "library.layout", "cards", LAYOUT_IDS);
 
   const qc = useQueryClient();
 
@@ -738,6 +676,10 @@ export function LibraryView() {
             onChange={setSortBy}
             align="right"
           />
+          {/* Last in the cluster, and the only one here without words on it:
+              what the page is arranged by is a question, where cards-or-rows
+              is a switch. */}
+          <LayoutToggle value={layout} onChange={setLayout} />
         </div>
       </div>
 
@@ -749,9 +691,17 @@ export function LibraryView() {
         <div className="flex items-center justify-end mb-3">{storageLine}</div>
       )}
 
+      {/* The layouts differ in the container and in what one recording is
+          drawn as. The headings, the storage readout and both empty states are
+          written once and serve either: they are the page's landmarks, and a
+          landmark that moves when the layout changes is not one.
+
+          `col-span-full` on the heading and the empty states means nothing in
+          a flex column, which is why it can stay on both paths rather than
+          becoming a third conditional. */}
       <div
-        className="grid gap-6"
-        style={{
+        className={layout === "list" ? "flex flex-col" : "grid gap-6"}
+        style={layout === "list" ? undefined : {
           // `min(280px, 100%)` — a floor wider than the container overflows
           // rather than shrinking, and that overflow scrolls the page
           // sideways. Same guard as the Live grid's.
@@ -817,6 +767,19 @@ export function LibraryView() {
               </div>
 
               {items.map((rec) => {
+            // The row carries its own everything: it is given the recording and
+            // the two things a row can do, and the sheet behind the ⋮ holds the
+            // rest. Nothing below this line applies to it.
+            if (layout === "list") {
+              return (
+                <RecordingRow
+                  key={rec.object_id}
+                  rec={rec}
+                  onPlay={() => { setStartMode("resume"); setPlaying(rec); }}
+                  onInfo={() => setInfoFor(rec)}
+                />
+              );
+            }
             const playable = isPlayable(rec);
             const keepable = isKeepable(rec);
             // Coverage is worth drawing whether or not it is still recording:

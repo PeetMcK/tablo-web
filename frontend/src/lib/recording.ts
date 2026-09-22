@@ -1,10 +1,121 @@
 /**
- * How much of a programme a recording actually captured.
+ * How much of a programme a recording actually captured, and the handful of
+ * other questions every view of one asks.
  *
- * One definition, drawn identically by the Library card, the info sheet, the
- * live card and the guide row. Three views inventing the same arithmetic is the
- * bug this file exists to prevent.
+ * One definition, drawn identically by the Library card, the Library row, the
+ * info sheet, the live card and the guide row. Views inventing the same
+ * arithmetic is the bug this file exists to prevent.
+ *
+ * Parameters are structural rather than the `Recording` type: a guide airing
+ * and a recording answer some of these, and neither should have to become the
+ * other to ask.
  */
+import { loadResume, resumeKey } from "./resume";
+
+/** What being still-in-progress is decided from. */
+export interface Live {
+  state: string | null;
+}
+
+/** Still being written, and so still growing under anyone watching it. */
+export function isRecording(rec: Live): boolean {
+  return rec.state === "recording";
+}
+
+/** What "is there something to play" is decided from. */
+export interface Playable {
+  offline_only: boolean;
+  error: string | null;
+}
+
+/**
+ * Whether there is something to play.
+ *
+ * A recording still being written plays fine: the device serves it as HLS from
+ * the first moment, which is how its own app lets you start a show that is
+ * still recording. Verified against a recording in progress - `state:
+ * recording`, `duration: 0` - which still answered `POST .../watch` with a
+ * playlist. This used to refuse them on the assumption that a transcode needs
+ * a complete file, and the result was the one thing the device is best at
+ * being the one thing we could not do.
+ */
+export function isPlayable(rec: Playable): boolean {
+  // An offline copy plays regardless of what the device reports — it may not
+  // be on the device at all any more.
+  if (rec.offline_only) return true;
+  return !rec.error;
+}
+
+/** What the coverage geometry is read from, on a recording. */
+export interface Covered extends Live {
+  start: string;
+  slot_seconds: number;
+  recording_started: string | null;
+  recorded_seconds: number | null;
+  duration: number;
+}
+
+/**
+ * A recording as the coverage bar sees it.
+ *
+ * The one subtlety is which number is "captured": while recording the server
+ * derives it, and once finished `duration` *is* it — the device replaces the
+ * slot with the real length at that moment, which is why `slot_seconds` exists
+ * separately.
+ */
+export function coverageOf(rec: Covered): Coverage {
+  return {
+    start: rec.start,
+    duration: rec.slot_seconds,
+    recording_started: rec.recording_started,
+    recorded_seconds: isRecording(rec) ? rec.recorded_seconds : rec.duration,
+  };
+}
+
+/** What a resume point is worked out from. */
+export interface Resumable extends Live {
+  object_id: number;
+  position: number | null;
+  recorded_seconds: number | null;
+  duration: number;
+}
+
+/**
+ * The saved position for a recording, or 0.
+ *
+ * Read at render because a card or a row labels its own button with it —
+ * "Resume 12:20" rather than "From start" — and that label has to be right
+ * before anything is playing. The player's own resume point is still read once
+ * per recording, where feeding it back on every tick used to reload the stream.
+ */
+export function resumeFor(rec: Resumable): number {
+  const ours = loadResume(resumeKey("recording", rec.object_id));
+  // The device's own position, which its app writes and ours now does too.
+  // Whichever is further in wins, and only here — once playing, our writes go
+  // to the device unconditionally, so a deliberate rewind sticks rather than
+  // being compared away.
+  //
+  // Neither side carries a timestamp: `user_info` is exactly
+  // {position, watched, protected}, so there is no honest last-writer-wins to
+  // implement. Taking the greater is right in the cases that happen — watched
+  // on the phone then opened here, or the reverse — and taking the device
+  // wholesale would have rewound eleven recordings, Saturday Night Live from
+  // 21:36 back to 33 seconds.
+  //
+  // Clamped to what exists: a position captured while the programme was still
+  // recording can outrun the media once it finishes and is cut short, and
+  // "greater wins" would otherwise enshrine it.
+  const theirs = rec.position ?? 0;
+  const furthest = Math.max(ours, theirs);
+  // `position:1` is the sentinel we write to un-mark watched without the device
+  // dropping the recording back to New (setting position>0 clears watched, and
+  // position 0 + not-watched reads as New). It is not a real resume point, so
+  // it must never surface a "Resume 0:01" — one second is nothing to resume to.
+  // Genuine positions (10s, 20s, …) are left alone: sub-30s resumes are wanted.
+  if (furthest <= 1) return 0;
+  const limit = isRecording(rec) ? (rec.recorded_seconds ?? 0) : rec.duration;
+  return limit > 0 ? Math.min(furthest, limit) : furthest;
+}
 
 /** Everything the geometry needs, from a recording or from a guide airing. */
 export interface Coverage {

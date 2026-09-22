@@ -85,3 +85,18 @@ def test_a_value_that_has_since_been_retired_is_not_answered_with(signed_in):
 def test_nothing_chosen_yet_is_an_empty_answer(signed_in):
     """The page falls back to its own defaults rather than being handed them."""
     assert client.get("/api/prefs").json() == {}
+
+
+def test_the_library_layout_is_remembered(signed_in):
+    """Cards or rows is how this person reads the page, not a question they
+    are asking today - so it outlives the visit, as group and sort do."""
+    assert client.put("/api/prefs",
+                      json={"key": "library.layout", "value": "list"}).status_code == 200
+
+    assert client.get("/api/prefs").json()["library.layout"] == "list"
+
+
+def test_a_layout_nobody_offers_is_refused(signed_in):
+    r = client.put("/api/prefs", json={"key": "library.layout", "value": "mosaic"})
+
+    assert r.status_code == 422

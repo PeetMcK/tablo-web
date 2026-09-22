@@ -7,8 +7,8 @@
  * around them.
  */
 import {
-  ArrowDownAZ, ArrowUpAZ, CalendarDays, Clock3, History, Layers, ListOrdered,
-  Radio, type LucideIcon,
+  ArrowDownAZ, ArrowUpAZ, CalendarDays, Clock3, History, Layers, LayoutGrid,
+  ListOrdered, Radio, Rows3, type LucideIcon,
 } from "lucide-react";
 
 import { dayKey, formatDayHeading } from "./format";
@@ -17,6 +17,14 @@ import { seriesKey } from "./series";
 export type LibraryGroup = "day" | "show" | "channel";
 export type LibrarySort =
   | "newest" | "oldest" | "title" | "title-desc" | "episode";
+/**
+ * How the page draws what it holds.
+ *
+ * Cards answer "what shall I watch" — artwork, a description, the coverage
+ * strip. Rows answer "where is the one I mean", which is the question a
+ * library of forty recordings is mostly asked.
+ */
+export type LibraryLayout = "cards" | "list";
 
 export interface LayoutOption<T extends string> {
   id: T;
@@ -38,6 +46,12 @@ export const LIBRARY_SORTS: LayoutOption<LibrarySort>[] = [
   { id: "episode",    label: "Episode", Icon: ListOrdered },
   { id: "title",      label: "A–Z",     Icon: ArrowDownAZ },
   { id: "title-desc", label: "Z–A",     Icon: ArrowUpAZ },
+];
+
+/** The layouts the switch offers. Cards first, being what the page was. */
+export const LIBRARY_LAYOUTS: LayoutOption<LibraryLayout>[] = [
+  { id: "cards", label: "Cards", Icon: LayoutGrid },
+  { id: "list",  label: "List",  Icon: Rows3 },
 ];
 
 /** What the Library needs of a recording to arrange it. */
