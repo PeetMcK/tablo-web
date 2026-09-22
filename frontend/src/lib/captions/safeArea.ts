@@ -71,6 +71,19 @@ export interface Placement {
   top: string;
   /** The translation that puts the requested anchor point on that spot. */
   transform: string;
+  /**
+   * The same `top`, as a number, and the share of the box's own height the
+   * transform shifts it by: 0 anchoring its top edge, -100 its bottom.
+   *
+   * Together these give the box's resting position without reading it off
+   * the page. Reading it off the page is wrong while the box is moving: it
+   * has a transition, so a measurement taken during one catches it partway
+   * and the lift computed from it is too small, which then moves it further,
+   * which measures smaller still. Measured on ABC, a caption overlapping the
+   * transport by forty-eight pixels climbed a hundred and fifty-two.
+   */
+  topPercent: number;
+  anchorShiftYPercent: number;
 }
 
 const clamp = (n: number) => Math.max(0, Math.min(100, n));
@@ -105,5 +118,33 @@ export function placeInSafeArea(
     left: `${left}%`,
     top: `${top}%`,
     transform: `translate(${x}%, ${y}%)`,
+    topPercent: top,
+    anchorShiftYPercent: y,
   };
+}
+
+/**
+ * Where the bottom edge of a placed box sits when nothing has moved it.
+ *
+ * Worked out rather than measured, because the box has a transition and a
+ * measurement taken during one catches it partway. A lift computed from that
+ * is short, applying it starts another transition, and the next reading is
+ * shorter still - the caption climbs by increments until it saturates. On
+ * ABC a caption overlapping the controls by forty-eight pixels rose a
+ * hundred and fifty-two.
+ *
+ * `stageTop` and `stageHeight` are the stage in viewport coordinates;
+ * `height` is the box's own, which is the one thing a transform leaves alone
+ * and so the one thing safe to measure while it moves.
+ */
+export function restingBottomPx(
+  stageTop: number,
+  stageHeight: number,
+  placement: Pick<Placement, "topPercent" | "anchorShiftYPercent">,
+  height: number,
+): number {
+  const top = stageTop
+    + (placement.topPercent / 100) * stageHeight
+    + (placement.anchorShiftYPercent / 100) * height;
+  return top + height;
 }
