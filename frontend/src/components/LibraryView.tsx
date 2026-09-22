@@ -6,8 +6,14 @@ import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
 import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Search, Trash2, X } from "lucide-react";
 import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
+import { OptionMenu } from "./OptionMenu";
+import {
+  LIBRARY_GROUPS, LIBRARY_SORTS, arrange,
+  type LibraryGroup, type LibrarySort,
+} from "../lib/libraryLayout";
+import { usePref } from "../lib/usePref";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
-import { dayKey, formatAired, formatDayHeading } from "../lib/format";
+import { formatAired } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
 import { ShowInfo } from "./ShowInfo";
 import { useSeriesDrawer } from "../lib/useSeriesDrawer";
@@ -192,6 +198,10 @@ function formatDuration(seconds: number): string {
  * `alpha` is passed through the slash form rather than concatenated as hex
  * digits: `rgb(...)` has no two-character alpha suffix to append.
  */
+/** What each stored layout preference is allowed to be — the menus themselves. */
+const GROUP_IDS = LIBRARY_GROUPS.map(g => g.id);
+const SORT_IDS = LIBRARY_SORTS.map(s => s.id);
+
 function dayTint(iso: string, alpha?: number): string {
   const d = new Date(iso);
   const day = Number.isNaN(d.getTime()) ? 0 : d.getDay();
@@ -226,6 +236,20 @@ export function LibraryView() {
    */
   const [query, setQuery] = useState("");
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
+  /**
+   * How the page is laid out, which — unlike the two above — is remembered.
+   *
+   * A search and a content filter are momentary: they answer "show me this,
+   * now", and restoring them tomorrow would open the Library on a question
+   * nobody asked. Grouping and order are how this person reads the page, and
+   * having to set them again every visit is the kind of small tax that makes a
+   * setting feel like it does not work. Kept server-side rather than in this
+   * browser's storage, so the answer follows the viewer between machines.
+   */
+  const [groupBy, setGroupBy] = usePref<LibraryGroup>(
+    "library.group", "day", GROUP_IDS);
+  const [sortBy, setSortBy] = usePref<LibrarySort>(
+    "library.sort", "newest", SORT_IDS);
 
   const qc = useQueryClient();
 
@@ -405,27 +429,17 @@ export function LibraryView() {
   }, [recordings, query, contentFilter]);
 
   /**
-   * The recordings split into the days they aired on, newest day first.
+   * The cards under their headings, in the order the toolbar asked for.
    *
-   * A flat wall of cards gave no sense of when anything was recorded; the
-   * heading rows are the only place the date is read at a glance.
+   * A flat wall of cards gave no sense of when anything was recorded, which is
+   * why the headings exist at all; what they say is now a choice. The rules
+   * live in `libraryLayout` — see `arrange` for why the sort orders the
+   * sections as well as the cards inside them.
    */
-  const days = useMemo(() => {
-    // The heading is rendered from a real timestamp, not from the key: a key is
-    // a bare `2026-09-14`, which Date parses as UTC midnight and would name the
-    // day before for anyone west of UTC — the very slip the key exists to avoid.
-    const byDay = new Map<string, { start: string; items: Recording[] }>();
-    for (const rec of shown) {
-      const start = rec.start ?? "";
-      const key = dayKey(start);
-      const bucket = byDay.get(key);
-      if (bucket) bucket.items.push(rec);
-      else byDay.set(key, { start, items: [rec] });
-    }
-    return [...byDay.entries()]
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([key, group]) => ({ key, ...group }));
-  }, [shown]);
+  const sections = useMemo(
+    () => arrange(shown, groupBy, sortBy),
+    [shown, groupBy, sortBy],
+  );
 
   // A recording named in the URL reopens as soon as the list contains it.
   // Derived rather than assigned from an effect, which would cascade renders.
@@ -702,13 +716,36 @@ export function LibraryView() {
           />
         </div>
         <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
+
+        {/* What narrows the page on the left, what arranges it on the right.
+            `ml-auto` puts the pair against the right edge on a wide window and
+            simply starts the line when the row has wrapped, so they stay
+            together either way rather than drifting apart as it narrows. */}
+        <div data-layout-menus className="ml-auto flex items-center gap-2">
+          <OptionMenu
+            label="Group by"
+            prefix="Group"
+            options={LIBRARY_GROUPS}
+            value={groupBy}
+            onChange={setGroupBy}
+            align="right"
+          />
+          <OptionMenu
+            label="Sort by"
+            prefix="Sort"
+            options={LIBRARY_SORTS}
+            value={sortBy}
+            onChange={setSortBy}
+            align="right"
+          />
+        </div>
       </div>
 
-      {/* With no days to hang it on there is no rule to sit on either, so the
-          readout falls back to a row of its own. Without this an empty library
-          would drop it entirely — and an empty library is exactly when "106.9
-          GB free" is worth reading. */}
-      {days.length === 0 && storageLine && (
+      {/* With no sections to hang it on there is no rule to sit on either, so
+          the readout falls back to a row of its own. Without this an empty
+          library would drop it entirely — and an empty library is exactly when
+          "106.9 GB free" is worth reading. */}
+      {sections.length === 0 && storageLine && (
         <div className="flex items-center justify-end mb-3">{storageLine}</div>
       )}
 
@@ -742,32 +779,41 @@ export function LibraryView() {
             </button>
           </div>
         ) : (
-          days.map(({ key, start, items }, dayIndex) => (
+          sections.map(({ key, label, tintFrom, items }, sectionIndex) => (
             <Fragment key={key}>
-              {/* The day these aired, in that weekday's colour. Spans the grid,
-                  so the cards below it read as one evening's recordings.
+              {/* What these have in common — a day, a show, a station — with a
+                  rule under it, so the cards below read as one group.
 
-                  The first one also carries the storage readout, at the far end
-                  of the rule. The rule already runs the width of the grid and
-                  fades out on the way, so the right end is space this row was
-                  spending on nothing. It is rendered here rather than owned by
-                  the day group: these are page totals, and they would be a lie
+                  A day is drawn in that weekday's colour, which is the one
+                  grouping where a colour means something: every card under
+                  "MONDAY 9/21" aired that day. A show or a channel spans weeks,
+                  so it takes the plain foreground rather than a colour picked
+                  from whichever card happened to come first.
+
+                  The first heading also carries the storage readout, at the far
+                  end of the rule. The rule already runs the width of the grid
+                  and fades out on the way, so the right end is space this row
+                  was spending on nothing. It is rendered here rather than owned
+                  by the group: these are page totals, and they would be a lie
                   if read as belonging to Monday. `flex-wrap` so it drops to its
                   own line at phone width instead of crushing the rule. */}
               <div className="col-span-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-2 first:pt-0">
                 <span
+                  data-library-heading
                   className="text-[11px] font-black uppercase tracking-widest whitespace-nowrap"
-                  style={{ color: dayTint(start) }}
+                  style={tintFrom ? { color: dayTint(tintFrom) } : undefined}
                 >
-                  {formatDayHeading(start) || "Undated"}
+                  {label}
                 </span>
                 <span
                   className="h-px flex-1 min-w-8 rounded-full"
                   style={{
-                    background: `linear-gradient(to right, ${dayTint(start, 0.5)}, transparent)`,
+                    background: `linear-gradient(to right, ${
+                      tintFrom ? dayTint(tintFrom, 0.5) : "rgb(var(--c-border))"
+                    }, transparent)`,
                   }}
                 />
-                {dayIndex === 0 && storageLine}
+                {sectionIndex === 0 && storageLine}
               </div>
 
               {items.map((rec) => {

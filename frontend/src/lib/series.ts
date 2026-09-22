@@ -41,7 +41,12 @@ export interface Episode {
  *
  * Null when there is none of the three, which is the signal to show no list.
  */
-export function seriesKey(rec: Episode): string | null {
+export function seriesKey(
+  // Only the three fields it reads, so the Library's grouping — which knows a
+  // recording by a different shape — files a card under exactly the same rule
+  // rather than a second copy of it.
+  rec: Pick<Episode, "title" | "series_path" | "sport_path">,
+): string | null {
   if (rec.series_path) return rec.series_path;
   if (rec.sport_path) return rec.sport_path;
   return rec.title ? `title:${rec.title}` : null;

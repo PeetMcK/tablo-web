@@ -10,6 +10,7 @@ from .routes import (
     auth,
     channels,
     iptv,
+    prefs,
     recordings,
     resume,
     schedule,
@@ -128,6 +129,7 @@ app.include_router(channels.router)
 app.include_router(iptv.router)
 app.include_router(series.router)
 app.include_router(recordings.router)
+app.include_router(prefs.router)
 app.include_router(resume.router)
 app.include_router(schedule.router)
 app.include_router(search.router)
