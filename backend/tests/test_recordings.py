@@ -27,6 +27,7 @@ from app.transcode_cache import (
     CacheState,
     InsufficientDisk,
     TranscodeCache,
+    probe_interlaced,
     resolve_within,
     segments_in_window,
     window_count,
@@ -3214,6 +3215,55 @@ def test_a_window_with_no_codec_still_encodes(tmp_path, monkeypatch):
     cmd = _run_one_window(tmp_path, monkeypatch, codec=None)
 
     assert cmd[cmd.index("-c:v") + 1] != "copy"
+
+
+def _probe_argv(monkeypatch, output=b"", seek=None):
+    """Run the interlace probe against a stubbed FFprobe; return its argv."""
+    seen = {}
+
+    async def fake_exec(*cmd, **kw):
+        seen["cmd"] = list(cmd)
+
+        class P:
+            returncode = 0
+            async def communicate(self):
+                return output, b""
+        return P()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    result = asyncio.run(probe_interlaced("http://device/pl.m3u8", seek=seek,
+                                          whitelist="http,https,tcp,tls"))
+    return seen["cmd"], result
+
+
+def test_the_interlace_probe_seeks_the_way_ffprobe_seeks(monkeypatch):
+    """`-ss` is FFmpeg's option, not FFprobe's. Passing it failed the probe
+    outright with "Option not found" - which reads as "cannot tell", and left
+    the deinterlacer running on every recording including the progressive ones
+    this exists to spare. FFprobe seeks inside `-read_intervals`."""
+    cmd, _ = _probe_argv(monkeypatch, output=b"0,\n", seek=1137.0)
+
+    assert "-ss" not in cmd
+    assert cmd[cmd.index("-read_intervals") + 1].startswith("1137.000%+")
+
+
+def test_the_interlace_probe_reads_the_frames(monkeypatch):
+    """Flags on a majority of frames, not on one stray frame either way."""
+    _, mostly = _probe_argv(monkeypatch, output=b"1,\n" * 30 + b"0,\n" * 10)
+    _, clean = _probe_argv(monkeypatch, output=b"0,\n" * 40)
+    _, stray = _probe_argv(monkeypatch, output=b"1,\n" + b"0,\n" * 39)
+
+    assert mostly is True
+    assert clean is False
+    assert stray is False
+
+
+def test_an_unreadable_source_keeps_the_deinterlacer(monkeypatch):
+    """Unknown is not progressive. Combing is the worse of the two faults, so
+    a probe that decoded nothing leaves the filter where it was."""
+    _, nothing = _probe_argv(monkeypatch, output=b"")
+
+    assert nothing is None
 
 
 def test_a_progressive_broadcast_is_not_deinterlaced(tmp_path, monkeypatch):
