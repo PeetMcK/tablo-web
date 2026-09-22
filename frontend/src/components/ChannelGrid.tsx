@@ -630,7 +630,13 @@ export function ChannelGrid({ onLogout }: Props) {
                   // One Escape, one dismissal: on a phone the field IS the
                   // row, so leaving it open with the dropdown gone would hide
                   // the tabs behind an empty box.
-                  if (searchExpanded) collapseSearch(); else closeSearch();
+                  if (searchExpanded) { collapseSearch(); return; }
+                  // Filtering has no dropdown to dismiss, so Escape means what
+                  // it meant in the Library's own filter: the text is the only
+                  // thing standing between the viewer and the whole page, so
+                  // the way out of the field is the way back to everything.
+                  if (effectiveMode === "filter") { setFilter(""); return; }
+                  closeSearch();
                 }}
                 placeholder={`${boxLabel}...`}
                 aria-label={boxLabel}
@@ -790,7 +796,11 @@ export function ChannelGrid({ onLogout }: Props) {
                   already on this tab genuinely remounts. Without it the panel
                   keeps the route it snapshotted at its own mount and the
                   activation silently does nothing. */}
-              <LibraryView key={libraryActivation} />
+              <LibraryView
+                key={libraryActivation}
+                query={pageFilter}
+                onClearQuery={() => setFilter("")}
+              />
             </div>
           )}
 

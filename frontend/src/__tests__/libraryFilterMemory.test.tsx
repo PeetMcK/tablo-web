@@ -9,12 +9,17 @@
  * In this browser rather than on the server, unlike grouping and order: those
  * are how a person reads the page and should follow them between machines,
  * while this is where one pair of eyes happens to be looking right now.
+ *
+ * The box itself has moved to the topbar, where it shares one field with the
+ * search: two boxes forty pixels apart, told apart only by a glyph, was a
+ * choice nobody could make correctly from looking. So these render the whole
+ * shell rather than the Library alone.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { LibraryView } from "../components/LibraryView";
+import { ChannelGrid } from "../components/ChannelGrid";
 import { api } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 
@@ -42,16 +47,28 @@ function list(): RecordingList {
 
 function renderLibrary() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  vi.spyOn(api, "status").mockResolvedValue({
+    authenticated: true, email: "viewer@example.com", devices: [],
+    active_sid: null, direct_origin: null,
+  });
+  vi.spyOn(api, "guideStream").mockImplementation(async function* () {});
+  vi.spyOn(api, "guideGridStream").mockImplementation(async function* () {});
   return render(
     <QueryClientProvider client={qc}>
-      <LibraryView />
+      <ChannelGrid onLogout={() => {}} />
     </QueryClientProvider>,
   );
+}
+
+/** The one text box, wherever it currently is and whatever it is called. */
+function box(): HTMLInputElement {
+  return document.querySelector<HTMLInputElement>("header input[type=text]")!;
 }
 
 describe("the Library filter across a reload", () => {
   beforeEach(() => {
     localStorage.clear();
+    window.history.replaceState(null, "", "#/library");
     vi.spyOn(api, "recordings").mockResolvedValue(list());
     vi.spyOn(api, "storage").mockResolvedValue(
       { pinned_bytes: 0, cache_bytes: 0, free_bytes: 0 } as never);
@@ -60,7 +77,7 @@ describe("the Library filter across a reload", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("comes back to a filter that was left in the box", async () => {
-    localStorage.setItem("tablo:library.filter", "kratts");
+    localStorage.setItem("tablo:topbar.query", "kratts");
 
     renderLibrary();
 
@@ -68,29 +85,36 @@ describe("the Library filter across a reload", () => {
     expect(screen.queryByText("NFL Football")).toBeNull();
   });
 
+  it("adopts the filter left in the Library's own box, before there was one", async () => {
+    // One-shot: the old key seeds the new one and is retired, so a viewer
+    // mid-session keeps their filter and nobody is left holding a dead key.
+    localStorage.setItem("tablo:library.filter", "kratts");
+
+    renderLibrary();
+
+    expect(await screen.findByText("Wild Kratts")).toBeInTheDocument();
+    expect(localStorage.getItem("tablo:library.filter")).toBeNull();
+  });
+
   it("remembers what was typed", async () => {
     renderLibrary();
     await screen.findByText("NFL Football");
 
-    fireEvent.change(screen.getByLabelText("Filter recordings"), {
-      target: { value: "kratts" },
-    });
+    fireEvent.change(box(), { target: { value: "kratts" } });
 
     await waitFor(() =>
-      expect(localStorage.getItem("tablo:library.filter")).toBe("kratts"));
+      expect(localStorage.getItem("tablo:topbar.query")).toBe("kratts"));
   });
 
   it("forgets it when the box is cleared", async () => {
-    localStorage.setItem("tablo:library.filter", "kratts");
+    localStorage.setItem("tablo:topbar.query", "kratts");
     renderLibrary();
     await screen.findByText("Wild Kratts");
 
-    fireEvent.change(screen.getByLabelText("Filter recordings"), {
-      target: { value: "" },
-    });
+    fireEvent.change(box(), { target: { value: "" } });
 
     await waitFor(() =>
-      expect(localStorage.getItem("tablo:library.filter")).toBeNull());
+      expect(localStorage.getItem("tablo:topbar.query")).toBeNull());
     expect(await screen.findByText("NFL Football")).toBeInTheDocument();
   });
 
@@ -107,23 +131,31 @@ describe("the Library filter across a reload", () => {
     renderLibrary();
     await screen.findByText("NFL Football");
 
-    expect(() => fireEvent.change(screen.getByLabelText("Filter recordings"), {
-      target: { value: "kratts" },
-    })).not.toThrow();
+    expect(() => fireEvent.change(box(), { target: { value: "kratts" } }))
+      .not.toThrow();
   });
 
   it("offers a way to empty the box without selecting the text", async () => {
     // Escape does it for a keyboard, and the phone layout has a collapse - but
     // a pointer on a desktop had nothing to aim at, and a filter is the one
     // control that hides things until it is cleared.
-    localStorage.setItem("tablo:library.filter", "kratts");
+    localStorage.setItem("tablo:topbar.query", "kratts");
     renderLibrary();
     await screen.findByText("Wild Kratts");
 
     fireEvent.click(screen.getByRole("button", { name: /clear filter/i }));
 
     expect(await screen.findByText("NFL Football")).toBeInTheDocument();
-    expect(localStorage.getItem("tablo:library.filter")).toBeNull();
+    expect(localStorage.getItem("tablo:topbar.query")).toBeNull();
+  });
+
+  it("leaves the Library with one box, not two", async () => {
+    // The whole point: two fields forty pixels apart, told apart only by a
+    // glyph, and typing in the wrong one said nothing.
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(document.querySelectorAll("input[type=search]")).toHaveLength(0);
   });
 
   it("offers nothing to clear when the box is empty", async () => {

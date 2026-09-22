@@ -117,6 +117,33 @@ describe("the topbar box's two jobs", () => {
     expect(await screen.findByText(FOX)).toBeInTheDocument();
   });
 
+  it("gives the whole page back on Escape while filtering", async () => {
+    // What the Library's own filter did, kept: filtering has no dropdown to
+    // dismiss, and the text is the only thing standing between the viewer and
+    // everything on the page.
+    renderShell();
+    await screen.findByText(MONTANA);
+    fireEvent.change(box(), { target: { value: "kufm" } });
+    await waitFor(() => expect(screen.queryByText(FOX)).toBeNull());
+
+    fireEvent.keyDown(box(), { key: "Escape" });
+
+    expect(box()).toHaveValue("");
+    expect(await screen.findByText(FOX)).toBeInTheDocument();
+  });
+
+  it("leaves the URL alone while filtering", async () => {
+    // Unlike the search, which names a results page anyone can link to. A
+    // filter narrows a page that is already open.
+    renderShell();
+    await screen.findByText(MONTANA);
+    const before = window.location.hash;
+
+    fireEvent.change(box(), { target: { value: "kufm" } });
+
+    expect(window.location.hash).toBe(before);
+  });
+
   it("greys the funnel on the Guide, and gives it back on the way out", async () => {
     renderShell();
     await screen.findByRole("radio", { name: "Filter this page" });

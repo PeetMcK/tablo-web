@@ -81,11 +81,18 @@ function list(overrides: Partial<RecordingList> = {}): RecordingList {
   return { recordings: [REC], returned: 1, total: 1, offline_only: 0, ...overrides };
 }
 
-function renderLibrary() {
+/**
+ * The Library alone, narrowed to `query`.
+ *
+ * The filter box itself lives in the topbar now, so the text arrives as a
+ * prop: an empty one is the unfiltered Library this file mostly tests, and
+ * `onClearQuery` stands in for the topbar emptying its own box.
+ */
+function renderLibrary(query = "", onClearQuery = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <LibraryView />
+      <LibraryView query={query} onClearQuery={onClearQuery} />
     </QueryClientProvider>,
   );
 }
@@ -1435,22 +1442,16 @@ describe("the Library toolbar", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  /** The filter field, addressed the way a viewer addresses it. */
-  const field = () => screen.getByRole("searchbox", { name: /filter recordings/i });
-
   async function openFilter() {
     const menu = within(document.querySelector<HTMLElement>("[data-library-toolbar]")!);
     fireEvent.click(await menu.findByRole("button", { name: /All/ }));
     return menu;
   }
 
-  it("filters the cards by title as it is typed", async () => {
-    renderLibrary();
-    await screen.findByText("Wild Kratts");
+  it("keeps only the cards matching the filter it is given", async () => {
+    renderLibrary("knives");
 
-    fireEvent.change(field(), { target: { value: "knives" } });
-
-    expect(screen.getByText("Knives Out")).toBeInTheDocument();
+    expect(await screen.findByText("Knives Out")).toBeInTheDocument();
     expect(screen.queryByText("Wild Kratts")).not.toBeInTheDocument();
     expect(screen.queryByText("NFL Football")).not.toBeInTheDocument();
   });
@@ -1458,28 +1459,13 @@ describe("the Library toolbar", () => {
   it("looks in the episode title and the blurb, not only the show", async () => {
     // An episode is as often remembered by what it was about as by what the
     // show is called.
-    renderLibrary();
-    await screen.findByText("Wild Kratts");
+    const blurb = renderLibrary("bald eagle");
+    expect(await screen.findByText("Wild Kratts")).toBeInTheDocument();
+    blurb.unmount();
 
-    fireEvent.change(field(), { target: { value: "bald eagle" } });
-    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
-
-    fireEvent.change(field(), { target: { value: "arrowhead" } });
-    expect(screen.getByText("NFL Football")).toBeInTheDocument();
+    renderLibrary("arrowhead");
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
     expect(screen.queryByText("Wild Kratts")).not.toBeInTheDocument();
-  });
-
-  it("empties on Escape rather than merely losing focus", async () => {
-    // The field holds the only thing standing between the viewer and the whole
-    // library, so the way out of it is the way back to everything.
-    renderLibrary();
-    await screen.findByText("Wild Kratts");
-    fireEvent.change(field(), { target: { value: "knives" } });
-
-    fireEvent.keyDown(field(), { key: "Escape" });
-
-    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
-    expect(field()).toHaveValue("");
   });
 
   it("files a film under Movies without asking the device anything", async () => {
@@ -1518,21 +1504,28 @@ describe("the Library toolbar", () => {
     expect(screen.queryByText("Knives Out")).not.toBeInTheDocument();
   });
 
-  it("says nothing matches, and offers the way back", async () => {
+  it("says nothing matches, rather than that the library is empty", async () => {
     // A library that holds things and a toolbar that finds none of them are
     // two different states; one message for both reads as "your recordings are
     // gone".
-    renderLibrary();
-    await screen.findByText("Wild Kratts");
+    renderLibrary("zzzz");
 
-    fireEvent.change(field(), { target: { value: "zzzz" } });
-    expect(screen.getByText(/nothing matches/i)).toBeInTheDocument();
+    expect(await screen.findByText(/nothing matches/i)).toBeInTheDocument();
     expect(screen.queryByText(/no recordings found/i)).not.toBeInTheDocument();
+  });
+
+  it("undoes the text filter too, not only the content one", async () => {
+    // The box is in the topbar now, so clearing its text is something this
+    // page has to ask for. A button that reset the content filter and left
+    // the text would put the viewer back in front of the same empty page
+    // having been told it was fixed.
+    const onClearQuery = vi.fn();
+    renderLibrary("zzzz", onClearQuery);
+    await screen.findByText(/nothing matches/i);
 
     fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
 
-    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
-    expect(field()).toHaveValue("");
+    expect(onClearQuery).toHaveBeenCalled();
   });
 
   it("keeps an empty library's own message", async () => {
@@ -1546,12 +1539,16 @@ describe("the Library toolbar", () => {
 
   it("leaves the URL alone", async () => {
     // Unlike the header's search, which names a page anyone can link to. The
-    // page's own route is all the hash ever holds here.
+    // page's own route is all the hash ever holds here — see
+    // `topbarMode.test.tsx` for the same guarantee from the box's end.
+    // After the render, not before it: the page writes its own `#/library` on
+    // mount, and that route is the thing the filter must not add to.
     renderLibrary();
     await screen.findByText("Wild Kratts");
     const before = window.location.hash;
 
-    fireEvent.change(field(), { target: { value: "knives" } });
+    const narrowed = renderLibrary("knives");
+    await within(narrowed.container).findByText("Knives Out");
 
     expect(window.location.hash).toBe(before);
   });
@@ -1785,13 +1782,14 @@ function stubPhone(matches: boolean) {
 }
 
 /**
- * The Library's filter at phone width.
+ * The Library's toolbar at phone width.
  *
- * The same move the topbar search makes, for the same reason: a full-width
- * field and two menus cannot share a 400px row, and the field is the one of
- * the three that is empty most of the time.
+ * The filter field that used to collapse to an icon here is gone: it shares
+ * the topbar's one box with the search now, and that box does its own
+ * collapsing (see `pageChrome.test.tsx`). What is left on this row is the two
+ * menus, which drop their words rather than their icons.
  */
-describe("the Library's filter at phone width", () => {
+describe("the Library's toolbar at phone width", () => {
   let restoreMedia = () => {};
 
   beforeEach(() => {
@@ -1806,56 +1804,6 @@ describe("the Library's filter at phone width", () => {
     vi.spyOn(api, "putPref").mockResolvedValue({ ok: true });
   });
   afterEach(() => { restoreMedia(); vi.restoreAllMocks(); });
-
-  const field = () => screen.getByPlaceholderText(/filter recordings/i);
-
-  it("is an icon, not a field, until it is asked for", async () => {
-    restoreMedia = stubPhone(true);
-    renderLibrary();
-    await screen.findByText("NFL Football");
-
-    expect(screen.getByRole("button", { name: "Filter recordings" }))
-      .toBeInTheDocument();
-    // Hidden rather than unmounted: the input's value IS the filter, and
-    // unmounting it would drop the query every time the row narrowed.
-    expect(field().parentElement!.className).toMatch(/\bhidden\b/);
-  });
-
-  it("opens into the field when the icon is tapped", async () => {
-    restoreMedia = stubPhone(true);
-    renderLibrary();
-    await screen.findByText("NFL Football");
-
-    fireEvent.click(screen.getByRole("button", { name: "Filter recordings" }));
-
-    expect(field().parentElement!.className).not.toMatch(/\bhidden\b/);
-    expect(field()).toHaveFocus();
-  });
-
-  it("gives the row back, and drops the query with it", async () => {
-    restoreMedia = stubPhone(true);
-    renderLibrary();
-    await screen.findByText("NFL Football");
-    fireEvent.click(screen.getByRole("button", { name: "Filter recordings" }));
-    fireEvent.change(field(), { target: { value: "kratts" } });
-
-    fireEvent.click(screen.getByRole("button", { name: "Close filter" }));
-
-    // A filter left behind an icon is a library missing recordings for no
-    // reason anyone can see.
-    expect(screen.getByRole("button", { name: "Filter recordings" }))
-      .toBeInTheDocument();
-    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
-  });
-
-  it("is simply the field on anything wider", async () => {
-    restoreMedia = stubPhone(false);
-    renderLibrary();
-    await screen.findByText("NFL Football");
-
-    expect(screen.queryByRole("button", { name: "Filter recordings" })).toBeNull();
-    expect(field().parentElement!.className).not.toMatch(/\bhidden\b/);
-  });
 
   it("drops the words in front of the two menus", async () => {
     // "Group Day" and "Sort Episode" are what makes the pair readable at a
