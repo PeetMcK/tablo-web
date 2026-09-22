@@ -1349,6 +1349,14 @@ def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
         # flags come after `prof.flags` deliberately, where FFmpeg lets the
         # last one win.
         "-bf", "0",
+        # And the quality live has always had. The recordings profile was
+        # raised to `-q:v 55` to match what the device's own transcode puts on
+        # screen, which costs roughly three times the bitrate; a recording is
+        # written once and read later, so it can afford that, while live is
+        # pushing bits at a player in real time over whatever connection it
+        # has. Same reasoning as `-bf` above, and only where `-q:v` is the
+        # knob - x264 takes `-crf`, and setting both would be a fight.
+        *(["-q:v", "40"] if prof.name == "h264_videotoolbox" else []),
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "hls",
         "-hls_time", str(HLS_TIME),
