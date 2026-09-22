@@ -35,6 +35,24 @@ from app.transcode_cache import (
 
 client = TestClient(app)
 
+
+def _interlace_probe(interlaced: bool = False):
+    """Stand-in for the `ffprobe` an encoding window runs before FFmpeg.
+
+    It reads the per-frame interlaced flags to decide whether the deinterlacer
+    is needed at all, so every fake `create_subprocess_exec` that an encoding
+    window passes through has to answer it - otherwise the fake's own FFmpeg
+    stub is handed the probe's argv and the window never encodes.
+    """
+    flags = ("1,\n" if interlaced else "0,\n") * 40
+
+    class Probe:
+        returncode = 0
+        async def communicate(self):
+            return flags.encode(), b""
+    return Probe()
+
+
 # Shape taken from a real device response (Tablo 4G QUAD, firmware 2.2.58).
 DEVICE_RECORDING = {
     "object_id": 80888,
@@ -618,6 +636,8 @@ def test_ensure_window_encodes_the_right_offset(tmp_path, monkeypatch):
     real_exec = asyncio.create_subprocess_exec
 
     async def fake_exec(*cmd, cwd=None, **kw):
+        if cmd[0] == "ffprobe":
+            return _interlace_probe()
         calls["cmd"] = cmd
         # Emulate ffmpeg writing the window's segments.
         from pathlib import Path as P
@@ -1132,6 +1152,8 @@ def test_a_prefetch_window_does_not_suspend_itself_when_demanded(tmp_path, monke
         return {"playlist_url": "http://device/pl.m3u8"}
 
     async def fake_exec(*cmd, cwd=None, **kw):
+        if cmd[0] == "ffprobe":
+            return _interlace_probe()
         from pathlib import Path as _P
         for n in range(segments_in_window(120, 0)):
             (_P(cwd) / f"seg_{n:02d}.ts").write_bytes(b"x")
@@ -3122,8 +3144,13 @@ def test_re_registering_updates_the_codec_without_clearing_the_pin(tmp_path):
     assert meta.pinned is True
 
 
-def _run_one_window(tmp_path, monkeypatch, codec, segments=None):
-    """Run window 7 with FFmpeg stubbed, and return the argv(s) it was given."""
+def _run_one_window(tmp_path, monkeypatch, codec, segments=None, interlaced=False):
+    """Run window 7 with FFmpeg stubbed, and return the argv(s) it was given.
+
+    Only the FFmpeg calls are returned. An encoding window also runs `ffprobe`
+    first, to find out whether the broadcast is interlaced, and that answer is
+    what `interlaced` stands in for - every frame flagged, or none of them.
+    """
     async def fake_session(path):
         return {"playlist_url": "http://device/stream/pl.m3u8?tok"}
 
@@ -3135,6 +3162,9 @@ def _run_one_window(tmp_path, monkeypatch, codec, segments=None):
     cmds = []
 
     async def fake_exec(*cmd, cwd=None, **kw):
+        if cmd[0] == "ffprobe":
+            return _interlace_probe(interlaced)
+
         cmds.append(list(cmd))
         from pathlib import Path as P
         for f in P(cwd).glob("seg_*.ts"):
@@ -3184,6 +3214,45 @@ def test_a_window_with_no_codec_still_encodes(tmp_path, monkeypatch):
     cmd = _run_one_window(tmp_path, monkeypatch, codec=None)
 
     assert cmd[cmd.index("-c:v") + 1] != "copy"
+
+
+def test_a_progressive_broadcast_is_not_deinterlaced(tmp_path, monkeypatch):
+    """`bwdif` in `send_field` doubles the declared frame rate whatever it is
+    given, and HLS is constant rate - so on a 720p60 channel every second frame
+    written was a duplicate of the one before it, at a third of the bitrate.
+    Measured on 30s of KTMFFOX: 720 frames per 6s segment against 360, 12 MB
+    against 8.6 MB. `deint=interlaced` spares the pixels, not the frame rate."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="mpeg2", interlaced=False)
+
+    assert not any("bwdif" in a for a in cmd)
+    # The rest of the chain still has to run: square pixels is correctness, not
+    # tuning, and dropping it stretches anamorphic SD.
+    assert any("setsar" in a for a in cmd)
+
+
+def test_an_interlaced_broadcast_still_is(tmp_path, monkeypatch):
+    """1080i is half the ATSC channels here, and encoding its fields as frames
+    puts comb teeth on every moving edge."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="mpeg2", interlaced=True)
+
+    assert any("bwdif=mode=send_field" in a for a in cmd)
+
+
+def test_an_encoded_window_reorders_frames_and_leaves_keyframes_to_the_segmenter(
+        tmp_path, monkeypatch):
+    """Both are generic FFmpeg options, so neither shows up in
+    `ffmpeg -h encoder=h264_videotoolbox`, and both were missing: `-bf` is what
+    sets VideoToolbox's `AllowFrameReordering` and `-g` its
+    `MaxKeyFrameInterval`. Without them the Media Engine emitted no B-frames
+    and a keyframe every twelve frames - 7.77 MB where 5.12 MB carried the same
+    30s at a *better* SSIM."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="mpeg2")
+
+    assert cmd[cmd.index("-bf") + 1] == "3"
+    # Long enough that `-force_key_frames` always gets there first; it is a
+    # safety net for a stream that somehow lost the forcing, not the mechanism.
+    assert int(cmd[cmd.index("-g") + 1]) >= 6 * 60
+    assert "-force_key_frames" in cmd
 
 
 def test_a_copied_window_that_comes_out_the_wrong_shape_is_re_encoded(
@@ -3260,6 +3329,8 @@ def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None, 
     cmds = []
 
     async def fake_exec(*cmd, cwd=None, **kw):
+        if cmd[0] == "ffprobe":
+            return _interlace_probe()
         cmds.append(list(cmd))
         from pathlib import Path as P
         for n in range(segments_in_window(GAME, window)):
@@ -3361,6 +3432,8 @@ def _window_producing(tmp_path, monkeypatch, n_segments, codec="h264"):
     cmds = []
 
     async def fake_exec(*cmd, cwd=None, **kw):
+        if cmd[0] == "ffprobe":
+            return _interlace_probe()
         cmds.append(list(cmd))
         from pathlib import Path as P
         for f in P(cwd).glob("seg_*.ts"):

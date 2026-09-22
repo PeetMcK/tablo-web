@@ -92,6 +92,32 @@ class EncoderProfile:
     pix_fmt: str | None = "yuv420p"
 
 
+#: B-frames, and a GOP long enough to stay out of their way.
+#:
+#: Both are generic FFmpeg options rather than encoder ones, which is why
+#: neither appears in `ffmpeg -h encoder=h264_videotoolbox` and why both were
+#: missed: `-bf` is what sets VideoToolbox's `AllowFrameReordering`, and `-g`
+#: its `MaxKeyFrameInterval`. Unset, the Media Engine emitted no B-frames at
+#: all and a keyframe every twelve frames. Measured on 30s of 720p60, all at
+#: `-q:v 40` against a lossless reference:
+#:
+#:     current            7.77 MB    SSIM 0.8716    0 B-frames, I every ~12
+#:     -bf 3              8.0  MB    -              B-frames, keyframes as before
+#:     -bf 3 -g 600       5.12 MB    SSIM 0.8804    1 keyframe per segment
+#:
+#: Smaller *and* better, which is the giveaway that the bits were being spent
+#: on keyframes nobody asked for. `-bf` alone is a regression: B-frames cost
+#: something to carry and earn it back only over a GOP long enough to use them.
+#:
+#: `-g` is a safety net, not the mechanism. Keyframes land on segment
+#: boundaries because of `-force_key_frames`, which was verified by pushing
+#: `-g` out to 3600 and checking every segment still opens on an I-frame. 600
+#: frames is 10s at 59.94 and 20s at 29.97, so it never fires before the
+#: forced keyframe does, and a stream that somehow lost the forcing still has
+#: a seek point rather than one GOP from end to end.
+B_FRAME_FLAGS = ["-bf", "3", "-g", "600"]
+
+
 def _profiles() -> dict[str, EncoderProfile]:
     # Quality is interpreted per encoder: CRF for x264 (lower is better),
     # -q:v for VideoToolbox (1-100, higher is better), -qp for VAAPI.
@@ -102,7 +128,8 @@ def _profiles() -> dict[str, EncoderProfile]:
         "libx264": EncoderProfile(
             name="libx264",
             flags=["-preset", "veryfast", "-crf", q or "23",
-                   "-maxrate", "4000k", "-bufsize", "8000k"],
+                   "-maxrate", "4000k", "-bufsize", "8000k",
+                   *B_FRAME_FLAGS],
         ),
         # macOS Media Engine. -realtime 0 lets it run flat out rather than pacing
         # to wall clock; -allow_sw 1 falls back to software instead of failing
@@ -122,13 +149,14 @@ def _profiles() -> dict[str, EncoderProfile]:
         "h264_videotoolbox": EncoderProfile(
             name="h264_videotoolbox",
             flags=["-realtime", "0", "-allow_sw", "1", "-a53cc", "0",
-                   "-q:v", q or "40", "-profile:v", "high"],
+                   "-q:v", q or "40", "-profile:v", "high",
+                   *B_FRAME_FLAGS],
         ),
         # Intel/AMD on Linux. UNVERIFIED - no VAAPI hardware was available to
         # test against; the shape follows FFmpeg's documented VAAPI pipeline.
         "h264_vaapi": EncoderProfile(
             name="h264_vaapi",
-            flags=["-qp", q or "23"],
+            flags=["-qp", q or "23", *B_FRAME_FLAGS],
             pre_input=["-vaapi_device", vaapi_device],
             filters=["format=nv12", "hwupload"],
             pix_fmt=None,
@@ -137,7 +165,8 @@ def _profiles() -> dict[str, EncoderProfile]:
         # upload filter is needed.
         "h264_nvenc": EncoderProfile(
             name="h264_nvenc",
-            flags=["-preset", "p4", "-cq", q or "23", "-rc", "vbr"],
+            flags=["-preset", "p4", "-cq", q or "23", "-rc", "vbr",
+                   *B_FRAME_FLAGS],
         ),
     }
 
@@ -178,13 +207,18 @@ def fill_limit(first: int, total: int) -> int:
 
 
 def deinterlace_filter(env_var: str = "TRANSCODE_DEINTERLACE",
-                       default: str = "field") -> list[str]:
+                       default: str = "field",
+                       interlaced: bool | None = None) -> list[str]:
     """Deinterlacing, applied before any encoder-specific filtering.
 
     ``env_var``/``default`` let callers pick their own default and override
     knob. Recordings default to ``field`` (60p, throughput can absorb it); live
     passes ``default="frame"`` (30p) because it must stay above realtime — see
     the note on why field halves encoder throughput and starved live playback.
+
+    ``interlaced`` is what the source was measured to be (`probe_interlaced`).
+    A source known to be progressive gets no filter at all, and that is not an
+    optimisation — see below.
 
     ATSC is split down the middle: ABC and FOX broadcast 720p60 progressive,
     CBS and NBC broadcast 1080i. Measured across six recordings off this
@@ -193,9 +227,27 @@ def deinterlace_filter(env_var: str = "TRANSCODE_DEINTERLACE",
     if they were frames is what puts comb teeth on every moving edge.
 
     ``deint=interlaced`` processes only frames actually flagged interlaced, so
-    the 720p60 channels pass through untouched and keep their frame rate. That
-    matters more than it looks: with ``send_field`` an unconditional filter
-    would double the rate of progressive content for nothing.
+    progressive frames come through with their own pixels untouched. That much
+    is true, and it used to be the whole story here. It is not:
+
+    **``send_field`` doubles the declared output frame rate whatever it
+    processes.** The pixels of a progressive frame are passed through, and then
+    FFmpeg has a filter graph advertising 119.88fps fed by a source producing
+    59.94, and fills the gap by duplicating every frame. Into MP4 that is
+    invisible - the muxer takes variable frame rate and the duplicates never
+    appear - which is why it survived a direct test. The real path writes HLS,
+    which is constant rate, and there they are written out and encoded.
+    Measured on 30s of KTMFFOX (720p60, every frame flagged progressive):
+
+        with bwdif send_field     720 frames per 6s segment    12 MB
+        no filter at all          360 frames per 6s segment   8.6 MB
+
+    Half of every segment on the progressive channels was a duplicate of the
+    frame before it, and the encoder spent a third of the bitrate on them. So
+    the filter is dropped outright for a source that has been measured
+    progressive, rather than relying on ``deint=interlaced`` to make it free.
+    A source not measured at all keeps the filter: unknown is treated as
+    possibly interlaced, because combing is the worse fault of the two.
 
     Modes, measured on one 1080i window (VideoToolbox, 60s of output):
 
@@ -214,9 +266,48 @@ def deinterlace_filter(env_var: str = "TRANSCODE_DEINTERLACE",
     mode = os.environ.get(env_var, default).lower()
     if mode in ("off", "none", "0", ""):
         return []
+    # Nothing to deinterlace, and in `send_field` the filter is not free.
+    if interlaced is False:
+        return []
     if mode == "frame":
         return ["bwdif=mode=send_frame:parity=auto:deint=interlaced"]
     return ["bwdif=mode=send_field:parity=auto:deint=interlaced"]
+
+
+async def probe_interlaced(source: str, *, seek: float | None = None,
+                           whitelist: str | None = None) -> bool | None:
+    """Whether this source is really interlaced, from its own frames.
+
+    The container's `field_order` is not enough on its own: it describes the
+    stream as declared, and what matters to `bwdif` is the per-frame flag. So
+    this counts the flags over a couple of seconds of real decoding.
+
+    Returns None when the probe fails or decodes nothing, which callers read as
+    "keep deinterlacing" - the safe direction, since combing is worse than a
+    frame rate that was doubled for no reason.
+    """
+    cmd = ["ffprobe", "-v", "error"]
+    if whitelist:
+        cmd += ["-protocol_whitelist", whitelist]
+    if seek is not None:
+        cmd += ["-ss", f"{seek:.3f}"]
+    cmd += ["-select_streams", "v:0", "-read_intervals", "%+2",
+            "-show_entries", "frame=interlaced_frame",
+            "-of", "csv=p=0", source]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except (OSError, TimeoutError):
+        return None
+    flags = [line for line in out.decode().split() if line.strip(",")]
+    if not flags:
+        return None
+    # A handful of stray flags in an otherwise progressive stream should not
+    # commit the whole recording to a doubled frame rate, and one clean frame
+    # in an interlaced one should not turn the deinterlacer off.
+    interlaced = sum(1 for f in flags if f.strip(",") == "1")
+    return interlaced > len(flags) // 4
 
 
 def square_pixels_filter() -> list[str]:
@@ -439,6 +530,12 @@ class CacheMeta:
     #: re-encoded - the offline copy is trying to produce exactly what the
     #: device already holds - and everything else takes the encoder.
     source_codec: str | None = None
+    #: Whether the broadcast is interlaced, measured from its own frames the
+    #: first time a window is encoded (`probe_interlaced`). None until then,
+    #: and on a copied recording forever - nothing decodes it to find out.
+    #: Kept because it decides whether the deinterlacer runs at all, and in
+    #: `send_field` that filter doubles the frame rate of whatever it is given.
+    source_interlaced: bool | None = None
     #: What the device says this recording weighs. A copied recording lands at
     #: that size - nothing is re-encoded - so it is what the progress and the
     #: estimate are really about. None for anything the device did not say.
@@ -1920,6 +2017,24 @@ class TranscodeCache:
         meta = self.read_meta(object_id)
         copying = (meta.source_codec if meta else None) == "h264"
 
+        # Whether this broadcast is interlaced, measured once and kept. The
+        # answer belongs to the channel rather than the window - ATSC stations
+        # do not switch between 1080i and 720p60 mid-programme - so the probe
+        # runs on the first window that needs it and every later window of the
+        # recording reads the recorded answer.
+        #
+        # A copied window decodes nothing and filters nothing, so it neither
+        # needs the answer nor is a place to learn it.
+        if not copying and meta is not None and meta.source_interlaced is None:
+            measured = await probe_interlaced(
+                playlist_url, seek=seek_to, whitelist="http,https,tcp,tls")
+            if measured is not None:
+                meta.source_interlaced = measured
+                self.write_meta(meta)
+                print(f"[cache] {object_id} source is "
+                      f"{'interlaced' if measured else 'progressive'}", flush=True)
+        interlaced = meta.source_interlaced if meta else None
+
         prof = encoder_profile()
         # Deinterlace ahead of anything encoder-specific: VAAPI's chain ends in
         # hwupload, and frames have to be progressive before they leave for the
@@ -1932,7 +2047,8 @@ class TranscodeCache:
             # source is progressive with square pixels already, so there is
             # nothing a filter would fix.
             filters = [] if copying else [
-                *deinterlace_filter(), *square_pixels_filter(), *prof.filters]
+                *deinterlace_filter(interlaced=interlaced),
+                *square_pixels_filter(), *prof.filters]
             return [
                 "ffmpeg", "-y",
                 # Device-controlled URLs get no 'file'. A local window source is

@@ -1341,6 +1341,14 @@ def live_ffmpeg_cmd(session_dir: Path, input_url: str) -> list[str]:
         "-c:v", prof.name, *prof.flags,
         *(["-pix_fmt", prof.pix_fmt] if prof.pix_fmt else []),
         "-g", "60",
+        # No B-frames here, whatever the shared profile says. They save real
+        # bitrate on the recordings path, but they buy it by reordering -
+        # the encoder holds frames back to code them against a future one -
+        # and live is the path with no slack: it must stay at or above
+        # realtime or the playlist stops keeping ahead of the player. Both
+        # flags come after `prof.flags` deliberately, where FFmpeg lets the
+        # last one win.
+        "-bf", "0",
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "hls",
         "-hls_time", str(HLS_TIME),
