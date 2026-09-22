@@ -204,10 +204,7 @@ export function RecordingRow({
       <button
         onClick={onInfo}
         aria-label={`Read about ${title}`}
-        // Sized to its text rather than filling the row, so the watched
-        // toggle below can sit immediately after the title. The blank space
-        // that leaves is its own target, further down.
-        className="min-w-0 flex flex-col gap-0.5 py-2 text-left rounded-lg
+        className="min-w-0 flex-1 flex flex-col gap-0.5 py-2 text-left rounded-lg
                    focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
           <span className="flex items-center gap-2 min-w-0">
@@ -273,42 +270,6 @@ export function RecordingRow({
           </span>
       </button>
 
-      {/* Watched sits with the title rather than in the cluster at the end:
-          it is the one control that is also a fact about the programme, and
-          reading "have I seen this" belongs where the name is.
-
-          A sibling of the text button, not a child of it — a button inside a
-          button is invalid and unreachable by keyboard — which is why the
-          text button above is sized to its content. */}
-      <button
-        onClick={() => onWatched(!rec.watched)}
-        disabled={live}
-        aria-pressed={rec.watched}
-        aria-label={rec.watched ? `Mark ${title} unwatched` : `Mark ${title} watched`}
-        title={rec.watched ? "Mark unwatched" : "Mark watched"}
-        className={ACTION + " w-7 h-7 " + (rec.watched
-          ? " text-fg-secondary hover:bg-fill hover:text-fg"
-          : " text-fg-faint hover:bg-fill hover:text-fg")}
-      >
-        {/* The state, as the lock draws it: an open eye has been watched, a
-            struck-through one has not. */}
-        {rec.watched
-          ? <Eye className="w-4 h-4" aria-hidden />
-          : <EyeOff className="w-4 h-4" aria-hidden />}
-      </button>
-
-      {/* The rest of the line. It opens the sheet, like the text it follows,
-          so a click lands somewhere useful wherever it falls in the row —
-          but it carries no name of its own, because the text button ahead of
-          it already announces that action once. */}
-      <button
-        onClick={onInfo}
-        aria-hidden
-        tabIndex={-1}
-        data-row-rest
-        className="flex-1 self-stretch cursor-pointer"
-      />
-
       {/* The card's own controls, at the end of the row and in the card's own
           order: save the file, drop the copy, keep it — then information, on
           the outside edge where the row itself ends. Information is the one
@@ -321,11 +282,25 @@ export function RecordingRow({
           right-aligned, so the buttons that are there still line up down the
           page whatever else a row has. */}
       <span data-row-actions className="shrink-0 flex items-center gap-1 pl-1">
-        {/* Protect leads the cluster: it applies to every recording whatever
-            is on disk, where the three after it need something cached. It
-            draws the STATE it is in — a closed lock is protected — with the
-            act in the name. It does not apply to a file still being written.
-            (Watched is the other of that pair, and sits with the title.) */}
+        {/* Watched and protect lead the cluster: they are the two that apply
+            to every recording whatever is on disk, where the three after them
+            need something cached. Each draws the STATE it is in — an open eye
+            has been watched, a closed lock is protected — with the act in the
+            name and the tooltip. Neither applies to a file still being
+            written. */}
+        <button
+          onClick={() => onWatched(!rec.watched)}
+          disabled={live}
+          aria-pressed={rec.watched}
+          aria-label={rec.watched ? `Mark ${title} unwatched` : `Mark ${title} watched`}
+          title={rec.watched ? "Mark unwatched" : "Mark watched"}
+          className={ACTION + " text-fg-faint hover:bg-fill hover:text-fg"}
+        >
+          {rec.watched
+            ? <Eye className="w-4 h-4" aria-hidden />
+            : <EyeOff className="w-4 h-4" aria-hidden />}
+        </button>
+
         <button
           onClick={() => onProtect(!rec.protected)}
           disabled={live}
