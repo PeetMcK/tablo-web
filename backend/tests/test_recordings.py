@@ -15,9 +15,9 @@ from app import store
 from app.main import app
 from app.state import AppState
 from app.transcode_cache import (
-    RATE_SAMPLES,
     _BIF_MAGIC,
     MAX_ONDEMAND_WINDOWS,
+    RATE_SAMPLES,
     SEGMENT_SECONDS,
     WINDOW_SECONDS,
     CacheFull,
