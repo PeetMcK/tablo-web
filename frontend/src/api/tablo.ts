@@ -450,10 +450,21 @@ export interface RecordingChannel {
 }
 
 export interface TranscodeRate {
-  /** Megabits per second written to the cache. */
+  /**
+   * Megabits per second.
+   *
+   * A property of the picture more than of the work: a frozen frame encodes
+   * in no time and produces almost nothing, so this falls while the encode
+   * races. Worth showing, not worth leading with.
+   */
   mbps: number;
-  /** Seconds of output produced per second spent encoding. */
+  /** Seconds of output produced per wall second, over the last half minute. */
   realtime: number;
+  /**
+   * The same, averaged over this whole run — the number that answers "how
+   * long will this take", and what the estimate divides by.
+   */
+  average?: number;
 }
 
 export interface RecordingList {

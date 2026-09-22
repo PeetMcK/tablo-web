@@ -710,6 +710,25 @@ class TranscodeCache:
             return
         samples.append((now, seconds))
 
+    def average_rate(self, object_id: int) -> float:
+        """Content produced per wall second across this run of windows.
+
+        The honest headline for a download. Megabits per second describes the
+        picture rather than the work - a frozen frame encodes in no time and
+        produces almost nothing - and the last thirty seconds of anything
+        wanders. This is what the whole run has actually averaged, which is
+        what "how long will this take" is really asking about.
+
+        Zero before the run has started, or where it produced nothing.
+        """
+        began = self._fill_started.get(object_id)
+        if began is None:
+            return 0.0
+        elapsed = time.monotonic() - began
+        if elapsed < 1.0:
+            return 0.0
+        return self.produced_seconds(object_id) / elapsed
+
     def produced_rate(self, object_id: int) -> float:
         """Seconds of output appearing per second, over the trailing window."""
         samples = self._produced.get(object_id)
@@ -777,7 +796,10 @@ class TranscodeCache:
         # keeps the answer from lurching once a minute.
         produced = self.produced_seconds(object_id)
         self._note_produced(object_id, produced)
-        rate = self.produced_rate(object_id)
+        # The run's average, not the last half minute: what remains will take
+        # about as long as what came before, and a momentary stall or sprint
+        # should not rewrite the answer.
+        rate = self.average_rate(object_id) or self.produced_rate(object_id)
         if rate <= 0:
             # Nothing has been watched appearing yet; fall back to what the
             # finished windows say about themselves.

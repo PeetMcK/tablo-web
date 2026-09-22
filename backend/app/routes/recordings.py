@@ -65,6 +65,10 @@ def _decorate(item: dict, meta=None) -> dict:
     produced = cache.produced_rate(oid)
     if produced > 0:
         item["rate"] = {**item["rate"], "realtime": round(produced, 2)}
+    # The run's average alongside the moment's. The average is the headline -
+    # Mb/s describes the picture rather than the work, and a frozen frame
+    # encodes in no time while producing almost nothing.
+    item["rate"] = {**item["rate"], "average": round(cache.average_rate(oid), 2)}
     # Computed here rather than in the browser: a copied recording's size is
     # known before it starts, so its wait is arithmetic over bytes, and only
     # this side knows how many have arrived.
