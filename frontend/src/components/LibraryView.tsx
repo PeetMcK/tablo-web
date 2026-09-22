@@ -8,9 +8,11 @@ import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilter
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { OptionMenu } from "./OptionMenu";
 import {
-  LIBRARY_GROUPS, LIBRARY_SORTS, arrange,
-  type LibraryGroup, type LibrarySort,
+  LIBRARY_GROUPS, LIBRARY_LAYOUTS, LIBRARY_SORTS, arrange,
+  type LibraryGroup, type LibraryLayout, type LibrarySort,
 } from "../lib/libraryLayout";
+import { LayoutToggle } from "./LayoutToggle";
+import { RecordingRow } from "./RecordingRow";
 import { usePref } from "../lib/usePref";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { formatAired } from "../lib/format";
@@ -126,6 +128,7 @@ function formatDuration(seconds: number): string {
 /** What each stored layout preference is allowed to be — the menus themselves. */
 const GROUP_IDS = LIBRARY_GROUPS.map(g => g.id);
 const SORT_IDS = LIBRARY_SORTS.map(s => s.id);
+const LAYOUT_IDS = LIBRARY_LAYOUTS.map(l => l.id);
 
 function dayTint(iso: string, alpha?: number): string {
   const d = new Date(iso);
@@ -175,6 +178,16 @@ export function LibraryView() {
     "library.group", "day", GROUP_IDS);
   const [sortBy, setSortBy] = usePref<LibrarySort>(
     "library.sort", "newest", SORT_IDS);
+  /**
+   * Cards or rows.
+   *
+   * Cards is the fallback because cards is what this page has always been, and
+   * because it is the answer that is never wrong: a first paint in the layout
+   * someone did not choose is a worse greeting than one in the layout everyone
+   * knows.
+   */
+  const [layout, setLayout] = usePref<LibraryLayout>(
+    "library.layout", "cards", LAYOUT_IDS);
 
   const qc = useQueryClient();
 
@@ -663,6 +676,10 @@ export function LibraryView() {
             onChange={setSortBy}
             align="right"
           />
+          {/* Last in the cluster, and the only one here without words on it:
+              what the page is arranged by is a question, where cards-or-rows
+              is a switch. */}
+          <LayoutToggle value={layout} onChange={setLayout} />
         </div>
       </div>
 
@@ -674,9 +691,17 @@ export function LibraryView() {
         <div className="flex items-center justify-end mb-3">{storageLine}</div>
       )}
 
+      {/* The layouts differ in the container and in what one recording is
+          drawn as. The headings, the storage readout and both empty states are
+          written once and serve either: they are the page's landmarks, and a
+          landmark that moves when the layout changes is not one.
+
+          `col-span-full` on the heading and the empty states means nothing in
+          a flex column, which is why it can stay on both paths rather than
+          becoming a third conditional. */}
       <div
-        className="grid gap-6"
-        style={{
+        className={layout === "list" ? "flex flex-col" : "grid gap-6"}
+        style={layout === "list" ? undefined : {
           // `min(280px, 100%)` — a floor wider than the container overflows
           // rather than shrinking, and that overflow scrolls the page
           // sideways. Same guard as the Live grid's.
@@ -742,6 +767,19 @@ export function LibraryView() {
               </div>
 
               {items.map((rec) => {
+            // The row carries its own everything: it is given the recording and
+            // the two things a row can do, and the sheet behind the ⋮ holds the
+            // rest. Nothing below this line applies to it.
+            if (layout === "list") {
+              return (
+                <RecordingRow
+                  key={rec.object_id}
+                  rec={rec}
+                  onPlay={() => { setStartMode("resume"); setPlaying(rec); }}
+                  onInfo={() => setInfoFor(rec)}
+                />
+              );
+            }
             const playable = isPlayable(rec);
             const keepable = isKeepable(rec);
             // Coverage is worth drawing whether or not it is still recording:

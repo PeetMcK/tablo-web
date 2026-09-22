@@ -1577,4 +1577,48 @@ describe("the Library's grouping and sort", () => {
 
     expect(headings()).toEqual(["Monday 9/21", "Sunday 9/20"]);
   });
+
+  it("draws cards until told otherwise", async () => {
+    mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    // The description is a card's, and a row has no room for one.
+    expect(screen.getByText("AFC West matchup at Arrowhead Stadium."))
+      .toBeInTheDocument();
+  });
+
+  it("draws rows when the stored layout says so", async () => {
+    mockLibrary({ "library.layout": "list" });
+    renderLibrary();
+
+    expect(await screen.findByRole("button", { name: /Play NFL Football/ }))
+      .toBeInTheDocument();
+    expect(screen.queryByText("AFC West matchup at Arrowhead Stadium.")).toBeNull();
+  });
+
+  it("keeps its headings whichever layout is drawing", async () => {
+    // The grouping, the rule and the storage readout are the page's landmarks.
+    // Switching layout must not move them.
+    mockLibrary({ "library.layout": "list" });
+    renderLibrary();
+    await screen.findByRole("button", { name: /Play NFL Football/ });
+
+    expect(headings()).toEqual(["Monday 9/21", "Sunday 9/20"]);
+  });
+
+  it("remembers the layout the moment it is switched", async () => {
+    const putPref = mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    fireEvent.click(screen.getByRole("button", { name: /List/ }));
+
+    // The page rearranges in the same beat the switch was clicked; the write
+    // that remembers it follows.
+    await waitFor(() =>
+      expect(screen.queryByText("AFC West matchup at Arrowhead Stadium.")).toBeNull());
+    await waitFor(() =>
+      expect(putPref).toHaveBeenCalledWith("library.layout", "list"));
+  });
 });
