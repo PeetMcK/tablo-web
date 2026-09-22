@@ -25,6 +25,22 @@ import { useTopbarMode, useTopbarQuery, type TopbarMode } from "../lib/topbarMem
 function useGuideStream(enabled: boolean) {
   const [channels, setChannels] = useState<GuideChannel[]>([]);
   const [loading, setLoading] = useState(false);
+  /**
+   * Whether the first full pass of the guide is still arriving.
+   *
+   * Not the same question as `loading`, which asks "is there anything to draw
+   * yet" and goes false at the very first row. The guide streams in phases —
+   * bare channels, then logos, then programmes, up to a minute and a half
+   * apart on a cold cache — so between those two moments there are cards on
+   * screen with nothing in them, and a card cannot tell "has not arrived" from
+   * "this channel genuinely has no listing". Both are a null programme. This
+   * is what tells them apart.
+   *
+   * Deliberately one-way: the five-minute refresh below does not set it true
+   * again. A channel that really has no listing would otherwise dissolve into
+   * a skeleton every five minutes for as long as the page is open.
+   */
+  const [populating, setPopulating] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   const channelsRef = useRef<GuideChannel[]>([]);
 
@@ -55,7 +71,13 @@ function useGuideStream(enabled: boolean) {
     } catch (e) {
       if (!controller.signal.aborted) console.error("Guide stream error:", e);
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+        // Also on the error path: a stream that died is not one whose data is
+        // still coming, and leaving every empty card spinning forever would be
+        // a worse lie than the one this replaces.
+        setPopulating(false);
+      }
     }
   }, []);
 
@@ -72,7 +94,7 @@ function useGuideStream(enabled: boolean) {
     };
   }, [enabled, startStream]);
 
-  return { channels, loading };
+  return { channels, loading, populating };
 }
 
 
@@ -206,7 +228,7 @@ export function ChannelGrid({ onLogout }: Props) {
     api.status().then(s => setUserEmail(s.email)).catch(() => {});
   }, []);
 
-  const { channels, loading: isLoading } = useGuideStream(activeTab === "live");
+  const { channels, loading: isLoading, populating } = useGuideStream(activeTab === "live");
   const inProgress = useRecordingsInProgress(activeTab === "live");
 
 
@@ -783,6 +805,10 @@ export function ChannelGrid({ onLogout }: Props) {
                       key={ch.identifier}
                       channel={ch}
                       now={now}
+                      /* Only where there is nothing yet: a card whose
+                         programme has already landed is finished, whatever the
+                         rest of the stream is still doing. */
+                      pending={populating && !ch.current_program}
                       recording={recordingFor(inProgress, ch.identifier,
                                               ch.current_program?.start)}
                       infoOpen={cardInfo?.channel === ch.identifier}
