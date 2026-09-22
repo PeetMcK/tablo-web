@@ -158,6 +158,9 @@ describe("the player's chrome", () => {
 
     const titles = [...container.querySelectorAll("button")]
       .map((b) => b.getAttribute("title") ?? "")
+      // Up to the separator: the pop-out's tooltip carries a second clause
+      // for the right-click, and this is about the key each control names.
+      .map((t) => t.split(" · ")[0])
       .filter((t) => /Mute|Unmute|picture|Fullscreen/i.test(t));
     // Every control that has a key says so. This one was the odd one out
     // between two that did, which read as though it had no shortcut.
@@ -173,14 +176,16 @@ describe("the player's chrome", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 
     expect(screen.getByTitle("Close picture-in-picture (P)")).toBeInTheDocument();
     expect(screen.getByText("Close picture-in-picture (P)")).toBeInTheDocument();
     // And the pop-out's own button, which is the one under the pointer there.
-    expect(pipDoc.body.querySelector('[title="Close picture-in-picture (P)"]'))
+    // Its tooltip carries a second clause for the right-click, so match the
+    // key part rather than the whole string.
+    expect(pipDoc.body.querySelector('[title^="Close picture-in-picture (P)"]'))
       .not.toBeNull();
   });
 
@@ -216,7 +221,7 @@ describe("the player's chrome", () => {
     const { pipDoc, requestWindow } = fakePipWindow();
 
     const video = container.querySelector("video")!;
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
 
     await waitFor(() => expect(requestWindow).toHaveBeenCalledTimes(1));
     await waitFor(() =>
@@ -229,10 +234,10 @@ describe("the player's chrome", () => {
     // The original never left, and still carries the sound.
     expect(container.contains(video)).toBe(true);
     expect(video.muted).toBe(false);
-    // Placement is the browser's to remember, and so is size while jsdom
-    // reports a picture of no size at all — a shape is asked for only when
-    // there is one (see pipResume).
-    expect(requestWindow).toHaveBeenCalledWith();
+    // The default box, and no placement: the browser reopens the window where
+    // and how the viewer left it, and the size passed matters only on the
+    // first pop-out of all. Shape is corrected afterwards (see pipResume).
+    expect(requestWindow).toHaveBeenCalledWith({ width: 480, height: 270 });
   });
 
   it("leaves no scrollbar down the side of the pop-out", async () => {
@@ -245,7 +250,7 @@ describe("the player's chrome", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 
@@ -264,7 +269,7 @@ describe("the player's chrome", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() =>
       expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
 

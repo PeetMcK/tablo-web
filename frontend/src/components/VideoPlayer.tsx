@@ -26,7 +26,9 @@ import {
   loadSkipForward, loadSkipBack, SKIP_CONFIG_EVENT,
 } from "../lib/skip";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
-import { fitPipWindow, loadPipArea, savePipArea } from "../lib/pipWindow";
+import {
+  defaultBoxFor, resizePipWindow, PIP_BOX_DEFAULT,
+} from "../lib/pipWindow";
 import {
   createHlsSurface, DOCUMENT_FRAMES, type CaptionSource, type FrameSource,
   type PlaybackSurface,
@@ -312,6 +314,8 @@ interface PlayerView {
    */
   poppedOut: boolean;
   togglePictureInPicture: () => void;
+  /** Resize a pop-out that is already out back to the default box. */
+  resetPipWindow: () => void;
   enterFullscreen: () => void;
   /**
    * Captions, and the controls for them.
@@ -2151,7 +2155,7 @@ export function VideoPlayer({
    * the canvas with the sample aspect already applied, and `videoWidth` is
    * aspect-corrected by definition — so the two are directly comparable and
    * the pop-out never has to learn which path it got. Zero until something
-   * has decoded, which `fitPipWindow` reads as "no shape yet".
+   * has decoded, which `reshapeTarget` reads as "no shape to correct to".
    */
   const pictureSize = useCallback(() => {
     const canvas = canvasRef.current;
@@ -2224,28 +2228,45 @@ export function VideoPlayer({
   const togglePictureInPicture = useCallback(async () => {
     const video = videoRef.current;
     const dpip = (window as unknown as { documentPictureInPicture?: {
-      requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
+      requestWindow: (o?: {
+        width?: number;
+        height?: number;
+        preferInitialWindowPlacement?: boolean;
+      }) => Promise<Window>;
     } }).documentPictureInPicture;
     if (!video || !dpip) return;
 
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
     try {
-      // The shape comes from the picture; the size from wherever the viewer
-      // last left a pop-out. Asked with no size at all, the browser reopens
-      // the box it remembers — and a box remembered from a 16:9 programme
-      // letterboxes a 4:3 one, bands the pop-out has no business drawing.
-      // Position stays the browser's: `resizeTo` is refused on a
-      // picture-in-picture window and there are no coordinates to pass.
-      const size = fitPipWindow(
-        pictureSize(),
-        { width: window.screen.availWidth, height: window.screen.availHeight },
-        loadPipArea(),
-      );
-      // Nothing decoded yet leaves no shape to match, and the browser's own
-      // guess beats one made from zeroes — so that case asks for nothing.
-      const w = size ? await dpip.requestWindow(size) : await dpip.requestWindow();
+      // Placement is left to the browser, always. It reopens the window where
+      // and how the viewer last left it, and there is no way to ask for that
+      // position back once it has been given up — `preferInitialWindowPlacement`
+      // buys an honoured size at the cost of the corner it opens in, and
+      // `moveTo` is refused on a picture-in-picture window.
+      //
+      // The size here is therefore only for the very first pop-out, before
+      // the browser has one to remember.
+      const w = await dpip.requestWindow(PIP_BOX_DEFAULT);
       pipWindow.current = w;
+
+      // The shape is not corrected here, however wrong it is.
+      //
+      // `resizeTo` on a pop-out throws NotAllowedError unless *that window*
+      // holds a transient activation — the opener's click is not it, and a
+      // window one statement old has never been touched. Measured, not
+      // assumed: "Failed to execute 'resizeTo': requires user activation in
+      // document picture-in-picture".
+      //
+      // Correcting it on the window's first click was tried and is worse than
+      // the fault: a picture that resizes itself under the hand of someone
+      // reaching for pause. It is a right-click on the pop-out's own close
+      // button instead — a gesture asking for it, in the document that can
+      // grant it. See `resetPipWindow`.
+      log.player("pop-out window", {
+        opened: `${w.innerWidth}x${w.innerHeight}`,
+        picture: `${pictureSize().width}x${pictureSize().height}`,
+      });
 
       // The window arrives with no styles at all, so every class the stage
       // uses has to be carried over or it lands there unstyled.
@@ -2293,10 +2314,9 @@ export function VideoPlayer({
       // — the root has to come down and the video come home, or the player is
       // left with nothing to show.
       w.addEventListener("pagehide", () => {
-        // Whatever the viewer dragged it to, so the next pop-out opens that
-        // large whatever shape it has to be. Read first, while the window
-        // still has a layout to report.
-        savePipArea(w.innerWidth, w.innerHeight);
+        // Nothing to record on the way out. The browser remembers this
+        // window's position and size for the next pop-out, and what it is
+        // remembering is the box the resize above already corrected.
         pipRoot.current?.unmount();
         closeMirror();
         // Back to this document's clock: the tab's stage is on screen again,
@@ -2317,6 +2337,33 @@ export function VideoPlayer({
       log.warn("picture-in-picture rejected", e);
     }
   }, [title, openMirror, closeMirror, pictureSize]);
+
+  /**
+   * Reset PiP: back to the default box, in place.
+   *
+   * Resized rather than closed and reopened, because closing is the one thing
+   * that loses the position — the browser remembers where the window was, and
+   * a resize never moves the corner it is anchored to.
+   *
+   * Only ever from the pop-out's own close button. `resizeTo` demands a
+   * transient activation belonging to the *pop-out's* document, so a
+   * right-click landing in that window qualifies and the identical click on
+   * the tab's button does not — which is why the tab does not offer it.
+   */
+  const resetPipWindow = useCallback(() => {
+    const w = pipWindow.current;
+    if (!w) return;
+    const box = defaultBoxFor(pictureSize(), {
+      width: window.screen.availWidth, height: window.screen.availHeight,
+    });
+    const resized = resizePipWindow(w, box);
+    log.player("pop-out reset", {
+      target: `${box.width}x${box.height}`,
+      got: `${w.innerWidth}x${w.innerHeight}`,
+      resized: resized.ok,
+      why: resized.why,
+    });
+  }, [pictureSize]);
 
   // A player torn down while popped out would leave the window orphaned,
   // holding a video element that no longer belongs to anything.
@@ -2575,7 +2622,7 @@ export function VideoPlayer({
     videoRef, rootRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
-    poppedOut, togglePictureInPicture, enterFullscreen,
+    poppedOut, togglePictureInPicture, resetPipWindow, enterFullscreen,
     captionSourceAt, captionsAvailable, captionsSilent, captionsOn, toggleCaptions, surfaceTime,
     captionPreferences, changeCaptionPreferences, captionMenuOpen, setCaptionMenuOpen,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
@@ -2614,7 +2661,7 @@ export function VideoPlayer({
         <div className="dark fixed inset-0 z-[60] bg-media flex flex-col items-center
                         justify-center gap-4">
           <button
-            onClick={togglePictureInPicture}
+            onClick={() => togglePictureInPicture()}
             className="w-20 h-20 rounded-full glass text-player-fg flex items-center
                        justify-center hover:bg-fill transition"
             title="Close picture-in-picture (P)"
@@ -2783,7 +2830,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     rootRef, barRef, placeVideo,
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
-    poppedOut, togglePictureInPicture, enterFullscreen,
+    poppedOut, togglePictureInPicture, resetPipWindow, enterFullscreen,
     captionSourceAt, captionsAvailable, captionsSilent, captionsOn, toggleCaptions, surfaceTime,
     captionPreferences, changeCaptionPreferences, captionMenuOpen, setCaptionMenuOpen,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
@@ -3547,6 +3594,22 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
               {"documentPictureInPicture" in window && (
                 <button
                   onClick={(e) => { e.stopPropagation(); togglePictureInPicture(); }}
+                  /* Right-click puts the window back to the default size: the
+                     way out of one dragged huge, or one the browser reopened
+                     at the shape of a different programme. Like the captions
+                     button, the browser's own menu is given up for it.
+
+                     Only while popped out, and only here. This button is
+                     rendered into the pop-out's own document then, which is
+                     the one place `resizeTo` can be called from — the same
+                     right-click on the tab's copy carries an activation
+                     belonging to the tab and is refused. Offering it there
+                     would be offering something that cannot work. */
+                  onContextMenu={poppedOut ? (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    resetPipWindow();
+                  } : undefined}
                   className={`rounded-lg glass text-player-fg flex items-center justify-center hover:bg-fill transition
                   ${poppedOut ? "w-8 h-8" : "w-9 h-9"}`}
                   /* Named with its key, the way Mute and Fullscreen either
@@ -3555,8 +3618,12 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                      though it had none. Both labels carry it, because the same
                      key closes the window and the hint should not vanish
                      exactly when it is in use. */
-                  title={poppedOut ? "Close picture-in-picture (P)" : "Picture in picture (P)"}
-                  aria-label={poppedOut ? "Close picture-in-picture (P)" : "Picture in picture (P)"}
+                  title={poppedOut
+                    ? "Close picture-in-picture (P) · right-click to Reset PiP"
+                    : "Picture in picture (P)"}
+                  aria-label={poppedOut
+                    ? "Close picture-in-picture (P), right-click to Reset PiP"
+                    : "Picture in picture (P)"}
                 >
                   {/* The same button either side of the pop-out, so the icon
                       carries which way it goes: the plain frame out of the
