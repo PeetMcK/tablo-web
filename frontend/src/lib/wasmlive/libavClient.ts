@@ -273,6 +273,49 @@ function sampleFramesOf(frame: LibavFrame): number {
 }
 
 /**
+ * Everything about an audio frame that the filter graph's buffer source is
+ * declared with, and so everything a frame can change to invalidate it.
+ */
+interface AudioShape {
+  sampleRate: number;
+  format: number;
+  layout: number;
+}
+
+function audioShapeOf(frame: LibavFrame): AudioShape {
+  return {
+    sampleRate: frame.sample_rate ?? 48000,
+    format: frame.format ?? 0,
+    layout: frame.channel_layoutmask ?? frame.channel_layout ?? AV_CH_LAYOUT_STEREO,
+  };
+}
+
+function sameAudioShape(a: AudioShape, b: AudioShape): boolean {
+  return a.sampleRate === b.sampleRate && a.format === b.format && a.layout === b.layout;
+}
+
+/**
+ * Split a decode batch into runs of frames that share a shape.
+ *
+ * Usually one run. A break mid-batch is what this exists for: an AC-3 stream
+ * that switches between stereo and 5.1 does it inside a single read round, and
+ * both sides have to reach the graph that can take them.
+ */
+function byAudioShape(frames: LibavFrame[]): LibavFrame[][] {
+  const runs: LibavFrame[][] = [];
+  let shape: AudioShape | null = null;
+  for (const frame of frames) {
+    const next = audioShapeOf(frame);
+    if (!shape || !sameAudioShape(shape, next)) {
+      runs.push([]);
+      shape = next;
+    }
+    runs[runs.length - 1].push(frame);
+  }
+  return runs;
+}
+
+/**
  * The frame's pixel shape as a single ratio, or 1 when it does not say.
  *
  * MPEG-2 carries a sample aspect that is frequently not square. This device's
@@ -443,6 +486,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   // them, and a graph is rebuilt on every seek.
   let vgraph = 0, vsrc = 0, vsink = 0;
   let agraph = 0, asrc = 0, asink = 0;
+  /** The frame shape `agraph` was built for; see `openAudioGraph`. */
+  let agraphShape: AudioShape | null = null;
   let frameDuration = DEFAULT_FRAME_DURATION;
   let lastVideoPts: number | null = null;
   /** The output timeline, corrected from the decoder's own timestamps. */
@@ -538,26 +583,49 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
   };
 
   /**
-   * Build the downmix from the first frame that arrives rather than from
-   * constants: this device sends 5.1(side), and a graph declared as 5.1(back)
-   * is refused outright ("changing audio frame properties on the fly").
+   * Build the downmix from the frame in hand rather than from constants: this
+   * device sends 5.1(side), and a graph declared as 5.1(back) is refused
+   * outright ("changing audio frame properties on the fly").
    */
   const openAudioGraph = async (frame: LibavFrame) => {
+    const shape = audioShapeOf(frame);
     [agraph, asrc, asink] = await libav.ff_init_filter_graph(
       "aresample,aformat=sample_fmts=flt:channel_layouts=stereo",
       {
         type: libav.AVMEDIA_TYPE_AUDIO,
-        sample_rate: frame.sample_rate,
-        sample_fmt: frame.format,
-        channel_layout: frame.channel_layoutmask ?? frame.channel_layout,
+        sample_rate: shape.sampleRate,
+        sample_fmt: shape.format,
+        channel_layout: shape.layout,
       },
       {
         type: libav.AVMEDIA_TYPE_AUDIO,
-        sample_rate: frame.sample_rate,
+        sample_rate: shape.sampleRate,
         sample_fmt: libav.AV_SAMPLE_FMT_FLT,
         channel_layout: AV_CH_LAYOUT_STEREO,
       },
     );
+    agraphShape = shape;
+  };
+
+  /** Free the audio graph, so the next frame builds one for its own shape. */
+  const closeAudioGraph = async () => {
+    if (agraph) await libav.avfilter_graph_free_js(agraph);
+    agraph = asrc = asink = 0;
+    agraphShape = null;
+  };
+
+  /** Stereo output off the sink, timed by the output timeline. */
+  const pushFiltered = (out: DecodeOutput, filtered: LibavFrame[]) => {
+    for (const frame of filtered) {
+      const rate = frame.sample_rate ?? 48000;
+      const frames = frame.data.length / 2;   // interleaved stereo
+      out.audio.push({
+        samples: frame.data,
+        sampleRate: rate,
+        ptsSeconds: nextOutputPts(audioTimeline, rate),
+      });
+      noteEmitted(audioTimeline, frames);
+    }
   };
 
   const toVideoFrame = (frame: LibavFrame): DecodedVideoFrame => {
@@ -584,6 +652,8 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     // Consecutive read-rounds whose audio decode threw; reset on any clean
     // audio decode. See AUDIO_DECODE_FAIL_LIMIT.
     let audioFailStreak = 0;
+    // The same for the filter graph, which fails for its own reasons.
+    let audioFilterFailStreak = 0;
     // The same for video. See VIDEO_DECODE_FAIL_LIMIT.
     let videoFailStreak = 0;
 
@@ -684,7 +754,6 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           decoded = [];
         }
         if (decoded.length) {
-          if (!asink) await openAudioGraph(decoded[0]);
           // Accounted before the graph, where the timestamps mean something.
           // buffersink re-bases what it emits onto the filter's timeline, and
           // that timeline is not the stream's: on a live feed it reported
@@ -704,16 +773,44 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
             );
           }
 
-          const filtered = await libav.ff_filter_multi(asrc, asink, aframe, decoded, { fin });
-          for (const frame of filtered) {
-            const rate = frame.sample_rate ?? 48000;
-            const frames = frame.data.length / 2;   // interleaved stereo
-            out.audio.push({
-              samples: frame.data,
-              sampleRate: rate,
-              ptsSeconds: nextOutputPts(audioTimeline, rate),
-            });
-            noteEmitted(audioTimeline, frames);
+          // One graph per shape, because libav refuses a frame that does not
+          // match the buffer source it is fed into: "Changing audio frame
+          // properties on the fly is not supported". An AC-3 broadcast changes
+          // shape - this device's NFL game went stereo to 5.1(side) and back
+          // inside segment 2272 - and the refusal used to throw out of the
+          // pump and end the session, picture and all, at 40:40.
+          try {
+            const runs = byAudioShape(decoded);
+            for (let i = 0; i < runs.length; i++) {
+              const run = runs[i];
+              if (asink && agraphShape && !sameAudioShape(agraphShape, audioShapeOf(run[0]))) {
+                // Drained before it goes: `aresample` holds samples back, and
+                // those are real audio that belongs ahead of the new shape's.
+                pushFiltered(
+                  out,
+                  await libav.ff_filter_multi(asrc, asink, aframe, [], { fin: true }),
+                );
+                await closeAudioGraph();
+              }
+              if (!asink) await openAudioGraph(run[0]);
+              pushFiltered(
+                out,
+                await libav.ff_filter_multi(asrc, asink, aframe, run, {
+                  // Only the last run ends the stream; an earlier `fin` would
+                  // close the graph on a shape change mid-batch.
+                  fin: fin && i === runs.length - 1,
+                }),
+              );
+            }
+            audioFilterFailStreak = 0;
+          } catch (e) {
+            // Belt to the braces above: a shape this module failed to notice
+            // must cost a batch, not the session. The graph goes with it, so
+            // the next batch builds one that fits.
+            audioFilterFailStreak += 1;
+            if (audioFilterFailStreak > AUDIO_DECODE_FAIL_LIMIT) throw e;
+            audioDropped += 1;
+            await closeAudioGraph().catch(() => {});
           }
         }
       }
@@ -780,6 +877,7 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
     actx = apkt = aframe = 0;
     vgraph = vsrc = vsink = 0;
     agraph = asrc = asink = 0;
+    agraphShape = null;
     lastVideoPts = null;
     audioTimeline = createTimeline();
     opened = false;
