@@ -23,6 +23,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { placeInSafeArea, restingBottomPx, windowWidthPercent }
   from "../lib/captions/safeArea";
 import type { PositionedCue } from "../lib/captions";
+import {
+  DEFAULT_CAPTION_PREFERENCES,
+  type CaptionPlacement, type CaptionStandardChoice,
+} from "../lib/captions/preferences";
 import { DOCUMENT_FRAMES, startFrameLoop } from "../lib/playbackSurface";
 import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
 import { CHROME_BOTTOM_BAND_PX, CHROME_CLEARANCE_PX, liftToClearChrome }
@@ -51,6 +55,52 @@ interface Shown {
 
 const EMPTY: Shown = { cea608: [], cea708: [], comparing: false };
 
+/**
+ * The cues to draw, from whichever decoder the viewer asked for.
+ *
+ * `auto` is the session's own latch — 708 where the stream speaks it, 608
+ * where it does not — and is what happened before there was a choice. The
+ * other two reach past the latch into both queues, which cost nothing to
+ * keep: both decoders run on every stream regardless.
+ */
+function chosen(
+  captions: CaptionSource, at: number, standard: CaptionStandardChoice,
+): { cea608: PositionedCue[]; cea708: PositionedCue[] } {
+  if (standard === "auto") return { cea608: [], cea708: captions.allAt(at) };
+  const both = captions.compareAt(at);
+  return { cea608: [], cea708: standard === "cea608" ? both.cea608 : both.cea708 };
+}
+
+/**
+ * Fold what is on screen into what the chosen placement can draw.
+ *
+ * Broadcast placement keeps every window where it was put. A fixed position
+ * has only one place to put anything, so several windows at once have to
+ * become one block of text or they would sit on top of each other — which is
+ * what a 608 screen has always been anyway. Read top to bottom and then left
+ * to right, the way the broadcaster laid them out.
+ */
+function gatherForPlacement(
+  cues: PositionedCue[], placement: CaptionPlacement,
+): PositionedCue[] {
+  if (placement !== "bottom" || cues.length < 2) return cues;
+
+  const ordered = [...cues].sort((a, b) => {
+    const ay = a.region?.yPercent ?? 100;
+    const by = b.region?.yPercent ?? 100;
+    if (ay !== by) return ay - by;
+    return (a.region?.xPercent ?? 0) - (b.region?.xPercent ?? 0);
+  });
+
+  return [{
+    ...ordered[0],
+    text: ordered.map((cue) => cue.text).join("\n"),
+    // The cue keeps its style but loses its window: there is nowhere for a
+    // window to go once the viewer has said where captions belong.
+    region: undefined,
+  }];
+}
+
 /** The window's geometry in a few characters, for the compare badge. */
 function describeRegion(cue: PositionedCue): string {
   const region = cue.region;
@@ -69,6 +119,8 @@ function fingerprint(shown: Shown): string {
 export function CaptionOverlay({
   source, enabled, currentTime, raised = false, frames = DOCUMENT_FRAMES,
   compare = false,
+  placement = DEFAULT_CAPTION_PREFERENCES.placement,
+  standard = DEFAULT_CAPTION_PREFERENCES.standard,
 }: {
   /**
    * The current surface's captions, read fresh each frame.
@@ -99,9 +151,14 @@ export function CaptionOverlay({
   frames?: FrameSource;
   /**
    * Draw both standards at once, each labelled. Diagnostic; see
-   * `lib/captions/compareMode`.
+   * `lib/captions/compareMode`. Overrides `standard` while it is on, since
+   * the point of it is to show both.
    */
   compare?: boolean;
+  /** Where captions go: the broadcaster's windows, or one fixed place. */
+  placement?: CaptionPlacement;
+  /** Which decoder's words to show. */
+  standard?: CaptionStandardChoice;
 }) {
   const [shown, setShown] = useState<Shown>(EMPTY);
 
@@ -113,7 +170,7 @@ export function CaptionOverlay({
       const next: Shown = captions
         ? compare
           ? { ...captions.compareAt(at), comparing: true }
-          : { cea608: [], cea708: captions.allAt(at), comparing: false }
+          : { ...chosen(captions, at, standard), comparing: false }
         : EMPTY;
       // Compared inside the setter rather than against a captured value: an
       // unchanged caption must not re-render sixty times a second, and the
@@ -126,18 +183,18 @@ export function CaptionOverlay({
     // the stale caption flashing back when captions are turned on again - or
     // when the source changes underneath them.
     return () => { loop.stop(); setShown(EMPTY); };
-  }, [source, enabled, currentTime, frames, compare]);
+  }, [source, enabled, currentTime, frames, compare, standard]);
 
   if (!enabled) return null;
 
   // Outside compare mode everything arrives in the 708 slot whichever
-  // standard produced it — the session has already chosen one.
+  // standard produced it — the choice has already been made upstream.
   const drawn: Array<{ cue: PositionedCue; badge?: string; tint?: string }> = shown.comparing
     ? [
         ...shown.cea708.map((cue) => ({ cue, badge: "708", tint: "ring-2 ring-sky-400" })),
         ...shown.cea608.map((cue) => ({ cue, badge: "608", tint: "ring-2 ring-amber-400" })),
       ]
-    : shown.cea708.map((cue) => ({ cue }));
+    : gatherForPlacement(shown.cea708, placement).map((cue) => ({ cue }));
 
   const visible = drawn.filter((d) => d.cue.text);
   if (!visible.length) return null;
@@ -157,7 +214,7 @@ export function CaptionOverlay({
              708 keeps its window. Placement is still comparable, through the
              geometry each box carries in the DOM; what the floor buys is two
              legible boxes instead of one illegible one. */
-          floor={shown.comparing && badge === "608"}
+          floor={shown.comparing ? badge === "608" : placement === "bottom"}
         />
       ))}
     </>
