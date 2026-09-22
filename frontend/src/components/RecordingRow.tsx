@@ -267,21 +267,22 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
           </span>
       </button>
 
-      {/* The card's own four, at the end of the row, and in the card's own
+      {/* The card's own controls, at the end of the row and in the card's own
           order: save the file, drop the copy, keep it — then information, on
-          the outside edge where the row itself ends. It is the one of the four
+          the outside edge where the row itself ends. Information is the one
           that does nothing irreversible, and the one the whole row already
           does, so it is the safe thing under a hand that overshoots.
 
-          All four always drawn, and disabled rather than absent when one does
-          not apply — a cluster that changes width from row to row leaves
-          nothing to aim down a column at, and "nothing is cached here" is
-          worth saying rather than hiding. */}
+          Save and delete appear only when there is something to save or drop:
+          most of a library has nothing cached, and those rows carry the two
+          controls that do apply — keep, then information. The cluster is
+          right-aligned, so the buttons that are there still line up down the
+          page whatever else a row has. */}
       <span data-row-actions className="shrink-0 flex items-center gap-1 pl-1">
         {/* A plain link, not a fetch: the browser owns the download, so a 7 GB
             file streams to disk instead of being buffered in a tab. Only once
             the whole copy exists — half a transcode is not a file. */}
-        {whole ? (
+        {whole && (
           <a
             href={downloadUrl(rec.object_id)}
             download
@@ -291,26 +292,18 @@ export function RecordingRow({ rec, onPlay, onInfo, onKeep, onDeleteCache }: Pro
           >
             <FileDown className="w-4 h-4" aria-hidden />
           </a>
-        ) : (
-          <span
-            aria-label={`Save ${title} as an MP4 file`}
-            aria-disabled="true"
-            title="Keep it offline first — there is no file to save yet"
-            className={ACTION + " text-fg-disabled"}
-          >
-            <FileDown className="w-4 h-4" aria-hidden />
-          </span>
         )}
 
-        <button
-          onClick={onDeleteCache}
-          disabled={!cached}
-          aria-label={`Delete cached video of ${title}`}
-          title={cached ? "Delete cached video" : "Nothing is cached here"}
-          className={ACTION + " text-fg-faint hover:bg-danger-soft hover:text-danger"}
-        >
-          <Trash2 className="w-4 h-4" aria-hidden />
-        </button>
+        {cached && (
+          <button
+            onClick={onDeleteCache}
+            aria-label={`Delete cached video of ${title}`}
+            title="Delete cached video"
+            className={ACTION + " text-fg-faint hover:bg-danger-soft hover:text-danger"}
+          >
+            <Trash2 className="w-4 h-4" aria-hidden />
+          </button>
+        )}
 
         <button
           onClick={() => onKeep(!rec.pinned)}
