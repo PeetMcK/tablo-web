@@ -513,6 +513,16 @@ export function ChannelGrid({ onLogout }: Props) {
             />
 
             {/* Navigation Tabs.
+                The selected tab is a raised chip with the brand label, not a
+                brand-filled pill. `accent-soft` alone was the problem: at 15%
+                over a near-black bar the blue tint lifts the capsule barely
+                above the background, so the selection read as absent rather
+                than as low. `fill-strong` is white at the same alpha, which
+                lifts it visibly; the label stays `accent-strong` so a selected
+                tab still differs from a hovered one by more than brightness.
+                Deliberately short of `bg-accent text-accent-fg` - a solid
+                brand pill sits next to a brand-gradient mark and reads as a
+                second logo.
                 `ml-4` is measured against the letterforms, not the boxes. Two
                 tab labels sit 36px apart — 16px of pill padding, the 4px gap,
                 16px more padding — but a pill's padding only counts once
@@ -521,29 +531,33 @@ export function ChannelGrid({ onLogout }: Props) {
             <nav className={`items-center gap-1 mr-auto ml-2 sm:ml-4 ${searchExpanded ? "hidden" : "flex"}`}>
               <button
                 onClick={() => goToTab("live")}
+                aria-current={activeTab === "live" ? "page" : undefined}
                 className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "live" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+                           ${activeTab === "live" ? "bg-fill-strong text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Live
               </button>
               <button
                 onClick={() => goToTab("grid")}
+                aria-current={activeTab === "grid" ? "page" : undefined}
                 className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "grid" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+                           ${activeTab === "grid" ? "bg-fill-strong text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Guide
               </button>
               <button
                 onClick={() => goToTab("library")}
+                aria-current={activeTab === "library" ? "page" : undefined}
                 className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "library" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+                           ${activeTab === "library" ? "bg-fill-strong text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Library
               </button>
               <button
                 onClick={() => goToTab("series")}
+                aria-current={activeTab === "series" ? "page" : undefined}
                 className={`touch-target flex items-center justify-center px-3 sm:px-4 py-1.5 rounded-full text-sm font-bold tracking-wide transition
-                           ${activeTab === "series" ? "bg-accent-soft text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
+                           ${activeTab === "series" ? "bg-fill-strong text-accent-strong" : "text-fg-muted hover:text-fg-secondary"}`}
               >
                 Series
               </button>
