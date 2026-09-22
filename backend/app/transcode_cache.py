@@ -1506,13 +1506,26 @@ class TranscodeCache:
                   f"({e}) — streaming instead", flush=True)
             return None
 
-        # Which segments cover the span, by the playlist's own clock.
+        # A window is the device's own segments whose starts fall inside it -
+        # not a span of time cut out of them.
+        #
+        # That distinction is the difference between a seam and a hole. Each of
+        # these segments begins on a keyframe, and `-c:v copy` can only begin on
+        # one, so asking FFmpeg for "sixty seconds starting at 420" made it skip
+        # forward to the first keyframe past 420 and drop everything before it.
+        # Measured on the first recording kept this way: 99 of 141 window seams
+        # lost video, 59.7s of the game in total, up to 1.068s at a time.
+        #
+        # Defined this way, window w ends exactly where window w+1 begins,
+        # because both are answering the same question about the same list. The
+        # seam moves by up to a second from where the playlist nominally puts
+        # it, and no frame is lost at it.
         wanted: list = []
         at = 0.0
         for seg in index.segments:
             if seg.byte_range is None:
                 return None
-            if at + seg.duration > first_second and at < last_second:
+            if first_second <= at < last_second:
                 wanted.append((at, seg))
             at += seg.duration
             if at >= last_second:
@@ -1603,22 +1616,22 @@ class TranscodeCache:
                 "-protocol_whitelist", "file" if local else "http,https,tcp,tls",
                 *([] if copying else prof.pre_input),
                 # Fast input seek to just before the window. Measured flat (~5s)
-                # regardless of offset. A local source holds only this window's
-                # span, so there is nothing to seek past on the way in.
+                # regardless of offset. A local source *is* the window - whole
+                # segments, nothing either side - so there is nothing to seek
+                # to and nothing to trim, and seeking a copied stream is how
+                # frames were lost at every seam before this.
                 *([] if local else ["-ss", f"{seek_to:.3f}"]),
                 "-i", str(local[0]) if local else playlist_url,
                 # Accurate output seek across the pre-roll, so the window begins on
-                # cleanly decoded frames rather than mid-GOP artefacts. Against a
-                # local source the pre-roll is however much of the file precedes
-                # the window: the device's segment boundary landed at or before it.
-                *(["-ss", f"{start - local[1]:.3f}"] if local and start > local[1] else
-                  ["-ss", f"{preroll:.3f}"] if preroll > 0 and not local else []),
-                "-t", f"{length:.3f}",
+                # cleanly decoded frames rather than mid-GOP artefacts.
+                *([] if local else
+                  ["-ss", f"{preroll:.3f}"] if preroll > 0 else []),
+                *([] if local else ["-t", f"{length:.3f}"]),
                 # Each window is encoded independently, so without this every window's
                 # output would start at PTS ~0 and the player would snap back to the
                 # beginning on each boundary. Offsetting makes timestamps absolute and
                 # continuous across the whole recording.
-                "-output_ts_offset", str(start),
+                "-output_ts_offset", f"{local[1]:.3f}" if local else str(start),
                 # Pins keyframes to exact segment boundaries so the window's segment
                 # count matches what the published playlist already declared.
                 # FFmpeg cannot place keyframes in a stream it is copying, so a
@@ -1678,7 +1691,7 @@ class TranscodeCache:
         local = None
         if copying:
             local = await self._fetch_window_source(
-                object_id, w, playlist_url, seek_to, start + length, wd)
+                object_id, w, playlist_url, start, start + length, wd)
 
         rc = await run(build_cmd(copying))
         expected = segments_in_window(duration, w)
