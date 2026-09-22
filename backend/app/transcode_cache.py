@@ -402,6 +402,11 @@ TRANSFER_CHUNK = 512 * 1024
 # window at any rate worth reporting.
 TRANSFER_SAMPLES = 8192
 
+# Readings of how much content a transcode has produced, kept for the rate
+# that feeds its estimate. One is taken per query, which the library makes
+# every couple of seconds, so this covers the window comfortably.
+PRODUCED_SAMPLES = 256
+
 # No window has landed in this long, and nothing is encoding, so report idle
 # rather than a stale average.
 #
@@ -546,6 +551,9 @@ class TranscodeCache:
         #: window copy is ~1400 files, so without this a listing would stat
         #: hundreds of thousands of times a minute.
         self._bytes_seen: dict[int, tuple[float, int]] = {}
+        #: Readings of content produced, for a transcode's estimate: (when,
+        #: seconds of output that existed then).
+        self._produced: dict[int, deque[tuple[float, float]]] = {}
         # Directory creation is lazy: this object is constructed at import time,
         # and CI imports the app on a runner with no /data volume.
 
@@ -622,7 +630,10 @@ class TranscodeCache:
             # disk is the real answer - and it moves continuously rather than
             # in steps of one window.
             return min(1.0, self.entry_bytes_cached(object_id) / meta.source_bytes)
-        return min(1.0, self.windows_done(object_id) / window_count(meta.source_duration))
+        # Content produced, not windows finished: the same evidence the
+        # estimate uses, so the bar and the time agree - and it moves every six
+        # seconds rather than once a minute.
+        return min(1.0, self.produced_seconds_sampled(object_id) / meta.source_duration)
 
     def cached_ranges(self, object_id: int) -> list[list[float]]:
         """Encoded regions as merged [start, end] second ranges.
@@ -650,6 +661,71 @@ class TranscodeCache:
 
     def cached_seconds(self, object_id: int) -> float:
         return sum(e - s for s, e in self.cached_ranges(object_id))
+
+    def produced_seconds_sampled(self, object_id: int) -> float:
+        """`produced_seconds`, recording the reading for the rate.
+
+        The library asks for progress every couple of seconds, which is a
+        better cadence than anything this module could schedule for itself.
+        """
+        produced = self.produced_seconds(object_id)
+        self._note_produced(object_id, produced)
+        return produced
+
+    def produced_seconds(self, object_id: int) -> float:
+        """Seconds of output that exist, counting part-finished windows.
+
+        A window is a minute and a segment is six seconds, so counting only
+        finished windows makes progress lurch once a minute - and leaves the
+        rate built on it sampled just as coarsely. FFmpeg lists a segment in
+        the window's own index as it finalises it, which is the same evidence
+        `segment_ready` already trusts to serve one.
+        """
+        meta = self.read_meta(object_id)
+        if meta is None or not meta.source_duration:
+            return 0.0
+        total = 0.0
+        for w in range(window_count(meta.source_duration)):
+            length = window_length(meta.source_duration, w)
+            if self.window_ready(object_id, w):
+                total += length
+                continue
+            index = self.window_dir(object_id, w) / "index.m3u8"
+            try:
+                listed = index.read_text().count(".ts")
+            except OSError:
+                continue
+            # Never more than the window holds: the last window of a recording
+            # is short, and a segment that overruns it is still inside it.
+            total += min(length, listed * SEGMENT_SECONDS)
+        return total
+
+    def _note_produced(self, object_id: int, seconds: float) -> None:
+        """Record how much output existed just now, for the rate below."""
+        samples = self._produced.setdefault(object_id, deque(maxlen=PRODUCED_SAMPLES))
+        now = time.monotonic()
+        # One reading a second is plenty; the library asks far more often than
+        # a segment can appear.
+        if samples and now - samples[-1][0] < 1.0:
+            return
+        samples.append((now, seconds))
+
+    def produced_rate(self, object_id: int) -> float:
+        """Seconds of output appearing per second, over the trailing window."""
+        samples = self._produced.get(object_id)
+        if not samples:
+            return 0.0
+        now = time.monotonic()
+        start = now - RATE_WINDOW_SECONDS
+        within = [s for s in samples if s[0] >= start]
+        if len(within) < 1:
+            return 0.0
+        first_at, first_seconds = within[0]
+        span = now - first_at
+        if span < 1.0:
+            return 0.0
+        grew = self.produced_seconds(object_id) - first_seconds
+        return max(0.0, grew) / span
 
     def _note_bytes(self, object_id: int, count: int, at: float | None = None) -> None:
         """Record bytes arriving for a recording."""
@@ -695,8 +771,18 @@ class TranscodeCache:
                 return max(
                     0.0, meta.source_bytes - self.entry_bytes_cached(object_id)) / per_second
             return None
-        return eta_seconds(meta.source_duration, self.cached_seconds(object_id),
-                           self.rate(object_id)["realtime"])
+        # A transcode's output size is nobody's to know until it exists, so
+        # this half is content: runtime left, over runtime appearing. Both are
+        # watched at segment granularity rather than window, which is what
+        # keeps the answer from lurching once a minute.
+        produced = self.produced_seconds(object_id)
+        self._note_produced(object_id, produced)
+        rate = self.produced_rate(object_id)
+        if rate <= 0:
+            # Nothing has been watched appearing yet; fall back to what the
+            # finished windows say about themselves.
+            rate = self.rate(object_id)["realtime"]
+        return eta_seconds(meta.source_duration, produced, rate)
 
     def rate(self, object_id: int) -> dict[str, float]:
         """Current throughput for a recording being cached.
@@ -1958,6 +2044,12 @@ class TranscodeCache:
         total_seconds = meta_now.source_duration if meta_now else 0
         done_seconds = self.cached_seconds(object_id)
         overall = self.rate(object_id)
+        if not (meta_now is not None and meta_now.source_bytes):
+            # A transcode's speed is content appearing, watched at segment
+            # granularity rather than inferred from these window completions.
+            produced_rate = self.produced_rate(object_id)
+            if produced_rate > 0:
+                overall = {**overall, "realtime": round(produced_rate, 2)}
         eta = self.eta(object_id)
         wire = self.transfer_rate(object_id)
         if wire > 0:
