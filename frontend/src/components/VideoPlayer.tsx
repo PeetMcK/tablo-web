@@ -33,6 +33,10 @@ import { chooseLivePath, wasmLiveEligible } from "../lib/wasmlive/capability";
 import { openWasmSurface } from "../lib/wasmlive/open";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { captionCompareRequested } from "../lib/captions/compareMode";
+import { CaptionSettings } from "./CaptionSettings";
+import {
+  loadCaptionPreferences, saveCaptionPreferences, type CaptionPreferences,
+} from "../lib/captions/preferences";
 import { CHROME_BOTTOM_BAND_PX } from "../lib/playerChrome";
 import { SeriesEndCard, type CardReason } from "./SeriesEndCard";
 
@@ -319,6 +323,11 @@ interface PlayerView {
   captionsAvailable: boolean;
   /** Whether the stream has stayed silent long enough to say it has none. */
   captionsSilent: boolean;
+  /** Placement and standard, and the panel that changes them. */
+  captionPreferences: CaptionPreferences;
+  changeCaptionPreferences: (next: CaptionPreferences) => void;
+  captionMenuOpen: boolean;
+  setCaptionMenuOpen: (open: boolean) => void;
   captionsOn: boolean;
   toggleCaptions: () => void;
   surfaceTime: () => number;
@@ -497,6 +506,15 @@ export function VideoPlayer({
   });
   /** Whether a caption has actually been seen on this stream. */
   const [captionsAvailable, setCaptionsAvailable] = useState(false);
+  /** Placement and standard, as the viewer last left them. */
+  const [captionPreferences, setCaptionPreferences] =
+    useState<CaptionPreferences>(loadCaptionPreferences);
+  const [captionMenuOpen, setCaptionMenuOpen] = useState(false);
+
+  const changeCaptionPreferences = useCallback((next: CaptionPreferences) => {
+    setCaptionPreferences(next);
+    saveCaptionPreferences(next);
+  }, []);
   /**
    * Whether this stream has been given long enough to prove it has captions.
    *
@@ -2526,6 +2544,7 @@ export function VideoPlayer({
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
     captionSourceAt, captionsAvailable, captionsSilent, captionsOn, toggleCaptions, surfaceTime,
+    captionPreferences, changeCaptionPreferences, captionMenuOpen, setCaptionMenuOpen,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2714,6 +2733,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
     captionSourceAt, captionsAvailable, captionsSilent, captionsOn, toggleCaptions, surfaceTime,
+    captionPreferences, changeCaptionPreferences, captionMenuOpen, setCaptionMenuOpen,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2949,6 +2969,8 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
           currentTime={surfaceTime}
           raised={chromeUp}
           compare={captionCompareRequested()}
+          placement={captionPreferences.placement}
+          standard={captionPreferences.standard}
         />
       )}
 
@@ -3389,8 +3411,38 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                   transcode has no caption source, uncaptioned programming
                   never produces a cue, and a fall back to the transcode
                   mid-session starts the clock again. */}
+              <div className="relative">
+              {captionMenuOpen && (
+                <CaptionSettings
+                  preferences={captionPreferences}
+                  onChange={changeCaptionPreferences}
+                  onClose={() => setCaptionMenuOpen(false)}
+                />
+              )}
               <button
                 onClick={(e) => { e.stopPropagation(); if (!captionsSilent) toggleCaptions(); }}
+                /* The settings are the rarer errand, so they go where a rarer
+                   errand goes. The browser's own menu is given up over this
+                   one button, which is a small thing to take and the only way
+                   a right-click can mean anything here. */
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setCaptionMenuOpen(!captionMenuOpen);
+                }}
+                /* And a long press, for a trackpad without a right button and
+                   for a touchscreen, which has no such thing at all. */
+                onPointerDown={(e) => {
+                  if (e.pointerType === "mouse" && e.button !== 0) return;
+                  const timer = setTimeout(() => setCaptionMenuOpen(true), 500);
+                  const cancel = () => {
+                    clearTimeout(timer);
+                    window.removeEventListener("pointerup", cancel);
+                    window.removeEventListener("pointercancel", cancel);
+                  };
+                  window.addEventListener("pointerup", cancel);
+                  window.addEventListener("pointercancel", cancel);
+                }}
                 disabled={captionsSilent}
                 className={`rounded-lg glass text-player-fg flex items-center justify-center transition
                 ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${captionsOn ? "bg-fill" : ""}
@@ -3407,6 +3459,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
               >
                 <ClosedCaption className="w-4 h-4" aria-hidden />
               </button>
+              </div>
 
               {/* Only where the API exists. Safari has no Document
                   Picture-in-Picture, so the button would promise nothing
