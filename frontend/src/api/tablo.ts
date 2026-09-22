@@ -373,6 +373,18 @@ export interface Recording {
    * recording measured has been.
    */
   codec: "mpeg2" | "h264" | null;
+  /** What the device says it weighs, or null where it did not say. */
+  size: number | null;
+  /**
+   * Seconds until the offline copy is finished, from the server.
+   *
+   * Computed there because only there is it knowable: a copied recording's
+   * finished size is the device's reported size, so the wait is bytes
+   * remaining over bytes arriving — and the bytes arriving are counted off the
+   * wire, not inferred from windows finishing. Null where there is nothing
+   * honest to say.
+   */
+  eta_seconds?: number | null;
   /**
    * What sort of thing this is: "episode", "sport" or "movie".
    *

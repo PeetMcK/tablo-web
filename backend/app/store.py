@@ -168,6 +168,7 @@ def read_recording(object_id: int) -> dict | None:
         "path": row["path"],
         "source_duration": row["source_duration"],
         "source_codec": row["source_codec"],
+        "source_bytes": row["source_bytes"],
         "created_at": row["created_at"],
         "last_access": row["last_access"],
         "error": row["error"],
@@ -180,12 +181,14 @@ def read_recording(object_id: int) -> dict | None:
 def write_recording(meta: dict) -> None:
     db.execute(
         "INSERT INTO recording(object_id, path, source_duration, source_codec, "
-        "                      pinned, paused, error, info, created_at, last_access) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "                      source_bytes, pinned, paused, error, info, "
+        "                      created_at, last_access) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(object_id) DO UPDATE SET "
         "  path = excluded.path, "
         "  source_duration = excluded.source_duration, "
         "  source_codec = excluded.source_codec, "
+        "  source_bytes = excluded.source_bytes, "
         "  pinned = excluded.pinned, "
         "  paused = excluded.paused, "
         "  error = excluded.error, "
@@ -196,6 +199,7 @@ def write_recording(meta: dict) -> None:
             meta["path"],
             int(meta.get("source_duration") or 0),
             meta.get("source_codec"),
+            meta.get("source_bytes"),
             1 if meta.get("pinned") else 0,
             1 if meta.get("paused") else 0,
             meta.get("error"),

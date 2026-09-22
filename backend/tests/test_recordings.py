@@ -3234,9 +3234,14 @@ def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None, 
             return (variant if variant is not None else _device_variant()).encode()
         return _DEVICE_MASTER.encode()
 
-    def fake_range(url, first, last, timeout=180):
+    def fake_range(url, first, last, timeout=180, on_bytes=None):
         ranges.append((url, first, last))
-        return b"X" * (last - first + 1)
+        payload = b"X" * (last - first + 1)
+        # The real reader reports bytes as they land; so does this, so the
+        # accounting that hangs off it is exercised rather than bypassed.
+        if on_bytes is not None:
+            on_bytes(len(payload))
+        return payload
 
     monkeypatch.setattr(tc, "_http_get", fake_get)
     monkeypatch.setattr(tc, "_http_get_range", fake_range)
@@ -3426,3 +3431,80 @@ def test_eta_seconds_matches_what_the_card_shows(tmp_path):
     assert eta_seconds(0, 0, 5) is None
     # Windows overrun their nominal length, so cached can pass duration.
     assert eta_seconds(8472, 8500, 5.5) == 0
+
+
+# ---------------------------------------------------------------------------
+# Measuring the transfer itself
+#
+# Copying re-encodes nothing, so the finished copy is the size the device
+# already reports. There is nothing to estimate: it is bytes remaining over
+# bytes per second, and both are known.
+# ---------------------------------------------------------------------------
+
+def test_the_device_size_is_projected():
+    """The only thing that knows how big the copy will be is the device."""
+    from app.state import AppState
+
+    fields = AppState._recording_fields(
+        {"object_id": 1, "video_details": {"size": 2_461_691_904, "container_format": "mpeg4"}})
+
+    assert fields["size"] == 2_461_691_904
+
+
+def test_transfer_rate_is_measured_from_bytes_as_they_land(tmp_path):
+    """Sampling at window completions makes a step function of a smooth thing:
+    a window's worth of bytes is attributed to the instant it finished, so the
+    readout jumps however steady the wire is. Bytes are recorded as they
+    arrive instead."""
+    c = _cache(tmp_path)
+    now = time.monotonic()
+    # 40 MB landing evenly across the last ten seconds.
+    for i in range(40):
+        c._note_bytes(66220, 1024**2, at=now - 10.0 + i * 0.25)
+
+    assert c.transfer_rate(66220) == pytest.approx(4 * 1024**2, rel=0.15)
+
+
+def test_transfer_rate_ignores_what_fell_out_of_the_window(tmp_path):
+    c = _cache(tmp_path)
+    now = time.monotonic()
+    c._note_bytes(66220, 500 * 1024**2, at=now - 600.0)
+    for i in range(10):
+        c._note_bytes(66220, 1024**2, at=now - 10.0 + i)
+
+    # The ancient 500 MB must not still be inflating this.
+    assert c.transfer_rate(66220) == pytest.approx(1024**2, rel=0.3)
+
+
+def test_the_estimate_for_a_copy_counts_bytes_not_seconds(tmp_path):
+    """Nothing is being re-encoded, so the finished size is known and the wait
+    is a transfer: 2.3 GB total, 0.3 GB on disk, 8 MB/s -> 250s."""
+    c = _cache(tmp_path)
+    meta = CacheMeta(object_id=66220, path="/r/66220", source_duration=8472,
+                     source_codec="h264", source_bytes=2_461_691_904)
+    c.write_meta(meta)
+    (c.dir_for(66220) / "w00000").mkdir(parents=True, exist_ok=True)
+    (c.dir_for(66220) / "w00000" / "seg_00.ts").write_bytes(b"x" * (300 * 1024**2))
+    now = time.monotonic()
+    for i in range(20):
+        c._note_bytes(66220, 4 * 1024**2, at=now - 10.0 + i * 0.5)
+
+    eta = c.eta(66220)
+
+    remaining = 2_461_691_904 - 300 * 1024**2
+    assert eta == pytest.approx(remaining / (8 * 1024**2), rel=0.2)
+
+
+def test_the_estimate_falls_back_to_content_when_the_size_is_unknown(tmp_path):
+    """A transcode's output size is nobody's to know until it exists, so that
+    one is still content produced over how fast it is being produced."""
+    c = _cache(tmp_path)
+    meta = CacheMeta(object_id=66220, path="/r/66220", source_duration=8472,
+                     source_codec="mpeg2")
+    c.write_meta(meta)
+    c._rate[66220] = deque([
+        (time.monotonic() - 10.0 + i, 15 * 1024**2, 12.0, 60.0) for i in range(6)
+    ], maxlen=RATE_SAMPLES)
+
+    # 8472s of content, none cached, at 36x -> ~235s.
+    assert c.eta(66220) == pytest.approx(8472 / 36, rel=0.2)
