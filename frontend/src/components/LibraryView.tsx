@@ -1300,7 +1300,7 @@ export function LibraryView() {
                   {rec.subtitle && (
                     <p className="text-xs font-medium text-accent truncate">{rec.subtitle}</p>
                   )}
-                  {(rec.channel || rec.scan) && (
+                  {(rec.channel || rec.scan || rec.codec === "h264") && (
                     <div className="mt-1 flex items-center gap-1.5 text-[10px] font-bold
                                     tracking-wide normal-case">
                       {rec.channel && (
@@ -1327,6 +1327,19 @@ export function LibraryView() {
                           }
                         >
                           {rec.scan}
+                        </span>
+                      )}
+                      {rec.codec === "h264" && (
+                        // Almost every recording here is the broadcast passed
+                        // through as MPEG-2. This one the box re-encoded
+                        // itself, which is why it plays and caches by a
+                        // different route - and why its dimensions are the
+                        // device's claim rather than what it wrote.
+                        <span
+                          className="px-1.5 py-0.5 rounded bg-accent-soft text-accent-strong"
+                          title="The Tablo re-encoded this itself (H.264/MP4) instead of storing the broadcast"
+                        >
+                          MP4
                         </span>
                       )}
                     </div>

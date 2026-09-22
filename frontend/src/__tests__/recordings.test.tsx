@@ -253,6 +253,29 @@ describe("LibraryView", () => {
     expect(screen.queryByText(/42% cached/)).toBeNull();
   });
 
+  it("marks a recording the box encoded itself", async () => {
+    // Almost every recording is the broadcast, passed through. This one is
+    // the Tablo's own re-encode, which is why it plays and caches by a
+    // different route entirely - worth saying on the card rather than
+    // leaving someone to wonder why this one behaves differently.
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, codec: "h264" }],
+    }));
+    renderLibrary();
+
+    expect(await screen.findByText("MP4")).toBeInTheDocument();
+  });
+
+  it("says nothing about the codec for an ordinary broadcast", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{ ...REC, codec: "mpeg2" }],
+    }));
+    renderLibrary();
+
+    await screen.findByText("NFL Football");
+    expect(screen.queryByText("MP4")).toBeNull();
+  });
+
   it("says how long a download still has to run", async () => {
     // The card already says how fast and how far; what a person wants from
     // those two is when they can stop watching it. 12615s at 5x with 1380s
