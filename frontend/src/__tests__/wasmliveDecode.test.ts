@@ -24,6 +24,13 @@ const FIXTURE = resolve("src/lib/wasmlive/__fixtures__/1080i-1s.ts.bin");
 // segment 15 of recording 94912, byte for byte. ffmpeg itself refuses that
 // packet ("slice below image (122 >= 68)") and decodes the other 27 frames.
 const DAMAGED = resolve("src/lib/wasmlive/__fixtures__/1080i-damaged-1s.ts.bin");
+// One second of the same broadcast where the AC-3 changes shape mid-segment:
+// segment 2272 of recording 80889, byte for byte. ffprobe reads 19 stereo
+// frames, two the decoder refuses outright, one 5.1(side), then 10 more
+// stereo. This is the game that stopped dead at 40:40.
+const LAYOUT_CHANGE = resolve(
+  "src/lib/wasmlive/__fixtures__/1080i-audio-layout-change-1s.ts.bin",
+);
 const WASM = pathToFileURL(
   resolve("src/lib/wasmlive/vendor/libav-6.10.9.0-tablo-mpeg2.wasm.wasm"),
 ).href;
@@ -154,6 +161,24 @@ describe("libavClient", () => {
 
     const damaged = await decodeFixture(DAMAGED);
     expect(damaged.stats.videoDropped).toBeGreaterThan(0);
+  });
+
+  it("survives audio that changes channel layout mid-stream", { timeout: 120_000 }, async () => {
+    // The filter graph is built from the first frame that arrives, and libav
+    // refuses a frame whose shape does not match the buffer source it is fed
+    // into: "Changing audio frame properties on the fly is not supported".
+    // That threw out of the pump, which ended the session - picture and all -
+    // and since a rebuild replays the same bytes it ended the next one too,
+    // until the player gave up. An NFL broadcast does this at every break, so
+    // the graph has to follow the frames rather than the first one.
+    const { video, audio } = await decodeFixture(LAYOUT_CHANGE);
+
+    // Both sides of the change, not just the frames before it.
+    expect(video.length).toBeGreaterThan(20);
+    expect(audio.length).toBeGreaterThan(25);
+    // Stereo out, whatever came in.
+    expect(audio.every((c) => c.samples.length === 1536 * 2)).toBe(true);
+    expect(audio.some((c) => c.samples.some((s) => s !== 0))).toBe(true);
   });
 
   it("can be reset mid-stream and decode again", { timeout: 120_000 }, async () => {
