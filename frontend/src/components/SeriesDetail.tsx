@@ -18,6 +18,10 @@ import {
 } from "../api/tablo";
 import { Segmented } from "./ui/controls";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
+import {
+  recordingForSeries, useRecordingsInProgress,
+} from "../lib/useRecordingsInProgress";
+import { formatDuration } from "../lib/format";
 import { ShowInfo } from "./ShowInfo";
 import { stateMarker } from "../lib/scheduleState";
 import { RecordingPill } from "./RecordingPill";
@@ -206,6 +210,9 @@ export function SeriesDetail({
     { channel: string; start: string | null; recordingId?: number } | null
   >(null);
   const [confirm, setConfirm] = useState<Confirmation | null>(null);
+  // Polled while the drawer is open: the rule control can stop a tuner, so it
+  // needs to know whether one is running before it asks the question.
+  const inProgress = useRecordingsInProgress(true);
   // Episodes always, even with nothing on disk. A series scheduled nightly and
   // not yet recorded had no Episodes tab at all, so the panel opened on
   // Upcoming and the place that would say "none yet" did not exist - which
@@ -334,6 +341,34 @@ export function SeriesDetail({
   const setRule = (rule: "all" | "new" | "none") => {
     if (!guidePath) return;
     if (rule === "none") {
+      // An episode of this series on a tuner right now - any episode, not one
+      // shown in this drawer.
+      //
+      // Measured on a real device 2026-09-18: turning the rule off stopped a
+      // recording in flight within twelve seconds, and the ninety seconds
+      // already captured stayed in the library as a stub. The wording below
+      // ("the episodes already recorded stay") is true and beside the point
+      // while a tuner is mid-capture, so that case gets its own question.
+      //
+      // No offer to keep the episode: rescheduling the airing afterwards does
+      // not resume the capture, it starts a second one. A cancelled hour came
+      // back as 5m and 55m, two rows in the library. An honest stop beats that.
+      const live = recordingForSeries(inProgress, guidePath);
+      if (live?.channel_identifier) {
+        const so_far = formatDuration(live.recorded_seconds ?? 0);
+        setConfirm({
+          title: "An episode is recording now.",
+          body: `“${live.title ?? "An episode"}” — ${so_far} of `
+            + `${formatDuration(live.duration)} captured. Turning the rule off `
+            + "stops it at once. What was captured stays in your library; the "
+            + "rest is not recorded.",
+          confirmLabel: "Stop it",
+          danger: true,
+          onConfirm: () =>
+            update.mutate({ identifier, guide_path: guidePath, rule: "none" }),
+        });
+        return;
+      }
       setConfirm({
         title: `Turn off ${card.title}?`,
         body: hasRecordings

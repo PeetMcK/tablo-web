@@ -75,3 +75,15 @@ export function formatAired(iso: string): string {
     .replace(/\s/g, NBSP);
   return `${date} ${time}`;
 }
+
+/**
+ * Runtime as `1h 0m`, matching LibraryView's own rendering.
+ *
+ * Lowercase h/m deliberately: in a metadata row of uppercase-ish tokens,
+ * `1H 0M` reads as units of something other than time.
+ */
+export function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
