@@ -662,10 +662,12 @@ export function ChannelGrid({ onLogout }: Props) {
                 }}
                 placeholder={`${boxLabel}...`}
                 aria-label={boxLabel}
-                /* `pl-[4.5rem]`: two 28px buttons, a 2px gap and the 6px the
-                   group is inset by is 64px of cap, plus the 8px of air the
-                   text always had after the lone icon. */
-                className={`w-full pl-[4.5rem] py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                /* `pl-[5.25rem]` — 84px — is where the text clears the switch.
+                   The capsule ends at 72: 6px of inset, then two 32px cells
+                   (a 16px glyph in `px-2`) and the 1px border down each side.
+                   The remaining 12px is the gap the lone spyglass used to
+                   leave — at 72 the caret sat flush against the capsule. */
+                className={`w-full pl-[5.25rem] py-2.5 rounded-xl bg-fill-soft border border-border-subtle
                            text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
                            focus:bg-fill transition shadow-inner ${filter ? "pr-10" : "pr-4"}`}
               />
