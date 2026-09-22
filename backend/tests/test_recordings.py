@@ -3018,3 +3018,34 @@ def test_a_caller_that_knows_better_can_ask_for_the_swap(monkeypatch):
         assert stream_routes.vod_sessions[body["session_id"]].swap_audio is True
     finally:
         stream_routes.vod_sessions.pop(body["session_id"], None)
+
+
+# ---------------------------------------------------------------------------
+# Copying what the device already encoded
+#
+# A recording the box encoded itself is H.264 already, which is exactly what
+# the offline copy is trying to produce. Decoding it to re-encode it spends a
+# core per window and loses a generation to arrive where it started.
+# ---------------------------------------------------------------------------
+
+def test_registering_remembers_the_source_codec(tmp_path):
+    """The window job cannot ask the device what it is copying: the only moment
+    anyone holds the recording's projection is registration."""
+    c = _cache(tmp_path, budget=10**12)
+    asyncio.run(c.register(94904, "/recordings/sports/events/94904", GAME, codec="h264"))
+
+    assert c.read_meta(94904).source_codec == "h264"
+
+
+def test_re_registering_updates_the_codec_without_clearing_the_pin(tmp_path):
+    """Re-registration is how a kept copy is resumed, and it has silently
+    cleared `pinned` before now - two offline copies were evicted that way."""
+    c = _cache(tmp_path, budget=10**12)
+    asyncio.run(c.register(94904, "/recordings/sports/events/94904", GAME))
+    c.set_pinned(94904, True)
+
+    asyncio.run(c.register(94904, "/recordings/sports/events/94904", GAME, codec="h264"))
+
+    meta = c.read_meta(94904)
+    assert meta.source_codec == "h264"
+    assert meta.pinned is True

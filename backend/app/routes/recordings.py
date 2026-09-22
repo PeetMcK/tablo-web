@@ -1353,7 +1353,10 @@ async def keep_recording(object_id: int):
 
     path = info["path"]
     try:
-        await cache.register(object_id, path, duration)
+        # The codec travels with the registration: it decides whether every
+        # window that follows is copied or re-encoded, and this is the only
+        # place holding the recording's projection.
+        await cache.register(object_id, path, duration, codec=info.get("codec"))
     except InsufficientDisk as e:
         raise HTTPException(status_code=507, detail=f"Insufficient storage: {e}")
     except Exception as e:

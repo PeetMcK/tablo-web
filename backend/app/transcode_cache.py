@@ -374,6 +374,12 @@ class CacheMeta:
     object_id: int
     path: str
     source_duration: int = 0
+    #: What the device said this recording's video is: "h264" for one the box
+    #: encoded itself, "mpeg2" for a broadcast passed through, None where it
+    #: said something nobody has seen. An H.264 source is copied rather than
+    #: re-encoded - the offline copy is trying to produce exactly what the
+    #: device already holds - and everything else takes the encoder.
+    source_codec: str | None = None
     created_at: str = field(default_factory=_now)
     last_access: str = field(default_factory=_now)
     error: str | None = None
@@ -1149,7 +1155,8 @@ class TranscodeCache:
     # Registration
     # ------------------------------------------------------------------
 
-    async def register(self, object_id: int, path: str, source_duration: int) -> CacheMeta:
+    async def register(self, object_id: int, path: str, source_duration: int,
+                       codec: str | None = None) -> CacheMeta:
         """Make the recording playable: write metadata and start background fill.
 
         Returns as soon as the playlist can be built — which is immediately, since
@@ -1162,10 +1169,12 @@ class TranscodeCache:
                 self._check_disk(estimated)
                 self.make_room(estimated)
                 meta = CacheMeta(
-                    object_id=object_id, path=path, source_duration=source_duration
+                    object_id=object_id, path=path, source_duration=source_duration,
+                    source_codec=codec,
                 )
                 self.write_meta(meta)
-            elif meta.source_duration != source_duration or meta.path != path:
+            elif (meta.source_duration != source_duration or meta.path != path
+                  or (codec is not None and meta.source_codec != codec)):
                 # Update the facts in place. Replacing the record wholesale here
                 # silently cleared `pinned`, which made the recording eligible
                 # for eviction - and an offline copy that had been explicitly
@@ -1177,6 +1186,8 @@ class TranscodeCache:
                 # a large pinned copy fail outright with CacheFull.
                 meta.source_duration = source_duration
                 meta.path = path
+                if codec is not None:
+                    meta.source_codec = codec
                 self.write_meta(meta)
             else:
                 self.touch(object_id)
