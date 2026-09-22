@@ -155,6 +155,26 @@ async def test_enrich_tags_movies(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_enrich_skips_cached_and_advances(monkeypatch):
+    # A cached non-movie must not be re-looked-up; the run advances to the
+    # untagged title it has not seen.
+    _seed_airing("Cached None")
+    _seed_airing("A Movie")
+    store.save_title_verdict(store.normalize_title("Cached None"), {"media_type": "none"})
+    calls = []
+
+    async def fake_classify(title, year=None, client=None):
+        calls.append(title)
+        return ({"media_type": "movie", "genres": ["Crime"], "overview": "x"}
+                if title == "A Movie" else {"media_type": "none"})
+    monkeypatch.setattr(tmdb, "classify_title", fake_classify)
+
+    stats = await enrich.enrich_untagged()
+    assert calls == ["A Movie"]      # Cached None skipped entirely
+    assert stats["tagged"] == 1
+
+
+@pytest.mark.asyncio
 async def test_enrich_skips_without_key(monkeypatch):
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
     monkeypatch.setattr(tmdb, "_KEY_FILE", "/nonexistent/themoviedb")
