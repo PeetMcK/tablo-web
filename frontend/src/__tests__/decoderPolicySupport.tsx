@@ -61,6 +61,7 @@ export const REC: Recording = {
   },
   scan: "720p",
   interlaced: false,
+  codec: "mpeg2",
   image_url: null, cover_frame: null,
   kind: "sport", genres: ["Football"],
   has_preview: false,

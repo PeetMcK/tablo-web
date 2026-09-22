@@ -39,6 +39,7 @@ export function wasmLiveEligible(
   win: { navigator: { userAgent: string } },
   storage: Pick<Storage, "getItem">,
   channelKind: string | null | undefined,
+  codec?: string | null,
 ): Eligibility {
   // On unless explicitly switched off. Deliberately ungated for now: the point
   // of this pass is to find every way the WASM path breaks under the real
@@ -54,6 +55,13 @@ export function wasmLiveEligible(
   // A guide row without a kind is a broadcast until proven otherwise, which is
   // the assumption the transcode branch already makes.
   if (channelKind === "ott") return { eligible: false, reason: "ott channel" };
+
+  // Same statement about the same thing: this decoder plays MPEG-2 and nothing
+  // else. A recording the box encoded itself is H.264, and handing that here
+  // produces "Codec not found" — a dead player where the browser could have
+  // decoded it natively. The device says which, so it is answerable before
+  // anything opens. Null means it did not say, which takes MPEG-2's path.
+  if (codec === "h264") return { eligible: false, reason: "h264 recording" };
 
   const ua = win.navigator.userAgent;
   const isChromeFamily = /Chrome\/|Edg\//.test(ua) && !/CriOS|Android/.test(ua);

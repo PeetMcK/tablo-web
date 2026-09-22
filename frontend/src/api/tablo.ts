@@ -363,6 +363,17 @@ export interface Recording {
   /** 1080i sources need deinterlacing; 720p60 ones pass through untouched. */
   interlaced: boolean;
   /**
+   * The device's word for the video codec: "mpeg2", "h264", or null where it
+   * said something nobody has seen.
+   *
+   * Almost always "mpeg2" — a broadcast, passed through, which is what the
+   * WASM decoder is built for. "h264" is a recording the box encoded itself:
+   * the browser decodes that picture natively and the WASM build cannot read
+   * it at all. Null takes MPEG-2's path, because that is what all but one
+   * recording measured has been.
+   */
+  codec: "mpeg2" | "h264" | null;
+  /**
    * What sort of thing this is: "episode", "sport" or "movie".
    *
    * Read server-side off the recording's own path. Null for an offline copy
@@ -1009,6 +1020,7 @@ export const api = {
       duration: number;
       segments: number;
       growing: boolean;
+      codec: "mpeg2" | "h264" | null;
       mode: string;
     }>(`/recordings/${objectId}/watch-vod`, { method: "POST" }),
 

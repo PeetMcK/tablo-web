@@ -211,7 +211,7 @@ describe("the player says when it is playing a local copy", () => {
     // noise.
     vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
       object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
-      duration: REC.duration, segments: 746, growing: false, mode: "vod",
+      duration: REC.duration, segments: 746, growing: false, codec: "mpeg2", mode: "vod",
     });
     const { container } = renderRecording(REC);
 
@@ -260,7 +260,7 @@ describe("the gesture that unlocks the sound", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
     vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
       object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
-      duration: REC.duration, segments: 746, growing: false, mode: "vod",
+      duration: REC.duration, segments: 746, growing: false, codec: "mpeg2", mode: "vod",
     });
   });
 

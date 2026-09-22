@@ -32,6 +32,22 @@ describe("wasmLiveEligible", () => {
     });
   });
 
+  it("refuses a recording the decoder was never built for", () => {
+    // The vendored build is libav-…-tablo-mpeg2. Handing it H.264 produces
+    // "Codec not found" after two rebuilds and a dead player — which is not a
+    // fault to report, it is a question that should have been asked here.
+    expect(wasmLiveEligible(capableWindow(CHROME), flagOn, "ota", "h264")).toEqual({
+      eligible: false, reason: "h264 recording",
+    });
+  });
+
+  it("takes MPEG-2, and takes what the device would not name", () => {
+    expect(wasmLiveEligible(capableWindow(CHROME), flagOn, "ota", "mpeg2").eligible)
+      .toBe(true);
+    expect(wasmLiveEligible(capableWindow(CHROME), flagOn, "ota", null).eligible)
+      .toBe(true);
+  });
+
   it("takes a broadcast when nothing has been said either way", () => {
     // Ungated on purpose: the way to find out how this breaks under the real
     // player is to let it take every channel a viewer opens, not only the ones
