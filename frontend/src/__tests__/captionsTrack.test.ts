@@ -62,7 +62,7 @@ describe("createCaptionTrack", () => {
     expect(cues[0].endSeconds).toBeGreaterThan(cues[0].startSeconds);
   });
 
-  it("hands each cue out once", () => {
+  it("repeats a caption that is still up, and stops once it comes down", () => {
     const track = createCaptionTrack();
     let t = 0;
     const feed = (pairs: CcPair[]) => { for (const p of pairs) { track.add(t, [p]); t += 0.034; } };
@@ -71,7 +71,25 @@ describe("createCaptionTrack", () => {
     feed(chars("HELLO"));
     feed([pair(0x14, 0x2d)]);
 
-    expect(track.flush().length).toBeGreaterThan(0);
+    const first = track.flush();
+    expect(first.length).toBeGreaterThan(0);
+
+    // The words are still on screen, so they come again. That is the point:
+    // a caption is reported while it is up rather than once it is gone, which
+    // is the only way the overlay can draw it from the moment it appears.
+    // The repeat carries the same start, and the session folds it into the
+    // one it already holds rather than stacking a second caption.
+    // Only the one still up comes again - the row that scrolled away before
+    // it is finished, and finished cues are handed out once.
+    const again = track.flush();
+    expect(again.length).toBeGreaterThan(0);
+    const starts = new Set(first.map((c) => c.startSeconds));
+    expect(again.every((c) => starts.has(c.startSeconds))).toBe(true);
+
+    // EDM, which erases the displayed memory. Nothing is up any more, so
+    // there is nothing left to report.
+    feed([pair(0x14, 0x2c)]);
+    track.flush();
     expect(track.flush()).toEqual([]);
   });
 

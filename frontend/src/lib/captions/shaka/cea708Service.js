@@ -482,6 +482,55 @@ export class Cea708Service {
   }
 
   /**
+   * What is on screen right now, rather than what has just left it.
+   *
+   * Added here; not Shaka's. Every emission point upstream is a take-down -
+   * a window hiding, clearing, being deleted, or carriage-returning - so a
+   * caption does not exist as a cue until the moment it stops being visible.
+   * A player that seeks in a finished file does not care, because the whole
+   * file is decoded before anything is drawn. A player decoding a couple of
+   * seconds ahead of its own playhead does: the cue arrives after the
+   * playhead is already inside its span, and the words can only be drawn for
+   * whatever is left of it. Measured on a live CBS capture, cues arrived
+   * between two and five seconds after the words went up, and every one of
+   * them after the words had come down again.
+   *
+   * So the window is asked what it is showing, at the presentation time
+   * decoded so far, and the answer is a cue spanning the words' real start to
+   * now. Repeated every read round it lengthens - same start, later end -
+   * which is the shape the 608 parser already emits and the session already
+   * knows how to fold together. The take-down cue still arrives in its own
+   * time and replaces the last snapshot with the true end.
+   *
+   * @param {number} pts Presentation time decoded through, in seconds.
+   * @return {!Array<shaka.extern.ICaptionDecoder.ClosedCaption>}
+   */
+  snapshotVisibleWindows(pts) {
+    const captions = [];
+    for (const window of this.windows_) {
+      if (!window || !window.isVisible()) {
+        continue;
+      }
+      const startTime = window.getStartTime();
+      // A window that went up at this very instant has nothing to show for
+      // any length of time yet, and a zero-length cue is never on screen.
+      if (!(startTime < pts)) {
+        continue;
+      }
+      const caption = window.forceEmit(pts, this.serviceNumber_);
+      // forceEmit moves the window's start up to the end it just emitted, so
+      // that the same words are not emitted twice when the window really is
+      // taken down. That is right for a take-down and wrong for a look: put
+      // the start back exactly as it was.
+      window.setStartTime(startTime);
+      if (caption) {
+        captions.push(caption);
+      }
+    }
+    return captions;
+  }
+
+  /**
    * Clears the state of the service completely.
    */
   clear() {

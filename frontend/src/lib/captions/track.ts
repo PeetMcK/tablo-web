@@ -9,7 +9,7 @@
  */
 
 import Cea608Parser, { type CaptionScreen, type CueSink } from "./cea608";
-import { createReorderBuffer } from "./reorder";
+import { createReorderBuffer, REORDER_SECONDS } from "./reorder";
 import type { CaptionCue, CcPair } from "./types";
 
 /**
@@ -26,6 +26,12 @@ class CueCollector implements CueSink {
   readonly cues: CaptionCue[] = [];
 
   newCue(startSeconds: number, endSeconds: number, screen: CaptionScreen): void {
+    // A cue with no length is never on screen, and one with no start is the
+    // parser having been asked about a screen it has not begun timing. Both
+    // become possible once we ask it what it is showing rather than waiting
+    // to be told what it showed.
+    if (!Number.isFinite(startSeconds) || !(endSeconds > startSeconds)) return;
+
     const text = screen.getDisplayText().trim();
     // An empty screen is the parser saying a caption has been cleared, which
     // the overlay achieves by finding no cue rather than by drawing nothing.
@@ -91,8 +97,36 @@ export function createCaptionTrack(): CaptionTrack {
     }
   };
 
+  /**
+   * Ask the parser what is on screen, rather than waiting to be told what was.
+   *
+   * The parser reports a caption when the displayed memory next changes,
+   * handing over the screen that has just been replaced. The cue is correctly
+   * dated but does not exist until the words have gone, which for a player
+   * decoding a couple of seconds ahead of its own playhead is too late to
+   * draw them: measured on a live CBS capture, cues arrived between two and
+   * five seconds after the words went up.
+   *
+   * `cueSplitAtTime` emits exactly what is wanted - the displayed memory,
+   * spanning its real start to now - because it exists to cut a long roll-up
+   * in two. Cutting is the part we do not want, so the start it moves is put
+   * straight back. Called every round the cue lengthens under an unchanged
+   * start, and `CueCollector` folds it into the one already held.
+   */
+  const snapshot = (seconds: number | null) => {
+    if (seconds === null) return;
+    const starts = parser.channels.map((channel) => channel?.cueStartTime ?? null);
+    parser.cueSplitAtTime(seconds);
+    parser.channels.forEach((channel, i) => {
+      if (channel) channel.cueStartTime = starts[i];
+    });
+  };
+
   return {
     add(seconds: number, pairs: readonly CcPair[]) {
+      // Every picture, carrying pairs or not — see the 708 track, which has
+      // the same arrangement for the same reason.
+      pending.advance(seconds);
       for (const pair of pairs) {
         if (pair.field !== 0) continue;
         // Set on arrival rather than on release: it is what the CC button is
@@ -106,11 +140,14 @@ export function createCaptionTrack(): CaptionTrack {
     // language — and the parser needs somewhere to put it either way.
     drain() {
       feed(pending.take());
+      snapshot(pending.settledThrough);
       return cc1.cues.splice(0);
     },
 
     flush() {
+      const through = pending.settledThrough;
       feed(pending.takeAll());
+      snapshot(through === null ? null : through + REORDER_SECONDS);
       return cc1.cues.splice(0);
     },
 

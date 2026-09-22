@@ -613,8 +613,14 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           if (!data || !data.length) continue;
           const pairs = extractCcData(data instanceof Uint8Array ? data : new Uint8Array(data));
           captionPairs += pairs.cea608.length;
-          if (pairs.cea608.length) captionTrack.add(seconds, pairs.cea608);
-          if (pairs.dtvcc.length) caption708Track.add(seconds, pairs.dtvcc);
+          // Offered unconditionally, empty or not: a picture that carries no
+          // caption bytes still moves time on, and time is what settles the
+          // bytes already held and what the decoders' screens are asked
+          // about. Skipping the empty ones stalled both — DTVCC pairs arrive
+          // in bursts, so the 708 decoder's idea of now stood still for
+          // seconds between them.
+          captionTrack.add(seconds, pairs.cea608);
+          caption708Track.add(seconds, pairs.dtvcc);
         }
         // At end of stream there is no later picture coming to settle the
         // order, so whatever is still held has to go in as it stands — the

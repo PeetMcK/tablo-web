@@ -424,6 +424,18 @@ export class Cea708Window {
   }
 
   /**
+   * When the words now in this window went up.
+   *
+   * Added here; not Shaka's. `snapshotVisibleWindows` needs it to put back
+   * what `forceEmit` moves.
+   *
+   * @return {number}
+   */
+  getStartTime() {
+    return this.startTime_;
+  }
+
+  /**
    * Support window positioning by mapping anchor related values to CueRegion.
    * https://dvcs.w3.org/hg/text-tracks/raw-file/default/608toVTT/608toVTT.html#positioning-in-cea-708
    * @param {CueRegion} region
