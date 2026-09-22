@@ -44,6 +44,31 @@ describe("createCaptionTrack", () => {
     expect(track.seen).toBe(false);
   });
 
+  it("carries the row and indent the broadcaster addressed", () => {
+    const track = createCaptionTrack();
+    let t = 0;
+    const feed = (pairs: CcPair[]) => { for (const p of pairs) { track.add(t, [p]); t += 0.034; } };
+
+    // RU2, then a Preamble Address Code putting the pen on row 15 at an
+    // indent of 8, then words. 608 is not the positionless standard it was
+    // first taken for: the parser has always tracked row and indent, and
+    // flattening the screen to a string was what threw them away.
+    feed([pair(0x14, 0x25)]);
+    feed([pair(0x14, 0x2d)]);
+    feed([pair(0x94, 0x54)]);   // PAC: row 15, indent 8
+    feed(chars("OVER HERE"));
+    feed([pair(0x14, 0x2d)]);
+
+    const cue = track.flush().find((c) => c.text.includes("OVER HERE"));
+    expect(cue).toBeTruthy();
+    expect(cue!.region).toBeTruthy();
+    // Measured against the 608 display grid of 15 rows by 32 columns, not
+    // against 708's, which counts in different units entirely.
+    expect(cue!.region!.gridColumns).toBe(32);
+    expect(cue!.region!.xPercent).toBeGreaterThan(0);
+    expect(cue!.region!.align).toBe("left");
+  });
+
   it("collects a roll-up caption as a cue", () => {
     const track = createCaptionTrack();
     let t = 0;

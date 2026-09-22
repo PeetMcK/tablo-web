@@ -13,12 +13,14 @@
  *
  * Two layouts, one component. A cue from CEA-608 has only the bottom rows to
  * work with and is drawn where captions have always been drawn; a cue from
- * CEA-708 carries the window the broadcaster placed, and is drawn there.
+ * CEA-708 carries the window the broadcaster placed, and is drawn there. A
+ * moment can hold several of the latter at once — see `compare` below, and
+ * `allAt` on the source.
  */
 
 import { useEffect, useState } from "react";
 
-import { placeInSafeArea } from "../lib/captions/safeArea";
+import { placeInSafeArea, windowWidthPercent } from "../lib/captions/safeArea";
 import type { PositionedCue } from "../lib/captions";
 import { DOCUMENT_FRAMES, startFrameLoop } from "../lib/playbackSurface";
 import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
@@ -42,11 +44,32 @@ const CLEARANCE_PX = 8;
 const NEAR_BOTTOM_PERCENT = 75;
 
 const boxClasses =
-  "max-w-[80%] rounded px-3 py-1 text-white text-base sm:text-lg md:text-xl " +
-  "font-medium leading-snug text-center";
+  "rounded px-3 py-1 text-white text-base sm:text-lg md:text-xl " +
+  "font-medium leading-snug";
+
+/** A window's justification, as the flex row that holds its plate. */
+const JUSTIFY = { left: "flex-start", center: "center", right: "flex-end" } as const;
+
+/** What the frame loop last read, and what the render draws. */
+interface Shown {
+  /** The standard in play, or both when comparing. */
+  cea608: PositionedCue[];
+  cea708: PositionedCue[];
+  comparing: boolean;
+}
+
+const EMPTY: Shown = { cea608: [], cea708: [], comparing: false };
+
+/** Cheap identity for "has anything on screen actually changed". */
+function fingerprint(shown: Shown): string {
+  const one = (cues: PositionedCue[]) =>
+    cues.map((c) => `${c.startSeconds}|${c.text}`).join("~");
+  return `${one(shown.cea608)}#${one(shown.cea708)}`;
+}
 
 export function CaptionOverlay({
   source, enabled, currentTime, raised = false, frames = DOCUMENT_FRAMES,
+  compare = false,
 }: {
   /**
    * The current surface's captions, read fresh each frame.
@@ -75,24 +98,78 @@ export function CaptionOverlay({
   raised?: boolean;
   /** Injected so a test can step the loop by hand. */
   frames?: FrameSource;
+  /**
+   * Draw both standards at once, each labelled. Diagnostic; see
+   * `lib/captions/compareMode`.
+   */
+  compare?: boolean;
 }) {
-  const [cue, setCue] = useState<PositionedCue | null>(null);
+  const [shown, setShown] = useState<Shown>(EMPTY);
 
   useEffect(() => {
-    if (!enabled) { setCue(null); return; }
+    if (!enabled) { setShown(EMPTY); return; }
     const loop = startFrameLoop(() => {
-      const next = source()?.at(currentTime()) ?? null;
+      const captions = source();
+      const at = currentTime();
+      const next: Shown = captions
+        ? compare
+          ? { ...captions.compareAt(at), comparing: true }
+          : { cea608: [], cea708: captions.allAt(at), comparing: false }
+        : EMPTY;
       // Compared inside the setter rather than against a captured value: an
       // unchanged caption must not re-render sixty times a second, and the
       // effect does not re-run to give us a fresh one to compare against.
-      setCue((was) => (was?.text === next?.text && was?.region === next?.region ? was : next));
+      setShown((was) => (fingerprint(was) === fingerprint(next) ? was : next));
       return true;
     }, frames);
     return () => loop.stop();
-  }, [source, enabled, currentTime, frames]);
+  }, [source, enabled, currentTime, frames, compare]);
 
-  if (!enabled || !cue?.text) return null;
+  if (!enabled) return null;
 
+  // Outside compare mode everything arrives in the 708 slot whichever
+  // standard produced it — the session has already chosen one.
+  const drawn: Array<{ cue: PositionedCue; badge?: string; tint?: string }> = shown.comparing
+    ? [
+        ...shown.cea708.map((cue) => ({ cue, badge: "708", tint: "ring-2 ring-sky-400" })),
+        ...shown.cea608.map((cue) => ({ cue, badge: "608", tint: "ring-2 ring-amber-400" })),
+      ]
+    : shown.cea708.map((cue) => ({ cue }));
+
+  const visible = drawn.filter((d) => d.cue.text);
+  if (!visible.length) return null;
+
+  return (
+    <>
+      {visible.map(({ cue, badge, tint }, index) => (
+        <Window
+          key={`${badge ?? ""}${cue.startSeconds}:${index}`}
+          cue={cue}
+          badge={badge}
+          tint={tint}
+          raised={raised}
+          /* Both standards now carry a position, and when they agree - which
+             is the point - their boxes land on top of each other and neither
+             can be read. So while comparing, 608 is pinned to the floor and
+             708 keeps its window. Placement is still comparable, through the
+             geometry each box carries in the DOM; what the floor buys is two
+             legible boxes instead of one illegible one. */
+          floor={shown.comparing && badge === "608"}
+        />
+      ))}
+    </>
+  );
+}
+
+function Window({
+  cue, raised, badge, tint, floor,
+}: {
+  cue: PositionedCue;
+  raised: boolean;
+  badge?: string;
+  tint?: string;
+  floor: boolean;
+}) {
   /*
    * Colour, under a readability floor.
    *
@@ -111,21 +188,38 @@ export function CaptionOverlay({
     textDecoration: style?.underline ? "underline" : undefined,
   };
 
+  // Inside a window the text follows the broadcaster's justification; an
+  // unpositioned 608 screen is centred, as captions have always been.
+  const align = cue.region && !floor ? cue.region.align : "center";
+
   const box = (
     <div
-      className={`${boxClasses} ${background ? "" : "bg-black/75"}`}
-      style={{ ...textStyle, backgroundColor: background }}
+      className={`${boxClasses} ${background ? "" : "bg-black/75"} ${tint ?? ""} relative
+                  ${cue.region && !floor ? "max-w-full" : "max-w-[80%]"}`}
+      style={{ ...textStyle, backgroundColor: background, textAlign: align }}
     >
+      {badge ? (
+        <span
+          className="absolute -top-2 -left-2 rounded bg-white px-1 text-[10px]
+                     font-bold text-black"
+          data-caption-badge={badge}
+        >
+          {badge}
+        </span>
+      ) : null}
       {cue.text.split("\n").map((row, i) => (
         <p key={i}>{row}</p>
       ))}
     </div>
   );
 
-  if (cue.region) {
+  if (cue.region && !floor) {
     const placement = placeInSafeArea(
       cue.region.anchor, cue.region.xPercent, cue.region.yPercent,
     );
+    // The window's own width, in the broadcaster's cells. Without it the box
+    // shrinks to its text and both the shape and the anchoring go wrong.
+    const width = `${windowWidthPercent(cue.region.columns, cue.region.gridColumns)}%`;
     // A window the broadcaster put down by the scrubber gets the same lift an
     // unpositioned caption does; one higher up is left where it was asked to
     // be, because the controls are nowhere near it.
@@ -134,15 +228,18 @@ export function CaptionOverlay({
 
     return (
       <div
-        className="absolute flex justify-center pointer-events-none px-4
+        className="absolute flex pointer-events-none
                    transition-transform duration-300"
         style={{
           left: placement.left,
           top: placement.top,
+          width,
+          justifyContent: JUSTIFY[cue.region.align],
           transform: `${placement.transform}${lift}`,
         }}
         data-raised={raised && nearBottom ? "true" : "false"}
         data-positioned="true"
+        data-caption-standard={badge}
         aria-live="polite"
       >
         {box}
@@ -159,15 +256,18 @@ export function CaptionOverlay({
         // inside the transport band and the captions move up to its top edge;
         // on a tall one they are already above it and do not move at all. Both
         // are the same rule, and neither needs to know the window's height.
-        bottom: raised
-          ? `max(${RESTING_BOTTOM}, ${CHROME_BOTTOM_BAND_PX + CLEARANCE_PX}px)`
-          : RESTING_BOTTOM,
+        bottom: floor
+          ? `${CHROME_BOTTOM_BAND_PX + CLEARANCE_PX}px`
+          : raised
+            ? `max(${RESTING_BOTTOM}, ${CHROME_BOTTOM_BAND_PX + CLEARANCE_PX}px)`
+            : RESTING_BOTTOM,
       }}
       /* The decision, not the pixels: `max()` is the presentation of it, and
          jsdom's CSS parser drops the value outright, so this is also what a
          test can hold on to. */
       data-raised={raised ? "true" : "false"}
       data-positioned="false"
+      data-caption-standard={badge}
       aria-live="polite"
     >
       {box}

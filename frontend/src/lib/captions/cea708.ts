@@ -16,6 +16,7 @@ import { DtvccPacketBuilder, DtvccPacketBuilder_DTVCC_PACKET_DATA }
 import { Cea708Service } from "./shaka/cea708Service";
 import type { Cue } from "./shaka/cue";
 import { createReorderBuffer, REORDER_SECONDS } from "./reorder";
+import { WINDOW_COLUMNS_16_9 } from "./safeArea";
 import type { CaptionAnchor, CcPair, PositionedCue } from "./types";
 
 /** The service these broadcasts carry. See the design note. */
@@ -84,7 +85,24 @@ function regionOf(cue: Cue): PositionedCue["region"] {
     yPercent: Math.max(0, Math.min(100, yPercent)),
     rows: region.height,
     columns: region.width,
+    gridColumns: WINDOW_COLUMNS_16_9,
+    align: alignOf(cue),
   };
+}
+
+/**
+ * Where the text sits inside its window.
+ *
+ * Shaka reports FULL justification as CENTER, which is its own simplification
+ * and the right one here: a browser cannot justify a caption line to a cell
+ * grid, and stretching the words to both edges of the window would look
+ * nothing like a television.
+ */
+function alignOf(cue: Cue): "left" | "center" | "right" {
+  const value = String(cue.textAlign || "").toLowerCase();
+  if (value.includes("left") || value === "start") return "left";
+  if (value.includes("right") || value === "end") return "right";
+  return "center";
 }
 
 export interface Cea708Track {

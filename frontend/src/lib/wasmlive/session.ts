@@ -210,6 +210,32 @@ export const ENDED_QUIET_SECONDS = 0.1;
  */
 export const CAPTION_QUEUE_LIMIT = 40;
 
+/**
+ * The cues on screen at a moment - one per window, newest wins.
+ *
+ * Per window rather than all of them, because the two standards overlap for
+ * opposite reasons. CEA-708 puts several windows up at once and each is a
+ * separate cue, all of which belong on screen together. A 608 roll-up instead
+ * re-sends the same screen as it grows, so its spans overlap with themselves
+ * and only the last revision belongs on screen - anything else double-draws
+ * the same words. Keying on the window collapses 608 to a single cue, which
+ * is what it always had, and keeps every distinct 708 window.
+ *
+ * The queue is sorted by start, so a later entry is the newer one.
+ */
+function onScreen(queue: readonly PositionedCue[], raw: number): PositionedCue[] {
+  const byWindow = new Map<string, PositionedCue>();
+  for (const cue of queue) {
+    if (raw < cue.startSeconds || raw >= cue.endSeconds) continue;
+    const region = cue.region;
+    const key = region
+      ? `${region.anchor}@${region.xPercent},${region.yPercent}`
+      : "screen";
+    byWindow.set(key, cue);
+  }
+  return [...byWindow.values()];
+}
+
 export interface SessionDeps {
   playlistUrl: string;
   /** When the backend opened this session, which media time is measured from. */
@@ -1213,6 +1239,15 @@ export function createSession(deps: SessionDeps): LiveSession {
         return null;
       },
 
+      allAt(mediaSeconds: number) {
+        return onScreen(use708 ? cues708 : cues, mediaSeconds - (ptsOffset ?? 0));
+      },
+
+      compareAt(mediaSeconds: number) {
+        const raw = mediaSeconds - (ptsOffset ?? 0);
+        return { cea608: onScreen(cues, raw), cea708: onScreen(cues708, raw) };
+      },
+
       on(_event: "change", handler: () => void) {
         captionHandlers.add(handler);
         return () => { captionHandlers.delete(handler); };
@@ -1262,6 +1297,24 @@ export function createSession(deps: SessionDeps): LiveSession {
         Number(c.startSeconds.toFixed(2)), Number(c.endSeconds.toFixed(2)),
         c.text.slice(0, 18),
       ]),
+      /* Both standards at the playhead, side by side. The pair decode the
+         same words from the same bytes, so a difference here is this app's
+         doing and not the broadcaster's - which is how a 708 window five
+         times too narrow was caught. Geometry included, because placement is
+         the half that cannot be checked by reading the screen. */
+      captionCompare: (() => {
+        const raw = (deps.audio.clockSeconds ?? 0) - (ptsOffset ?? 0);
+        const describe = (queue: PositionedCue[]) =>
+          onScreen(queue, raw).map((c) => ({
+            text: c.text.slice(0, 40),
+            where: c.region
+              ? `${c.region.anchor}@${Math.round(c.region.xPercent)},${Math.round(c.region.yPercent)}`
+              : "unplaced",
+            cells: c.region ? `${c.region.columns}/${c.region.gridColumns}` : null,
+            align: c.region?.align ?? null,
+          }));
+        return { cea608: describe(cues), cea708: describe(cues708) };
+      })(),
       // Whether the transport is waiting on the network or on its own pacing.
       // Answering that took a temporary instrumented build on 2026-09-17; it
       // should not need one again.

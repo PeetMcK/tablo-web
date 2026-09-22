@@ -80,6 +80,12 @@ export function stubCaptions(cues: CaptionCue[] = []): CaptionSource & { announc
     get available() { return seen; },
     at: (seconds: number) =>
       cues.find((c) => seconds >= c.startSeconds && seconds < c.endSeconds) ?? null,
+    allAt: (seconds: number) =>
+      cues.filter((c) => seconds >= c.startSeconds && seconds < c.endSeconds),
+    compareAt: (seconds: number) => ({
+      cea608: [],
+      cea708: cues.filter((c) => seconds >= c.startSeconds && seconds < c.endSeconds),
+    }),
     on(_event: "change", handler: () => void) {
       handlers.add(handler);
       return () => { handlers.delete(handler); };

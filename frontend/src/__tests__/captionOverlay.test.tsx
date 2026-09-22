@@ -22,11 +22,17 @@ function manualFrames() {
   return { frames, step: () => act(() => { const p = pending; pending = null; p?.(0); }) };
 }
 
-function source(cues: PositionedCue[]) {
+function source(cues: PositionedCue[], other: PositionedCue[] = []) {
   let now = 0;
+  const covering = (from: PositionedCue[]) =>
+    from.filter((c) => now >= c.startSeconds && now < c.endSeconds);
   const src: CaptionSource = {
     available: true,
-    at: () => cues.find((c) => now >= c.startSeconds && now < c.endSeconds) ?? null,
+    at: () => covering(cues)[0] ?? null,
+    allAt: () => covering(cues),
+    // The second list stands in for the standard not in play, which only
+    // compare mode ever asks about.
+    compareAt: () => ({ cea608: covering(other), cea708: covering(cues) }),
     on: () => () => {},
   };
   return { src, seek: (t: number) => { now = t; } };
@@ -142,7 +148,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([{
       startSeconds: 0, endSeconds: 9, text: "OVER HERE",
-      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 4, columns: 32 },
+      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
 
     const { container } = render(
@@ -176,7 +182,7 @@ describe("CaptionOverlay", () => {
     const { frames, step } = manualFrames();
     const { src, seek } = source([{
       startSeconds: 0, endSeconds: 9, text: "OFF SCREEN",
-      region: { anchor: "top-left", xPercent: 400, yPercent: -50, rows: 4, columns: 32 },
+      region: { anchor: "top-left", xPercent: 400, yPercent: -50, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
 
     const { container } = render(
@@ -233,11 +239,11 @@ describe("CaptionOverlay", () => {
   it("lifts a window placed down by the transport, and leaves a high one alone", () => {
     const low = source([{
       startSeconds: 0, endSeconds: 9, text: "LOW",
-      region: { anchor: "bottom-left", xPercent: 10, yPercent: 99, rows: 4, columns: 32 },
+      region: { anchor: "bottom-left", xPercent: 10, yPercent: 99, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
     const high = source([{
       startSeconds: 0, endSeconds: 9, text: "HIGH",
-      region: { anchor: "top-left", xPercent: 10, yPercent: 10, rows: 4, columns: 32 },
+      region: { anchor: "top-left", xPercent: 10, yPercent: 10, rows: 4, columns: 32, gridColumns: 42, align: "center" },
     }]);
 
     const a = manualFrames();
@@ -260,5 +266,89 @@ describe("CaptionOverlay", () => {
     expect(
       (highRender.container.querySelector('[data-positioned="true"][data-raised="false"]')),
     ).toBeTruthy();
+  });
+
+  it("gives a window the width the broadcaster declared", () => {
+    const { frames, step } = manualFrames();
+    const { src, seek } = source([{
+      startSeconds: 0, endSeconds: 9, text: "A LINE THE BROADCASTER SIZED",
+      region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 2, columns: 32, gridColumns: 42, align: "left" },
+    }]);
+
+    const { container } = render(
+      <CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />,
+    );
+    seek(1);
+    step();
+
+    // 32 character cells of the 42 a 16:9 window can hold, across the
+    // title-safe 80% of the stage. Divided into the 210-cell *anchor* grid
+    // instead, the plate came out five times too narrow. Sized to its text
+    // broadcaster had already broken, and puts its anchor in the wrong place -
+    // which is what "708 renders off-centre and too narrow" was.
+    const box = container.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(box.style.width).toBe(`${(32 / 42) * 80}%`);
+    expect(box.style.justifyContent).toBe("flex-start");
+  });
+
+  it("draws every window that is up, not just one of them", () => {
+    const { frames, step } = manualFrames();
+    // Two windows at once is ordinary 708: a speaker's line low down and a
+    // title higher up. Answering with one of them is how information went
+    // missing.
+    const { src, seek } = source([
+      {
+        startSeconds: 0, endSeconds: 9, text: "SPEAKER",
+        region: { anchor: "bottom-left", xPercent: 10, yPercent: 90, rows: 2, columns: 32, gridColumns: 42, align: "left" },
+      },
+      {
+        startSeconds: 0, endSeconds: 9, text: "TITLE",
+        region: { anchor: "top-right", xPercent: 90, yPercent: 10, rows: 1, columns: 16, gridColumns: 42, align: "right" },
+      },
+    ]);
+
+    render(<CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />);
+    seek(1);
+    step();
+
+    expect(screen.getByText("SPEAKER")).toBeTruthy();
+    expect(screen.getByText("TITLE")).toBeTruthy();
+  });
+
+  it("draws both standards, labelled, when comparing", () => {
+    const { frames, step } = manualFrames();
+    const { src, seek } = source(
+      [{
+        startSeconds: 0, endSeconds: 9, text: "FROM 708",
+        region: { anchor: "top-left", xPercent: 0, yPercent: 0, rows: 1, columns: 32, gridColumns: 42, align: "center" },
+      }],
+      [{ startSeconds: 0, endSeconds: 9, text: "FROM 608" }],
+    );
+
+    const { container } = render(
+      <CaptionOverlay source={() => src} enabled compare currentTime={() => 0} frames={frames} />,
+    );
+    seek(1);
+    step();
+
+    expect(screen.getByText("FROM 708")).toBeTruthy();
+    expect(screen.getByText("FROM 608")).toBeTruthy();
+    expect(container.querySelector('[data-caption-badge="708"]')).toBeTruthy();
+    expect(container.querySelector('[data-caption-badge="608"]')).toBeTruthy();
+  });
+
+  it("shows only the latched standard when not comparing", () => {
+    const { frames, step } = manualFrames();
+    const { src, seek } = source(
+      [{ startSeconds: 0, endSeconds: 9, text: "FROM 708" }],
+      [{ startSeconds: 0, endSeconds: 9, text: "FROM 608" }],
+    );
+
+    render(<CaptionOverlay source={() => src} enabled currentTime={() => 0} frames={frames} />);
+    seek(1);
+    step();
+
+    expect(screen.getByText("FROM 708")).toBeTruthy();
+    expect(screen.queryByText("FROM 608")).toBeNull();
   });
 });
