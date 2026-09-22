@@ -19,10 +19,17 @@ opens a dropdown over them, and neither says "you wanted the other one."
 
 ## The decision
 
-One box, in the topbar, with a two-way switch in its left cap. Funnel on the
-left, spyglass on the right, the selection remembered. Filter narrows the
-page you are on. Search does what it does today. The Library's own filter
-box is deleted.
+One box, in the topbar, with a two-way switch in its left cap. Spyglass on
+the left, funnel on the right, the selection remembered and starting on the
+funnel. Filter narrows the page you are on. Search does what it does today.
+The Library's own filter box is deleted.
+
+The spyglass leads because it is the half that was already there: the box
+has worn a spyglass in that exact spot since it was only a search, and a
+switch that moved the familiar glyph to make room for the new one would
+charge everyone a relearn for a feature half of them did not ask for. The
+funnel is the default *selection* even so — narrowing the page is the more
+common errand — so the pair opens with its right half lit.
 
 The switch is **strict**: the mode decides the behaviour, and nothing leaks
 across.
@@ -103,7 +110,8 @@ phone.
 ## The control
 
 The field's left cap stops being one decorative `<Search>` and becomes two
-buttons in a `role="radiogroup"`, funnel then spyglass. Selected takes the
+buttons in a `role="radiogroup"`, spyglass then funnel — the spyglass stays
+where the single icon always was, and the funnel joins it. Selected takes the
 accent token; the other stays `text-fg-muted`. A glyph shows state, not the
 act — so the accessible names are the modes ("Filter this page", "Search
 everything"), and the tooltip carries the act.
