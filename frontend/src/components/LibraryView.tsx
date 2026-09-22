@@ -20,26 +20,10 @@ import { useSeriesDrawer } from "../lib/useSeriesDrawer";
 import { CoverageStrip } from "./CoverageStrip";
 import { RecordingPill } from "./RecordingPill";
 import { loadResume, saveResume, resumeKey } from "../lib/resume";
-import { cardArt, isIncomplete, recordedSpan, strippedTime, watchedSpan } from "../lib/recording";
-import type { Coverage } from "../lib/recording";
-
-/**
- * Whether there is something to play.
- *
- * A recording still being written plays fine: the device serves it as HLS from
- * the first moment, which is how its own app lets you start a show that is
- * still recording. Verified against a recording in progress - `state:
- * recording`, `duration: 0` - which still answered `POST .../watch` with a
- * playlist. This used to refuse them on the assumption that a transcode needs
- * a complete file, and the result was the one thing the device is best at
- * being the one thing we could not do.
- */
-function isPlayable(rec: Recording): boolean {
-  // An offline copy plays regardless of what the device reports — it may not
-  // be on the device at all any more.
-  if (rec.offline_only) return true;
-  return !rec.error;
-}
+import {
+  cardArt, coverageOf, isIncomplete, isPlayable, isRecording, recordedSpan,
+  resumeFor, strippedTime, watchedSpan,
+} from "../lib/recording";
 
 /**
  * Whether an offline copy can be made.
@@ -53,23 +37,6 @@ function isKeepable(rec: Recording): boolean {
 }
 
 /**
- * A recording as the coverage bar sees it.
- *
- * The one subtlety is which number is "captured": while recording the server
- * derives it, and once finished `duration` *is* it — the device replaces the
- * slot with the real length at that moment, which is why `slot_seconds` exists
- * separately.
- */
-function coverageOf(rec: Recording): Coverage {
-  return {
-    start: rec.start,
-    duration: rec.slot_seconds,
-    recording_started: rec.recording_started,
-    recorded_seconds: isRecording(rec) ? rec.recorded_seconds : rec.duration,
-  };
-}
-
-/**
  * How far playback must move before the device is told again, in seconds.
  *
  * Measured from the device's own app, which writes every ~7.5 seconds of media
@@ -79,11 +46,6 @@ function coverageOf(rec: Recording): Coverage {
  * write nothing at all.
  */
 const DEVICE_POSITION_STEP = 7;
-
-/** Still being written, and so still growing under anyone watching it. */
-function isRecording(rec: Recording): boolean {
-  return rec.state === "recording";
-}
 
 /**
  * Which point a card asked the player to open at.
@@ -119,43 +81,6 @@ function progressTitle(rec: Recording): string {
     total ? `Expected to capture ${formatDuration(total)} of it.` : null,
     "Elapsed time is derived from that start, not measured from the file.",
   ].filter(Boolean).join(" ");
-}
-
-/**
- * The saved position for a recording, or 0.
- *
- * Read at render because the in-progress card labels its own button with it —
- * "Resume 12:20" rather than "From start" — and that label has to be right
- * before anything is playing. The player's own resume point is still read once
- * per recording, where feeding it back on every tick used to reload the stream.
- */
-function resumeFor(rec: Recording): number {
-  const ours = loadResume(resumeKey("recording", rec.object_id));
-  // The device's own position, which its app writes and ours now does too.
-  // Whichever is further in wins, and only here — once playing, our writes go
-  // to the device unconditionally, so a deliberate rewind sticks rather than
-  // being compared away.
-  //
-  // Neither side carries a timestamp: `user_info` is exactly
-  // {position, watched, protected}, so there is no honest last-writer-wins to
-  // implement. Taking the greater is right in the cases that happen — watched
-  // on the phone then opened here, or the reverse — and taking the device
-  // wholesale would have rewound eleven recordings, Saturday Night Live from
-  // 21:36 back to 33 seconds.
-  //
-  // Clamped to what exists: a position captured while the programme was still
-  // recording can outrun the media once it finishes and is cut short, and
-  // "greater wins" would otherwise enshrine it.
-  const theirs = rec.position ?? 0;
-  const furthest = Math.max(ours, theirs);
-  // `position:1` is the sentinel we write to un-mark watched without the device
-  // dropping the recording back to New (setting position>0 clears watched, and
-  // position 0 + not-watched reads as New). It is not a real resume point, so
-  // it must never surface a "Resume 0:01" — one second is nothing to resume to.
-  // Genuine positions (10s, 20s, …) are left alone: sub-30s resumes are wanted.
-  if (furthest <= 1) return 0;
-  const limit = isRecording(rec) ? (rec.recorded_seconds ?? 0) : rec.duration;
-  return limit > 0 ? Math.min(furthest, limit) : furthest;
 }
 
 /** A position as `12:20`, or `1:02:20` past the hour. */
