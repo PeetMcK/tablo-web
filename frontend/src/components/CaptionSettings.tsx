@@ -17,23 +17,21 @@ import type {
   CaptionPlacement, CaptionPreferences, CaptionStandardChoice,
 } from "../lib/captions/preferences";
 
-const PLACEMENTS: Array<{ value: CaptionPlacement; label: string; hint: string }> = [
-  {
-    value: "broadcast",
-    label: "As broadcast",
-    hint: "Follows the window the broadcaster sent",
-  },
-  {
-    value: "bottom",
-    label: "Bottom center",
-    hint: "Always the same place",
-  },
+/*
+ * Labels alone. The explanations under each one doubled the panel's height
+ * for the sake of telling a viewer twice what "Bottom center" means, and in
+ * the picture-in-picture pop-out that was the difference between a panel that
+ * fits its window and one clipped from the top.
+ */
+const PLACEMENTS: Array<{ value: CaptionPlacement; label: string }> = [
+  { value: "broadcast", label: "As broadcast" },
+  { value: "bottom", label: "Bottom center" },
 ];
 
-const STANDARDS: Array<{ value: CaptionStandardChoice; label: string; hint: string }> = [
-  { value: "auto", label: "Auto", hint: "Whichever the channel carries" },
-  { value: "cea608", label: "CEA-608", hint: "The older standard" },
-  { value: "cea708", label: "CEA-708", hint: "The newer one" },
+const STANDARDS: Array<{ value: CaptionStandardChoice; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "cea608", label: "CEA-608" },
+  { value: "cea708", label: "CEA-708" },
 ];
 
 export function CaptionSettings({
@@ -71,7 +69,7 @@ export function CaptionSettings({
 
   const group = <T extends string>(
     title: string,
-    options: Array<{ value: T; label: string; hint: string }>,
+    options: Array<{ value: T; label: string }>,
     current: T,
     pick: (value: T) => void,
   ) => (
@@ -86,18 +84,15 @@ export function CaptionSettings({
           role="menuitemradio"
           aria-checked={current === option.value}
           onClick={(event) => { event.stopPropagation(); pick(option.value); }}
-          className={`w-full rounded px-2 py-1.5 text-left transition
-            hover:bg-fill ${current === option.value ? "bg-fill" : ""}`}
+          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left
+            transition hover:bg-fill ${current === option.value ? "bg-fill" : ""}`}
         >
-          <span className="flex items-center gap-2">
-            <span
-              aria-hidden
-              className={`inline-block h-2 w-2 shrink-0 rounded-full
-                ${current === option.value ? "bg-player-fg" : "bg-player-fg/25"}`}
-            />
-            <span className="text-sm text-player-fg">{option.label}</span>
-          </span>
-          <span className="block pl-4 text-[11px] text-player-fg/55">{option.hint}</span>
+          <span
+            aria-hidden
+            className={`inline-block h-2 w-2 shrink-0 rounded-full
+              ${current === option.value ? "bg-player-fg" : "bg-player-fg/25"}`}
+          />
+          <span className="text-sm text-player-fg">{option.label}</span>
         </button>
       ))}
     </div>
