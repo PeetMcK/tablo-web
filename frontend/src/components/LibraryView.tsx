@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Funnel, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
 import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { OptionMenu } from "./OptionMenu";
@@ -14,6 +14,7 @@ import {
 import { LayoutToggle } from "./LayoutToggle";
 import { RecordingRow } from "./RecordingRow";
 import { usePref } from "../lib/usePref";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { formatAired } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -164,6 +165,35 @@ export function LibraryView() {
    */
   const [query, setQuery] = useState("");
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
+  /**
+   * Whether the filter is a field or an icon, and the width that decides.
+   *
+   * Only below 640px is there a choice to make: above it the field, the
+   * content filter and the two menus all fit the row, and an icon that has to
+   * be opened would be a step where there was none.
+   */
+  const phone = useMediaQuery("(max-width: 639px)");
+  const [filterExpanded, setFilterExpanded] = useState(false);
+  const filterInputRef = useRef<HTMLInputElement>(null);
+
+  /** Give the row back, dropping the query with it. */
+  const collapseFilter = useCallback(() => {
+    setFilterExpanded(false);
+    setQuery("");
+  }, []);
+
+  // Focus follows the expansion: tapping the icon should put the caret in the
+  // field, not merely reveal it. An effect rather than `autoFocus`, which only
+  // fires on mount and would do nothing the second time it is opened.
+  useEffect(() => {
+    if (filterExpanded) filterInputRef.current?.focus();
+  }, [filterExpanded]);
+
+  // Widening the window while the field is open would otherwise leave the row
+  // carrying a close button it no longer needs.
+  useEffect(() => {
+    if (!phone) setFilterExpanded(false);
+  }, [phone]);
   /**
    * How the page is laid out, which — unlike the two above — is remembered.
    *
@@ -636,16 +666,46 @@ export function LibraryView() {
           natural width beside it. `flex-wrap` so the menu drops under the field
           at phone width rather than squeezing it to nothing. */}
       <div data-library-toolbar className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="relative flex-1 min-w-48 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
+        {/* Closed on a phone, the field is an icon at the head of the row —
+            the same move the topbar search makes, and for the same reason: a
+            full-width field, the content filter and two menus cannot share a
+            400px row, and the field is the one of them that is empty most of
+            the time.
+
+            Hidden rather than unmounted: the input's value IS the filter, and
+            unmounting it would drop the query every time the row narrowed. */}
+        {phone && !filterExpanded && (
+          <button
+            onClick={() => setFilterExpanded(true)}
+            aria-label="Filter recordings"
+            aria-expanded={false}
+            className="touch-target shrink-0 flex items-center justify-center p-2.5 rounded-xl
+                       bg-fill-soft border border-border-subtle text-fg-muted
+                       hover:text-fg-secondary hover:bg-fill transition
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <Funnel className="w-4 h-4" aria-hidden />
+          </button>
+        )}
+        <div className={`relative flex-1 min-w-48 max-w-sm
+                         ${phone && !filterExpanded ? "hidden" : ""}`}>
+          {/* A funnel, not a spyglass: this narrows what is already here,
+              where the topbar's spyglass goes and finds things. Two controls
+              on one screen wearing the same icon read as the same control. */}
+          <Funnel className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
           <input
+            ref={filterInputRef}
             type="search"
             value={query}
             onChange={e => setQuery(e.target.value)}
             // Escape clears rather than blurs: the field holds the only thing
             // standing between the viewer and the whole library, so the way
-            // out of it should be the way back to everything.
-            onKeyDown={e => { if (e.key === "Escape") setQuery(""); }}
+            // out of it should be the way back to everything. On a phone the
+            // field IS the row, so one Escape gives the row back too.
+            onKeyDown={e => {
+              if (e.key !== "Escape") return;
+              if (phone && filterExpanded) collapseFilter(); else setQuery("");
+            }}
             placeholder="Filter recordings..."
             aria-label="Filter recordings"
             className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
@@ -653,6 +713,21 @@ export function LibraryView() {
                        focus:bg-fill transition shadow-inner"
           />
         </div>
+        {/* The way back to the row. Dropping the query with it: a filter left
+            behind an icon is a library missing recordings for no reason
+            anyone can see. */}
+        {phone && filterExpanded && (
+          <button
+            onMouseDown={e => e.preventDefault()}
+            onClick={collapseFilter}
+            aria-label="Close filter"
+            className="touch-target shrink-0 flex items-center justify-center p-2.5 rounded-xl
+                       text-fg-muted hover:text-fg-secondary hover:bg-fill-soft transition
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <X className="w-4 h-4" aria-hidden />
+          </button>
+        )}
         <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
 
         {/* What narrows the page on the left, what arranges it on the right.
@@ -660,9 +735,13 @@ export function LibraryView() {
             simply starts the line when the row has wrapped, so they stay
             together either way rather than drifting apart as it narrows. */}
         <div data-layout-menus className="ml-auto flex items-center gap-2">
+          {/* The words go before anything else does as the row narrows: the
+              icons say which menu is which, and the value is the part being
+              read. The accessible name keeps saying "Group by", since a
+              screen reader has no icon to go on. */}
           <OptionMenu
             label="Group by"
-            prefix="Group"
+            prefix={phone ? undefined : "Group"}
             options={LIBRARY_GROUPS}
             value={groupBy}
             onChange={setGroupBy}
@@ -670,7 +749,7 @@ export function LibraryView() {
           />
           <OptionMenu
             label="Sort by"
-            prefix="Sort"
+            prefix={phone ? undefined : "Sort"}
             options={LIBRARY_SORTS}
             value={sortBy}
             onChange={setSortBy}
