@@ -1655,7 +1655,10 @@ export function VideoPlayer({
     log.player(`seek → ${fmt(target)}`, {
       cached: isCached(target, cachedRangesRef.current) ? "warm" : "COLD — will transcode",
     });
-  }, [rangeStart, rangeEnd]);
+    // `cancelSkip` holds no deps of its own, so naming it here changes nothing
+    // about how often this is rebuilt - it only stops the omission reading as
+    // an oversight.
+  }, [rangeStart, rangeEnd, cancelSkip]);
 
   /**
    * Jump by `delta`, held inside what is playable right now.

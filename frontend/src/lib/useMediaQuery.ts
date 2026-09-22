@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 /**
  * Subscribe to a CSS media query from JS.
@@ -14,22 +14,27 @@ import { useEffect, useState } from "react";
  * implementation unless the test setup installs one, and the fallback of
  * `false` is the wide layout — which is what the existing tests render, and
  * what a browser too old for `matchMedia` should get.
+ *
+ * `useSyncExternalStore` rather than state plus an effect. The awkward part of
+ * the hand-rolled version was that the query can flip between the first render
+ * and the effect that subscribes, while the listener only fires on *later*
+ * changes — so the effect had to re-read and set state, which is a render
+ * caused by a render. Re-reading the snapshot around subscribing is what this
+ * hook is for, and it does it without the extra pass.
  */
 export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => read(query));
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  const subscribe = useCallback((onChange: () => void) => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return () => {};
+    }
     const mql = window.matchMedia(query);
-    // Re-read on subscribe: the query can have flipped between the first
-    // render and this effect, and the listener only fires on later changes.
-    setMatches(mql.matches);
-    const onChange = (e: MediaQueryListEvent) => setMatches(e.matches);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, [query]);
 
-  return matches;
+  // The third argument is the server snapshot, which is also what a browser
+  // with no `matchMedia` gets: the wide layout.
+  return useSyncExternalStore(subscribe, () => read(query), () => false);
 }
 
 function read(query: string): boolean {

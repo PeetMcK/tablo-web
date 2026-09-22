@@ -160,7 +160,15 @@ export function ChannelGrid({ onLogout }: Props) {
    * with the same placeholder and the same value to keep in step.
    */
   const phone = useMediaQuery("(max-width: 639px)");
-  const [searchExpanded, setSearchExpanded] = useState(false);
+  const [searchExpandedOnPhone, setSearchExpanded] = useState(false);
+  // Widening the window while the phone field is open would leave the row
+  // hiding its own tabs and clock, since the expanded shape is what renders
+  // them out. Derived rather than reset by an effect watching `phone`: the
+  // expanded field *is* a phone shape, so it is not a second piece of state
+  // that has to be kept in step with the first. Narrowing again restores the
+  // open field, which reverses what the widening did rather than discarding
+  // it.
+  const searchExpanded = phone && searchExpandedOnPhone;
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   // A channel picked from search that was not yet in `channels` when picked
   // (the guide stream only runs once the Live TV tab is active). Matched
@@ -386,12 +394,6 @@ export function ChannelGrid({ onLogout }: Props) {
   useEffect(() => {
     if (searchExpanded) searchInputRef.current?.focus();
   }, [searchExpanded]);
-
-  // Widening the window while the phone field is open leaves the row hiding
-  // its own tabs and clock, since the expanded shape is what renders them out.
-  useEffect(() => {
-    if (!phone) setSearchExpanded(false);
-  }, [phone]);
 
   // The palette activates through the very same path as the topbar dropdown
   // (`handleSearchActivate`) rather than a second, parallel one - it only

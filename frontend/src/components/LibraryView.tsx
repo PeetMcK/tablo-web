@@ -502,7 +502,10 @@ export function LibraryView({ query, onClearQuery }: {
     if (!rec) return;
     saveResume(resumeKey("recording", rec.object_id), whole, rec.duration);
     writeDevicePosition(rec, whole);
-  }, []);
+    // `writeDevicePosition` holds no deps of its own, so listing it costs
+    // nothing: this callback's identity is as stable as it was when the array
+    // was empty, and the effects that depend on it still never re-run.
+  }, [writeDevicePosition]);
 
   /**
    * The DVR readout, as one node rendered in one of two places.

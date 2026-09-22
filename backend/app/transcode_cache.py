@@ -346,7 +346,7 @@ def _http_get(url: str, timeout: int = 120) -> bytes:
 
 
 def _http_get_range(url: str, first: int, last: int, timeout: int = 180,
-                    on_bytes: "Callable[[int], None] | None" = None) -> bytes:
+                    on_bytes: Callable[[int], None] | None = None) -> bytes:
     """One byte range of one device file, inclusive of both ends.
 
     The device publishes a recording as byte ranges of a handful of large
