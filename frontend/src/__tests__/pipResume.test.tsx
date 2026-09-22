@@ -91,19 +91,47 @@ describe("popping out leaves the playing element alone", () => {
     delete (window as unknown as Record<string, unknown>).documentPictureInPicture;
   });
 
-  function fakePipWindow() {
+  /**
+   * @param inner The box the browser opens the window at — by default the one
+   *   it remembers from the last pop-out, which is what the shape correction
+   *   has to work from.
+   */
+  function fakePipWindow(inner = { width: 1200, height: 675 }) {
     const frame = document.createElement("iframe");
     document.body.append(frame);
     const pipDoc = frame.contentDocument!;
+    const listeners = new Map<string, EventListener[]>();
+    const resizeTo = vi.fn(function (this: Record<string, number>, w: number, h: number) {
+      // A real window answers its new size afterwards, and the correction
+      // checks — a browser that clamps has not done what was asked.
+      this.outerWidth = w;
+      this.outerHeight = h;
+      this.innerWidth = w;
+      this.innerHeight = h - 38;
+    });
     const w = {
       document: pipDoc,
       close: vi.fn(),
-      addEventListener: vi.fn(),
+      addEventListener: vi.fn((type: string, fn: EventListener) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), fn]);
+      }),
       removeEventListener: vi.fn(),
+      innerWidth: inner.width,
+      innerHeight: inner.height,
+      // A title bar of the browser's own, which `resizeTo` counts and the
+      // content box does not.
+      outerWidth: inner.width,
+      outerHeight: inner.height + 38,
+      resizeTo,
     } as unknown as Window;
     const requestWindow = vi.fn().mockResolvedValue(w);
     (window as unknown as Record<string, unknown>).documentPictureInPicture = { requestWindow };
-    return { pipDoc, close: w.close as ReturnType<typeof vi.fn>, requestWindow };
+    return {
+      pipDoc, close: w.close as ReturnType<typeof vi.fn>, requestWindow, resizeTo,
+      /** A gesture inside the pop-out — the only kind `resizeTo` accepts. */
+      touch: () => (listeners.get("pointerdown") ?? [])
+        .forEach((fn) => fn(new Event("pointerdown"))),
+    };
   }
 
   function renderPlayer(onClose = () => {}) {
@@ -127,7 +155,7 @@ describe("popping out leaves the playing element alone", () => {
     play.mockClear();
     pause.mockClear();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     // Same parent, and nobody asked it to stop or to start again.
@@ -150,7 +178,7 @@ describe("popping out leaves the playing element alone", () => {
     const { pipDoc } = fakePipWindow();
     const video = container.querySelector("video")!;
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     // Anything that re-renders the tab's stage will do; playback does this
@@ -164,34 +192,99 @@ describe("popping out leaves the playing element alone", () => {
     expect(pipDoc.body.querySelector("video")).not.toBe(video);
   });
 
-  it("asks for a window the shape of the picture", async () => {
-    // Asked with no size, the browser reopens the box it remembers — which is
-    // the shape of whatever played last, and letterboxes everything else.
-    //
-    // `videoWidth` lives on HTMLVideoElement rather than HTMLMediaElement, and
-    // jsdom's own pair answers zero; put back by hand because a defined
-    // property is not a spy and `restoreAllMocks` leaves it where it is.
+  /**
+   * A decoding picture of this shape.
+   *
+   * `videoWidth` lives on HTMLVideoElement rather than HTMLMediaElement, and
+   * jsdom's own pair answers zero. Put back by hand: a defined property is
+   * not a spy, and `restoreAllMocks` leaves it where it is.
+   */
+  function stubPicture(width: number, height: number) {
     const original = {
       width: Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoWidth")!,
       height: Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoHeight")!,
     };
     Object.defineProperty(HTMLVideoElement.prototype, "videoWidth",
-      { configurable: true, get: () => 1440 });
+      { configurable: true, get: () => width });
     Object.defineProperty(HTMLVideoElement.prototype, "videoHeight",
-      { configurable: true, get: () => 1080 });
+      { configurable: true, get: () => height });
     onTestFinished(() => {
       Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", original.width);
       Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", original.height);
     });
+  }
+
+  it("never asks for a placement, so the window opens where it was left", async () => {
+    // `preferInitialWindowPlacement` is the only way to have a requested size
+    // honoured, and it costs the remembered position — the pop-out goes back
+    // to the browser's default corner every time. The shape is fixed by
+    // resizing instead, which keeps the corner.
+    stubPicture(640, 480);
     renderPlayer();
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     const { requestWindow } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(requestWindow).toHaveBeenCalled());
 
-    const box = requestWindow.mock.calls[0][0] as { width: number; height: number };
-    expect(box.width / box.height).toBeCloseTo(4 / 3, 2);
+    const asked = requestWindow.mock.calls[0][0] as Record<string, unknown>;
+    expect(asked.preferInitialWindowPlacement).toBeUndefined();
+  });
+
+  it("never resizes a window on its own", async () => {
+    // Two reasons, and either alone would settle it. `resizeTo` throws
+    // NotAllowedError unless the pop-out's own document holds a transient
+    // activation, which a window one statement old has never had — and a
+    // picture that resizes itself under the hand of someone reaching for
+    // pause is worse than the letterboxing it would be correcting.
+    stubPicture(640, 480);
+    renderPlayer();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { requestWindow, resizeTo, touch } = fakePipWindow({ width: 1200, height: 675 });
+
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
+    await waitFor(() => expect(requestWindow).toHaveBeenCalled());
+    touch();
+
+    expect(resizeTo).not.toHaveBeenCalled();
+  });
+
+  it("resets the window that is already out, without closing it", async () => {
+    // The moment a viewer wants the small one back is while looking at the
+    // big one. Closing and reopening would be the one thing that loses the
+    // position the browser is holding, so the open window is resized instead.
+    stubPicture(1920, 1080);
+    renderPlayer();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { pipDoc, close, resizeTo } = fakePipWindow({ width: 1800, height: 1012 });
+
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
+    await waitFor(() =>
+      expect(pipDoc.body.querySelector('[aria-label="Back 10 seconds"]')).not.toBeNull());
+    resizeTo.mockClear();
+
+    // The button in the pop-out's own control row — the one under the pointer
+    // there, which is where the right-click lands.
+    const button = pipDoc.body.querySelector<HTMLElement>(
+      '[title^="Close picture-in-picture (P)"]')!;
+    fireEvent.contextMenu(button);
+
+    expect(resizeTo).toHaveBeenCalledWith(480, 270 + 38);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("offers no reset before there is a window to reset", async () => {
+    // A right-click in the tab could only ever be refused: `resizeTo` wants
+    // an activation belonging to the pop-out's document, and this one belongs
+    // to the tab's. An affordance that cannot work is worse than none.
+    stubPicture(1920, 1080);
+    renderPlayer();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { requestWindow } = fakePipWindow();
+
+    fireEvent.contextMenu(screen.getByTitle("Picture in picture (P)"));
+
+    expect(requestWindow).not.toHaveBeenCalled();
   });
 
   it("lets Escape dismiss the pop-out rather than the player", async () => {
@@ -203,7 +296,7 @@ describe("popping out leaves the playing element alone", () => {
     const { pipDoc, close } = fakePipWindow();
     void container;
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     fireEvent.keyDown(window, { key: "Escape" });
@@ -337,7 +430,7 @@ describe("popping out the picture the WASM path is drawing", () => {
     await renderWasmLivePlayer();
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     expect(canvasCapture).toHaveBeenCalled();
@@ -349,7 +442,7 @@ describe("popping out the picture the WASM path is drawing", () => {
     // Worth pinning: the two paths differ in what they draw with, and a gate
     // added to one would be invisible from the other.
     await renderWasmLivePlayer();
-    expect(screen.getByTitle("Picture in picture (P)")).toBeInTheDocument();
+    expect(screen.getByTitle(/^Picture in picture \(P\)/)).toBeInTheDocument();
   });
 
   it("leaves the canvas in the tab", async () => {
@@ -360,7 +453,7 @@ describe("popping out the picture the WASM path is drawing", () => {
     const canvas = container.querySelector("canvas")!;
     const { pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     expect(canvas.ownerDocument).toBe(document);
@@ -383,7 +476,7 @@ describe("popping out the picture the WASM path is drawing", () => {
     const { pipDoc } = fakePipWindow();
     wasm.surface!.repaint.mockClear();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     expect(wasm.surface!.repaint).toHaveBeenCalled();
@@ -396,7 +489,7 @@ describe("popping out the picture the WASM path is drawing", () => {
     await renderWasmLivePlayer();
     const { w, pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
 
     await waitFor(() => expect(wasm.surface!.setFrameSource).toHaveBeenCalled());
@@ -413,7 +506,7 @@ describe("popping out the picture the WASM path is drawing", () => {
     await renderWasmLivePlayer();
     const { w, pipDoc } = fakePipWindow();
 
-    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    fireEvent.click(screen.getByTitle(/^Picture in picture \(P\)/));
     await waitFor(() => expect(pipDoc.body.querySelector("video")).not.toBeNull());
     await waitFor(() => expect(wasm.surface!.setFrameSource).toHaveBeenCalled());
 
