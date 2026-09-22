@@ -1691,15 +1691,48 @@ class TranscodeCache:
         # boundaries, this window goes back through the encoder - which can put
         # them exactly where they are needed. Measured on the one H.264
         # recording here, keyframes are 1.001s apart and this never fires.
-        if copying and rc == 0 and len(list(wd.glob("seg_*.ts"))) != expected:
+        if copying and rc == 0:
+            # Copying cuts where the source's keyframes are, not where the
+            # window boundaries would like them. Measured on the real
+            # recording: ten segments came out 5.6-6.8s apart, covering 60.35s
+            # between them, and the remainder became an eleventh of 0.969s.
+            # Nothing is wrong with that content - there is simply one file
+            # more than the playlist named, and the playlist was published
+            # before any of it existed.
+            #
+            # So fold the tail into the last segment the playlist does name.
+            # MPEG-TS concatenates: 188-byte packets, with PAT and PMT
+            # repeated throughout, and the joined segment decodes clean
+            # (checked 2026-09-22 on the spill this fixes). The alternative -
+            # re-encoding the window - spends a core to rebuild frames that
+            # were already correct, which is the one thing this path exists to
+            # avoid.
+            spilled = sorted(wd.glob("seg_*.ts"))[expected:]
+            if spilled:
+                last = wd / f"seg_{expected - 1:02d}.ts"
+                extra = 0
+                with last.open("ab") as out:
+                    for seg in spilled:
+                        extra += seg.stat().st_size
+                        out.write(seg.read_bytes())
+                        seg.unlink()
+                print(f"[cache] {object_id} w{w} folded {len(spilled)} spilled "
+                      f"segment(s), {extra / 1024:.0f} KB, into seg_"
+                      f"{expected - 1:02d}", flush=True)
+
             made = len(list(wd.glob("seg_*.ts")))
-            print(f"[cache] {object_id} w{w} copy made {made} segments, "
-                  f"playlist says {expected} — re-encoding", flush=True)
-            for f in wd.glob("seg_*.ts"):
-                f.unlink()
-            (wd / "index.m3u8").unlink(missing_ok=True)
-            copying = False
-            rc = await run(build_cmd(False))
+            if made < expected:
+                # Short, not long: the source had too few keyframes to cut the
+                # window into the shape the playlist promised. Only the encoder
+                # can place them where they are needed, so this window goes
+                # back through it.
+                print(f"[cache] {object_id} w{w} copy made {made} segments, "
+                      f"playlist says {expected} — re-encoding", flush=True)
+                for f in wd.glob("seg_*.ts"):
+                    f.unlink()
+                (wd / "index.m3u8").unlink(missing_ok=True)
+                copying = False
+                rc = await run(build_cmd(False))
 
         elapsed = asyncio.get_event_loop().time() - t0
         produced = len(list(wd.glob("seg_*.ts")))

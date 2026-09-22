@@ -3254,3 +3254,77 @@ def test_a_device_index_that_cannot_be_read_streams_as_before(tmp_path, monkeypa
     assert ranges == []
     assert cmd[cmd.index("-i") + 1].startswith("http://")
     assert c.window_ready(80888, 7)
+
+
+def _window_producing(tmp_path, monkeypatch, n_segments, codec="h264"):
+    """Run window 7 where FFmpeg emits `n_segments` files. Returns (cache, cmds)."""
+    async def fake_session(path):
+        return {"playlist_url": "http://device/stream/pl.m3u8?tok"}
+
+    c = TranscodeCache(session_starter=fake_session, root=tmp_path, budget_bytes=10**12)
+    asyncio.run(c.register(80888, "/recordings/x/80888", GAME, codec=codec))
+
+    real_exec = asyncio.create_subprocess_exec
+    cmds = []
+
+    async def fake_exec(*cmd, cwd=None, **kw):
+        cmds.append(list(cmd))
+        from pathlib import Path as P
+        for f in P(cwd).glob("seg_*.ts"):
+            f.unlink()
+        # Each segment's bytes name it, so a fold can be seen to have kept them.
+        for n in range(n_segments):
+            (P(cwd) / f"seg_{n:02d}.ts").write_bytes(f"<{n}>".encode())
+
+        class P0:
+            returncode = 0
+            async def wait(self):
+                return 0
+        return P0()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    try:
+        asyncio.run(c.ensure_window(80888, 7, "/recordings/x/80888", GAME))
+    finally:
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", real_exec)
+    return c, cmds
+
+
+def test_a_spilled_segment_is_folded_rather_than_re_encoded(tmp_path, monkeypatch):
+    """Measured on the real recording: copying cut a 60s window into eleven
+    segments (5.6-6.8s apart, 60.35s between them) where the playlist named
+    ten, and the remainder was 0.969s. The content is fine - there is one file
+    too many - so it joins the last segment the playlist does name. Rebuilding
+    those frames in the encoder is the one thing this path exists to avoid."""
+    expected = segments_in_window(GAME, 7)
+    c, cmds = _window_producing(tmp_path, monkeypatch, expected + 1)
+    wd = c.window_dir(80888, 7)
+
+    assert len(cmds) == 1, "the encoder was not asked to redo the window"
+    assert cmds[0][cmds[0].index("-c:v") + 1] == "copy"
+    assert len(list(wd.glob("seg_*.ts"))) == expected
+    # Every frame is still there: the spill is on the end of the last segment.
+    last = (wd / f"seg_{expected - 1:02d}.ts").read_bytes()
+    assert last == f"<{expected - 1}>".encode() + f"<{expected}>".encode()
+    assert c.window_ready(80888, 7)
+
+
+def test_several_spilled_segments_all_fold(tmp_path, monkeypatch):
+    expected = segments_in_window(GAME, 7)
+    c, cmds = _window_producing(tmp_path, monkeypatch, expected + 2)
+    wd = c.window_dir(80888, 7)
+
+    assert len(cmds) == 1
+    assert len(list(wd.glob("seg_*.ts"))) == expected
+    last = (wd / f"seg_{expected - 1:02d}.ts").read_bytes()
+    assert last.endswith(f"<{expected + 1}>".encode())
+
+
+def test_a_window_that_comes_out_short_still_goes_to_the_encoder(tmp_path, monkeypatch):
+    """Too few keyframes to cut the shape the playlist promised - only the
+    encoder can place them where they are needed."""
+    expected = segments_in_window(GAME, 7)
+    _c, cmds = _window_producing(tmp_path, monkeypatch, expected - 1)
+
+    assert len(cmds) == 2
+    assert cmds[1][cmds[1].index("-c:v") + 1] != "copy"
