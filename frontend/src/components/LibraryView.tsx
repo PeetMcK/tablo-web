@@ -11,6 +11,7 @@ import {
   LIBRARY_GROUPS, LIBRARY_LAYOUTS, LIBRARY_SORTS, arrange,
   type LibraryGroup, type LibraryLayout, type LibrarySort,
 } from "../lib/libraryLayout";
+import { cacheEta } from "../lib/cacheEta";
 import { LayoutToggle } from "./LayoutToggle";
 import { RecordingRow } from "./RecordingRow";
 import { usePref } from "../lib/usePref";
@@ -1388,6 +1389,15 @@ export function LibraryView() {
                                 {rec.rate.mbps.toFixed(1)} Mb/s
                               </span>
                               {rec.rate.realtime > 0 && ` · ${rec.rate.realtime.toFixed(1)}×`}
+                              {/* What the other two numbers are for: when this
+                                  stops needing to be watched. */}
+                              {(() => {
+                                const eta = cacheEta(
+                                  rec.duration, rec.cached_seconds, rec.rate.realtime);
+                                return eta === null ? null
+                                  : eta < 60 ? " · under a minute left"
+                                  : ` · ${formatDuration(eta)} left`;
+                              })()}
                             </>
                           ) : (
                             <span className="text-fg-subtle">starting…</span>
