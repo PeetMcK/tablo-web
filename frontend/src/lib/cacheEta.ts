@@ -6,6 +6,11 @@
  * it. Deliberately not derived from Mb/s: that varies with the bitrate of
  * whatever is being copied, while this does not.
  *
+ * A fallback. The server answers this question properly — it knows which
+ * windows are still to encode, and a copied recording's wait is arithmetic
+ * over bytes it can see arriving — and sends the answer as `eta_seconds`.
+ * This stands in only where it sent none.
+ *
  * Null where there is no honest answer: nothing has been produced yet, so
  * there is no rate, or the recording's length is unknown. An invented estimate
  * reads as knowledge and is worse than an empty space.

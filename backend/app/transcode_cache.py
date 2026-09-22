@@ -417,23 +417,6 @@ PRODUCED_SAMPLES = 256
 RATE_IDLE_AFTER = 180.0
 
 
-def eta_seconds(duration: float, cached: float, realtime: float) -> float | None:
-    """How long an offline copy still has to run, or None where nothing honest
-    can be said.
-
-    `realtime` is output seconds per wall second - the same figure the card
-    shows as "5.5x" - so this is the remaining content divided by it. The
-    frontend renders the same arithmetic; keeping it here too is what lets the
-    log say what the screen says, and what makes a prediction checkable against
-    the clock afterwards.
-    """
-    if not (duration > 0) or not (realtime > 0):
-        return None
-    # Windows overrun their nominal length, so what is cached can pass the
-    # recording's duration. That is finished, not negative time remaining.
-    return max(0.0, duration - cached) / realtime
-
-
 class CacheState(str, Enum):
     ABSENT = "absent"
     PARTIAL = "partial"
@@ -537,10 +520,12 @@ class TranscodeCache:
         # Shared across every prefetch loop. Created lazily: there is no running
         # event loop at import time.
         self._prefetch_slots: asyncio.Semaphore | None = None
-        #: When the current run of windows began, per recording, so the line
-        #: printed at the end can be compared against the estimates printed
-        #: along the way. Cleared when the copy completes.
-        self._fill_started: dict[int, float] = {}
+        #: Per recording: when the current run of windows began, and how many
+        #: seconds of content already existed at that moment. The baseline is
+        #: the whole point - resume a copy that is forty minutes in and without
+        #: it the first window to land reads as forty minutes of work done in
+        #: ninety seconds. Cleared when the copy completes.
+        self._fill_started: dict[int, tuple[float, float]] = {}
         #: Bytes off the wire, as they land: (when, how many). This is the
         #: transfer itself rather than the windows made out of it, which is
         #: what makes the throughput readout steady and the estimate honest.
@@ -700,6 +685,40 @@ class TranscodeCache:
             total += min(length, listed * SEGMENT_SECONDS)
         return total
 
+    def remaining_seconds(self, object_id: int) -> float:
+        """Seconds of content still to be encoded.
+
+        Not `source_duration - produced_seconds`. Those agree while everything
+        is going well, and part company exactly where the estimate matters: a
+        window abandoned part-way - a cancelled fill, a killed backend, a
+        failed ffmpeg - keeps its finalised segments on disk, and
+        `produced_seconds` counts them because for *progress* they are real
+        output that can be played. But the encoder clears the directory before
+        it starts, so that window will be made again from nothing. The work
+        left includes it in full.
+
+        Only the window an encoder is actually holding gets credit for what it
+        has finalised, because that one will not be redone.
+        """
+        meta = self.read_meta(object_id)
+        if meta is None or not meta.source_duration:
+            return 0.0
+        total = 0.0
+        for w in range(window_count(meta.source_duration)):
+            if self.window_ready(object_id, w):
+                continue
+            length = window_length(meta.source_duration, w)
+            if (object_id, w) not in self._window_jobs:
+                total += length
+                continue
+            index = self.window_dir(object_id, w) / "index.m3u8"
+            try:
+                listed = index.read_text().count(".ts")
+            except OSError:
+                listed = 0
+            total += max(0.0, length - min(length, listed * SEGMENT_SECONDS))
+        return total
+
     def _note_produced(self, object_id: int, seconds: float) -> None:
         """Record how much output existed just now, for the rate below."""
         samples = self._produced.setdefault(object_id, deque(maxlen=PRODUCED_SAMPLES))
@@ -719,15 +738,30 @@ class TranscodeCache:
         wanders. This is what the whole run has actually averaged, which is
         what "how long will this take" is really asking about.
 
+        Content *this run* produced: a resumed copy inherits whatever an
+        earlier one left on disk, and counting that against this run's wall
+        clock is how a 3h30m transcode came to claim 36.7x and "5m left".
+
         Zero before the run has started, or where it produced nothing.
         """
-        began = self._fill_started.get(object_id)
-        if began is None:
+        run = self._fill_started.get(object_id)
+        if run is None:
             return 0.0
+        began, baseline = run
         elapsed = time.monotonic() - began
         if elapsed < 1.0:
             return 0.0
-        return self.produced_seconds(object_id) / elapsed
+        return max(0.0, self.produced_seconds(object_id) - baseline) / elapsed
+
+    def _begin_run(self, object_id: int) -> None:
+        """Mark the start of a run of windows, with what it found already made.
+
+        Taken once. A later window must not re-baseline, or every window would
+        erase the measurement of the one before it.
+        """
+        if object_id in self._fill_started:
+            return
+        self._fill_started[object_id] = (time.monotonic(), self.produced_seconds(object_id))
 
     def produced_rate(self, object_id: int) -> float:
         """Seconds of output appearing per second, over the trailing window."""
@@ -791,11 +825,10 @@ class TranscodeCache:
                     0.0, meta.source_bytes - self.entry_bytes_cached(object_id)) / per_second
             return None
         # A transcode's output size is nobody's to know until it exists, so
-        # this half is content: runtime left, over runtime appearing. Both are
+        # this half is content: work left, over runtime appearing. Both are
         # watched at segment granularity rather than window, which is what
         # keeps the answer from lurching once a minute.
-        produced = self.produced_seconds(object_id)
-        self._note_produced(object_id, produced)
+        self._note_produced(object_id, self.produced_seconds(object_id))
         # The run's average, not the last half minute: what remains will take
         # about as long as what came before, and a momentary stall or sprint
         # should not rewrite the answer.
@@ -804,7 +837,12 @@ class TranscodeCache:
             # Nothing has been watched appearing yet; fall back to what the
             # finished windows say about themselves.
             rate = self.rate(object_id)["realtime"]
-        return eta_seconds(meta.source_duration, produced, rate)
+        if rate <= 0:
+            return None
+        # The windows still to encode, not the runtime not yet reached: a
+        # resumed copy fills out of order, and a window that was abandoned
+        # part-way is work that is still ahead of us.
+        return self.remaining_seconds(object_id) / rate
 
     def rate(self, object_id: int) -> dict[str, float]:
         """Current throughput for a recording being cached.
@@ -1860,7 +1898,7 @@ class TranscodeCache:
         # expire ~3.5 minutes out and a window encodes in well under that, so no
         # separate refresh loop is needed.
         t0 = asyncio.get_event_loop().time()
-        self._fill_started.setdefault(object_id, time.monotonic())
+        self._begin_run(object_id)
         session = await self._start_session(path)
         playlist_url = session.get("playlist_url")
         if not playlist_url:
@@ -2099,12 +2137,19 @@ class TranscodeCache:
         # The end of the run, said once: how long it actually took, against
         # every "eta" printed on the way here.
         if total_seconds and self.windows_done(object_id) >= window_count(total_seconds):
-            began = self._fill_started.pop(object_id, None)
-            if began is not None:
+            run = self._fill_started.pop(object_id, None)
+            if run is not None:
+                began, baseline = run
                 took = time.monotonic() - began
+                # What this run made, over this run's clock. The whole
+                # recording over the same clock is the resumed copy's flattery:
+                # it claims a rate for content an earlier run produced.
+                made = max(0.0, total_seconds - baseline)
                 print(f"[cache] {object_id} complete: "
                       f"{window_count(total_seconds)} windows in {took / 60:.1f} min "
-                      f"({total_seconds / max(took, 0.001):.1f}x overall)", flush=True)
+                      f"({made / max(took, 0.001):.1f}x overall"
+                      + (f", resuming from {baseline / 60:.0f} min already cached)"
+                         if baseline >= 1.0 else ")"), flush=True)
         # Any export built earlier no longer matches what is cached.
         self.export_path(object_id).unlink(missing_ok=True)
 
