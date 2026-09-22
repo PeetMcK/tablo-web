@@ -50,12 +50,21 @@ export function SearchModeToggle({
   filterDisabled: boolean;
 }) {
   return (
+    /* One capsule, two cells, and a line between them.
+       `items-stretch` with no height on the cells themselves is what makes a
+       half's fill run floor to ceiling: two loose buttons with a gap between
+       them read as two controls that happen to be adjacent, and a hover that
+       stopped short of the edges kept saying so. `overflow-hidden` is what
+       lets the cells stay square-cornered while the capsule is round — the
+       clip supplies the outer radius, so the fill reaches into the corners
+       instead of leaving four lit crumbs outside a rounded chip. */
     <div
       role="radiogroup"
       aria-label="Search mode"
-      className="absolute left-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5"
+      className="absolute left-1.5 top-1/2 -translate-y-1/2 h-8 flex items-stretch
+                 rounded-lg border border-border overflow-hidden"
     >
-      {MODES.map(({ value: mode, name, hint, Icon }) => {
+      {MODES.map(({ value: mode, name, hint, Icon }, i) => {
         const disabled = filterDisabled && mode === "filter";
         // Greyed out, the funnel cannot be the checked one even while it is
         // still the stored mode — the box really is searching while you are
@@ -72,12 +81,28 @@ export function SearchModeToggle({
             disabled={disabled}
             onMouseDown={e => e.preventDefault()}
             onClick={() => onChange(mode)}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition
-                        focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
+            /* The divider is the first cell's right edge rather than an
+               element of its own, so it is exactly as tall as the cells are
+               and cannot drift out of step with them.
+
+               `ring-inset` because the capsule clips its children: an outset
+               focus ring would be shaved off on three sides.
+
+               `fill-strong` for the selected half, not `accent-soft`: the
+               brand blue at 15% over this near-black bar lifts a chip barely
+               above the background, which is what made the selected tab read
+               as having no indicator (see the nav above). White at the same
+               alpha lifts; the glyph stays `accent-strong`, so a selected
+               half still differs from a hovered one by hue and not only by
+               brightness. */
+            className={`px-2 flex items-center justify-center transition
+                        focus:outline-none focus-visible:ring-2 focus-visible:ring-inset
+                        focus-visible:ring-accent
+                        ${i === 0 ? "border-r border-border" : ""}
                         ${disabled
                           ? "text-fg-subtle cursor-not-allowed"
                           : checked
-                            ? "bg-accent-soft text-accent-strong"
+                            ? "bg-fill-strong text-accent-strong"
                             : "text-fg-muted hover:text-fg-secondary hover:bg-fill"}`}
           >
             <Icon className="w-4 h-4" aria-hidden />
