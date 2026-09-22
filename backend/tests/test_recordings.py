@@ -3156,7 +3156,7 @@ def _device_variant(n: int = 520, size: int = 1000) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None):
+def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None, window=7):
     """Run window 7 with the device and FFmpeg stubbed. Returns (argv, ranges, cache)."""
     from app import transcode_cache as tc
 
@@ -3186,7 +3186,7 @@ def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None):
     async def fake_exec(*cmd, cwd=None, **kw):
         cmds.append(list(cmd))
         from pathlib import Path as P
-        for n in range(segments_in_window(GAME, 7)):
+        for n in range(segments_in_window(GAME, window)):
             (P(cwd) / f"seg_{n:02d}.ts").write_bytes(b"x")
 
         class P0:
@@ -3197,7 +3197,7 @@ def _copy_window_with_device(tmp_path, monkeypatch, codec="h264", variant=None):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     try:
-        asyncio.run(c.ensure_window(80888, 7, "/recordings/x/80888", GAME))
+        asyncio.run(c.ensure_window(80888, window, "/recordings/x/80888", GAME))
     finally:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", real_exec)
     return cmds[0], ranges, c
@@ -3211,8 +3211,10 @@ def test_a_copied_window_pulls_the_device_in_one_request(tmp_path, monkeypatch):
     assert len(ranges) == 1
     url, first, last = ranges[0]
     assert url.endswith("/stream/segw.ts?a")
-    # Window 7 is 420-480s, and the read starts a pre-roll early.
-    assert first == 417 * 1000
+    # Window 7 is the segments whose starts fall in 420-480s, and nothing else:
+    # no pre-roll to seek across, because seeking a copied stream is what lost
+    # frames at every seam.
+    assert first == 420 * 1000
     assert last == 480 * 1000 - 1
 
 
@@ -3223,9 +3225,12 @@ def test_a_copied_window_is_cut_from_disk_not_from_the_device(tmp_path, monkeypa
     assert "http" not in cmd[cmd.index("-i") + 1]
     # Only the file it just wrote may be opened.
     assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
-    # The window still begins where the playlist says it does: the read started
-    # three seconds early and the output seek crosses that.
-    assert cmd[cmd.index("-ss") + 1] == "3.000"
+    # Nothing is seeked or trimmed: the file *is* the window. A seek would only
+    # move the start forward to the next keyframe and drop what it passed.
+    assert "-ss" not in cmd
+    assert "-t" not in cmd
+    # Its timestamps say where its first segment really begins.
+    assert cmd[cmd.index("-output_ts_offset") + 1] == "420.000"
 
 
 def test_the_window_source_is_not_kept(tmp_path, monkeypatch):
@@ -3234,6 +3239,18 @@ def test_the_window_source_is_not_kept(tmp_path, monkeypatch):
 
     assert not (c.window_dir(80888, 7) / "source.ts").exists()
     assert c.window_ready(80888, 7)
+
+
+def test_one_window_ends_where_the_next_begins(tmp_path, monkeypatch):
+    """The seam is the whole point. Both windows ask the same question of the
+    same segment list, so window 7 stops exactly where window 8 starts and no
+    frame falls between them - which is where 59.7s of a game went before."""
+    _c7, ranges7, _ = _copy_window_with_device(tmp_path, monkeypatch, window=7)
+    _c8, ranges8, _ = _copy_window_with_device(tmp_path, monkeypatch, window=8)
+
+    (_u7, _first7, last7) = ranges7[0]
+    (_u8, first8, _last8) = ranges8[0]
+    assert first8 == last7 + 1
 
 
 def test_an_encoded_window_still_streams_from_the_device(tmp_path, monkeypatch):
