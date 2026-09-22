@@ -21,7 +21,7 @@
  * view render cards or rows from the same section list.
  */
 import {
-  CheckCircle2, CloudOff, Download, Eye, EyeOff, FileDown, Lock, LockOpen,
+  CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Lock, LockOpen, MonitorDown,
   Play, Trash2,
 } from "lucide-react";
 
@@ -355,7 +355,7 @@ export function RecordingRow({
         >
           {rec.pinned
             ? <CheckCircle2 className="w-4 h-4" aria-hidden />
-            : <Download className="w-4 h-4" aria-hidden />}
+            : <MonitorDown className="w-4 h-4" aria-hidden />}
         </button>
 
         {/* Last, on the row's outside edge. Lit by a hover anywhere on the
