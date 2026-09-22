@@ -26,6 +26,7 @@ import {
   loadSkipForward, loadSkipBack, SKIP_CONFIG_EVENT,
 } from "../lib/skip";
 import { clampVolume, loadVolume, saveVolume } from "../lib/volume";
+import { fitPipWindow, loadPipArea, savePipArea } from "../lib/pipWindow";
 import {
   createHlsSurface, DOCUMENT_FRAMES, type CaptionSource, type PlaybackSurface,
 } from "../lib/playbackSurface";
@@ -2124,6 +2125,23 @@ export function VideoPlayer({
    */
   const mirrorRef = useRef<HTMLVideoElement | null>(null);
 
+  /**
+   * The picture's own size, from whichever element is drawing it.
+   *
+   * Both report display size rather than coded size — the deinterlacer sizes
+   * the canvas with the sample aspect already applied, and `videoWidth` is
+   * aspect-corrected by definition — so the two are directly comparable and
+   * the pop-out never has to learn which path it got. Zero until something
+   * has decoded, which `fitPipWindow` reads as "no shape yet".
+   */
+  const pictureSize = useCallback(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    return usingWasm
+      ? { width: canvas?.width ?? 0, height: canvas?.height ?? 0 }
+      : { width: video?.videoWidth ?? 0, height: video?.videoHeight ?? 0 };
+  }, [usingWasm]);
+
   const openMirror = useCallback(() => {
     // Whichever element is drawing the picture. `captureStream` is the same
     // method on both, handing out a MediaStream of one video track, and a
@@ -2194,10 +2212,20 @@ export function VideoPlayer({
     if (pipWindow.current) { pipWindow.current.close(); return; }
 
     try {
-      // No size, no position: the browser reopens the window where the viewer
-      // last left it, and neither is ours to set — `resizeTo` is refused on a
+      // The shape comes from the picture; the size from wherever the viewer
+      // last left a pop-out. Asked with no size at all, the browser reopens
+      // the box it remembers — and a box remembered from a 16:9 programme
+      // letterboxes a 4:3 one, bands the pop-out has no business drawing.
+      // Position stays the browser's: `resizeTo` is refused on a
       // picture-in-picture window and there are no coordinates to pass.
-      const w = await dpip.requestWindow();
+      const size = fitPipWindow(
+        pictureSize(),
+        { width: window.screen.availWidth, height: window.screen.availHeight },
+        loadPipArea(),
+      );
+      // Nothing decoded yet leaves no shape to match, and the browser's own
+      // guess beats one made from zeroes — so that case asks for nothing.
+      const w = size ? await dpip.requestWindow(size) : await dpip.requestWindow();
       pipWindow.current = w;
 
       // The window arrives with no styles at all, so every class the stage
@@ -2246,6 +2274,10 @@ export function VideoPlayer({
       // — the root has to come down and the video come home, or the player is
       // left with nothing to show.
       w.addEventListener("pagehide", () => {
+        // Whatever the viewer dragged it to, so the next pop-out opens that
+        // large whatever shape it has to be. Read first, while the window
+        // still has a layout to report.
+        savePipArea(w.innerWidth, w.innerHeight);
         pipRoot.current?.unmount();
         closeMirror();
         // Back to this document's clock: the tab's stage is on screen again,
@@ -2265,7 +2297,7 @@ export function VideoPlayer({
       // Refused for want of a user gesture, or not implemented here after all.
       log.warn("picture-in-picture rejected", e);
     }
-  }, [title, openMirror, closeMirror]);
+  }, [title, openMirror, closeMirror, pictureSize]);
 
   // A player torn down while popped out would leave the window orphaned,
   // holding a video element that no longer belongs to anything.
