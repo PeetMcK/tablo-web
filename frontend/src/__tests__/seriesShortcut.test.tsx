@@ -85,7 +85,7 @@ describe("the show's name in the player", () => {
     vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
       object_id: REC.object_id, session_id: "vod-1", mode: "vod",
       stream_url: "/api/vod/vod-1/playlist.m3u8",
-      duration: 12615, segments: 8400, growing: false,
+      duration: 12615, segments: 8400, growing: false, codec: "mpeg2",
     });
     vi.spyOn(api, "stopStream").mockResolvedValue({ ok: true });
     vi.spyOn(api, "recordingStatus").mockResolvedValue({

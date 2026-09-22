@@ -393,3 +393,129 @@ def test_an_idle_vod_session_is_reaped():
         assert SESSION not in stream.vod_sessions
     finally:
         _clear()
+
+
+# ---------------------------------------------------------------------------
+# The recordings the device encoded itself
+#
+# Measured 2026-09-22: one recording of 39 is H.264 rather than MPEG-2 - the box
+# re-encoded it with x264 after a tuner capture died mid-game. Chrome decodes
+# that picture natively and refuses its AC-3 audio in every container, so the
+# picture is copied and only the audio is converted.
+# ---------------------------------------------------------------------------
+
+def test_a_swapped_session_names_segments_the_browser_can_decode():
+    """The name says which bytes: the same instant exists twice, once as the
+    device wrote it and once with AAC, and a cache keyed on the number alone
+    would serve one where the other was asked for."""
+    index = parse_vod_playlist(PLAYLIST, BASE)
+    stream.vod_sessions[SESSION] = stream.VodSession(
+        index=index, device_url=BASE, swap_audio=True)
+    try:
+        with TestClient(app) as client:
+            body = client.get(f"/api/vod/{SESSION}/playlist.m3u8").text
+    finally:
+        _clear()
+
+    assert "00000.aac.ts" in body
+    assert "\n00000.ts" not in body
+    # The boundaries the device published, unmoved.
+    assert body.count("#EXTINF:1.500,") == 2
+
+
+def test_a_swapped_segment_keeps_the_video_and_changes_the_audio(monkeypatch):
+    """`-c:v copy`: the picture is the device's own bytes. Only AC-3 is touched."""
+    _register()
+    seen = {}
+
+    async def fake_fetch(url, byte_range=None):
+        return b"DEVICE-TS"
+
+    async def fake_swap(payload):
+        seen["payload"] = payload
+        return b"SWAPPED-TS"
+
+    monkeypatch.setattr(stream, "_fetch_bytes", fake_fetch)
+    monkeypatch.setattr(stream, "swap_segment_audio", fake_swap)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/api/vod/{SESSION}/00000.aac.ts")
+    finally:
+        _clear()
+        stream.SWAP_CACHE.clear()
+
+    assert r.status_code == 200
+    assert r.content == b"SWAPPED-TS"
+    assert r.headers["content-type"].startswith("video/mp2t")
+    assert seen["payload"] == b"DEVICE-TS"
+
+
+def test_a_swapped_segment_is_only_made_once(monkeypatch):
+    """A scrub back over a segment already swapped must not re-run ffmpeg."""
+    _register()
+    runs = []
+
+    async def fake_fetch(url, byte_range=None):
+        return b"DEVICE-TS"
+
+    async def fake_swap(payload):
+        runs.append(1)
+        return b"SWAPPED-TS"
+
+    monkeypatch.setattr(stream, "_fetch_bytes", fake_fetch)
+    monkeypatch.setattr(stream, "swap_segment_audio", fake_swap)
+    try:
+        with TestClient(app) as client:
+            client.get(f"/api/vod/{SESSION}/00000.aac.ts")
+            client.get(f"/api/vod/{SESSION}/00000.aac.ts")
+    finally:
+        _clear()
+        stream.SWAP_CACHE.clear()
+
+    assert len(runs) == 1
+
+
+def test_an_unswapped_name_is_still_the_devices_own_bytes(monkeypatch):
+    """The MPEG-2 path is untouched by any of this."""
+    _register()
+
+    async def fake_fetch(url, byte_range=None):
+        return b"DEVICE-TS"
+
+    async def fake_swap(payload):
+        raise AssertionError("nothing should be converted here")
+
+    monkeypatch.setattr(stream, "_fetch_bytes", fake_fetch)
+    monkeypatch.setattr(stream, "swap_segment_audio", fake_swap)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/api/vod/{SESSION}/00000.ts")
+    finally:
+        _clear()
+
+    assert r.content == b"DEVICE-TS"
+
+
+def test_a_failed_swap_is_an_error_not_the_untouched_segment(monkeypatch):
+    """Handing back the device's bytes would play the picture and drop the
+    audio track without a word, which is the failure this path exists to stop."""
+    _register()
+
+    async def fake_fetch(url, byte_range=None):
+        return b"DEVICE-TS"
+
+    async def fake_swap(payload):
+        raise RuntimeError("ffmpeg died")
+
+    monkeypatch.setattr(stream, "_fetch_bytes", fake_fetch)
+    monkeypatch.setattr(stream, "swap_segment_audio", fake_swap)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/api/vod/{SESSION}/00000.aac.ts")
+    finally:
+        _clear()
+        stream.SWAP_CACHE.clear()
+
+    assert r.status_code == 502
+    assert "00000" in r.json()["detail"]
+    assert r.content != b"DEVICE-TS"

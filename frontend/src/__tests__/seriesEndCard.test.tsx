@@ -14,6 +14,7 @@ function rec(over: Partial<Recording> & { object_id: number }): Recording {
     title: "Carl the Collector",
     subtitle: null,
     description: null,
+    codec: "mpeg2",
     start: "2026-09-17T17:00:00Z",
     series_path: "/recordings/series/86119",
     sport_path: null,

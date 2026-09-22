@@ -31,9 +31,15 @@ vi.mock("../lib/wasmlive/capability", async (importOriginal) => {
     // jsdom has neither WebGL2 nor OffscreenCanvas nor a Chrome user agent, so
     // the real check can only ever say no. Which path is taken is the premise
     // of these tests, not their subject.
-    wasmLiveEligible: () => (wasm.eligible
-      ? { eligible: true, reason: "" }
-      : { eligible: false, reason: "test" }),
+    // The codec question is real here: it is what these tests are about. The
+    // browser-capability half stays stubbed, for the reason above.
+    wasmLiveEligible: (
+      _w: unknown, _s: unknown, _kind: unknown, codec?: string | null,
+    ) => (codec === "h264"
+      ? { eligible: false, reason: "h264 recording" }
+      : wasm.eligible
+        ? { eligible: true, reason: "" }
+        : { eligible: false, reason: "test" }),
   };
 });
 
@@ -148,6 +154,88 @@ describe("the transcode is not a rescue", () => {
 
     await waitFor(() => expect(watch).toHaveBeenCalledWith(REC.object_id));
   });
+
+  it("plays an H.264 recording from the device, not from the encoder", async () => {
+    // Measured 2026-09-22: hls.js plays the device's own H.264 segments and
+    // seeks across them, so the encoder has nothing to add. Transcoding here
+    // would decode H.264 only to re-encode it as worse H.264.
+    const vod = vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-9", stream_url: "/v9.m3u8",
+      duration: REC.duration, segments: 10, growing: false,
+      codec: "h264", mode: "vod",
+    });
+    const transcode = vi.spyOn(api, "watchRecording");
+
+    renderRecording({ ...REC, codec: "h264" });
+
+    await waitFor(() => expect(vod).toHaveBeenCalledWith(REC.object_id));
+    expect(wasm.open).not.toHaveBeenCalled();
+    expect(transcode).not.toHaveBeenCalled();
+  });
+
+  it("corrects itself once when the decoder has no such codec", async () => {
+    // A null codec takes the MPEG-2 path, so a recording the device did not
+    // label fails exactly as 94904 did. "Codec not found" is not a fault to
+    // report — it is this routing being wrong, and the device's own stream is
+    // the same picture, not a worse one.
+    const vod = vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 10, growing: false,
+      codec: null, mode: "vod",
+    });
+    const transcode = vi.spyOn(api, "watchRecording");
+    wasm.open.mockImplementation((options: OpenOptions) => {
+      wasm.opens.push(options);
+      return Promise.resolve({
+        ...stubSurface(),
+        diagnostics: () => ({ kind: "wasm", failureDetail: "Codec not found" }),
+      });
+    });
+
+    renderRecording({ ...REC, codec: null });
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(1));
+
+    await act(async () => { failureOf(0)("decode error"); });
+
+    // Corrected, not rebuilt: the decoder is not asked the same question twice,
+    // and the encoder is never asked at all.
+    await waitFor(() => expect(vod).toHaveBeenCalledTimes(2));
+    // And it asks for audio it can decode, rather than reopening to silence.
+    expect(vod).toHaveBeenLastCalledWith(REC.object_id, { swapAudio: true });
+    expect(wasm.open).toHaveBeenCalledTimes(1);
+    expect(transcode).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Decoding stopped/)).toBeNull();
+  });
+
+  it("still rebuilds when the failure is not about the codec", async () => {
+    // The existing rule, untouched: one rebuild, then the reason.
+    vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 10, growing: false,
+      codec: "mpeg2", mode: "vod",
+    });
+
+    renderRecording({ ...REC, codec: "mpeg2" });
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(1));
+
+    await act(async () => { failureOf(0)("decode error"); });
+
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(2));
+  });
+
+  it("still gives an MPEG-2 recording to the WASM decoder", async () => {
+    vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 10, growing: false,
+      codec: "mpeg2", mode: "vod",
+    });
+    const transcode = vi.spyOn(api, "watchRecording");
+
+    renderRecording({ ...REC, codec: "mpeg2" });
+
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(1));
+    expect(transcode).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -211,7 +299,7 @@ describe("the player says when it is playing a local copy", () => {
     // noise.
     vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
       object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
-      duration: REC.duration, segments: 746, growing: false, mode: "vod",
+      duration: REC.duration, segments: 746, growing: false, codec: "mpeg2", mode: "vod",
     });
     const { container } = renderRecording(REC);
 
@@ -260,7 +348,7 @@ describe("the gesture that unlocks the sound", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
     vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
       object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
-      duration: REC.duration, segments: 746, growing: false, mode: "vod",
+      duration: REC.duration, segments: 746, growing: false, codec: "mpeg2", mode: "vod",
     });
   });
 
@@ -332,4 +420,5 @@ describe("the gesture that unlocks the sound", () => {
     // The tap resumed rather than being swallowed as an unlock gesture.
     await waitFor(() => expect(play).toHaveBeenCalled());
   });
+
 });

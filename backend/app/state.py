@@ -38,6 +38,19 @@ CLOUD_GUIDE_DAYS = int(os.environ.get("TABLO_CLOUD_GUIDE_DAYS", "14"))
 CLOUD_GUIDE_CONCURRENCY = int(os.environ.get("TABLO_CLOUD_GUIDE_CONCURRENCY", "4"))
 
 
+#: What the device calls the video codec: `video_details.container_format`.
+#:
+#: Its word is about the codec, not the container - everything it serves is
+#: MPEG-TS. Surveyed across all 39 recordings on 2026-09-22: 38 say "mpeg2",
+#: one says "mpeg4", and ffprobe of that one's own segments says h264 High
+#: 1280x720 with an x264 encoder SEI - the box re-encoded it after a tuner
+#: capture died mid-game.
+#:
+#: Anything else maps to None rather than a guess. Null takes the MPEG-2 path,
+#: which is what all but one recording measured has been.
+_VIDEO_CODECS = {"mpeg2": "mpeg2", "mpeg4": "h264"}
+
+
 def _scan_label(resolution: str | None, flags: list[str]) -> str | None:
     """`1080i`, `720p`, `480i` — what a station is actually broadcasting.
 
@@ -1173,6 +1186,12 @@ class AppState:
             # discovered as combing on a moving edge.
             "scan": scan,
             "interlaced": interlaced,
+            # Which decoder can read this. Almost always MPEG-2 - a broadcast,
+            # passed through - but a recording the box encoded itself is H.264,
+            # which the vendored WASM build cannot read and every browser can.
+            # The player has to know before it opens one, and only the device
+            # can say.
+            "codec": _VIDEO_CODECS.get(vd.get("container_format")),
         }
 
     @staticmethod

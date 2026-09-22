@@ -377,6 +377,7 @@ const LIBRARY_RECORDING: Recording = {
   object_id: 80888, identifier: 80888, path: "/recordings/sports/events/80888",
   title: "NFL Football", subtitle: null, description: null,
   start: "2026-09-15T00:15:00Z", duration: 12615, recorded_seconds: null,
+  codec: "mpeg2",
   series_path: null, sport_path: null, season_number: null, episode_number: null,
   orig_air_date: null,
   expected_seconds: null,

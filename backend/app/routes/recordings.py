@@ -8,7 +8,7 @@ from functools import partial
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -906,13 +906,26 @@ async def recording_detail(object_id: int):
 
 
 @router.post("/{object_id}/watch-vod")
-async def watch_recording_vod(object_id: int):
-    """Serve a recording as MPEG-2, straight from the device.
+async def watch_recording_vod(object_id: int, swap_audio: bool = Query(False)):
+    """Serve a recording straight from the device, decoded in the browser.
 
-    A recording is MPEG-2 video with AC-3 audio - the same thing the live path
-    decodes - so playing it needs no transcode at all. The device publishes it
-    as a playlist where every segment is addressable by byte range. Measured on
-    a 3.5 hour recording, 8542 segments across 29 byte-ranged files.
+    A recording is *usually* MPEG-2 video with AC-3 audio - the same thing the
+    live path decodes - so playing it needs no transcode at all. The device
+    publishes it as a playlist where every segment is addressable by byte
+    range. Measured on a 3.5 hour recording, 8542 segments across 29
+    byte-ranged files.
+
+    Usually, not always. A recording the box encoded itself is H.264, whose
+    picture every browser decodes and whose AC-3 none but Safari will - so that
+    one is served with its audio converted and its picture still untouched.
+    `video_details.container_format` is how the device says which, and it is
+    read here, once, because it names every segment the playlist publishes.
+
+    `swap_audio` is for the caller that knows better than the label. A decoder
+    answering "Codec not found" has proved the recording is not MPEG-2 whatever
+    the device called it, and the player learns that before this route could -
+    so it may ask for the converted audio outright rather than reopening to
+    silence.
 
     The index is held; the media is not. Downloading it would be ~25GB for one
     viewing of something the device already has, so segments are fetched on
@@ -949,6 +962,17 @@ async def watch_recording_vod(object_id: int):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Device error: {e}")
 
+    # Which decoder may play this, and therefore which segment names the
+    # playlist publishes. One device read, once per session.
+    #
+    # Tolerant on purpose: a device that will not answer must not turn every
+    # recording into something it is not. Unknown reads as MPEG-2, which is
+    # what 38 of the 39 recordings measured on this device are.
+    try:
+        codec = (await state.recording_snapshot(object_id)).get("codec")
+    except Exception:
+        codec = None
+
     session_id = uuid.uuid4().hex
     state.streams[session_id] = SimpleNamespace(
         stream=SimpleNamespace(token=sess.get("token")),
@@ -956,6 +980,7 @@ async def watch_recording_vod(object_id: int):
     # The variant url is kept because a growing index is re-read from it.
     stream_routes.vod_sessions[session_id] = stream_routes.VodSession(
         index=index, device_url=variant_url,
+        swap_audio=codec == "h264" or swap_audio,
     )
     stream_routes.touch_session(session_id)
 
@@ -988,6 +1013,9 @@ async def watch_recording_vod(object_id: int):
         # What is held so far, not what the recording will be. The player polls
         # for the rest, and must not pin its scrubber to this.
         "growing": not index.finished,
+        # What the player is being handed, so it can say so in its own logs and
+        # know without asking again.
+        "codec": codec,
         "mode": "vod",
     }
 
