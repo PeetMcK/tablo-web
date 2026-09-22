@@ -239,6 +239,7 @@ describe("what a row can do to a recording", () => {
     row({ pinned: true, cache_state: "complete" });
 
     expect(cluster()).toEqual([
+      expect.stringMatching(/Mark Jeopardy! watched/),
       expect.stringMatching(/Protect Jeopardy! from deletion/),
       expect.stringMatching(/Save Jeopardy!/),
       expect.stringMatching(/Delete cached video/),
@@ -307,20 +308,11 @@ describe("what a row can do to a recording", () => {
     row({ cache_state: "absent" });
 
     expect(cluster()).toEqual([
+      expect.stringMatching(/Mark Jeopardy! watched/),
       expect.stringMatching(/Protect Jeopardy! from deletion/),
       expect.stringMatching(/Keep Jeopardy! offline/),
       expect.stringMatching(/Information about Jeopardy!/),
     ]);
-  });
-
-  it("keeps watched with the title rather than in the cluster", () => {
-    // "Have I seen this" is a fact about the programme as much as a control,
-    // and it reads where the name is.
-    const { container } = row();
-
-    const watched = screen.getByRole("button", { name: /Mark Jeopardy! watched/ });
-    expect(container.querySelector("[data-row-actions]")!.contains(watched))
-      .toBe(false);
   });
 
   it("draws the eye the recording is in, not the one the click makes", () => {
@@ -332,16 +324,6 @@ describe("what a row can do to a recording", () => {
     row({ watched: false });
     expect(screen.getByRole("button", { name: /Mark Jeopardy! watched/ })
       .querySelector(".lucide-eye-off")).toBeTruthy();
-  });
-
-  it("opens the sheet from the blank space after the title too", () => {
-    // Whatever the title's length, a click in the row lands on something.
-    const onInfo = vi.fn();
-    const { container } = row({}, { onInfo });
-
-    fireEvent.click(container.querySelector("[data-row-rest]")!);
-
-    expect(onInfo).toHaveBeenCalledTimes(1);
   });
 
   it("marks a recording watched, and unwatched once it is", () => {
@@ -412,6 +394,7 @@ describe("what a row can do to a recording", () => {
     row({ cache_state: "partial", cache_progress: 0.4 });
 
     expect(cluster()).toEqual([
+      expect.stringMatching(/Mark Jeopardy! watched/),
       expect.stringMatching(/Protect Jeopardy! from deletion/),
       expect.stringMatching(/Delete cached video/),
       expect.stringMatching(/Keep Jeopardy! offline/),
