@@ -3,6 +3,7 @@
 import asyncio
 import time
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -472,6 +473,29 @@ def test_the_live_state_is_written_back_to_the_mirror(authed, monkeypatch):
 def test_the_live_state_of_an_airing_we_do_not_have_is_a_404(authed):
     r = client.get("/api/schedule/live",
                    params={"channel": "nope", "start": "2026-01-01T00:00Z"})
+    assert r.status_code == 404
+
+
+def test_an_airing_the_device_no_longer_has_is_a_404(authed, monkeypatch):
+    """The mirror outlives the guide it copied.
+
+    An airing that has already aired leaves the device's guide, and the row the
+    sheet was opened from can still name it. The device answers 404 — it was
+    reached, and it has no such airing — so "The Tablo could not be reached" is
+    a false diagnosis of a reachable device, and the 502 it rode in on sends
+    the client looking for an outage that is not there.
+    """
+    rows, start = _guide(time.time(), schedule_state="scheduled")
+    store.save_guide(rows)
+
+    async def fake(method, path, body=""):
+        req = httpx.Request(method, "http://tablo:8887" + path)
+        raise httpx.HTTPStatusError(
+            "not found", request=req, response=httpx.Response(404, request=req))
+    monkeypatch.setattr(app_state, "request_device", fake)
+
+    r = client.get("/api/schedule/live", params={"channel": "ch1", "start": start})
+
     assert r.status_code == 404
 
 

@@ -7,13 +7,14 @@
  * disabled with a hint and only episode cleanup is offered. The episode list
  * reuses the episode-level protect/watched/delete verbs.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Lock, LockOpen, Eye, EyeOff, Trash2, Film,
 } from "lucide-react";
 import {
-  api, type SeriesAiring, type SeriesCard, type SeriesEpisode, type SeriesUpdate,
+  api, isGone,
+  type SeriesAiring, type SeriesCard, type SeriesEpisode, type SeriesUpdate,
   type SeriesDetail as SeriesDetailData,
 } from "../api/tablo";
 import { Segmented } from "./ui/controls";
@@ -219,11 +220,26 @@ export function SeriesDetail({
   // reads as a different kind of series rather than an empty one.
   const [tab, setTab] = useState<"episodes" | "upcoming" | "conflicts">("episodes");
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["series-detail", detailKey],
     queryFn: () =>
       path ? api.series.detail(path) : api.series.detailByGuide(card.guide_path!),
+    // A 404 is an answer. "Turn off & delete all" takes the last episode, the
+    // device drops the series with it, and the refetch that follows the
+    // mutation reads a path that no longer exists - so the default policy spent
+    // three more requests re-asking a question that had been answered.
+    retry: (count, e) => !isGone(e) && count < 3,
   });
+
+  // The series is gone, so the panel describing it has to go too. Whatever is
+  // still in the cache here is a list of episodes the device no longer has, and
+  // leaving it up reads as a delete that did not land. The listing behind is
+  // invalidated for the same reason: its card is describing the same ghost.
+  useEffect(() => {
+    if (!isGone(error)) return;
+    qc.invalidateQueries({ queryKey: ["series"] });
+    onClose();
+  }, [error, onClose, qc]);
 
   const settings = data?.settings;
   const identifier = settings?.identifier ?? null;
