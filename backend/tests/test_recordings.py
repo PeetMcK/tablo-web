@@ -1504,6 +1504,50 @@ def test_deleting_something_the_device_does_not_have_is_a_404(monkeypatch):
     assert client.delete("/api/recordings/999999").status_code == 404
 
 
+def test_deleting_an_offline_only_copy_deletes_the_copy(monkeypatch):
+    """The Tablo deleted the original; the kept copy is all that is left.
+
+    Asking the device to delete it again is not a thing that can happen, and
+    reporting "Recording not found" leaves the viewer with a card they cannot
+    get rid of - the one recording here that only we can delete.
+    """
+    from app import store
+    from app.routes import recordings as rec
+
+    called = {"stopped": False, "evicted": None, "device": False}
+
+    async def resolve(object_id):
+        raise KeyError(object_id)
+
+    async def delete_device(path):
+        called["device"] = True
+
+    async def fake_stop(oid):
+        called["stopped"] = True
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec.state, "delete_recording", delete_device)
+    monkeypatch.setattr(rec.cache, "read_meta", lambda oid: object())
+    monkeypatch.setattr(rec.cache, "stop", fake_stop)
+    monkeypatch.setattr(rec.cache, "evict",
+                        lambda oid, force=False: called.__setitem__("evicted", force) or True)
+    store.index_recording_airings([{
+        "object_id": 94867, "start": "2026-09-20T14:00Z",
+        "channel": {"identifier": "S34654_008_01"},
+    }])
+
+    r = client.delete("/api/recordings/94867")
+
+    assert r.status_code == 200
+    assert r.json() == {"object_id": 94867, "deleted": True}
+    # Nothing was asked of the device: it does not have it.
+    assert called["device"] is False
+    assert called["stopped"] is True
+    assert called["evicted"] is True
+    assert store.recording_for_airing("S34654_008_01", "2026-09-20T14:00Z") is None
+
+
 def test_a_refused_delete_keeps_the_local_record(monkeypatch):
     """If the device would not delete it, it still exists - and the sheet has
     to keep saying so."""
