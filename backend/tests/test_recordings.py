@@ -2918,3 +2918,83 @@ def test_an_unrecognised_codec_label_is_no_codec_at_all():
         {"object_id": 3, "video_details": {"container_format": "hevc"}})["codec"] is None
     assert AppState._recording_fields(
         {"object_id": 4, "video_details": {}})["codec"] is None
+
+
+# ---------------------------------------------------------------------------
+# Which decoder a recording is served for
+#
+# The codec is read once, when the session opens, because it decides every
+# segment name the playlist publishes.
+# ---------------------------------------------------------------------------
+
+def _stub_vod(monkeypatch, rec, snapshot):
+    """Everything `watch-vod` touches except the codec read under test."""
+    from app.vod_index import VodIndex, VodSegment
+
+    async def resolve(object_id):
+        return f"/recordings/sports/events/{object_id}", 100
+
+    async def session(path):
+        return {"playlist_url": "http://dev/master.m3u8", "token": "t"}
+
+    async def index(master):
+        return VodIndex(segments=[VodSegment("http://dev/s.ts", None, 1.0)],
+                        duration=1.0, finished=True), "http://dev/v.m3u8"
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "resolve_recording", resolve)
+    monkeypatch.setattr(rec.state, "start_recording_session", session)
+    monkeypatch.setattr(rec.state, "recording_snapshot", snapshot)
+    monkeypatch.setattr(rec, "_fetch_vod_index", index)
+    monkeypatch.setattr(rec.cache, "preview_available", lambda oid: True)
+
+
+def test_watching_an_h264_recording_swaps_its_audio(monkeypatch):
+    from app.routes import recordings as rec
+    from app.routes import stream as stream_routes
+
+    async def snapshot(object_id):
+        return {"object_id": object_id, "codec": "h264"}
+
+    _stub_vod(monkeypatch, rec, snapshot)
+    body = client.post("/api/recordings/94904/watch-vod").json()
+    try:
+        session = stream_routes.vod_sessions[body["session_id"]]
+        assert body["codec"] == "h264"
+        assert session.swap_audio is True
+    finally:
+        stream_routes.vod_sessions.pop(body["session_id"], None)
+
+
+def test_watching_an_mpeg2_recording_serves_the_device_untouched(monkeypatch):
+    from app.routes import recordings as rec
+    from app.routes import stream as stream_routes
+
+    async def snapshot(object_id):
+        return {"object_id": object_id, "codec": "mpeg2"}
+
+    _stub_vod(monkeypatch, rec, snapshot)
+    body = client.post("/api/recordings/86353/watch-vod").json()
+    try:
+        assert body["codec"] == "mpeg2"
+        assert stream_routes.vod_sessions[body["session_id"]].swap_audio is False
+    finally:
+        stream_routes.vod_sessions.pop(body["session_id"], None)
+
+
+def test_a_recording_whose_codec_cannot_be_read_is_served_untouched(monkeypatch):
+    """A device that will not answer must not turn every recording into
+    something it is not. Unknown takes the path 38 of 39 recordings need."""
+    from app.routes import recordings as rec
+    from app.routes import stream as stream_routes
+
+    async def snapshot(object_id):
+        raise RuntimeError("device down")
+
+    _stub_vod(monkeypatch, rec, snapshot)
+    body = client.post("/api/recordings/86353/watch-vod").json()
+    try:
+        assert body["codec"] is None
+        assert stream_routes.vod_sessions[body["session_id"]].swap_audio is False
+    finally:
+        stream_routes.vod_sessions.pop(body["session_id"], None)
