@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +97,9 @@ RING_POLL_INTERVAL_SECONDS = float(os.environ.get("RING_POLL_INTERVAL_SECONDS", 
 # it. Both are matched rather than sanitised: anything else is not ours.
 _SESSION_RE = re.compile(r"^[0-9a-f]{8,64}$")
 _SEGMENT_RE = re.compile(r"^\d{5}\.ts$")
+# A VOD segment may also be asked for with its audio converted, which is a
+# different name because it is different bytes for the same instant.
+_VOD_SEGMENT_RE = re.compile(r"^(\d{5})(\.aac)?\.ts$")
 
 LIVE_MODES = ("transcode", "raw", "ring")
 
@@ -139,6 +143,10 @@ class VodSession:
     index: VodIndex
     #: The device's *variant* playlist, already resolved from its master.
     device_url: str
+    #: True for a recording the device encoded itself, whose AC-3 audio no
+    #: browser but Safari will decode. Decided once, when the session opens,
+    #: from the device's own codec label - it names every segment published.
+    swap_audio: bool = False
     refreshed_at: float = field(default_factory=time.monotonic)
 
 
@@ -835,7 +843,8 @@ async def vod_playlist(session_id: str):
     # segments but the session must not be reaped out from under them.
     touch_session(session_id)
     return Response(
-        content=session.index.playlist(),
+        content=session.index.playlist(
+            suffix=".aac.ts" if session.swap_audio else ".ts"),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
     )
@@ -908,28 +917,107 @@ async def _fetch_text(url: str) -> str:
     return resp.text
 
 
+#: Swapped segments already made, oldest first. Bounded: a segment is ~250KB,
+#: so 64 of them is ~16MB - enough that a scrub back, a re-read or a second
+#: viewer pays nothing, and small enough to sit in memory. Deliberately not on
+#: disk: this route's promise is that the media stays on the device.
+SWAP_CACHE: "OrderedDict[tuple[str, int], bytes]" = OrderedDict()
+SWAP_CACHE_SIZE = 64
+
+#: How many conversions may run at once. Each is ~0.08s of ffmpeg for a ~1s
+#: segment (measured 2026-09-22), and hls.js fetches in bursts, so this bounds
+#: a seek storm the way the device fetch is already bounded.
+_swap_gate = asyncio.Semaphore(4)
+
+
+async def swap_segment_audio(payload: bytes) -> bytes:
+    """One segment with its picture copied and its AC-3 converted to AAC.
+
+    `-c:v copy` is the whole point: the H.264 is the device's own bytes, so
+    there is no re-encode, nothing lost, and no deinterlace to do - what the
+    box wrote is already progressive. Only the audio is touched, because AC-3
+    is the one part no browser but Safari will decode: measured 2026-09-22,
+    every ac-3 mime string is false in Chrome, in MSE and in a bare <video>.
+
+    `-copyts` keeps the segment's own timestamps, which is what lets the
+    published `#EXTINF` keep describing it and the player's seek arithmetic
+    stay true. Measured on a real 1.089s segment: 0.07-0.08s wall, 248KB in,
+    240KB out, `start_time` unchanged.
+    """
+    async with _swap_gate:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-v", "error", "-copyts",
+            "-i", "pipe:0",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+            "-f", "mpegts", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate(payload)
+    if proc.returncode != 0 or not out:
+        raise RuntimeError(err.decode(errors="replace").strip() or "ffmpeg failed")
+    return out
+
+
+def _segment_response(payload: bytes) -> Response:
+    return Response(
+        content=payload,
+        media_type="video/mp2t",
+        headers={"Cache-Control": "max-age=30", "Access-Control-Allow-Origin": "*"},
+    )
+
+
 @router.get("/vod/{session_id}/{name}")
 async def vod_segment(session_id: str, name: str):
-    """One segment, fetched from the device on demand and never stored."""
+    """One segment, fetched from the device on demand and never stored.
+
+    `{n}.aac.ts` is that same segment with its audio converted - see
+    `swap_segment_audio`. The two are different names because they are
+    different bytes, and one name for both would let the cache below serve
+    either.
+    """
     session = _vod_session(session_id)
-    if not _SEGMENT_RE.match(name):
+    match = _VOD_SEGMENT_RE.match(name)
+    if not match:
         raise HTTPException(status_code=400, detail="Bad segment name")
-    number = int(name[:5])
+    number = int(match.group(1))
+    swapped = match.group(2) is not None
     if number < 0 or number >= len(session.index.segments):
         raise HTTPException(status_code=404, detail="Segment not found")
 
     touch_session(session_id)
+
+    if swapped:
+        held = SWAP_CACHE.get((session_id, number))
+        if held is not None:
+            SWAP_CACHE.move_to_end((session_id, number))
+            return _segment_response(held)
+
     segment = session.index.segments[number]
     try:
         payload = await _fetch_bytes(segment.url, segment.byte_range)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Device error: {e}")
 
-    return Response(
-        content=payload,
-        media_type="video/mp2t",
-        headers={"Cache-Control": "max-age=30", "Access-Control-Allow-Origin": "*"},
-    )
+    if swapped:
+        try:
+            payload = await swap_segment_audio(payload)
+        except Exception as e:
+            # Never the untouched segment as a consolation: hls.js plays those
+            # happily and drops the audio track without a word, which is the
+            # failure this path exists to stop.
+            raise HTTPException(
+                status_code=502,
+                detail=f"Segment {number:05d} audio could not be converted: {e}",
+            ) from None
+        SWAP_CACHE[(session_id, number)] = payload
+        SWAP_CACHE.move_to_end((session_id, number))
+        while len(SWAP_CACHE) > SWAP_CACHE_SIZE:
+            SWAP_CACHE.popitem(last=False)
+
+    return _segment_response(payload)
 
 
 def _vod_session(session_id: str) -> VodSession:

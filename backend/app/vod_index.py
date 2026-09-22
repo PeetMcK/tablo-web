@@ -37,8 +37,14 @@ class VodIndex:
     #: the device's two playlist shapes differ: no `EXT-X-ENDLIST`.
     finished: bool = True
 
-    def playlist(self) -> str:
+    def playlist(self, suffix: str = ".ts") -> str:
         """Our own playlist over the same media.
+
+        `suffix` names the segment this session will answer to. A recording the
+        device encoded itself is H.264 with AC-3 audio, which is served with
+        that audio converted and under a different name - the same instant
+        exists as two different sets of bytes, and one name for both would let
+        a cache serve either.
 
         No `PROGRAM-DATE-TIME`: media time for a recording is elapsed time from
         zero, which is what the scrubber already shows. The live ring needs
@@ -59,7 +65,7 @@ class VodIndex:
             lines.append("#EXT-X-PLAYLIST-TYPE:VOD")
         for i, seg in enumerate(self.segments):
             lines.append(f"#EXTINF:{seg.duration:.3f},")
-            lines.append(f"{i:05d}.ts")
+            lines.append(f"{i:05d}{suffix}")
         if self.finished:
             lines.append("#EXT-X-ENDLIST")
         return "\n".join(lines) + "\n"
