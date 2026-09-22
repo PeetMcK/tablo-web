@@ -7,6 +7,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -3420,20 +3421,6 @@ def test_a_window_that_comes_out_short_still_goes_to_the_encoder(tmp_path, monke
     assert cmds[1][cmds[1].index("-c:v") + 1] != "copy"
 
 
-def test_eta_seconds_matches_what_the_card_shows(tmp_path):
-    """One formula, so the line in the log and the number on screen cannot
-    drift apart: what is left to make, over how fast it is being made."""
-    from app.transcode_cache import eta_seconds
-
-    # 2h21m recording, 23m done, 5.5x: (8472-1380)/5.5 = 1289s.
-    assert eta_seconds(8472, 1380, 5.5) == pytest.approx(1289.5, abs=1)
-    # Nothing honest to say without a rate, or without a length.
-    assert eta_seconds(8472, 0, 0) is None
-    assert eta_seconds(0, 0, 5) is None
-    # Windows overrun their nominal length, so cached can pass duration.
-    assert eta_seconds(8472, 8500, 5.5) == 0
-
-
 # ---------------------------------------------------------------------------
 # Measuring the transfer itself
 #
@@ -3520,6 +3507,12 @@ def test_the_estimate_falls_back_to_content_when_the_size_is_unknown(tmp_path):
 # sixty.
 # ---------------------------------------------------------------------------
 
+def _a_job():
+    """A stand-in for a running encoder: `remaining_seconds` asks only whether
+    one is registered for the window, never what it is."""
+    return cast("asyncio.Task[None]", object())
+
+
 def _finalised(c, oid, w, n_segments, window_seconds=60):
     """A window mid-flight: `n_segments` finalised, listed in its own index."""
     wd = c.window_dir(oid, w)
@@ -3555,12 +3548,14 @@ def test_produced_seconds_does_not_count_past_the_window_it_is_in(tmp_path):
 
 
 def test_the_transcode_estimate_uses_content_it_has_watched_being_made(tmp_path):
-    """Runtime left, over how fast runtime is appearing: 600s recording, 84s
-    produced, and 12s of content appearing every second -> 43s."""
+    """Work left, over how fast content is appearing: a 600s recording with one
+    window done and an encoder 24s into the next leaves 516s to encode, and 84s
+    of content has appeared in the last seven seconds."""
     c = _cache(tmp_path)
     _register(c, oid=66220, duration=600)
     _mark_done(c, 66220, 0)
     _finalised(c, 66220, 1, 4)
+    c._window_jobs[(66220, 1)] = _a_job()
     now = time.monotonic()
     # Ten seconds ago it had produced 84 - 120 = -36... so start from nothing:
     # 84s of content has appeared over the last seven seconds.
@@ -3568,7 +3563,7 @@ def test_the_transcode_estimate_uses_content_it_has_watched_being_made(tmp_path)
 
     eta = c.eta(66220)
 
-    assert eta == pytest.approx((600 - 84) / (84 / 7), rel=0.15)
+    assert eta == pytest.approx((600 - 84) / (84 / 7), rel=0.05)
 
 
 def test_the_average_rate_is_the_whole_run_not_the_last_moment(tmp_path):
@@ -3580,7 +3575,7 @@ def test_the_average_rate_is_the_whole_run_not_the_last_moment(tmp_path):
     _register(c, oid=66220, duration=600)
     _mark_done(c, 66220, 0)
     _finalised(c, 66220, 1, 4)          # 84s of content produced
-    c._fill_started[66220] = time.monotonic() - 12.0
+    c._fill_started[66220] = (time.monotonic() - 12.0, 0.0)
 
     # 84s of output across the twelve seconds this run has been going.
     assert c.average_rate(66220) == pytest.approx(7.0, rel=0.1)
@@ -3591,3 +3586,75 @@ def test_the_average_rate_says_nothing_before_the_run_started(tmp_path):
     _register(c, oid=66220, duration=600)
 
     assert c.average_rate(66220) == 0.0
+
+
+# --- A run measures its own work -------------------------------------------
+
+
+def test_the_average_rate_counts_only_what_this_run_produced(tmp_path):
+    """Resume a copy that is already ten minutes in and the first window to
+    land must not read as ten minutes of work done in twelve seconds. The run
+    is measured against what it found, not against everything on disk."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=3600)
+    for w in range(10):
+        _mark_done(c, 66220, w)              # 600s an earlier run left behind
+    c._fill_started[66220] = (time.monotonic() - 12.0, 600.0)
+    _finalised(c, 66220, 10, 4)              # 24s this run has produced
+
+    assert c.average_rate(66220) == pytest.approx(2.0, rel=0.1)
+
+
+def test_a_run_baselines_the_content_it_found(tmp_path):
+    """Taken once, when the run's first window begins - a later window must not
+    re-baseline and wipe out the work already measured."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=3600)
+    for w in range(10):
+        _mark_done(c, 66220, w)
+
+    c._begin_run(66220)
+    assert c._fill_started[66220][1] == pytest.approx(600.0, abs=0.1)
+
+    _mark_done(c, 66220, 10)
+    c._begin_run(66220)
+    assert c._fill_started[66220][1] == pytest.approx(600.0, abs=0.1)
+
+
+def test_work_left_is_the_windows_still_to_encode(tmp_path):
+    """A window abandoned part-way is encoded again from nothing - the encoder
+    clears the directory before it starts - so its segments are not work that
+    has already been done."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=300)    # five windows
+    _mark_done(c, 66220, 0)
+    _finalised(c, 66220, 1, 5)               # 30s nobody is working on
+
+    assert c.remaining_seconds(66220) == pytest.approx(240.0, abs=0.1)
+
+
+def test_the_window_being_encoded_gets_credit_for_its_segments(tmp_path):
+    """The one window with an encoder on it will not be redone, so what it has
+    finalised is genuinely behind us."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=300)
+    _mark_done(c, 66220, 0)
+    _finalised(c, 66220, 1, 5)
+    c._window_jobs[(66220, 1)] = _a_job()
+
+    assert c.remaining_seconds(66220) == pytest.approx(210.0, abs=0.1)
+
+
+def test_the_estimate_is_the_work_left_not_the_runtime_left(tmp_path):
+    """300s recording, one window done and a live window 30s in, so 210s of
+    encoding remains - at 9s of content a second, that is not (300 - 90) / 9 by
+    accident but by measurement, and it diverges the moment a window is
+    abandoned."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=300)
+    _mark_done(c, 66220, 0)
+    _finalised(c, 66220, 1, 5)               # abandoned: will be redone
+    c._fill_started[66220] = (time.monotonic() - 10.0, 0.0)
+
+    # 90s of content exists, so the run averages 9x; 240s of work is left.
+    assert c.eta(66220) == pytest.approx(240.0 / 9.0, rel=0.1)
