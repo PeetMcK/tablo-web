@@ -107,7 +107,7 @@ export function CaptionOverlay({
   const [shown, setShown] = useState<Shown>(EMPTY);
 
   useEffect(() => {
-    if (!enabled) { setShown(EMPTY); return; }
+    if (!enabled) return;
     const loop = startFrameLoop(() => {
       const captions = source();
       const at = currentTime();
@@ -122,7 +122,11 @@ export function CaptionOverlay({
       setShown((was) => (fingerprint(was) === fingerprint(next) ? was : next));
       return true;
     }, frames);
-    return () => loop.stop();
+    // Cleared here rather than at the top of the next run: nothing renders
+    // while `enabled` is false anyway, and what this is really preventing is
+    // the stale caption flashing back when captions are turned on again - or
+    // when the source changes underneath them.
+    return () => { loop.stop(); setShown(EMPTY); };
   }, [source, enabled, currentTime, frames, compare]);
 
   if (!enabled) return null;

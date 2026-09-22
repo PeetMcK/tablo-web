@@ -3,7 +3,6 @@ import pytest
 
 from app import db, enrich, store, tmdb
 
-
 # --- fake TMDb client ------------------------------------------------------
 
 class _Resp:

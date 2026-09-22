@@ -1450,7 +1450,7 @@ def test_one_recording_answers_in_the_shape_the_player_takes(monkeypatch):
     assert "pinned" in body
 
 
-def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
+def test_the_row_for_a_recording_the_device_does_not_have_is_a_404(monkeypatch):
     from app.routes import recordings as rec
 
     async def snapshot(object_id):
@@ -2221,7 +2221,9 @@ def test_a_copy_kept_after_deletion_still_describes_itself(monkeypatch, tmp_path
     assert d["past"] is True
 
 
-def test_a_recording_the_device_does_not_have_is_a_404(monkeypatch, tmp_path):
+def test_the_detail_for_a_recording_the_device_does_not_have_is_a_404(
+    monkeypatch, tmp_path
+):
     """Gone on the device and never kept offline: nothing to describe."""
     from app.routes import recordings as rec
 
