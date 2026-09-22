@@ -289,9 +289,12 @@ async def probe_interlaced(source: str, *, seek: float | None = None,
     cmd = ["ffprobe", "-v", "error"]
     if whitelist:
         cmd += ["-protocol_whitelist", whitelist]
-    if seek is not None:
-        cmd += ["-ss", f"{seek:.3f}"]
-    cmd += ["-select_streams", "v:0", "-read_intervals", "%+2",
+    # `-ss` is FFmpeg's, not FFprobe's: passing it here fails the whole probe
+    # with "Option not found", which reads as "cannot tell" and quietly left
+    # the deinterlacer on for every recording. FFprobe seeks inside
+    # `-read_intervals` instead - "START%+DURATION".
+    interval = f"{seek:.3f}%+2" if seek is not None else "%+2"
+    cmd += ["-select_streams", "v:0", "-read_intervals", interval,
             "-show_entries", "frame=interlaced_frame",
             "-of", "csv=p=0", source]
     try:
