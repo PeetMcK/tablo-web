@@ -374,6 +374,12 @@ class CacheMeta:
     object_id: int
     path: str
     source_duration: int = 0
+    #: What the device said this recording's video is: "h264" for one the box
+    #: encoded itself, "mpeg2" for a broadcast passed through, None where it
+    #: said something nobody has seen. An H.264 source is copied rather than
+    #: re-encoded - the offline copy is trying to produce exactly what the
+    #: device already holds - and everything else takes the encoder.
+    source_codec: str | None = None
     created_at: str = field(default_factory=_now)
     last_access: str = field(default_factory=_now)
     error: str | None = None
@@ -1149,7 +1155,8 @@ class TranscodeCache:
     # Registration
     # ------------------------------------------------------------------
 
-    async def register(self, object_id: int, path: str, source_duration: int) -> CacheMeta:
+    async def register(self, object_id: int, path: str, source_duration: int,
+                       codec: str | None = None) -> CacheMeta:
         """Make the recording playable: write metadata and start background fill.
 
         Returns as soon as the playlist can be built — which is immediately, since
@@ -1162,10 +1169,12 @@ class TranscodeCache:
                 self._check_disk(estimated)
                 self.make_room(estimated)
                 meta = CacheMeta(
-                    object_id=object_id, path=path, source_duration=source_duration
+                    object_id=object_id, path=path, source_duration=source_duration,
+                    source_codec=codec,
                 )
                 self.write_meta(meta)
-            elif meta.source_duration != source_duration or meta.path != path:
+            elif (meta.source_duration != source_duration or meta.path != path
+                  or (codec is not None and meta.source_codec != codec)):
                 # Update the facts in place. Replacing the record wholesale here
                 # silently cleared `pinned`, which made the recording eligible
                 # for eviction - and an offline copy that had been explicitly
@@ -1177,6 +1186,8 @@ class TranscodeCache:
                 # a large pinned copy fail outright with CacheFull.
                 meta.source_duration = source_duration
                 meta.path = path
+                if codec is not None:
+                    meta.source_codec = codec
                 self.write_meta(meta)
             else:
                 self.touch(object_id)
@@ -1471,6 +1482,13 @@ class TranscodeCache:
               f"@{start:.0f}s len={length:.0f}s "
               f"session={asyncio.get_event_loop().time() - t0:.1f}s", flush=True)
 
+        # A recording the box encoded itself is already H.264 - which is
+        # exactly what this is trying to produce. Copy the picture and change
+        # only the audio: AC-3 is the one part no browser but Safari decodes,
+        # and the one part `build_mp4` cannot put in an MP4.
+        meta = self.read_meta(object_id)
+        copying = (meta.source_codec if meta else None) == "h264"
+
         prof = encoder_profile()
         # Deinterlace ahead of anything encoder-specific: VAAPI's chain ends in
         # hwupload, and frames have to be progressive before they leave for the
@@ -1478,73 +1496,105 @@ class TranscodeCache:
         # Order is load-bearing at both ends: the deinterlace samples real
         # rows so it must see the coded picture, and VAAPI's chain ends in
         # hwupload, after which a software scale has nothing to work on.
-        filters = [*deinterlace_filter(), *square_pixels_filter(), *prof.filters]
-        cmd = [
-            "ffmpeg", "-y",
-            # 'file' is deliberately excluded: input_url is device-controlled.
-            "-protocol_whitelist", "http,https,tcp,tls",
-            *prof.pre_input,
-            # Fast input seek to just before the window. Measured flat (~5s)
-            # regardless of offset.
-            "-ss", f"{seek_to:.3f}",
-            "-i", playlist_url,
-            # Accurate output seek across the pre-roll, so the window begins on
-            # cleanly decoded frames rather than mid-GOP artefacts.
-            *(["-ss", f"{preroll:.3f}"] if preroll > 0 else []),
-            "-t", f"{length:.3f}",
-            # Each window is encoded independently, so without this every window's
-            # output would start at PTS ~0 and the player would snap back to the
-            # beginning on each boundary. Offsetting makes timestamps absolute and
-            # continuous across the whole recording.
-            "-output_ts_offset", str(start),
-            # Pins keyframes to exact segment boundaries so the window's segment
-            # count matches what the published playlist already declared.
-            "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})",
-            *(["-vf", ",".join(filters)] if filters else []),
-            "-c:v", prof.name, *prof.flags,
-            *(["-pix_fmt", prof.pix_fmt] if prof.pix_fmt else []),
-            "-c:a", "aac", "-b:a", "160k", "-ac", "2",
-            "-f", "hls",
-            "-hls_time", str(SEGMENT_SECONDS),
-            "-hls_list_size", "0",
-            # No -hls_playlist_type: FFmpeg defers writing a VOD index until the
-            # encode completes, so readiness could not be detected until the
-            # whole window was done (58s vs 9s measured). This index is only
-            # used to tell when a segment is finalized - playback uses the
-            # playlist we synthesise.
-            "-start_number", "0",
-            "-hls_segment_filename", "seg_%02d.ts",
-            "-loglevel", "warning",
-            "index.m3u8",
-        ]
+        def build_cmd(copying: bool) -> list[str]:
+            # Nothing to filter when nothing is being decoded - and a copied
+            # source is progressive with square pixels already, so there is
+            # nothing a filter would fix.
+            filters = [] if copying else [
+                *deinterlace_filter(), *square_pixels_filter(), *prof.filters]
+            return [
+                "ffmpeg", "-y",
+                # 'file' is deliberately excluded: input_url is device-controlled.
+                "-protocol_whitelist", "http,https,tcp,tls",
+                *([] if copying else prof.pre_input),
+                # Fast input seek to just before the window. Measured flat (~5s)
+                # regardless of offset.
+                "-ss", f"{seek_to:.3f}",
+                "-i", playlist_url,
+                # Accurate output seek across the pre-roll, so the window begins on
+                # cleanly decoded frames rather than mid-GOP artefacts.
+                *(["-ss", f"{preroll:.3f}"] if preroll > 0 else []),
+                "-t", f"{length:.3f}",
+                # Each window is encoded independently, so without this every window's
+                # output would start at PTS ~0 and the player would snap back to the
+                # beginning on each boundary. Offsetting makes timestamps absolute and
+                # continuous across the whole recording.
+                "-output_ts_offset", str(start),
+                # Pins keyframes to exact segment boundaries so the window's segment
+                # count matches what the published playlist already declared.
+                # FFmpeg cannot place keyframes in a stream it is copying, so a
+                # copied window is checked against that count afterwards instead.
+                *([] if copying else [
+                    "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"]),
+                *(["-vf", ",".join(filters)] if filters else []),
+                *(["-c:v", "copy"] if copying else ["-c:v", prof.name, *prof.flags]),
+                *([] if copying or not prof.pix_fmt else ["-pix_fmt", prof.pix_fmt]),
+                "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+                "-f", "hls",
+                "-hls_time", str(SEGMENT_SECONDS),
+                "-hls_list_size", "0",
+                # No -hls_playlist_type: FFmpeg defers writing a VOD index until the
+                # encode completes, so readiness could not be detected until the
+                # whole window was done (58s vs 9s measured). This index is only
+                # used to tell when a segment is finalized - playback uses the
+                # playlist we synthesise.
+                "-start_number", "0",
+                "-hls_segment_filename", "seg_%02d.ts",
+                "-loglevel", "warning",
+                "index.m3u8",
+            ]
 
-        log = open(wd / "ffmpeg.log", "w")  # noqa: ASYNC230, SIM115
-        log.write(f"window {w}  start={start}s  len={length:.3f}s\n{' '.join(cmd)}\n\n")
-        log.flush()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=str(wd), stdout=log, stderr=asyncio.subprocess.STDOUT
-            )
-            self._procs[(object_id, w)] = (proc, on_demand)
-            # A background window started before the seek arrived must also yield
-            # - unless it is the window being waited on. Prefetch and a viewer
-            # race for the same window, and if prefetch wins by a fraction the
-            # request attaches to this job while `on_demand` stays False. Going
-            # by that flag alone made the window suspend itself the moment it
-            # started, so it produced nothing, the wait timed out at 25s, and a
-            # cold open took 53s and two 503s to begin playing.
-            if self._ondemand and not on_demand and (object_id, w) not in self._ondemand:
-                try:
-                    proc.send_signal(signal.SIGSTOP)
-                except Exception:
-                    pass
-            rc = await proc.wait()
-        finally:
-            self._procs.pop((object_id, w), None)
-            log.close()
+        async def run(cmd: list[str]) -> int:
+            log = open(wd / "ffmpeg.log", "a")  # noqa: ASYNC230, SIM115
+            log.write(
+                f"window {w}  start={start}s  len={length:.3f}s\n{' '.join(cmd)}\n\n")
+            log.flush()
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, cwd=str(wd), stdout=log, stderr=asyncio.subprocess.STDOUT
+                )
+                self._procs[(object_id, w)] = (proc, on_demand)
+                # A background window started before the seek arrived must also
+                # yield - unless it is the window being waited on. Prefetch and
+                # a viewer race for the same window, and if prefetch wins by a
+                # fraction the request attaches to this job while `on_demand`
+                # stays False. Going by that flag alone made the window suspend
+                # itself the moment it started, so it produced nothing, the wait
+                # timed out at 25s, and a cold open took 53s and two 503s to
+                # begin playing.
+                if (self._ondemand and not on_demand
+                        and (object_id, w) not in self._ondemand):
+                    try:
+                        proc.send_signal(signal.SIGSTOP)
+                    except Exception:
+                        pass
+                return await proc.wait()
+            finally:
+                self._procs.pop((object_id, w), None)
+                log.close()
+
+        rc = await run(build_cmd(copying))
+        expected = segments_in_window(duration, w)
+
+        # A copied window has to come out the shape the playlist already
+        # published: `build_playlist` names `expected` files before anything is
+        # made, so one fewer leaves a URI pointing at nothing and one more hides
+        # that content from playback. FFmpeg cannot place keyframes in a stream
+        # it is copying, so where the source's own keyframes do not fall on the
+        # boundaries, this window goes back through the encoder - which can put
+        # them exactly where they are needed. Measured on the one H.264
+        # recording here, keyframes are 1.001s apart and this never fires.
+        if copying and rc == 0 and len(list(wd.glob("seg_*.ts"))) != expected:
+            made = len(list(wd.glob("seg_*.ts")))
+            print(f"[cache] {object_id} w{w} copy made {made} segments, "
+                  f"playlist says {expected} — re-encoding", flush=True)
+            for f in wd.glob("seg_*.ts"):
+                f.unlink()
+            (wd / "index.m3u8").unlink(missing_ok=True)
+            copying = False
+            rc = await run(build_cmd(False))
 
         elapsed = asyncio.get_event_loop().time() - t0
-        expected = segments_in_window(duration, w)
         produced = len(list(wd.glob("seg_*.ts")))
         if rc != 0 or produced == 0:
             tail = ""

@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -363,6 +363,18 @@ CREATE TABLE IF NOT EXISTS show_genres (
 """
 
 
+# Version 11 records what an offline copy is made of.
+#
+# A recording the device encoded itself is H.264 already, and its windows are
+# copied rather than re-encoded. The window job runs long after registration and
+# cannot ask the device what it is copying, so the answer is stored beside the
+# rest of the entry. Nullable: every row that predates this encodes, which is
+# what it was already doing.
+_SCHEMA_V11 = """
+ALTER TABLE recording ADD COLUMN source_codec TEXT;
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -457,6 +469,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V9)
             if version < 10:
                 conn.executescript(_SCHEMA_V10)
+            if version < 11:
+                conn.executescript(_SCHEMA_V11)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

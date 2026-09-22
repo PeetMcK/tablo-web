@@ -3018,3 +3018,116 @@ def test_a_caller_that_knows_better_can_ask_for_the_swap(monkeypatch):
         assert stream_routes.vod_sessions[body["session_id"]].swap_audio is True
     finally:
         stream_routes.vod_sessions.pop(body["session_id"], None)
+
+
+# ---------------------------------------------------------------------------
+# Copying what the device already encoded
+#
+# A recording the box encoded itself is H.264 already, which is exactly what
+# the offline copy is trying to produce. Decoding it to re-encode it spends a
+# core per window and loses a generation to arrive where it started.
+# ---------------------------------------------------------------------------
+
+def test_registering_remembers_the_source_codec(tmp_path):
+    """The window job cannot ask the device what it is copying: the only moment
+    anyone holds the recording's projection is registration."""
+    c = _cache(tmp_path, budget=10**12)
+    asyncio.run(c.register(94904, "/recordings/sports/events/94904", GAME, codec="h264"))
+
+    assert c.read_meta(94904).source_codec == "h264"
+
+
+def test_re_registering_updates_the_codec_without_clearing_the_pin(tmp_path):
+    """Re-registration is how a kept copy is resumed, and it has silently
+    cleared `pinned` before now - two offline copies were evicted that way."""
+    c = _cache(tmp_path, budget=10**12)
+    asyncio.run(c.register(94904, "/recordings/sports/events/94904", GAME))
+    c.set_pinned(94904, True)
+
+    asyncio.run(c.register(94904, "/recordings/sports/events/94904", GAME, codec="h264"))
+
+    meta = c.read_meta(94904)
+    assert meta.source_codec == "h264"
+    assert meta.pinned is True
+
+
+def _run_one_window(tmp_path, monkeypatch, codec, segments=None):
+    """Run window 7 with FFmpeg stubbed, and return the argv(s) it was given."""
+    async def fake_session(path):
+        return {"playlist_url": "http://device/stream/pl.m3u8?tok"}
+
+    c = TranscodeCache(session_starter=fake_session, root=tmp_path, budget_bytes=10**12)
+    asyncio.run(c.register(80888, "/recordings/x/80888", GAME, codec=codec))
+
+    real_exec = asyncio.create_subprocess_exec
+    n_segments = segments if segments is not None else segments_in_window(GAME, 7)
+    cmds = []
+
+    async def fake_exec(*cmd, cwd=None, **kw):
+        cmds.append(list(cmd))
+        from pathlib import Path as P
+        for f in P(cwd).glob("seg_*.ts"):
+            f.unlink()
+        for n in range(n_segments):
+            (P(cwd) / f"seg_{n:02d}.ts").write_bytes(b"x")
+
+        class P0:
+            returncode = 0
+            async def wait(self):
+                return 0
+        return P0()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    try:
+        asyncio.run(c.ensure_window(80888, 7, "/recordings/x/80888", GAME))
+    finally:
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", real_exec)
+    return cmds[0] if len(cmds) == 1 else cmds
+
+
+def test_an_h264_window_copies_the_picture(tmp_path, monkeypatch):
+    """The box already encoded this. Decoding it to re-encode it spends a core
+    per window and loses a generation to arrive at what we started with."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="h264")
+
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    # Nothing is being decoded, so there is nothing to filter - and this source
+    # is progressive 720p with square pixels already.
+    assert "-vf" not in cmd
+    # FFmpeg cannot place keyframes in a stream it is copying.
+    assert "-force_key_frames" not in cmd
+    # The audio still has to change: no browser but Safari decodes AC-3, and
+    # `build_mp4` cannot put it in an MP4.
+    assert cmd[cmd.index("-c:a") + 1] == "aac"
+
+
+def test_an_mpeg2_window_still_encodes(tmp_path, monkeypatch):
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="mpeg2")
+
+    assert cmd[cmd.index("-c:v") + 1] != "copy"
+    assert "-force_key_frames" in cmd
+
+
+def test_a_window_with_no_codec_still_encodes(tmp_path, monkeypatch):
+    """Unknown takes the path all but one recording on this device needs."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec=None)
+
+    assert cmd[cmd.index("-c:v") + 1] != "copy"
+
+
+def test_a_copied_window_that_comes_out_the_wrong_shape_is_re_encoded(
+        tmp_path, monkeypatch):
+    """`build_playlist` publishes the segment names before anything is made, so
+    the files have to be the files it named: one fewer leaves the playlist
+    pointing at a 404, one more hides that content from playback entirely.
+    Copying cannot force keyframes, so the shape is checked rather than
+    assumed, and a source whose keyframes fall elsewhere degrades to exactly
+    what it does today."""
+    expected = segments_in_window(GAME, 7)
+    cmds = _run_one_window(tmp_path, monkeypatch, codec="h264",
+                           segments=expected - 1)
+
+    assert len(cmds) == 2
+    assert cmds[0][cmds[0].index("-c:v") + 1] == "copy"
+    assert cmds[1][cmds[1].index("-c:v") + 1] != "copy"
+    assert "-force_key_frames" in cmds[1]
