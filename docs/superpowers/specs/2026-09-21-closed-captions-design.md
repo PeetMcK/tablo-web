@@ -244,11 +244,34 @@ arriving end to end.
 ## Out of scope
 
 - **CEA-708.** It is present in the stream and offers real positioning, fonts
-  and multiple services, but there is no reusable permissively-licensed JS
-  decoder to vendor — it means building a DTVCC packet reassembler and a
-  window/pen state machine from the spec. The module boundary above lets a 708
-  decoder be swapped in behind `CaptionTrack` later without touching
-  extraction, transport or rendering.
+  and multiple services.
+
+  An earlier draft of this document said no reusable permissively-licensed JS
+  decoder existed and that 708 meant writing a DTVCC packet reassembler and a
+  window/pen state machine from the spec. **That was wrong**, and it was
+  asserted without a survey — one package was checked, and the absence was
+  generalised from it. Two exist, both Apache-2.0:
+
+  | Library | 708 sources | Shape |
+  |---|---|---|
+  | `mux.js` 6.3.0 | `Cea708Window`, `Cea708Service`, DTVCC handling in `m2ts/caption-stream.js` (~1900 lines with the 608 path) | Plain ES modules, two small internal deps |
+  | `shaka-player` 5.2.11 | `lib/cea/dtvcc_packet_builder.js`, `cea708_service.js`, `cea708_window.js`, `cea_utils.js` (~1800 lines) | Closure (`goog.provide`/`goog.require`), depends on Shaka's `text.Cue` and `CueRegion` |
+
+  `mux.js` is the better vendoring target: it is the same copy-and-adapt
+  exercise `cea608.ts` already is, where Shaka's would need a Closure-to-ESM
+  conversion and a mapping of its cue types onto ours.
+
+  So the cost of 708 is not the decoder. It is the renderer. 708 earns its
+  keep through placement, pen styling and simultaneous services, and
+  `CaptionOverlay` is one bottom-centred box — decoding 708 and flattening it
+  into that box buys close to nothing over 608, because broadcasters carry the
+  same words in both. Getting the benefit means giving the overlay a window
+  model: anchor points, row and column placement, per-window styling.
+
+  The decision to ship 608 first still stands on those grounds. The module
+  boundary lets a 708 decoder sit behind `CaptionTrack` without touching
+  extraction or transport, and `extract.ts` already finds the DTVCC pairs —
+  it discards them at `cc_type > 1`, which is one line to change.
 - **Caption appearance settings** — size, font, colour, opacity.
 - **Captions in picture-in-picture.**
 - **The H.264 transcode path.** Two separate defects live there, both to be
