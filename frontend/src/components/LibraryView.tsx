@@ -872,6 +872,17 @@ export function LibraryView() {
                       onConfirm: () => keep.mutate({ id: rec.object_id, on: false }),
                     });
                   }}
+                  // The card's own two toggles, called the card's own way:
+                  // un-marking goes through `position: 1`, which clears
+                  // watched without the device dropping the recording back to
+                  // New. See the mutations above.
+                  onWatched={(on) => {
+                    if (on) markWatched.mutate(rec.object_id);
+                    else markUnwatched.mutate(rec.object_id);
+                  }}
+                  onProtect={(on) => setProtect.mutate({
+                    id: rec.object_id, protectedFlag: on,
+                  })}
                   onDeleteCache={() => setConfirmation({
                     title: `Delete the cached video of "${rec.title ?? "this recording"}"?`,
                     body: rec.offline_only
