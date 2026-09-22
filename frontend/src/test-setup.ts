@@ -57,3 +57,19 @@ if (typeof globalThis.localStorage === "undefined") {
     }
   }
 }
+
+
+// Site data starts empty for every test.
+//
+// The Library's filter box now outlives a reload, which means it outlives a
+// test too: one that types "kratts" would leave the next one opening a
+// library filtered to it, and the failure lands nowhere near the cause.
+import { beforeEach } from "vitest";
+
+beforeEach(() => {
+  try {
+    localStorage.clear();
+  } catch {
+    // A test that deliberately breaks storage has already made its point.
+  }
+});

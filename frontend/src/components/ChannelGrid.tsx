@@ -590,10 +590,29 @@ export function ChannelGrid({ onLogout }: Props) {
                   if (searchExpanded) collapseSearch(); else closeSearch();
                 }}
                 placeholder="Search programs, channels..."
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                aria-label="Search programs, channels"
+                className={`w-full pl-10 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
                            text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
-                           focus:bg-fill transition shadow-inner"
+                           focus:bg-fill transition shadow-inner ${filter ? "pr-10" : "pr-4"}`}
               />
+              {/* Same reason as the Library's filter: Escape is the keyboard's
+                  way out and there was nothing for a pointer. `onMouseDown` is
+                  prevented because the field's own `onBlur` closes the
+                  dropdown, which would otherwise swallow this click. */}
+              {filter && (
+                <button
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => { setFilter(""); searchInputRef.current?.focus(); }}
+                  title="Clear search"
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
+                             flex items-center justify-center text-fg-muted
+                             hover:text-fg hover:bg-fill transition
+                             focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  <X className="w-4 h-4" aria-hidden />
+                </button>
+              )}
               {/* Not on the search tab: the results page below is the same
                   query answered at fifty rows a group, so floating a
                   three-row summary of it over the top says less and hides
