@@ -81,6 +81,7 @@ async def test_classify_no_match_is_none():
 @pytest.mark.asyncio
 async def test_classify_disabled_without_key(monkeypatch):
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
+    monkeypatch.setattr(tmdb, "_KEY_FILE", "/nonexistent/themoviedb")
     v = await tmdb.classify_title("Anything", client=_Client([MOVIE]))
     assert v["media_type"] == "none"
 
@@ -156,4 +157,5 @@ async def test_enrich_tags_movies(monkeypatch):
 @pytest.mark.asyncio
 async def test_enrich_skips_without_key(monkeypatch):
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
+    monkeypatch.setattr(tmdb, "_KEY_FILE", "/nonexistent/themoviedb")
     assert await enrich.enrich_untagged() == {"skipped": "no api key"}

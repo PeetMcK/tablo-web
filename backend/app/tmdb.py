@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 import httpx
 
@@ -21,9 +22,28 @@ logger = logging.getLogger(__name__)
 _BASE = "https://api.themoviedb.org/3"
 _genre_cache: dict[int, str] | None = None
 
+# Where the key may live, in order: the env var, an explicit file, then a
+# conventional dotfile. A file keeps the secret out of the process listing and
+# shell history; only its first line is read.
+_KEY_FILE = os.environ.get("TMDB_API_KEY_FILE") or "~/.config/themoviedb"
+
 
 def api_key() -> str | None:
-    return os.environ.get("TMDB_API_KEY") or None
+    env = os.environ.get("TMDB_API_KEY")
+    if env:
+        return env.strip() or None
+    try:
+        text = Path(_KEY_FILE).expanduser().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Accept a bare key or a `NAME=value` line (e.g. `APIKey=…`).
+        value = line.split("=", 1)[1] if "=" in line else line
+        return value.strip().strip('"').strip("'") or None
+    return None
 
 
 def enabled() -> bool:
