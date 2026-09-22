@@ -1396,12 +1396,29 @@ export function LibraryView() {
                           {formatDuration(rec.cached_seconds)} of {formatDuration(rec.duration)}
                         </div>
                         <div>
-                          {rec.rate?.mbps > 0 ? (
+                          {rec.rate?.mbps > 0 || (rec.rate?.average ?? 0) > 0 ? (
                             <>
-                              <span className="text-success" title={`${(rec.rate.mbps / 8).toFixed(1)} MB/s`}>
-                                {rec.rate.mbps.toFixed(1)} Mb/s
-                              </span>
-                              {rec.rate.realtime > 0 && ` · ${rec.rate.realtime.toFixed(1)}×`}
+                              {/* The run's average leads: megabits describe the
+                                  picture rather than the work, and the last
+                                  half minute of anything wanders. */}
+                              {(rec.rate.average ?? 0) > 0 && (
+                                <span
+                                  className="text-success"
+                                  title="Encoding speed, average for this download"
+                                >
+                                  {rec.rate.average!.toFixed(1)}×
+                                </span>
+                              )}
+                              {rec.rate.realtime > 0 && (
+                                (rec.rate.average ?? 0) > 0
+                                  ? ` · ${rec.rate.realtime.toFixed(1)}× now`
+                                  : ` ${rec.rate.realtime.toFixed(1)}×`
+                              )}
+                              {rec.rate.mbps > 0 && (
+                                <span title={`${(rec.rate.mbps / 8).toFixed(1)} MB/s`}>
+                                  {` · ${rec.rate.mbps.toFixed(1)} Mb/s`}
+                                </span>
+                              )}
                               {/* What the other two numbers are for: when this
                                   stops needing to be watched. */}
                               {(() => {

@@ -291,6 +291,27 @@ describe("LibraryView", () => {
     expect(await screen.findByText(/37m left/)).toBeInTheDocument();
   });
 
+  it("leads with the average encode rate, not the bitrate", async () => {
+    // Mb/s describes the picture, not the work: a frozen frame encodes in no
+    // time and produces almost nothing, so highlighting it would call a stall
+    // a slowdown and a sprint a speed-up. The run's average is what answers
+    // "how long will this take"; the moment's rate and the bitrate sit beside
+    // it as detail.
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [{
+        ...REC, cache_state: "partial", cache_progress: 0.06, pinned: true,
+        cached_seconds: 660, eta_seconds: 1800,
+        rate: { mbps: 35.6, realtime: 6.7, average: 5.9 },
+      }],
+    }));
+    renderLibrary();
+
+    const headline = await screen.findByTitle(/average for this download/i);
+    expect(headline).toHaveTextContent("5.9×");
+    expect(screen.getByText(/6.7× now/)).toBeInTheDocument();
+    expect(screen.getByText(/35.6 Mb\/s/)).toBeInTheDocument();
+  });
+
   it("prefers the server's estimate to its own arithmetic", async () => {
     // For a copied recording the server knows the finished size and counts
     // the bytes arriving, so its answer is arithmetic where this side can

@@ -3569,3 +3569,25 @@ def test_the_transcode_estimate_uses_content_it_has_watched_being_made(tmp_path)
     eta = c.eta(66220)
 
     assert eta == pytest.approx((600 - 84) / (84 / 7), rel=0.15)
+
+
+def test_the_average_rate_is_the_whole_run_not_the_last_moment(tmp_path):
+    """Mb/s is a property of the picture, not of the work: a frozen frame
+    encodes quickly and produces almost nothing. The encode rate is the honest
+    headline, and an average of it is steadier than the last thirty seconds -
+    which is what a person reads when they want to know how long this takes."""
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=600)
+    _mark_done(c, 66220, 0)
+    _finalised(c, 66220, 1, 4)          # 84s of content produced
+    c._fill_started[66220] = time.monotonic() - 12.0
+
+    # 84s of output across the twelve seconds this run has been going.
+    assert c.average_rate(66220) == pytest.approx(7.0, rel=0.1)
+
+
+def test_the_average_rate_says_nothing_before_the_run_started(tmp_path):
+    c = _cache(tmp_path)
+    _register(c, oid=66220, duration=600)
+
+    assert c.average_rate(66220) == 0.0
