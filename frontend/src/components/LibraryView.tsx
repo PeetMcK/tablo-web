@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Funnel, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
+import { AlertTriangle, Play, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Funnel, ImageOff, Loader2, Lock, LockOpen, MonitorDown, Pause, Radio, Trash2, X } from "lucide-react";
 import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { OptionMenu } from "./OptionMenu";
@@ -1493,7 +1493,7 @@ export function LibraryView() {
                                      enabled:hover:scale-110 enabled:active:scale-95"
                         >
                           {rec.paused
-                            ? <Download className="w-4 h-4" aria-hidden />
+                            ? <MonitorDown className="w-4 h-4" aria-hidden />
                             : <Pause className="w-4 h-4" fill="currentColor" aria-hidden />}
                         </button>
                       )}
@@ -1563,7 +1563,7 @@ export function LibraryView() {
                           ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
                           : rec.pinned
                             ? <CheckCircle2 className="w-4 h-4" aria-hidden />
-                            : <Download className="w-4 h-4" aria-hidden />}
+                            : <MonitorDown className="w-4 h-4" aria-hidden />}
                       </button>
                       <button
                         // Says how it opens as well as what: the mode is
