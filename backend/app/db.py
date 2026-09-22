@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -329,6 +329,23 @@ ALTER TABLE recording_art ADD COLUMN cover_stored_at TEXT;
 """
 
 
+# TMDb title classifications, cached so each distinct title is looked up once
+# rather than per airing per guide refresh (and so few titles leave the
+# network). `media_type` is "movie" or "none" — a negative is cached too, with
+# a shorter TTL applied by the caller, so an unmatched title is not re-queried
+# every cycle. `title_key` is the normalised title.
+_SCHEMA_V9 = """
+CREATE TABLE IF NOT EXISTS title_lookup (
+    title_key   TEXT PRIMARY KEY,
+    media_type  TEXT,
+    year        INTEGER,
+    genres      TEXT,
+    overview    TEXT,
+    checked_at  REAL NOT NULL
+);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -419,6 +436,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V7)
             if version < 8:
                 conn.executescript(_SCHEMA_V8)
+            if version < 9:
+                conn.executescript(_SCHEMA_V9)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True

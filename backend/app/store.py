@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1270,6 +1272,75 @@ def guide_age_seconds(now: datetime | None = None) -> float | None:
 # change as the store moves server-side.
 MIN_RESUME = 30.0
 END_MARGIN = 60.0
+
+
+# ---------------------------------------------------------------------------
+# Title lookup — the TMDb movie-enrichment cache
+# ---------------------------------------------------------------------------
+
+def normalize_title(title: str) -> str:
+    """A comparison key for a programme title: lowercase, no year suffix, no
+    punctuation, collapsed spaces. Used both to key the cache and to compare
+    against a TMDb result's title."""
+    t = (title or "").strip().lower()
+    t = re.sub(r"\s*\(\d{4}\)\s*$", "", t)          # drop a trailing (2010)
+    t = re.sub(r"[^a-z0-9]+", " ", t)               # punctuation -> space
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def get_title_verdict(title_key: str) -> dict | None:
+    row = db.query_one(
+        "SELECT media_type, year, genres, overview, checked_at "
+        "FROM title_lookup WHERE title_key = ?", (title_key,)
+    )
+    if not row:
+        return None
+    return {
+        "media_type": row["media_type"],
+        "year": row["year"],
+        "genres": json.loads(row["genres"]) if row["genres"] else [],
+        "overview": row["overview"],
+        "checked_at": row["checked_at"],
+    }
+
+
+def save_title_verdict(title_key: str, verdict: dict) -> None:
+    db.execute(
+        "INSERT INTO title_lookup(title_key, media_type, year, genres, overview, "
+        "    checked_at) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(title_key) DO UPDATE SET media_type=excluded.media_type, "
+        "    year=excluded.year, genres=excluded.genres, "
+        "    overview=excluded.overview, checked_at=excluded.checked_at",
+        (title_key, verdict.get("media_type") or "none", verdict.get("year"),
+         json.dumps(verdict.get("genres") or []), verdict.get("overview"),
+         time.time()),
+    )
+
+
+def untagged_titles(limit: int = 100) -> list[str]:
+    """Distinct guide titles that could be a movie but carry no type: no `kind`,
+    no episode marker, no series. These are what the grid shows as a live event
+    for want of anything better."""
+    rows = db.query(
+        "SELECT DISTINCT title FROM guide_airing "
+        "WHERE (kind IS NULL OR kind = '') AND episode_title IS NULL "
+        "  AND series_path IS NULL AND title IS NOT NULL AND title != '' "
+        "LIMIT ?", (limit,)
+    )
+    return [r["title"] for r in rows]
+
+
+def apply_movie_verdict(title: str, genres: list[str], overview: str | None) -> int:
+    """Tag every untagged airing of `title` as a movie, filling genres and, only
+    where none exists, the overview. Leaves already-typed rows alone."""
+    with db.write() as conn:
+        cur = conn.execute(
+            "UPDATE guide_airing SET kind = 'movieAiring', genres = ?, "
+            "    description = COALESCE(NULLIF(description, ''), ?) "
+            "WHERE title = ? AND (kind IS NULL OR kind = '')",
+            (json.dumps(genres or []), overview, title),
+        )
+        return cur.rowcount
 
 
 def save_resume(kind: str, ref: str, position: float, duration: float) -> None:

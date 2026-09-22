@@ -14,7 +14,7 @@ import httpx
 from tablo_api import TabloAuth, TabloClient
 from tablo_api.models import TabloChannel, TabloDevice, TabloStream
 
-from . import store
+from . import enrich, store
 
 # Default suits the container, where /data is a volume. Running the backend
 # natively on macOS - the only way to reach VideoToolbox - needs it elsewhere.
@@ -1806,6 +1806,7 @@ class AppState:
         ]
         try:
             await _run_sync(store.save_guide, rows)
+            enrich.schedule()
         except Exception as e:
             print(f"[db] could not store guide: {e}", flush=True)
         return rows
@@ -1848,6 +1849,7 @@ class AppState:
             for c in channels
         ]
         await _run_sync(store.save_guide, rows)
+        enrich.schedule()
 
         after = {c.identifier for c in channels}
         return {
@@ -1955,6 +1957,7 @@ class AppState:
         # Stored after streaming so the client is never kept waiting on a write.
         try:
             await _run_sync(store.save_guide, rows)
+            enrich.schedule()
         except Exception as e:
             print(f"[db] could not store guide: {e}", flush=True)
 

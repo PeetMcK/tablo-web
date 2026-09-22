@@ -45,6 +45,12 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 export TRANSCODE_VIDEO_ENCODER="${TRANSCODE_VIDEO_ENCODER:-h264_videotoolbox}"
+
+# Optional: a TMDb (themoviedb.org) API key enables the movie enricher, which
+# looks up untyped guide airings by title and tags the movies so the grid stops
+# labelling them "Live TV Event". Only titles are sent; without the key the
+# enricher is simply off. Set it in your environment (do not commit it):
+#   export TMDB_API_KEY="…"
 # Higher than the CPU default, because on hardware the bottleneck moves.
 #
 # Measured per 60s window: fetching and remuxing from the device alone takes
