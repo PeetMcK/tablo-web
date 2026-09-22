@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 _BASE = "https://api.themoviedb.org/3"
 _genre_cache: dict[int, str] | None = None
 
+# When a title matches both a movie and a show, tag the movie only if it clearly
+# dominates: at least this popular, and at least this many times the show's.
+_MIN_MOVIE_POP = 5.0
+_DOMINANCE = 2.0
+
 # Where the key may live, in order: the env var, an explicit file, then a
 # conventional dotfile. A file keeps the secret out of the process listing and
 # shell history; only its first line is read.
@@ -97,8 +102,18 @@ async def classify_title(title: str, year: int | None = None,
                   and store.normalize_title(r.get("title") or "") == qkey]
         tv = [r for r in results if r.get("media_type") == "tv"
               and store.normalize_title(r.get("name") or "") == qkey]
-        if not movies or tv:
+        if not movies:
             return _none()
+        # A title can match both a movie and a show (e.g. "Labyrinth" — the 1986
+        # film and later miniseries). The enricher only ever sees *untyped*
+        # airings; a series broadcast arrives tagged with episode/series info
+        # and is excluded upstream, so a clearly-dominant movie here is the film.
+        # Tag it only when the movie clearly outweighs the show, else leave it.
+        if tv:
+            mv = max((m.get("popularity") or 0) for m in movies)
+            tvp = max((t.get("popularity") or 0) for t in tv)
+            if not (mv >= _MIN_MOVIE_POP and mv >= _DOMINANCE * tvp):
+                return _none()
         # Prefer a year match when we have one, else the most popular movie.
         def score(m: dict) -> tuple:
             my = (m.get("release_date") or "")[:4]

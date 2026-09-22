@@ -45,8 +45,13 @@ def _reset(monkeypatch):
 MOVIE = {"media_type": "movie", "title": "The Next Three Days",
          "release_date": "2010-11-19", "genre_ids": [53, 80], "popularity": 20,
          "overview": "A man plans to break his wife out of prison."}
+# A show of the same name that is *competitive* in popularity — the movie does
+# not clearly dominate, so the pair stays ambiguous.
 TV = {"media_type": "tv", "name": "The Next Three Days",
-      "first_air_date": "2019-01-01", "genre_ids": [], "popularity": 5}
+      "first_air_date": "2019-01-01", "genre_ids": [], "popularity": 15}
+# A show the dominant movie clearly outweighs (Labyrinth-like: 20 vs 5).
+TV_MINOR = {"media_type": "tv", "name": "The Next Three Days",
+            "first_air_date": "2015-01-01", "genre_ids": [], "popularity": 5}
 
 
 # --- classify_title --------------------------------------------------------
@@ -61,9 +66,16 @@ async def test_classify_movie_match():
 
 
 @pytest.mark.asyncio
-async def test_classify_ambiguous_movie_and_tv_is_none():
+async def test_classify_ambiguous_when_show_is_competitive():
     v = await tmdb.classify_title("The Next Three Days", client=_Client([MOVIE, TV]))
-    assert v["media_type"] == "none"
+    assert v["media_type"] == "none"   # movie 20 < 2 * show 15
+
+
+@pytest.mark.asyncio
+async def test_classify_dominant_movie_beats_minor_show():
+    v = await tmdb.classify_title("The Next Three Days",
+                                  client=_Client([MOVIE, TV_MINOR]))
+    assert v["media_type"] == "movie"  # 20 >= 5 and 20 >= 2 * 5
 
 
 @pytest.mark.asyncio
