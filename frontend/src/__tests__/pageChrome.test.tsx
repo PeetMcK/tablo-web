@@ -137,6 +137,11 @@ describe("the topbar search at phone width", () => {
 
   beforeEach(() => {
     window.history.replaceState(null, "", "#/live");
+    // The box has two jobs now and opens on the filter. This describe is about
+    // the search's chrome — its icon, its collapse, the room it takes — so it
+    // asks for the search explicitly; the filter's half of the same field is
+    // covered in `topbarMode.test.tsx`.
+    localStorage.setItem("tablo:topbar.mode", "search");
     mockShell();
   });
   afterEach(() => { restoreMedia(); vi.restoreAllMocks(); });
@@ -258,6 +263,10 @@ describe("the topbar search at phone width", () => {
 });
 
 describe("emptying the search box", () => {
+  // Search mode for the same reason as the describe above: this is the
+  // search's clear button, and the box opens on the filter.
+  beforeEach(() => localStorage.setItem("tablo:topbar.mode", "search"));
+
   it("offers a button to clear it, and keeps the caret in the field", async () => {
     // Escape is the keyboard's way out; a pointer had nothing to aim at.
     mockShell();
