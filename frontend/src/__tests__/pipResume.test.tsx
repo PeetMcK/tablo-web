@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  describe, it, expect, vi, beforeEach, afterEach, onTestFinished,
+} from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -101,7 +103,7 @@ describe("popping out leaves the playing element alone", () => {
     } as unknown as Window;
     const requestWindow = vi.fn().mockResolvedValue(w);
     (window as unknown as Record<string, unknown>).documentPictureInPicture = { requestWindow };
-    return { pipDoc, close: w.close as ReturnType<typeof vi.fn> };
+    return { pipDoc, close: w.close as ReturnType<typeof vi.fn>, requestWindow };
   }
 
   function renderPlayer(onClose = () => {}) {
@@ -160,6 +162,36 @@ describe("popping out leaves the playing element alone", () => {
     expect(pipDoc.body.contains(video)).toBe(false);
     // Which leaves the pop-out showing a mirror rather than the original.
     expect(pipDoc.body.querySelector("video")).not.toBe(video);
+  });
+
+  it("asks for a window the shape of the picture", async () => {
+    // Asked with no size, the browser reopens the box it remembers — which is
+    // the shape of whatever played last, and letterboxes everything else.
+    //
+    // `videoWidth` lives on HTMLVideoElement rather than HTMLMediaElement, and
+    // jsdom's own pair answers zero; put back by hand because a defined
+    // property is not a spy and `restoreAllMocks` leaves it where it is.
+    const original = {
+      width: Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoWidth")!,
+      height: Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoHeight")!,
+    };
+    Object.defineProperty(HTMLVideoElement.prototype, "videoWidth",
+      { configurable: true, get: () => 1440 });
+    Object.defineProperty(HTMLVideoElement.prototype, "videoHeight",
+      { configurable: true, get: () => 1080 });
+    onTestFinished(() => {
+      Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", original.width);
+      Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", original.height);
+    });
+    renderPlayer();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    const { requestWindow } = fakePipWindow();
+
+    fireEvent.click(screen.getByTitle("Picture in picture (P)"));
+    await waitFor(() => expect(requestWindow).toHaveBeenCalled());
+
+    const box = requestWindow.mock.calls[0][0] as { width: number; height: number };
+    expect(box.width / box.height).toBeCloseTo(4 / 3, 2);
   });
 
   it("lets Escape dismiss the pop-out rather than the player", async () => {

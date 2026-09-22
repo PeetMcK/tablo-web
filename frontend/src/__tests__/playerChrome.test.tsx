@@ -229,7 +229,9 @@ describe("the player's chrome", () => {
     // The original never left, and still carries the sound.
     expect(container.contains(video)).toBe(true);
     expect(video.muted).toBe(false);
-    // Placement is the browser's to remember.
+    // Placement is the browser's to remember, and so is size while jsdom
+    // reports a picture of no size at all — a shape is asked for only when
+    // there is one (see pipResume).
     expect(requestWindow).toHaveBeenCalledWith();
   });
 
