@@ -77,6 +77,37 @@ else
   elif [ -n "$tagged_image" ]; then
     ok "frontend runs the image that was last built"
   fi
+
+# And is the image itself newer than the code it should contain?
+#
+# "Runs the image last built" was true and was not the question. The frontend
+# Dockerfile ends in `COPY . .` and `npm run build`, and a cached COPY layer
+# will happily rebuild an image out of source that predates the change being
+# deployed. The tag moves, the container is recreated, this check passed, and
+# the served bundle was old - three deploys went out that way before anyone
+# searched the served JavaScript for a string it should have contained.
+#
+# Against the last commit that touched the frontend, because that is what a
+# deploy is made of. Uncommitted work is not covered and does not need to be:
+# it is not what anybody thinks they shipped.
+  built_at=$(docker image inspect tablo-web-frontend:local \
+    --format '{{.Created}}' 2>/dev/null)
+  # Docker reports UTC, and parsed as local time it lands hours in the future -
+  # where nothing is ever newer than it. Which is how the first version of this
+  # check waved through an image that was deliberately stale, twice.
+  built_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "${built_at%%.*}" +%s 2>/dev/null)
+  source_epoch=$(git log -1 --format=%ct -- frontend 2>/dev/null)
+  if [ -n "${built_epoch:-}" ] && [ -n "${source_epoch:-}" ]; then
+    if [ "$source_epoch" -gt "$built_epoch" ]; then
+      bad "frontend image predates the last commit to frontend/"
+      note "image built $(TZ=UTC date -r "$built_epoch" '+%Y-%m-%d %H:%M:%SZ')"
+      note "code committed $(TZ=UTC date -r "$source_epoch" '+%Y-%m-%d %H:%M:%SZ')"
+      note "rebuild it: docker compose build frontend"
+      note "and if a cached layer is the reason, add --no-cache"
+    else
+      ok "frontend image is newer than the last frontend commit"
+    fi
+  fi
 fi
 
 # --------------------------------------------------------- the stray container
