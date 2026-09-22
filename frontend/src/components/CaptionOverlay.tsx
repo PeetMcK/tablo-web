@@ -3,13 +3,18 @@
  *
  * Drawn in the DOM rather than into the canvas: text stays crisp at any window
  * size, a screen reader can read it, and a test can assert on it without a
- * GPU. The cost is that `captureStream` does not carry it, so captions do not
- * appear in the picture-in-picture pop-out — the pop-out is fed a mirror of
- * canvas pixels, and this is not one of them.
+ * GPU. This was once said to cost the picture-in-picture pop-out its
+ * captions, on the grounds that the pop-out is fed canvas pixels and a DOM
+ * layer is not one of them — but the pop-out here is a document with a React
+ * root of its own, so a DOM layer belongs in it exactly as the chrome around
+ * it does, and the overlay renders there too.
  *
  * It steps on animation frames rather than on the player's `timeupdate`, which
  * fires about four times a second — enough for a scrubber, visibly late for
- * roll-up captions that advance a word at a time.
+ * roll-up captions that advance a word at a time. Which window those frames
+ * come from matters: a document that is not on screen runs none, and while
+ * the pop-out has the screen the tab is that document. `frames` is how the
+ * stage hands over the window it is really being drawn in.
  *
  * Two layouts, one component. A cue from CEA-608 has only the bottom rows to
  * work with and is drawn where captions have always been drawn; a cue from
@@ -308,9 +313,11 @@ function Window({
 
     measure();
     // The box moves when the window does, and a caption that cleared the
-    // controls at one size may not at another.
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    // controls at one size may not at another. The window it is drawn in,
+    // which in the picture-in-picture pop-out is not the tab's.
+    const view = element.ownerDocument.defaultView ?? window;
+    view.addEventListener("resize", measure);
+    return () => view.removeEventListener("resize", measure);
   }, [raised, placement, cue.text, floor]);
 
   const box = (
