@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  X, Lock, LockOpen, Eye, EyeOff, Trash2, Film,
+  X, Lock, LockOpen, Eye, EyeOff, Loader2, Trash2, Film,
 } from "lucide-react";
 import {
   api, isGone,
@@ -446,7 +446,13 @@ export function SeriesDetail({
         </div>
 
         {isLoading ? (
-          <p className="text-fg-muted py-12 text-center">Loading…</p>
+          // The panel opens on the click and fills in after, so this is the
+          // first thing a viewer sees. It says what is being waited on rather
+          // than "Loading…", which could be anything.
+          <div className="py-16 flex flex-col items-center gap-3 text-fg-muted">
+            <Loader2 className="w-6 h-6 animate-spin" aria-hidden />
+            <p className="text-sm" role="status">Fetching series information…</p>
+          </div>
         ) : (
           <div className="flex-1 min-h-0 flex flex-col">
             {/* Upper region: description + settings, capped so the episode list

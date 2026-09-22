@@ -106,6 +106,32 @@ describe("the series drawer", () => {
     expect(await screen.findByText(/Green Bay Packers/)).toBeInTheDocument();
   });
 
+  it("opens the moment it is asked, not when the index answers", async () => {
+    // The index is a round trip over every series on the box. Waiting for it
+    // before drawing anything left a click that did nothing for as long as it
+    // took, which reads as a dead control rather than a slow one.
+    let land: (v: { series: SeriesCard[] }) => void = () => {};
+    vi.spyOn(api.series, "index").mockReturnValue(
+      new Promise(resolve => { land = resolve; }));
+    vi.spyOn(api.series, "detail").mockResolvedValue(detailFor());
+    renderHarness("/guide/sports/38763");
+
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+
+    // On screen already, with the title the caller handed over and a word
+    // about what it is waiting for.
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getAllByText("NFL Football").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Fetching series information/i)).toBeInTheDocument();
+
+    land({ series: [NFL] });
+
+    // And once the card lands, the panel reads the episode list from the
+    // recordings path only the index knew.
+    await waitFor(() =>
+      expect(api.series.detail).toHaveBeenCalledWith("/recordings/sports/63558"));
+  });
+
   it("opens on what the sheet knew when the index has no card", async () => {
     // The index is an optimisation. A show missing from it — or a listing that
     // failed — still opens, on the one path the caller handed over.
