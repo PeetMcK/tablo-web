@@ -138,16 +138,18 @@ describe("what a row says", () => {
 });
 
 describe("what a row does", () => {
-  it("plays when the row itself is clicked", () => {
+  it("plays when the picture is clicked", () => {
     const onPlay = vi.fn();
-    row({}, { onPlay });
+    const onInfo = vi.fn();
+    row({}, { onPlay, onInfo });
 
     fireEvent.click(screen.getByRole("button", { name: /Play Jeopardy!/ }));
 
     expect(onPlay).toHaveBeenCalledTimes(1);
+    expect(onInfo).not.toHaveBeenCalled();
   });
 
-  it("opens the sheet from the one control that is not play", () => {
+  it("opens the sheet when anything but the picture is clicked", () => {
     const onPlay = vi.fn();
     const onInfo = vi.fn();
     row({}, { onPlay, onInfo });
@@ -155,14 +157,56 @@ describe("what a row does", () => {
     fireEvent.click(screen.getByRole("button", { name: /Information about/ }));
 
     expect(onInfo).toHaveBeenCalledTimes(1);
-    // The sheet holds delete, keep and series — the row must not also play.
     expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it("carries the title and the facts on the sheet's own target", () => {
+    // The two are one button, so reading the row and opening what it
+    // describes are the same gesture.
+    row({ subtitle: "Temple of Tigers", title: "Wild Kratts" });
+
+    const sheet = screen.getByRole("button", { name: /Information about Wild Kratts/ });
+    expect(sheet).toHaveTextContent(/Wild Kratts/);
+    expect(sheet).toHaveTextContent(/Temple of Tigers/);
+    expect(sheet).toHaveTextContent(/8\.1 CBS/);
   });
 
   it("refuses to play what the device reported an error for", () => {
     row({ error: "tuner_conflict" });
 
     expect(screen.getByRole("button", { name: /Play Jeopardy!/ })).toBeDisabled();
+  });
+
+  it("wears a play mark on the picture, so the frame reads as the button", () => {
+    const { container } = row();
+
+    // Decorative: the row's own button already says "Play Jeopardy!", and a
+    // second accessible name for the same click is one thing announced twice.
+    const mark = container.querySelector("[data-play-mark]")!;
+    expect(mark).toBeTruthy();
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    // Hidden until the row is hovered or focused — the frame is artwork at
+    // rest, and a permanent triangle over every picture is a page of
+    // triangles.
+    expect(mark.className).toMatch(/opacity-0/);
+    expect(mark.className).toMatch(/group-hover:opacity-100/);
+  });
+
+  it("offers one way in, not three", () => {
+    // A card offers Live / Resume / From start because it has room to ask.
+    // A row resumes, and the sheet behind the ⋮ is where the other answers
+    // live.
+    row({ position: 937, state: "recording", recorded_seconds: 600 });
+
+    expect(screen.queryByText(/From start/i)).toBeNull();
+    expect(screen.queryByText(/^Resume/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Live$/i })).toBeNull();
+  });
+
+  it("puts no play mark on what cannot play", () => {
+    const { container } = row({ error: "tuner_conflict" });
+
+    expect(container.querySelector("[data-play-mark]")).toBeNull();
   });
 });
 
