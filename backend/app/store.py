@@ -1317,7 +1317,22 @@ def save_title_verdict(title_key: str, verdict: dict) -> None:
     )
 
 
-def untagged_titles(limit: int = 100) -> list[str]:
+def fresh_title_keys(now: float | None = None,
+                     positive_ttl: float = 30 * 86400,
+                     negative_ttl: float = 7 * 86400) -> set[str]:
+    """Normalised title keys already looked up and still fresh. The enricher
+    skips these so each run advances to titles it has not seen, instead of
+    re-selecting the same cached (mostly non-movie) titles every time."""
+    now = now if now is not None else time.time()
+    fresh: set[str] = set()
+    for r in db.query("SELECT title_key, media_type, checked_at FROM title_lookup"):
+        ttl = positive_ttl if r["media_type"] == "movie" else negative_ttl
+        if (now - (r["checked_at"] or 0)) < ttl:
+            fresh.add(r["title_key"])
+    return fresh
+
+
+def untagged_titles(limit: int = 1000) -> list[str]:
     """Distinct guide titles that could be a movie but carry no type: no `kind`,
     no episode marker, no series. These are what the grid shows as a live event
     for want of anything better."""

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import httpx
 
@@ -16,14 +15,7 @@ from . import store, tmdb
 
 logger = logging.getLogger(__name__)
 
-_POSITIVE_TTL = 30 * 86400   # a movie stays a movie
-_NEGATIVE_TTL = 7 * 86400    # an unmatched title may match after a TMDb add
 _running = False             # coalesce overlapping runs (guide refreshes often)
-
-
-def _fresh(verdict: dict) -> bool:
-    ttl = _POSITIVE_TTL if verdict.get("media_type") == "movie" else _NEGATIVE_TTL
-    return (time.time() - (verdict.get("checked_at") or 0)) < ttl
 
 
 async def enrich_untagged(limit: int = 100) -> dict:
@@ -52,29 +44,39 @@ def schedule(limit: int = 100) -> None:
 
 
 async def _run(limit: int) -> dict:
-    titles = await asyncio.to_thread(store.untagged_titles, limit)
-    if not titles:
-        return {"checked": 0, "tagged": 0, "cached": 0}
+    # Fetch a wide set of untagged titles, then drop the ones already looked up
+    # (fresh in the cache) so the run advances to titles we have not seen — a
+    # cached non-movie stays untagged, and without this it would be re-selected
+    # every run and block the window. `limit` caps the *network* lookups.
+    all_titles = await asyncio.to_thread(store.untagged_titles, 2000)
+    fresh = await asyncio.to_thread(store.fresh_title_keys)
+    seen: set[str] = set()
+    todo: list[str] = []
+    for t in all_titles:
+        key = store.normalize_title(t)
+        if key in fresh or key in seen:
+            continue
+        seen.add(key)
+        todo.append(t)
+        if len(todo) >= limit:
+            break
+    if not todo:
+        return {"checked": 0, "tagged": 0, "remaining": 0}
 
     sem = asyncio.Semaphore(4)
-    stats = {"checked": 0, "tagged": 0, "cached": 0}
+    stats = {"checked": 0, "tagged": 0}
     client = httpx.AsyncClient()
 
     async def one(title: str) -> None:
         key = store.normalize_title(title)
-        cached = await asyncio.to_thread(store.get_title_verdict, key)
-        if cached and _fresh(cached):
-            verdict = cached
-            stats["cached"] += 1
-        else:
-            async with sem:
-                try:
-                    verdict = await tmdb.classify_title(title, client=client)
-                except Exception as e:  # unknown — don't cache, try again next run
-                    logger.warning("tmdb lookup failed for %r: %s", title, e)
-                    return
-            await asyncio.to_thread(store.save_title_verdict, key, verdict)
-            stats["checked"] += 1
+        async with sem:
+            try:
+                verdict = await tmdb.classify_title(title, client=client)
+            except Exception as e:  # unknown — don't cache, try again next run
+                logger.warning("tmdb lookup failed for %r: %s", title, e)
+                return
+        await asyncio.to_thread(store.save_title_verdict, key, verdict)
+        stats["checked"] += 1
         if verdict.get("media_type") == "movie":
             n = await asyncio.to_thread(
                 store.apply_movie_verdict, title,
@@ -83,8 +85,13 @@ async def _run(limit: int) -> dict:
                 stats["tagged"] += 1
 
     try:
-        await asyncio.gather(*[one(t) for t in titles])
+        await asyncio.gather(*[one(t) for t in todo])
     finally:
         await client.aclose()
+    # How many untagged titles remain uncached after this run (roughly), so a
+    # caller/loop knows whether to run again.
+    remaining = max(0, len([t for t in all_titles
+                            if store.normalize_title(t) not in fresh]) - len(todo))
+    stats["remaining"] = remaining
     logger.info("enrich: %s", stats)
     return stats
