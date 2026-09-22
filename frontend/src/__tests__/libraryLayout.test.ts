@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { arrange, type Arrangeable } from "../lib/libraryLayout";
+import { arrange, LIBRARY_LAYOUTS, type Arrangeable } from "../lib/libraryLayout";
 
 function rec(over: Partial<Arrangeable> & { object_id: number }): Arrangeable {
   return {
@@ -161,5 +161,17 @@ describe("the order inside a section", () => {
 describe("an empty library", () => {
   it("has no sections at all", () => {
     expect(arrange([], "day", "newest")).toEqual([]);
+  });
+});
+
+describe("the layouts on offer", () => {
+  it("offers cards and rows, cards first", () => {
+    // Cards is what the Library has always been, so it is the fallback the
+    // page renders before any preference has been read.
+    expect(LIBRARY_LAYOUTS.map(l => l.id)).toEqual(["cards", "list"]);
+  });
+
+  it("names each one in words, not by its icon alone", () => {
+    for (const layout of LIBRARY_LAYOUTS) expect(layout.label).toBeTruthy();
   });
 });
