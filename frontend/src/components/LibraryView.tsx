@@ -15,6 +15,7 @@ import { cacheEta } from "../lib/cacheEta";
 import { LayoutToggle } from "./LayoutToggle";
 import { RecordingRow } from "./RecordingRow";
 import { usePref } from "../lib/usePref";
+import { useStoredText } from "../lib/useStoredText";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { formatAired } from "../lib/format";
@@ -162,9 +163,19 @@ export function LibraryView() {
    *
    * Deliberately not in the URL. The header's search is a route — it names a
    * results page anyone can link to — where these two narrow a page already
-   * open, and survive nothing but the scroll.
+   * open.
+   *
+   * The filter text does survive a reload, in this browser. It was momentary
+   * on the reasoning that restoring it tomorrow would open the Library on a
+   * question nobody asked, and that still holds for tomorrow — but a refresh
+   * is not tomorrow. It is the same sitting, usually right after something
+   * changed on screen, and losing the filter there means typing it again to
+   * get back to where you already were. Kept locally rather than on the
+   * server, unlike grouping and order: how a person reads the page should
+   * follow them between machines, where what they are squinting at this
+   * minute should not.
    */
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useStoredText("tablo:library.filter");
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   /**
    * Whether the filter is a field or an icon, and the width that decides.
@@ -181,7 +192,7 @@ export function LibraryView() {
   const collapseFilter = useCallback(() => {
     setFilterExpanded(false);
     setQuery("");
-  }, []);
+  }, [setQuery]);
 
   // Focus follows the expansion: tapping the icon should put the caret in the
   // field, not merely reveal it. An effect rather than `autoFocus`, which only
@@ -709,10 +720,27 @@ export function LibraryView() {
             }}
             placeholder="Filter recordings..."
             aria-label="Filter recordings"
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+            className={`w-full pl-10 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
                        text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
-                       focus:bg-fill transition shadow-inner"
+                       focus:bg-fill transition shadow-inner ${query ? "pr-10" : "pr-4"}`}
           />
+          {/* Escape empties it for a keyboard and the phone layout collapses
+              the whole row, but a pointer had nothing to aim at - and this is
+              the one control that hides things until it is cleared, now that
+              it also outlives a reload. */}
+          {query && (
+            <button
+              onClick={() => { setQuery(""); filterInputRef.current?.focus(); }}
+              title="Clear filter"
+              aria-label="Clear filter"
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
+                         flex items-center justify-center text-fg-muted
+                         hover:text-fg hover:bg-fill transition
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <X className="w-4 h-4" aria-hidden />
+            </button>
+          )}
         </div>
         {/* The way back to the row. Dropping the query with it: a filter left
             behind an icon is a library missing recordings for no reason

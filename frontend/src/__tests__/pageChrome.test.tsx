@@ -256,3 +256,26 @@ describe("the topbar search at phone width", () => {
     expect(fieldBox().className).toMatch(/\bml-4\b/);
   });
 });
+
+describe("emptying the search box", () => {
+  it("offers a button to clear it, and keeps the caret in the field", async () => {
+    // Escape is the keyboard's way out; a pointer had nothing to aim at.
+    mockShell();
+    renderShell();
+    const box = await screen.findByLabelText("Search programs, channels");
+    fireEvent.change(box, { target: { value: "dave" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /clear search/i }));
+
+    expect(box).toHaveValue("");
+    expect(box).toHaveFocus();
+  });
+
+  it("offers nothing to clear while the box is empty", async () => {
+    mockShell();
+    renderShell();
+    await screen.findByLabelText("Search programs, channels");
+
+    expect(screen.queryByRole("button", { name: /clear search/i })).toBeNull();
+  });
+});

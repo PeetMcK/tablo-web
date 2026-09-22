@@ -555,3 +555,15 @@
       0 0 32px rgb(var(--c-accent) / var(--glow-spread-a));
   }
 }
+
+/* One clear button, ours.
+ *
+ * A `type="search"` field draws its own in Chromium, which appears on hover,
+ * sits where ours sits, and cannot be given a focus ring or an accessible
+ * name to match the rest of the toolbar. Two Xs in one box is worse than
+ * either, so the native one goes. */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
