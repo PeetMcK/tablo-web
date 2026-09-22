@@ -42,6 +42,15 @@ def test_choosing_again_replaces_rather_than_accumulates(signed_in):
     assert client.get("/api/prefs").json() == {"library.sort": "oldest"}
 
 
+def test_every_order_the_menu_offers_is_accepted(signed_in):
+    """The allow-list and the menu have to agree — a sort the page offers and
+    the server refuses is a control that silently does nothing."""
+    for value in ("newest", "oldest", "episode", "title", "title-desc"):
+        r = client.put("/api/prefs", json={"key": "library.sort", "value": value})
+        assert r.status_code == 200, value
+        assert client.get("/api/prefs").json()["library.sort"] == value
+
+
 def test_an_unknown_preference_is_refused(signed_in):
     """Not a general key-value store for the client. A typo that stored a row
     nobody ever reads again is a worse answer than a 422."""

@@ -1681,7 +1681,7 @@ def prune_recording_assets(items: list[dict]) -> list[int]:
 #: have to agree.
 PREF_KEYS: dict[str, tuple[str, ...]] = {
     "library.group": ("day", "show", "channel"),
-    "library.sort": ("newest", "oldest", "title", "title-desc"),
+    "library.sort": ("newest", "oldest", "episode", "title", "title-desc"),
 }
 
 #: Where a preference lives in the settings table. Prefixed so it cannot

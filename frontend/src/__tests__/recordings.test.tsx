@@ -1531,6 +1531,25 @@ describe("the Library's grouping and sort", () => {
     await waitFor(() => expect(headings()).toEqual(["Sunday 9/20", "Monday 9/21"]));
   });
 
+  it("offers episode order, and reads a show forwards under it", async () => {
+    // The games have no numbering at all, so they fall back to their dates —
+    // which is the whole reason this order exists rather than one that only
+    // understands numbers.
+    const put = mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    const group = await openMenu(/group by/i);
+    fireEvent.click(group.getByRole("menuitemradio", { name: /Show/ }));
+    const sort = await openMenu(/sort by/i);
+    fireEvent.click(sort.getByRole("menuitemradio", { name: /Episode/ }));
+
+    // Shows in name order — S1E1 before S1E2 says nothing about which show
+    // comes first.
+    await waitFor(() => expect(headings()).toEqual(["NFL Football", "Wild Kratts"]));
+    await waitFor(() => expect(put).toHaveBeenCalledWith("library.sort", "episode"));
+  });
+
   it("remembers a choice for next time", async () => {
     const put = mockLibrary();
     renderLibrary();
