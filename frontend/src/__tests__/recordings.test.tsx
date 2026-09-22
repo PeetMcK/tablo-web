@@ -1641,3 +1641,119 @@ describe("the Library's grouping and sort", () => {
       expect(putPref).toHaveBeenCalledWith("library.layout", "list"));
   });
 });
+
+/** Answer `(max-width: 639px)` — and only that query — with `matches`. */
+function stubPhone(matches: boolean) {
+  const real = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: matches && query === "(max-width: 639px)",
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+  return () => { window.matchMedia = real; };
+}
+
+/**
+ * The Library's filter at phone width.
+ *
+ * The same move the topbar search makes, for the same reason: a full-width
+ * field and two menus cannot share a 400px row, and the field is the one of
+ * the three that is empty most of the time.
+ */
+describe("the Library's filter at phone width", () => {
+  let restoreMedia = () => {};
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+    vi.spyOn(api, "recordings").mockResolvedValue(list());
+    vi.spyOn(api, "prefs").mockResolvedValue({});
+    vi.spyOn(api, "putPref").mockResolvedValue({ ok: true });
+  });
+  afterEach(() => { restoreMedia(); vi.restoreAllMocks(); });
+
+  const field = () => screen.getByPlaceholderText(/filter recordings/i);
+
+  it("is an icon, not a field, until it is asked for", async () => {
+    restoreMedia = stubPhone(true);
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(screen.getByRole("button", { name: "Filter recordings" }))
+      .toBeInTheDocument();
+    // Hidden rather than unmounted: the input's value IS the filter, and
+    // unmounting it would drop the query every time the row narrowed.
+    expect(field().parentElement!.className).toMatch(/\bhidden\b/);
+  });
+
+  it("opens into the field when the icon is tapped", async () => {
+    restoreMedia = stubPhone(true);
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter recordings" }));
+
+    expect(field().parentElement!.className).not.toMatch(/\bhidden\b/);
+    expect(field()).toHaveFocus();
+  });
+
+  it("gives the row back, and drops the query with it", async () => {
+    restoreMedia = stubPhone(true);
+    renderLibrary();
+    await screen.findByText("NFL Football");
+    fireEvent.click(screen.getByRole("button", { name: "Filter recordings" }));
+    fireEvent.change(field(), { target: { value: "kratts" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close filter" }));
+
+    // A filter left behind an icon is a library missing recordings for no
+    // reason anyone can see.
+    expect(screen.getByRole("button", { name: "Filter recordings" }))
+      .toBeInTheDocument();
+    expect(await screen.findByText("NFL Football")).toBeInTheDocument();
+  });
+
+  it("is simply the field on anything wider", async () => {
+    restoreMedia = stubPhone(false);
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(screen.queryByRole("button", { name: "Filter recordings" })).toBeNull();
+    expect(field().parentElement!.className).not.toMatch(/\bhidden\b/);
+  });
+
+  it("drops the words in front of the two menus", async () => {
+    // "Group Day" and "Sort Episode" are what makes the pair readable at a
+    // glance on a wide row. On a narrow one the words are the first thing
+    // that can go: the icons say which menu is which, and the value is the
+    // part being read.
+    restoreMedia = stubPhone(true);
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(screen.getByRole("button", { name: "Group by: Day" }))
+      .toHaveTextContent(/^Day$/);
+    expect(screen.getByRole("button", { name: "Sort by: Newest" }))
+      .toHaveTextContent(/^Newest$/);
+  });
+
+  it("keeps the words once there is room for them", async () => {
+    restoreMedia = stubPhone(false);
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(screen.getByRole("button", { name: "Group by: Day" }))
+      .toHaveTextContent(/Group\s*Day/);
+    expect(screen.getByRole("button", { name: "Sort by: Newest" }))
+      .toHaveTextContent(/Sort\s*Newest/);
+  });
+});
