@@ -911,6 +911,22 @@ export const api = {
 
   recordings: () => req<RecordingList>("/recordings"),
 
+  /**
+   * How this viewer likes a page laid out — `{"library.group": "show", …}`.
+   *
+   * Server-side for the reason resume positions are: a preference in one
+   * browser's site data is lost on the next machine. Empty until something has
+   * been chosen, which is the page falling back to its own defaults rather
+   * than being handed them.
+   */
+  prefs: () => req<Record<string, string>>("/prefs"),
+
+  putPref: (key: string, value: string) =>
+    req<{ ok: boolean }>("/prefs", {
+      method: "PUT",
+      body: JSON.stringify({ key, value }),
+    }),
+
   /** Every stored resume position, keyed `"<kind>:<ref>"`. */
   resumeAll: () => req<Record<string, number>>("/resume"),
 

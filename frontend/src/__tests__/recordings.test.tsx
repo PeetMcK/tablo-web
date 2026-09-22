@@ -1430,3 +1430,151 @@ describe("the Library toolbar", () => {
     expect(window.location.hash).toBe(before);
   });
 });
+
+
+/**
+ * The Library's layout menus: what the cards are grouped under, and in what
+ * order.
+ *
+ * Unlike the search box and the content filter beside them, these two are
+ * remembered — and server-side, so the answer follows the viewer to the next
+ * machine rather than living in one browser's site data.
+ */
+describe("the Library's grouping and sort", () => {
+  const KRATTS: Recording = {
+    ...REC, object_id: 90001, identifier: 90001,
+    path: "/recordings/series/episodes/90001",
+    title: "Wild Kratts", subtitle: "Temple of Tigers", description: null,
+    start: "2026-09-20T15:00:00Z",
+    series_path: "/recordings/series/900", sport_path: null,
+    kind: "episode", genres: [],
+    channel: { identifier: "S1_007_01", call_sign: "PBS", network: "PBS",
+               number: "7.1", kind: "ota" },
+  };
+  const GAME: Recording = {
+    ...REC, object_id: 90002, identifier: 90002,
+    title: "NFL Football", subtitle: "Giants at Rams",
+    start: "2026-09-21T22:15:00Z",
+    series_path: null, sport_path: "/recordings/sports/63558",
+    kind: "sport", genres: ["Football"],
+  };
+
+  function mockLibrary(prefs: Record<string, string> = {}) {
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [GAME, KRATTS], returned: 2, total: 2,
+    }));
+    vi.spyOn(api, "prefs").mockResolvedValue(prefs);
+    return vi.spyOn(api, "putPref").mockResolvedValue({ ok: true });
+  }
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** Open one of the two layout menus and return it, scoped. */
+  async function openMenu(name: RegExp) {
+    const menus = within(document.querySelector<HTMLElement>("[data-layout-menus]")!);
+    fireEvent.click(await menus.findByRole("button", { name }));
+    return menus;
+  }
+
+  /** Every group heading on the page, in the order it is drawn. */
+  function headings(): string[] {
+    return [...document.querySelectorAll("[data-library-heading]")]
+      .map(el => el.textContent ?? "");
+  }
+
+  it("opens grouped by day, newest first", async () => {
+    mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(headings()).toEqual(["Monday 9/21", "Sunday 9/20"]);
+  });
+
+  it("regroups under one heading per show", async () => {
+    mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    const menus = await openMenu(/group by/i);
+    fireEvent.click(menus.getByRole("menuitemradio", { name: /Show/ }));
+
+    await waitFor(() => expect(headings()).toEqual(["NFL Football", "Wild Kratts"]));
+  });
+
+  it("regroups by station, named as the card names it", async () => {
+    mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    const menus = await openMenu(/group by/i);
+    fireEvent.click(menus.getByRole("menuitemradio", { name: /Channel/ }));
+
+    await waitFor(() => expect(headings()).toEqual(["23.1 KTMFABC", "7.1 PBS"]));
+  });
+
+  it("turns the days around for Oldest", async () => {
+    mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    const menus = await openMenu(/sort by/i);
+    fireEvent.click(menus.getByRole("menuitemradio", { name: /Oldest/ }));
+
+    await waitFor(() => expect(headings()).toEqual(["Sunday 9/20", "Monday 9/21"]));
+  });
+
+  it("remembers a choice for next time", async () => {
+    const put = mockLibrary();
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    const menus = await openMenu(/group by/i);
+    fireEvent.click(menus.getByRole("menuitemradio", { name: /Show/ }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith("library.group", "show"));
+  });
+
+  it("opens on what was chosen last time", async () => {
+    mockLibrary({ "library.group": "channel", "library.sort": "title" });
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    await waitFor(() =>
+      expect(headings()).toEqual(["23.1 KTMFABC", "7.1 PBS"]));
+  });
+
+  it("falls back to its own layout when nothing has been chosen", async () => {
+    // And when the preference cannot be read at all: a page that will not draw
+    // because a preference request failed is a worse answer than the default.
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [GAME, KRATTS], returned: 2, total: 2,
+    }));
+    vi.spyOn(api, "prefs").mockRejectedValue(new Error("offline"));
+    renderLibrary();
+
+    await screen.findByText("NFL Football");
+    expect(headings()).toEqual(["Monday 9/21", "Sunday 9/20"]);
+  });
+
+  it("ignores a stored value the menu no longer offers", async () => {
+    // Rows outlive options. A layout the page cannot draw must not be what it
+    // opens on.
+    mockLibrary({ "library.group": "genre" });
+    renderLibrary();
+    await screen.findByText("NFL Football");
+
+    expect(headings()).toEqual(["Monday 9/21", "Sunday 9/20"]);
+  });
+});

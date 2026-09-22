@@ -1666,3 +1666,46 @@ def prune_recording_assets(items: list[dict]) -> list[int]:
     for object_id in gone:
         forget_recording(object_id)
     return gone
+
+
+# ---------------------------------------------------------------------------
+# Layout preferences — how a page is read, kept between visits
+# ---------------------------------------------------------------------------
+
+#: Every preference the UI may store, and the values each accepts.
+#:
+#: A closed set on purpose. These are written straight from a menu and read
+#: straight back into a layout, so an unknown value is a page that cannot draw
+#: itself - better refused at the write than discovered at the read. Adding an
+#: option to a menu means adding it here, which is the reminder that the two
+#: have to agree.
+PREF_KEYS: dict[str, tuple[str, ...]] = {
+    "library.group": ("day", "show", "channel"),
+    "library.sort": ("newest", "oldest", "title", "title-desc"),
+}
+
+#: Where a preference lives in the settings table. Prefixed so it cannot
+#: collide with the device and sync keys sharing it.
+_PREF_PREFIX = "pref."
+
+
+def all_prefs() -> dict[str, str]:
+    """Every stored preference, keyed as the UI names it.
+
+    Only the known keys, and only values still in their allow-list: an option
+    removed from a menu leaves rows behind, and answering with one would put a
+    layout on screen that no longer exists.
+    """
+    out: dict[str, str] = {}
+    for row in db.query("SELECT key, value FROM setting WHERE key LIKE ?",
+                        (f"{_PREF_PREFIX}%",)):
+        key = row["key"][len(_PREF_PREFIX):]
+        allowed = PREF_KEYS.get(key)
+        if allowed and row["value"] in allowed:
+            out[key] = row["value"]
+    return out
+
+
+def save_pref(key: str, value: str) -> None:
+    """Remember one choice. Validated by the caller against `PREF_KEYS`."""
+    db.set_setting(f"{_PREF_PREFIX}{key}", value)
