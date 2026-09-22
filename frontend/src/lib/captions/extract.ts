@@ -8,7 +8,7 @@
  * captioned stream the app receives and cost nothing to read.
  */
 
-import type { CcPair } from "./types";
+import type { CcData, CcPair } from "./types";
 
 /** `GA94`, the ATSC identifier that marks an A/53 user-data block. */
 const ATSC_IDENTIFIER = 0x47413934;
@@ -22,8 +22,8 @@ const USER_DATA_TYPE_CC = 0x03;
  * `bytes` is an assembled packet — one picture — so a user-data block is
  * contiguous within it and no reassembly is needed.
  */
-export function extractCcData(bytes: Uint8Array): CcPair[] {
-  const out: CcPair[] = [];
+export function extractCcData(bytes: Uint8Array): CcData {
+  const out: CcData = { cea608: [], dtvcc: [] };
 
   for (let i = 0; i + 3 < bytes.length; i++) {
     if (bytes[i] !== 0x00 || bytes[i + 1] !== 0x00 || bytes[i + 2] !== 0x01) continue;
@@ -42,8 +42,8 @@ export function extractCcData(bytes: Uint8Array): CcPair[] {
   return out;
 }
 
-/** Read one user-data block, appending whatever 608 pairs it holds. */
-function readUserData(bytes: Uint8Array, p: number, out: CcPair[]): void {
+/** Read one user-data block, appending whatever caption pairs it holds. */
+function readUserData(bytes: Uint8Array, p: number, out: CcData): void {
   // identifier(4) + user_data_type_code(1) + flags(1) + em_data(1)
   if (p + 7 > bytes.length) return;
 
@@ -70,12 +70,12 @@ function readUserData(bytes: Uint8Array, p: number, out: CcPair[]): void {
     const marker = bytes[q];
     if ((marker & 0x04) === 0) continue;   // cc_valid clear: a padding entry
 
-    const type = marker & 0x03;
-    // 2 and 3 are DTVCC packet data — CEA-708, which this pass does not
-    // decode. They are skipped here rather than filtered later so that
-    // everything downstream can assume 608.
-    if (type > 1) continue;
-
-    out.push({ field: type as 0 | 1, a: bytes[q + 1], b: bytes[q + 2] });
+    const type = (marker & 0x03) as 0 | 1 | 2 | 3;
+    const pair: CcPair = { field: type, a: bytes[q + 1], b: bytes[q + 2] };
+    // Order within each list is the order the encoder wrote them, which is
+    // what both decoders need - DTVCC especially, where a packet is assembled
+    // from consecutive entries.
+    if (type <= 1) out.cea608.push(pair);
+    else out.dtvcc.push(pair);
   }
 }

@@ -597,9 +597,9 @@ export async function createDecoder(options: DecoderOptions = {}): Promise<Libav
           const data = packet.data;
           if (!data || !data.length) continue;
           const pairs = extractCcData(data instanceof Uint8Array ? data : new Uint8Array(data));
-          if (!pairs.length) continue;
-          captionPairs += pairs.length;
-          captionTrack.add(seconds, pairs);
+          if (!pairs.cea608.length) continue;
+          captionPairs += pairs.cea608.length;
+          captionTrack.add(seconds, pairs.cea608);
         }
         // At end of stream there is no later picture coming to settle the
         // order, so whatever is still held has to go in as it stands — the
