@@ -66,7 +66,9 @@ function renderRecordings() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <RecordingsView />
+      {/* An empty query is the unnarrowed Series tab, which is what this file
+          tests; the funnel's own half is in `seriesFilter.test.tsx`. */}
+      <RecordingsView query="" />
     </QueryClientProvider>,
   );
 }

@@ -334,7 +334,9 @@ export function ChannelGrid({ onLogout }: Props) {
     // this call is always "live" in the branch above that just set it, so
     // the value set two lines up survives.
     goToTab(tab);
-  }, [channels, goToTab]);
+    // `setFilter` listed for the same reason as in `collapseSearch` below: a
+    // stable callback the linter cannot prove is one.
+  }, [channels, goToTab, setFilter]);
 
   const handleSearchSeeAll = useCallback(() => {
     setSearchOpen(false);
@@ -343,12 +345,18 @@ export function ChannelGrid({ onLogout }: Props) {
 
   const closeSearch = useCallback(() => setSearchOpen(false), []);
 
-  /** Collapse the phone search back to its icon, dropping the query with it. */
+  /**
+   * Collapse the phone search back to its icon, dropping the query with it.
+   *
+   * `setFilter` is in the deps because it is a callback now rather than a
+   * `useState` setter the linter knows is stable — it is stable all the same
+   * (see `lib/topbarMemory`), so listing it changes nothing but the warning.
+   */
   const collapseSearch = useCallback(() => {
     setSearchExpanded(false);
     setSearchOpen(false);
     setFilter("");
-  }, []);
+  }, [setFilter]);
 
   // Focus follows the expansion: tapping the icon should put the caret in the
   // field, not merely reveal it. Effect rather than `autoFocus`, which only
@@ -806,7 +814,7 @@ export function ChannelGrid({ onLogout }: Props) {
 
           {activeTab === "series" && (
             <div className="flex flex-col flex-1 min-h-0">
-              <RecordingsView />
+              <RecordingsView query={pageFilter} />
             </div>
           )}
 

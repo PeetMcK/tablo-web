@@ -13,7 +13,7 @@
  * the Schedule grid rather than a tab of their own. Tapping a series card opens
  * its detail (settings + episode cleanup).
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarClock, Film } from "lucide-react";
 import { api, type SeriesCard } from "../api/tablo";
@@ -133,15 +133,31 @@ function SeriesGrid({
   );
 }
 
-export function RecordingsView() {
+export function RecordingsView({ query }: {
+  /**
+   * What to narrow to, from the topbar's box; empty while it is searching.
+   * See `lib/topbarMemory` for where the text lives between visits.
+   */
+  query: string;
+}) {
   const [segment, setSegment] = useState<Segment>("series");
   const [selected, setSelected] = useState<SeriesCard | null>(null);
 
   const series = useQuery({ queryKey: ["series"], queryFn: api.series.index });
 
-  const all = series.data?.series ?? [];
+  // By title only: a card carries counts, a rule and a keep policy, and none
+  // of those is what anyone types into a box looking for a show.
+  const all = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const cards = series.data?.series ?? [];
+    if (!needle) return cards;
+    return cards.filter((s) => s.title.toLowerCase().includes(needle));
+  }, [series.data, query]);
   const failed = all.filter((s) => s.failed_count > 0);
-  const conflictCount = all.filter((s) => s.conflict).length;
+  // Deliberately counted over everything rather than over `all`: a conflict
+  // does not stop being one because the box is narrowed to something else,
+  // and a banner that vanishes when you filter is a banner that lies.
+  const conflictCount = (series.data?.series ?? []).filter((s) => s.conflict).length;
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
@@ -186,7 +202,7 @@ export function RecordingsView() {
           <SeriesGrid list={all} empty="No series recordings yet."
                       onOpen={setSelected} />
         ) : segment === "upcoming" ? (
-          <ScheduleGrid />
+          <ScheduleGrid query={query} />
         ) : (
           <SeriesGrid list={failed} empty="No failed recordings."
                       onOpen={setSelected} />
