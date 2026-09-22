@@ -323,11 +323,18 @@ with the previous listings intact and nothing escaping the loop.
 | 8s parse on the segment-serving process | Thread plus batched commits. Measured, not assumed. |
 | Disk | 56 MB temp deleted after parsing; the 290k-row sample is rebuilt, not accumulated. |
 
-## Open question, to settle first
+## The key a mapping binds to
 
-**Are the feed's channel ids stable across days?** Everything here binds a
-mapping to `TheNest.us` as a durable key, and that has been verified against
-exactly one day's file. The first implementation task is to download the feed
-again and diff the id set against 2026-09-21's. If ids churn, a stored
-`feed_id` is the wrong key and the mapping needs a content-based re-bind —
-which is a design change, not a bug fix.
+Everything here stores `feed_id` — `TheNest.us` — as a durable key, which is
+only sound if the feed's channel ids persist across refreshes. They do, per
+the project owner on 2026-09-21, for this file and for IPTV-EPG's other
+regional feeds. That is a stated fact rather than a measured one; it was
+verified here against a single day's file only.
+
+It needs no verification task, because the design already fails safely if it
+is ever wrong in a particular case: a mapping whose `feed_id` is absent from a
+refresh is marked stale and keeps the rows it already has, rather than
+silently filling from whatever else now answers to that id. The one thing
+never to add is a fallback that re-binds a stale mapping by name — feed names
+are the untrustworthy field, and a silent re-bind would put a *different
+channel's* listings on a station under the guise of a refresh.
