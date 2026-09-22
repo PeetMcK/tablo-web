@@ -3049,3 +3049,67 @@ def test_re_registering_updates_the_codec_without_clearing_the_pin(tmp_path):
     meta = c.read_meta(94904)
     assert meta.source_codec == "h264"
     assert meta.pinned is True
+
+
+def _run_one_window(tmp_path, monkeypatch, codec, segments=None):
+    """Run window 7 with FFmpeg stubbed, and return the argv(s) it was given."""
+    async def fake_session(path):
+        return {"playlist_url": "http://device/stream/pl.m3u8?tok"}
+
+    c = TranscodeCache(session_starter=fake_session, root=tmp_path, budget_bytes=10**12)
+    asyncio.run(c.register(80888, "/recordings/x/80888", GAME, codec=codec))
+
+    real_exec = asyncio.create_subprocess_exec
+    n_segments = segments if segments is not None else segments_in_window(GAME, 7)
+    cmds = []
+
+    async def fake_exec(*cmd, cwd=None, **kw):
+        cmds.append(list(cmd))
+        from pathlib import Path as P
+        for f in P(cwd).glob("seg_*.ts"):
+            f.unlink()
+        for n in range(n_segments):
+            (P(cwd) / f"seg_{n:02d}.ts").write_bytes(b"x")
+
+        class P0:
+            returncode = 0
+            async def wait(self):
+                return 0
+        return P0()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    try:
+        asyncio.run(c.ensure_window(80888, 7, "/recordings/x/80888", GAME))
+    finally:
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", real_exec)
+    return cmds[0] if len(cmds) == 1 else cmds
+
+
+def test_an_h264_window_copies_the_picture(tmp_path, monkeypatch):
+    """The box already encoded this. Decoding it to re-encode it spends a core
+    per window and loses a generation to arrive at what we started with."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="h264")
+
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    # Nothing is being decoded, so there is nothing to filter - and this source
+    # is progressive 720p with square pixels already.
+    assert "-vf" not in cmd
+    # FFmpeg cannot place keyframes in a stream it is copying.
+    assert "-force_key_frames" not in cmd
+    # The audio still has to change: no browser but Safari decodes AC-3, and
+    # `build_mp4` cannot put it in an MP4.
+    assert cmd[cmd.index("-c:a") + 1] == "aac"
+
+
+def test_an_mpeg2_window_still_encodes(tmp_path, monkeypatch):
+    cmd = _run_one_window(tmp_path, monkeypatch, codec="mpeg2")
+
+    assert cmd[cmd.index("-c:v") + 1] != "copy"
+    assert "-force_key_frames" in cmd
+
+
+def test_a_window_with_no_codec_still_encodes(tmp_path, monkeypatch):
+    """Unknown takes the path all but one recording on this device needs."""
+    cmd = _run_one_window(tmp_path, monkeypatch, codec=None)
+
+    assert cmd[cmd.index("-c:v") + 1] != "copy"

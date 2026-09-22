@@ -1482,6 +1482,13 @@ class TranscodeCache:
               f"@{start:.0f}s len={length:.0f}s "
               f"session={asyncio.get_event_loop().time() - t0:.1f}s", flush=True)
 
+        # A recording the box encoded itself is already H.264 - which is
+        # exactly what this is trying to produce. Copy the picture and change
+        # only the audio: AC-3 is the one part no browser but Safari decodes,
+        # and the one part `build_mp4` cannot put in an MP4.
+        meta = self.read_meta(object_id)
+        copying = (meta.source_codec if meta else None) == "h264"
+
         prof = encoder_profile()
         # Deinterlace ahead of anything encoder-specific: VAAPI's chain ends in
         # hwupload, and frames have to be progressive before they leave for the
@@ -1489,12 +1496,16 @@ class TranscodeCache:
         # Order is load-bearing at both ends: the deinterlace samples real
         # rows so it must see the coded picture, and VAAPI's chain ends in
         # hwupload, after which a software scale has nothing to work on.
-        filters = [*deinterlace_filter(), *square_pixels_filter(), *prof.filters]
+        # Nothing to filter when nothing is being decoded - and a copied source
+        # is progressive with square pixels already, so there is nothing a
+        # filter would fix.
+        filters = [] if copying else [
+            *deinterlace_filter(), *square_pixels_filter(), *prof.filters]
         cmd = [
             "ffmpeg", "-y",
             # 'file' is deliberately excluded: input_url is device-controlled.
             "-protocol_whitelist", "http,https,tcp,tls",
-            *prof.pre_input,
+            *([] if copying else prof.pre_input),
             # Fast input seek to just before the window. Measured flat (~5s)
             # regardless of offset.
             "-ss", f"{seek_to:.3f}",
@@ -1510,10 +1521,13 @@ class TranscodeCache:
             "-output_ts_offset", str(start),
             # Pins keyframes to exact segment boundaries so the window's segment
             # count matches what the published playlist already declared.
-            "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})",
+            # FFmpeg cannot place keyframes in a stream it is copying, so a
+            # copied window is checked against that count afterwards instead.
+            *([] if copying else [
+                "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"]),
             *(["-vf", ",".join(filters)] if filters else []),
-            "-c:v", prof.name, *prof.flags,
-            *(["-pix_fmt", prof.pix_fmt] if prof.pix_fmt else []),
+            *(["-c:v", "copy"] if copying else ["-c:v", prof.name, *prof.flags]),
+            *([] if copying or not prof.pix_fmt else ["-pix_fmt", prof.pix_fmt]),
             "-c:a", "aac", "-b:a", "160k", "-ac", "2",
             "-f", "hls",
             "-hls_time", str(SEGMENT_SECONDS),
