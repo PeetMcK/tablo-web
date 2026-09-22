@@ -3467,19 +3467,34 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                    for a touchscreen, which has no such thing at all. */
                 onPointerDown={(e) => {
                   if (e.pointerType === "mouse" && e.button !== 0) return;
-                  const timer = setTimeout(() => setCaptionMenuOpen(true), 500);
+                  // The window this button is in, which in the pop-out is not
+                  // the tab's. Listening on the tab's meant the release never
+                  // arrived, the press was never cancelled, and an ordinary
+                  // click opened the menu half a second later.
+                  const view = e.currentTarget.ownerDocument.defaultView;
+                  if (!view) return;
+                  const timer = view.setTimeout(() => setCaptionMenuOpen(true), 500);
                   const cancel = () => {
-                    clearTimeout(timer);
-                    window.removeEventListener("pointerup", cancel);
-                    window.removeEventListener("pointercancel", cancel);
+                    view.clearTimeout(timer);
+                    view.removeEventListener("pointerup", cancel);
+                    view.removeEventListener("pointercancel", cancel);
                   };
-                  window.addEventListener("pointerup", cancel);
-                  window.addEventListener("pointercancel", cancel);
+                  view.addEventListener("pointerup", cancel);
+                  view.addEventListener("pointercancel", cancel);
                 }}
                 disabled={captionsSilent}
-                className={`rounded-lg glass text-player-fg flex items-center justify-center transition
-                ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${captionsOn ? "bg-fill" : ""}
-                ${captionsSilent ? "opacity-40 cursor-default" : "hover:bg-fill"}`}
+                /* On is inverted rather than tinted. `bg-fill` over glass is
+                   a few percent of lightness, which reads as a hover state at
+                   best and as nothing at all over bright video - and whether
+                   captions are on is the one thing this button has to say. */
+                className={`rounded-lg flex items-center justify-center transition
+                ${poppedOut ? "w-8 h-8" : "w-9 h-9"}
+                ${captionsOn
+                  ? "bg-player-fg text-media ring-1 ring-black/10"
+                  : "glass text-player-fg"}
+                ${captionsSilent
+                  ? "opacity-40 cursor-default"
+                  : captionsOn ? "hover:bg-player-fg/85" : "hover:bg-fill"}`}
                 /* Named with its key, the way the buttons either side of it
                    are. */
                 title={captionsSilent

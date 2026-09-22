@@ -1,0 +1,25 @@
+# What the image build must not be sent.
+#
+# The Dockerfile runs `npm ci` and then `COPY . .`, so without this the host's
+# own `node_modules` lands on top of the one the image just installed - macOS
+# binaries in a Linux container - and the host's `dist` lands where the build
+# is about to write. Both are large, and a build context that carries a
+# hundred thousand files it will not use is a build context whose cache
+# behaves in ways nobody can follow.
+#
+# It behaved badly here: `docker compose build frontend` reused a cached
+# `COPY . .` layer and shipped an image built from source that predated the
+# feature being deployed. The running container was the image last built and
+# the stack check said so, which is true and was not the question. Three
+# deploys went out that way before the served bundle was searched for a string
+# it should have contained.
+node_modules
+dist
+.vite
+
+# Never needed to build, and `.env` in particular has no business in an image.
+.env
+.env.*
+*.log
+coverage
+.DS_Store
