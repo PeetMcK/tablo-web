@@ -114,6 +114,19 @@ const LIVE_LEAD_SECONDS = 12;
  * reaps a transcode whose player is gone — several heartbeats have to be missed
  * before a session that is merely slow is taken for an abandoned one.
  */
+/**
+ * How long a stream gets to produce its first caption before the CC button
+ * admits there are none.
+ *
+ * Long, deliberately. Captions announce themselves within a second or two of
+ * speech, but a programme can open on music, a title card or a silent
+ * establishing shot, and greying the control out during one of those would be
+ * wrong about a captioned stream. Ninety seconds is past any of that and
+ * still short enough that a viewer looking for captions is not left waiting
+ * on a control that will never work.
+ */
+const CAPTION_SILENCE_MS = 90_000;
+
 const KEEPALIVE_MS = 30_000;
 
 /**
@@ -304,6 +317,8 @@ interface PlayerView {
    */
   captionSourceAt: () => CaptionSource | null;
   captionsAvailable: boolean;
+  /** Whether the stream has stayed silent long enough to say it has none. */
+  captionsSilent: boolean;
   captionsOn: boolean;
   toggleCaptions: () => void;
   surfaceTime: () => number;
@@ -482,6 +497,26 @@ export function VideoPlayer({
   });
   /** Whether a caption has actually been seen on this stream. */
   const [captionsAvailable, setCaptionsAvailable] = useState(false);
+  /**
+   * Whether this stream has been given long enough to prove it has captions.
+   *
+   * The control starts live and stays live: captions take a second or two to
+   * announce themselves on a good stream and longer on a quiet passage, and a
+   * viewer who presses CC before the first cue should get captions when they
+   * arrive rather than a dead button. Only after a stretch of silence does it
+   * grey out and say so - by then the answer really is "this stream has
+   * none", and saying nothing would leave a live-looking control that does
+   * nothing.
+   */
+  const [captionsSilent, setCaptionsSilent] = useState(false);
+  /** Bumped per surface, so the silence clock restarts on a new stream. */
+  const [captionEpoch, setCaptionEpoch] = useState(0);
+
+  useEffect(() => {
+    if (captionsAvailable) { setCaptionsSilent(false); return; }
+    const timer = setTimeout(() => setCaptionsSilent(true), CAPTION_SILENCE_MS);
+    return () => clearTimeout(timer);
+  }, [captionsAvailable, captionEpoch]);
 
   /**
    * Where the overlay reads the playhead.
@@ -938,6 +973,9 @@ export function VideoPlayer({
      */
     const captions = surface.captions ?? null;
     setCaptionsAvailable(captions?.available ?? false);
+    // A new stream gets the benefit of the doubt again, and its own clock.
+    setCaptionsSilent(false);
+    setCaptionEpoch((n) => n + 1);
     if (captions) {
       offs.push(captions.on("change", () => setCaptionsAvailable(captions.available)));
     }
@@ -2379,7 +2417,7 @@ export function VideoPlayer({
       if (e.key === "p") togglePictureInPicture();
       // Only where there is something to toggle. A key that silently does
       // nothing is worse than one that is not bound.
-      if (e.key === "c" && captionsAvailable) toggleCaptions();
+      if (e.key === "c" && !captionsSilent) toggleCaptions();
       if (e.key === "m") toggleMute();
       if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
       // Match every other transport (the tap zones and the on-screen skip
@@ -2406,7 +2444,7 @@ export function VideoPlayer({
     };
   }, [onClose, enterFullscreen, toggleMute, togglePlay, skip, resetHideTimer,
       poppedOut, togglePictureInPicture, nudgeVolume, card, closeCard,
-      captionsAvailable, toggleCaptions]);
+      captionsAvailable, captionsSilent, toggleCaptions]);
 
   const span = Math.max(1, barEnd - barStart);
   // Priority: the live drag, then a seek in flight, then where playback is.
@@ -2484,7 +2522,7 @@ export function VideoPlayer({
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
-    captionSourceAt, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
+    captionSourceAt, captionsAvailable, captionsSilent, captionsOn, toggleCaptions, surfaceTime,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable: stage.volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -2672,7 +2710,7 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
     showControls, resetHideTimer, handleSurfaceClick, holdControls,
     loading, combinedError, onClose, waiting, waitPct,
     poppedOut, togglePictureInPicture, enterFullscreen,
-    captionSourceAt, captionsAvailable, captionsOn, toggleCaptions, surfaceTime,
+    captionSourceAt, captionsAvailable, captionsSilent, captionsOn, toggleCaptions, surfaceTime,
     paused, togglePlay, skip, skipBurst, muted, toggleMute,
     volume, changeVolume, volumeSettable,
     isLive, atLiveEdge, goLive, title, subtitle, program, programRemaining, sourceNote,
@@ -3338,30 +3376,30 @@ function Stage({ view, pip }: { view: PlayerView; pip: boolean }) {
                 )}
               </div>
 
-              {/* Always in the row, live only once a cue has been seen.
-                  Captions take a second or so to prove themselves — the first
-                  cue is what `captionsAvailable` waits for — and a button that
-                  appeared partway through the controls shifting sideways
-                  underneath the pointer. Present and dimmed says "this stream
-                  has no captions" where an absent button said nothing at all,
-                  and the row stops moving. One rule still covers every case:
-                  a transcode has no caption source, uncaptioned programming
+              {/* Always in the row, and live from the start. A viewer who
+                  presses CC before the first cue has arrived gets captions
+                  when they do; the button only greys out once the stream has
+                  been silent long enough for "no captions" to be the truth
+                  rather than a guess. It used to appear a second or so into a
+                  captioned stream, which moved the controls either side of it
+                  under the pointer. One rule still covers every case: a
+                  transcode has no caption source, uncaptioned programming
                   never produces a cue, and a fall back to the transcode
-                  mid-session dims the button again. */}
+                  mid-session starts the clock again. */}
               <button
-                onClick={(e) => { e.stopPropagation(); if (captionsAvailable) toggleCaptions(); }}
-                disabled={!captionsAvailable}
+                onClick={(e) => { e.stopPropagation(); if (!captionsSilent) toggleCaptions(); }}
+                disabled={captionsSilent}
                 className={`rounded-lg glass text-player-fg flex items-center justify-center transition
                 ${poppedOut ? "w-8 h-8" : "w-9 h-9"} ${captionsOn ? "bg-fill" : ""}
-                ${captionsAvailable ? "hover:bg-fill" : "opacity-40 cursor-default"}`}
+                ${captionsSilent ? "opacity-40 cursor-default" : "hover:bg-fill"}`}
                 /* Named with its key, the way the buttons either side of it
                    are. */
-                title={captionsAvailable
-                  ? (captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)")
-                  : "No closed captions on this stream"}
-                aria-label={captionsAvailable
-                  ? (captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)")
-                  : "No closed captions on this stream"}
+                title={captionsSilent
+                  ? "No CC data on this stream"
+                  : (captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)")}
+                aria-label={captionsSilent
+                  ? "No CC data on this stream"
+                  : (captionsOn ? "Hide closed captions (C)" : "Show closed captions (C)")}
                 aria-pressed={captionsOn}
               >
                 <ClosedCaption className="w-4 h-4" aria-hidden />

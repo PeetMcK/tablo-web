@@ -1,15 +1,16 @@
 /**
- * A control that is always there, and only live when it does something.
+ * A control that is always there, and live until the stream proves it is not.
  *
- * The rule under test is one clause — the surface has captions and has seen
- * one — and what makes it worth testing is the three different situations it
- * has to cover without knowing they are different: a transcode with no caption
- * source at all, a captioned stream before its first cue, and programming that
- * simply carries none.
+ * Captions announce themselves a second or two into speech, so a button that
+ * waits for the first cue is dead exactly when a viewer reaches for it - and
+ * it used to be absent until then, which moved the controls either side as it
+ * appeared. So it starts live: pressing it before the first cue turns
+ * captions on, and they show when they arrive.
  *
- * The button holds its place through all of them. It used to appear only once
- * a cue had been seen, which is a second or so into a captioned stream, and
- * the controls either side shifted as it arrived.
+ * Greying out is the slow path. Only after `CAPTION_SILENCE_MS` of a stream
+ * saying nothing does the button give up and say so, by which time "no
+ * captions" is the truth rather than a guess. A programme opening on a title
+ * card or a silent establishing shot must not trip it.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -47,8 +48,9 @@ function renderLive() {
   );
 }
 
-/** The button whatever state it is in. */
-const ccButton = () => screen.queryByLabelText(/closed captions/i) as HTMLButtonElement | null;
+/** The button whatever state it is in - it renames itself when it gives up. */
+const ccButton = () =>
+  screen.queryByLabelText(/closed captions|CC data/i) as HTMLButtonElement | null;
 /** The button once it actually does something - the label says which. */
 const findCc = () => screen.findByLabelText(/(Show|Hide) closed captions/i);
 
@@ -68,25 +70,70 @@ describe("the CC button", () => {
 
   afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); });
 
-  it("is present but dead while the stream has shown no captions", async () => {
+  it("is live before a single caption has been seen", async () => {
     wasm.open.mockResolvedValue(stubSurface("running", stubCaptions()));
     renderLive();
     await waitFor(() => expect(wasm.open).toHaveBeenCalled());
 
+    // The stream has said nothing yet, and nothing is not the same as none.
     const button = ccButton();
     expect(button).toBeTruthy();
-    expect(button!.disabled).toBe(true);
-    // Says why, rather than leaving a dimmed icon to be guessed at.
-    expect(button!.getAttribute("aria-label")).toBe("No closed captions on this stream");
+    expect(button!.disabled).toBe(false);
   });
 
-  it("is dead on a surface that cannot produce captions at all", async () => {
-    // No caption source is how the H.264 transcode fallback says it has none.
-    wasm.open.mockResolvedValue(stubSurface("running"));
-    renderLive();
-    await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+  it("gives up only after the stream has stayed silent", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      wasm.open.mockResolvedValue(stubSurface("running", stubCaptions()));
+      renderLive();
+      await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+      expect(ccButton()!.disabled).toBe(false);
 
-    expect(ccButton()!.disabled).toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(95_000); });
+
+      const button = ccButton()!;
+      expect(button.disabled).toBe(true);
+      // Says why, rather than leaving a dimmed icon to be guessed at.
+      expect(button.getAttribute("aria-label")).toBe("No CC data on this stream");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays live when a caption arrives during the wait", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const captions = stubCaptions();
+      captions.at = () => HELLO;
+      captions.allAt = () => [HELLO];
+      wasm.open.mockResolvedValue(stubSurface("running", captions));
+      renderLive();
+      await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+
+      // A title card's worth of silence, then speech.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      act(() => captions.announce());
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+
+      expect(ccButton()!.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up on a surface that cannot produce captions at all", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // No caption source is how the H.264 transcode fallback says it has none.
+      wasm.open.mockResolvedValue(stubSurface("running"));
+      renderLive();
+      await waitFor(() => expect(wasm.open).toHaveBeenCalled());
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(95_000); });
+      expect(ccButton()!.disabled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("appears once a caption has been seen", async () => {
@@ -96,21 +143,20 @@ describe("the CC button", () => {
     expect(await findCc()).toBeTruthy();
   });
 
-  it("comes alive mid-playback, when the first cue arrives a second in", async () => {
+  it("shows captions switched on before the first cue arrived", async () => {
     const captions = stubCaptions();
-    // Cues are there; the stream has simply not announced itself yet.
+    // Cues are there; the stream has simply not announced itself yet, which
+    // is the moment a viewer reaching for CC used to get a dead control.
     captions.at = () => HELLO;
     captions.allAt = () => [HELLO];
     wasm.open.mockResolvedValue(stubSurface("running", captions));
     renderLive();
     await waitFor(() => expect(wasm.open).toHaveBeenCalled());
-    expect(ccButton()!.disabled).toBe(true);
 
+    fireEvent.click(ccButton()!);
     act(() => captions.announce());
 
-    // Alive, and in the place it has occupied the whole time.
-    expect(await findCc()).toBeTruthy();
-    expect(ccButton()!.disabled).toBe(false);
+    expect(await screen.findByText("HELLO")).toBeTruthy();
   });
 
   it("toggles captions on and off", async () => {
