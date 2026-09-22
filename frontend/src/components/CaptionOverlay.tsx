@@ -18,30 +18,20 @@
  * `allAt` on the source.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { placeInSafeArea, windowWidthPercent } from "../lib/captions/safeArea";
 import type { PositionedCue } from "../lib/captions";
 import { DOCUMENT_FRAMES, startFrameLoop } from "../lib/playbackSurface";
 import type { CaptionSource, FrameSource } from "../lib/playbackSurface";
-import { CHROME_BOTTOM_BAND_PX } from "../lib/playerChrome";
+import { CHROME_BOTTOM_BAND_PX, CHROME_CLEARANCE_PX, liftToClearChrome }
+  from "../lib/playerChrome";
 
 /** Where captions sit when nothing is in their way — a television's height. */
 const RESTING_BOTTOM = "12%";
 
 /** A little air between the caption box and the top of the transport band. */
-const CLEARANCE_PX = 8;
-
-/**
- * How far up the frame a positioned window has to be before the transport
- * stops being its problem.
- *
- * Below this, a broadcaster's window is in the same territory as the scrubber
- * and gets the same treatment as an unpositioned caption; above it, the
- * controls are nowhere near and moving the caption would be the surprising
- * thing.
- */
-const NEAR_BOTTOM_PERCENT = 75;
+const CLEARANCE_PX = CHROME_CLEARANCE_PX;
 
 const boxClasses =
   "rounded px-3 py-1 text-white text-base sm:text-lg md:text-xl " +
@@ -59,6 +49,14 @@ interface Shown {
 }
 
 const EMPTY: Shown = { cea608: [], cea708: [], comparing: false };
+
+/** The window's geometry in a few characters, for the compare badge. */
+function describeRegion(cue: PositionedCue): string {
+  const region = cue.region;
+  if (!region) return " unplaced";
+  return ` ${region.anchor}@${Math.round(region.xPercent)},${Math.round(region.yPercent)}`
+    + ` ${region.columns}/${region.gridColumns}c ${region.align}`;
+}
 
 /** Cheap identity for "has anything on screen actually changed". */
 function fingerprint(shown: Shown): string {
@@ -196,6 +194,44 @@ function Window({
   // unpositioned 608 screen is centred, as captions have always been.
   const align = cue.region && !floor ? cue.region.align : "center";
 
+  /**
+   * How far the box actually intrudes into the transport band, in pixels.
+   *
+   * Measured rather than guessed. This used to lift any window anchored below
+   * three quarters of the frame, by the whole height of the band - a rule
+   * that knows the window's anchor but not where the box ends up, and so
+   * threw captions a hundred and fifty pixels up the picture to clear a bar
+   * they were already well above. A box either overlaps the controls or it
+   * does not, and when it does the amount it overlaps by is exactly how far
+   * it needs to move.
+   */
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [overlap, setOverlap] = useState(0);
+
+  useLayoutEffect(() => {
+    const element = boxRef.current;
+    if (!element) return;
+    if (!raised) { setOverlap(0); return; }
+
+    const measure = () => {
+      const stage = element.offsetParent as HTMLElement | null;
+      const stageRect = stage?.getBoundingClientRect();
+      if (!stageRect?.height) return;
+
+      const rect = element.getBoundingClientRect();
+      // Back out the lift already applied, or each measurement would be of
+      // the box in its lifted position and the two would chase each other.
+      const next = liftToClearChrome(rect.bottom + overlap, stageRect.bottom);
+      setOverlap((was) => (Math.abs(was - next) > 1 ? next : was));
+    };
+
+    measure();
+    // The box moves when the window does, and a caption that cleared the
+    // controls at one size may not at another.
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [raised, overlap, cue.text, cue.region, floor]);
+
   const box = (
     <div
       className={`${boxClasses} ${background ? "" : "bg-black/75"} ${tint ?? ""} relative
@@ -204,11 +240,14 @@ function Window({
     >
       {badge ? (
         <span
-          className="absolute -top-2 -left-2 rounded bg-white px-1 text-[10px]
-                     font-bold text-black"
+          className="absolute -top-4 left-0 whitespace-nowrap rounded bg-white
+                     px-1 text-[10px] font-bold text-black"
           data-caption-badge={badge}
         >
-          {badge}
+          {/* The geometry, on the picture. Comparing placement means reading
+              four numbers, and a diagnostic that needs the console open to
+              answer its own question is half a diagnostic. */}
+          {badge}{describeRegion(cue)}
         </span>
       ) : null}
       {cue.text.split("\n").map((row, i) => (
@@ -224,14 +263,11 @@ function Window({
     // The window's own width, in the broadcaster's cells. Without it the box
     // shrinks to its text and both the shape and the anchoring go wrong.
     const width = `${windowWidthPercent(cue.region.columns, cue.region.gridColumns)}%`;
-    // A window the broadcaster put down by the scrubber gets the same lift an
-    // unpositioned caption does; one higher up is left where it was asked to
-    // be, because the controls are nowhere near it.
-    const nearBottom = cue.region.yPercent >= NEAR_BOTTOM_PERCENT;
-    const lift = raised && nearBottom ? ` translateY(-${CHROME_BOTTOM_BAND_PX}px)` : "";
+    const lift = overlap > 0 ? ` translateY(-${overlap}px)` : "";
 
     return (
       <div
+        ref={boxRef}
         className="absolute flex pointer-events-none
                    transition-transform duration-300"
         style={{
@@ -241,7 +277,7 @@ function Window({
           justifyContent: JUSTIFY[cue.region.align],
           transform: `${placement.transform}${lift}`,
         }}
-        data-raised={raised && nearBottom ? "true" : "false"}
+        data-raised={overlap > 0 ? "true" : "false"}
         data-positioned="true"
         data-caption-standard={badge}
         aria-live="polite"

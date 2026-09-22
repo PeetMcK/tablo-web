@@ -15,3 +15,25 @@
  * legible over arbitrary video.
  */
 export const CHROME_BOTTOM_BAND_PX = 132;
+
+/** A little air between whatever is being cleared and the band's top edge. */
+export const CHROME_CLEARANCE_PX = 8;
+
+/**
+ * How far something must rise to clear the transport, in CSS pixels.
+ *
+ * Zero unless it actually overlaps. Captions used to be lifted on a rule
+ * about where the broadcaster anchored them - anything below three quarters
+ * of the frame moved, and moved by the whole height of the band - which knows
+ * the anchor but not where the box ends up. A caption sitting comfortably
+ * above the controls would jump a hundred and fifty pixels up the picture to
+ * clear a bar it was never near. Whether two boxes overlap is a question
+ * about their edges, and the answer is also the distance.
+ *
+ * Both arguments are viewport coordinates, as `getBoundingClientRect` gives
+ * them.
+ */
+export function liftToClearChrome(boxBottom: number, stageBottom: number): number {
+  const bandTop = stageBottom - (CHROME_BOTTOM_BAND_PX + CHROME_CLEARANCE_PX);
+  return Math.max(0, Math.round(boxBottom - bandTop));
+}
