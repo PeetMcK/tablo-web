@@ -3,7 +3,7 @@ import { api, type GuideChannel, type GridChannel, type SearchItem } from "../ap
 import { recordingFor, useRecordingsInProgress } from "../lib/useRecordingsInProgress";
 import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
-import { Inbox, Search, X } from "lucide-react";
+import { Funnel, Inbox, Search, X } from "lucide-react";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import type { ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
@@ -15,10 +15,12 @@ import { GuideGridView, type GuideJumpTarget } from "./GuideGridView";
 import { AppMenu } from "./AppMenu";
 import { HeaderClock } from "./HeaderClock";
 import { SearchDropdown } from "./SearchDropdown";
+import { SearchModeToggle } from "./SearchModeToggle";
 import { SearchResultsView } from "./SearchResultsView";
 import { CommandPalette } from "./CommandPalette";
 import { SettingsModal } from "./SettingsModal";
 import { onRoutePop, parseRoute, writeRoute, type Tab } from "../lib/route";
+import { useTopbarMode, useTopbarQuery, type TopbarMode } from "../lib/topbarMemory";
 
 function useGuideStream(enabled: boolean) {
   const [channels, setChannels] = useState<GuideChannel[]>([]);
@@ -112,9 +114,10 @@ export function ChannelGrid({ onLogout }: Props) {
   // route opened directly on the search tab — `writeRoute` only ever
   // writes `q` for that tab (see the effect below), so `initialRoute.q`
   // is otherwise noise.
-  const [filter, setFilter] = useState(() =>
+  const [filter, setFilter] = useTopbarQuery(
     initialRoute.tab === "search" ? initialRoute.q ?? "" : ""
   );
+  const [mode, setMode] = useTopbarMode();
   // Whether the results dropdown should be showing. Deliberately NOT derived
   // from the input's real DOM focus state: the dropdown's own mousedown guard
   // (below) keeps the input DOM-focused through a click on a result, so a
@@ -331,7 +334,9 @@ export function ChannelGrid({ onLogout }: Props) {
     // this call is always "live" in the branch above that just set it, so
     // the value set two lines up survives.
     goToTab(tab);
-  }, [channels, goToTab]);
+    // `setFilter` listed for the same reason as in `collapseSearch` below: a
+    // stable callback the linter cannot prove is one.
+  }, [channels, goToTab, setFilter]);
 
   const handleSearchSeeAll = useCallback(() => {
     setSearchOpen(false);
@@ -340,12 +345,18 @@ export function ChannelGrid({ onLogout }: Props) {
 
   const closeSearch = useCallback(() => setSearchOpen(false), []);
 
-  /** Collapse the phone search back to its icon, dropping the query with it. */
+  /**
+   * Collapse the phone search back to its icon, dropping the query with it.
+   *
+   * `setFilter` is in the deps because it is a callback now rather than a
+   * `useState` setter the linter knows is stable — it is stable all the same
+   * (see `lib/topbarMemory`), so listing it changes nothing but the warning.
+   */
   const collapseSearch = useCallback(() => {
     setSearchExpanded(false);
     setSearchOpen(false);
     setFilter("");
-  }, []);
+  }, [setFilter]);
 
   // Focus follows the expansion: tapping the icon should put the caret in the
   // field, not merely reveal it. Effect rather than `autoFocus`, which only
@@ -368,10 +379,34 @@ export function ChannelGrid({ onLogout }: Props) {
     handleSearchActivate(item);
   }, [handleSearchActivate]);
 
+  /**
+   * Which tabs have a list worth narrowing.
+   *
+   * The Guide is out until it can filter on the whole visible window rather
+   * than on whatever happens to be airing this minute — narrowing a grid by
+   * `current_program` would hide a channel that has the match forty minutes
+   * from now, which is the case people actually want. The results page is out
+   * because it already IS the query.
+   */
+  const filterable = activeTab === "live" || activeTab === "library" || activeTab === "series";
+  const effectiveMode: TopbarMode = filterable ? mode : "search";
+  /** The text, if it is doing the narrowing job; otherwise nothing is narrowed. */
+  const pageFilter = effectiveMode === "filter" ? filter : "";
+
+  /**
+   * What the box calls itself: the mode AND the tab, because "Filter
+   * recordings…" over the Live list would be a lie about what it narrows.
+   */
+  const boxLabel = effectiveMode === "search"
+    ? "Search programs, channels"
+    : activeTab === "live" ? "Filter channels"
+    : activeTab === "library" ? "Filter recordings"
+    : "Filter series";
+
   const filtered = channels.filter(ch => {
     if (!matchesContentFilter(ch, contentFilter)) return false;
-    if (!filter) return true;
-    const q = filter.toLowerCase();
+    if (!pageFilter) return true;
+    const q = pageFilter.toLowerCase();
     return (
       ch.call_sign.toLowerCase().includes(q) ||
       ch.network.toLowerCase().includes(q) ||
@@ -570,13 +605,18 @@ export function ChannelGrid({ onLogout }: Props) {
             {phone && !searchExpanded && (
               <button
                 onClick={() => setSearchExpanded(true)}
-                aria-label="Search"
+                /* The glyph is the state, here as in the switch itself: closed,
+                   this icon is the only thing on screen saying which job the
+                   box would do if it were open. */
+                aria-label={effectiveMode === "search" ? "Search" : "Filter this page"}
                 aria-expanded={false}
                 className="touch-target shrink-0 flex items-center justify-center p-2.5 rounded-xl bg-fill-soft border border-border-subtle
                            text-fg-muted hover:text-fg-secondary hover:bg-fill transition
                            focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
-                <Search className="w-4 h-4" aria-hidden />
+                {effectiveMode === "search"
+                  ? <Search className="w-4 h-4" aria-hidden />
+                  : <Funnel className="w-4 h-4" aria-hidden />}
               </button>
             )}
 
@@ -588,7 +628,11 @@ export function ChannelGrid({ onLogout }: Props) {
                 open, the field is what sits next to the mark, and without it
                 the two touched. */}
             <div className={`relative flex-1 max-w-sm ${searchExpanded ? "ml-4" : ""} ${phone && !searchExpanded ? "hidden" : ""}`}>
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
+              <SearchModeToggle
+                value={mode}
+                onChange={setMode}
+                filterDisabled={!filterable}
+              />
               <input
                 ref={searchInputRef}
                 type="text"
@@ -597,15 +641,31 @@ export function ChannelGrid({ onLogout }: Props) {
                 onFocus={() => setSearchOpen(true)}
                 onBlur={() => setSearchOpen(false)}
                 onKeyDown={e => {
+                  // Enter belongs to the search: it is the one mode with
+                  // somewhere else to go. Filtering already happened on the
+                  // keystroke before it.
+                  if (e.key === "Enter") {
+                    if (effectiveMode === "search" && filter.trim()) handleSearchSeeAll();
+                    return;
+                  }
                   if (e.key !== "Escape") return;
                   // One Escape, one dismissal: on a phone the field IS the
                   // row, so leaving it open with the dropdown gone would hide
                   // the tabs behind an empty box.
-                  if (searchExpanded) collapseSearch(); else closeSearch();
+                  if (searchExpanded) { collapseSearch(); return; }
+                  // Filtering has no dropdown to dismiss, so Escape means what
+                  // it meant in the Library's own filter: the text is the only
+                  // thing standing between the viewer and the whole page, so
+                  // the way out of the field is the way back to everything.
+                  if (effectiveMode === "filter") { setFilter(""); return; }
+                  closeSearch();
                 }}
-                placeholder="Search programs, channels..."
-                aria-label="Search programs, channels"
-                className={`w-full pl-10 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                placeholder={`${boxLabel}...`}
+                aria-label={boxLabel}
+                /* `pl-[4.5rem]`: two 28px buttons, a 2px gap and the 6px the
+                   group is inset by is 64px of cap, plus the 8px of air the
+                   text always had after the lone icon. */
+                className={`w-full pl-[4.5rem] py-2.5 rounded-xl bg-fill-soft border border-border-subtle
                            text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
                            focus:bg-fill transition shadow-inner ${filter ? "pr-10" : "pr-4"}`}
               />
@@ -617,8 +677,8 @@ export function ChannelGrid({ onLogout }: Props) {
                 <button
                   onMouseDown={e => e.preventDefault()}
                   onClick={() => { setFilter(""); searchInputRef.current?.focus(); }}
-                  title="Clear search"
-                  aria-label="Clear search"
+                  title={effectiveMode === "search" ? "Clear search" : "Clear filter"}
+                  aria-label={effectiveMode === "search" ? "Clear search" : "Clear filter"}
                   className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
                              flex items-center justify-center text-fg-muted
                              hover:text-fg hover:bg-fill transition
@@ -632,7 +692,8 @@ export function ChannelGrid({ onLogout }: Props) {
                   three-row summary of it over the top says less and hides
                   more. Everywhere else the dropdown is the only answer
                   there is. */}
-              {searchOpen && activeTab !== "search" && filter.trim().length >= 2 && (
+              {searchOpen && effectiveMode === "search" && activeTab !== "search"
+               && filter.trim().length >= 2 && (
                 // Keeps the input focused through the click so `onBlur` above
                 // does not dismiss the dropdown before `onActivate` fires.
                 <div onMouseDown={e => e.preventDefault()}>
@@ -757,13 +818,17 @@ export function ChannelGrid({ onLogout }: Props) {
                   already on this tab genuinely remounts. Without it the panel
                   keeps the route it snapshotted at its own mount and the
                   activation silently does nothing. */}
-              <LibraryView key={libraryActivation} />
+              <LibraryView
+                key={libraryActivation}
+                query={pageFilter}
+                onClearQuery={() => setFilter("")}
+              />
             </div>
           )}
 
           {activeTab === "series" && (
             <div className="flex flex-col flex-1 min-h-0">
-              <RecordingsView />
+              <RecordingsView query={pageFilter} />
             </div>
           )}
 

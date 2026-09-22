@@ -17,6 +17,17 @@ const EMPTY: SearchResponse = {
   query: "", coverage: { since: null, last_sync: null }, groups: [],
 };
 
+/**
+ * Put the topbar box in the job these tests are about.
+ *
+ * It does two now — narrowing the page, or searching everything — and it opens
+ * on the filter, which deliberately shows no dropdown at all. Everything below
+ * that renders a `ChannelGrid` is testing the search half.
+ */
+function searchMode() {
+  localStorage.setItem("tablo:topbar.mode", "search");
+}
+
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
@@ -211,6 +222,9 @@ describe("ChannelGrid search wiring", () => {
     // The route hash persists across tests in jsdom; pin it so every test
     // here starts on Live TV regardless of what an earlier test left behind.
     window.history.replaceState(null, "", "#/live");
+    // The topbar box does two jobs now and opens on the filter, which shows no
+    // dropdown at all. Everything below is about the search half of it.
+    searchMode();
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -415,6 +429,7 @@ function mockLibraryApis() {
 }
 
 describe("ChannelGrid library search handoff", () => {
+  beforeEach(searchMode);
   afterEach(() => vi.restoreAllMocks());
 
   it("opens a recording activated from search while already on Library", async () => {
@@ -567,7 +582,10 @@ const AIRING_GROUPED: SearchResponse = {
 };
 
 describe("ChannelGrid guide search handoff", () => {
-  beforeEach(() => window.history.replaceState(null, "", "#/live"));
+  beforeEach(() => {
+    window.history.replaceState(null, "", "#/live");
+    searchMode();
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("opens the show sheet for an upcoming airing picked from search", async () => {
@@ -604,7 +622,10 @@ describe("ChannelGrid guide search handoff", () => {
 });
 
 describe("the topbar dropdown and the results page", () => {
-  beforeEach(() => window.history.replaceState(null, "", "#/live"));
+  beforeEach(() => {
+    window.history.replaceState(null, "", "#/live");
+    searchMode();
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("stands down on the search tab, where the page already answers", async () => {

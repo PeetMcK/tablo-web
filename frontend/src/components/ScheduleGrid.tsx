@@ -79,7 +79,10 @@ function Row({ row }: { row: ScheduleRow }) {
   );
 }
 
-export function ScheduleGrid() {
+export function ScheduleGrid({ query }: {
+  /** What to narrow to, from the topbar's box; empty while it is searching. */
+  query: string;
+}) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["schedule"],
     queryFn: api.series.schedule,
@@ -99,12 +102,19 @@ export function ScheduleGrid() {
 
   const rows = useMemo(() => data ?? [], [data]);
   const visible = useMemo(
-    () =>
-      rows.filter((r) => {
+    () => {
+      const needle = query.trim().toLowerCase();
+      return rows.filter((r) => {
         const g = stateMarker(r.state, r.skip_reason).group;
-        return g === null || enabled.has(g); // recording (null) always shown
-      }),
-    [rows, enabled],
+        if (g !== null && !enabled.has(g)) return false; // recording (null) always shown
+        if (!needle) return true;
+        // The series title and the episode's own: an upcoming airing is as
+        // often remembered by the episode as by the show it belongs to.
+        return r.series_title.toLowerCase().includes(needle)
+          || (r.title?.toLowerCase().includes(needle) ?? false);
+      });
+    },
+    [rows, enabled, query],
   );
 
   const groups = useMemo(() => {

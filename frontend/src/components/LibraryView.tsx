@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, Funnel, ImageOff, Loader2, Lock, LockOpen, MonitorDown, Pause, Radio, Trash2, X } from "lucide-react";
+import { AlertTriangle, Play, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Loader2, Lock, LockOpen, MonitorDown, Pause, Radio, Trash2, X } from "lucide-react";
 import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import { OptionMenu } from "./OptionMenu";
@@ -15,7 +15,6 @@ import { cacheEta } from "../lib/cacheEta";
 import { LayoutToggle } from "./LayoutToggle";
 import { RecordingRow } from "./RecordingRow";
 import { usePref } from "../lib/usePref";
-import { useStoredText } from "../lib/useStoredText";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { formatAired } from "../lib/format";
@@ -141,7 +140,25 @@ function dayTint(iso: string, alpha?: number): string {
     : `rgb(var(--c-day-${day}) / ${alpha})`;
 }
 
-export function LibraryView() {
+export function LibraryView({ query, onClearQuery }: {
+  /**
+   * What to narrow the library to, decided by the topbar's one box.
+   *
+   * Empty whenever that box is searching rather than filtering, so this
+   * component never has to know the mode exists. The text itself outlives a
+   * reload — see `lib/topbarMemory` for where it is kept and why there.
+   */
+  query: string;
+  /**
+   * Empty that box from here.
+   *
+   * Only the "Nothing Matches" state uses it, and it has to: that state offers
+   * one button to undo every narrowing at once, and a button that cleared the
+   * content filter while leaving the text would put the viewer back in front
+   * of the same empty page having been told it was fixed.
+   */
+  onClearQuery: () => void;
+}) {
   // Opening the series behind a recording, from its sheet.
   const { openSeries, drawer: seriesDrawer } = useSeriesDrawer();
   const [playing, setPlaying] = useState<Recording | null>(null);
@@ -159,53 +176,17 @@ export function LibraryView() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const playingRef = useRef<Recording | null>(null);
   /**
-   * The toolbar's two controls.
-   *
-   * Deliberately not in the URL. The header's search is a route — it names a
-   * results page anyone can link to — where these two narrow a page already
-   * open.
-   *
-   * The filter text does survive a reload, in this browser. It was momentary
-   * on the reasoning that restoring it tomorrow would open the Library on a
-   * question nobody asked, and that still holds for tomorrow — but a refresh
-   * is not tomorrow. It is the same sitting, usually right after something
-   * changed on screen, and losing the filter there means typing it again to
-   * get back to where you already were. Kept locally rather than on the
-   * server, unlike grouping and order: how a person reads the page should
-   * follow them between machines, where what they are squinting at this
-   * minute should not.
+   * The content filter, deliberately not in the URL. The header's search is a
+   * route — it names a results page anyone can link to — where this narrows a
+   * page already open.
    */
-  const [query, setQuery] = useStoredText("tablo:library.filter");
   const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   /**
-   * Whether the filter is a field or an icon, and the width that decides.
-   *
-   * Only below 640px is there a choice to make: above it the field, the
-   * content filter and the two menus all fit the row, and an icon that has to
-   * be opened would be a step where there was none.
+   * The width at which the Group and Sort menus drop their prefixes: below
+   * 640px the row cannot hold "Group Show" and "Sort Newest" beside the
+   * content filter.
    */
   const phone = useMediaQuery("(max-width: 639px)");
-  const [filterExpanded, setFilterExpanded] = useState(false);
-  const filterInputRef = useRef<HTMLInputElement>(null);
-
-  /** Give the row back, dropping the query with it. */
-  const collapseFilter = useCallback(() => {
-    setFilterExpanded(false);
-    setQuery("");
-  }, [setQuery]);
-
-  // Focus follows the expansion: tapping the icon should put the caret in the
-  // field, not merely reveal it. An effect rather than `autoFocus`, which only
-  // fires on mount and would do nothing the second time it is opened.
-  useEffect(() => {
-    if (filterExpanded) filterInputRef.current?.focus();
-  }, [filterExpanded]);
-
-  // Widening the window while the field is open would otherwise leave the row
-  // carrying a close button it no longer needs.
-  useEffect(() => {
-    if (!phone) setFilterExpanded(false);
-  }, [phone]);
   /**
    * How the page is laid out, which — unlike the two above — is remembered.
    *
@@ -669,94 +650,15 @@ export function LibraryView() {
         />
       )}
 
-      {/* Above the first day's rule, because it narrows every day below it and
-          not the one it sits over.
+      {/* Above the first day’s rule, because these narrow every day below
+          them and not the one they sit over.
 
-          The field and the menu, in that order, and sized so the pair reads as
-          one control: the field takes the room it can up to `max-w-sm` — the
-          same ceiling the header's search uses — and the menu keeps its
-          natural width beside it. `flex-wrap` so the menu drops under the field
-          at phone width rather than squeezing it to nothing. */}
+          The text filter is not here any more: it shares the topbar’s field
+          with the search, which is where the duplicate went. What is left
+          groups and orders what that field left behind. `flex-wrap` so the
+          menus stack at phone width rather than squeezing each other to
+          nothing. */}
       <div data-library-toolbar className="flex flex-wrap items-center gap-3 mb-4">
-        {/* Closed on a phone, the field is an icon at the head of the row —
-            the same move the topbar search makes, and for the same reason: a
-            full-width field, the content filter and two menus cannot share a
-            400px row, and the field is the one of them that is empty most of
-            the time.
-
-            Hidden rather than unmounted: the input's value IS the filter, and
-            unmounting it would drop the query every time the row narrowed. */}
-        {phone && !filterExpanded && (
-          <button
-            onClick={() => setFilterExpanded(true)}
-            aria-label="Filter recordings"
-            aria-expanded={false}
-            className="touch-target shrink-0 flex items-center justify-center p-2.5 rounded-xl
-                       bg-fill-soft border border-border-subtle text-fg-muted
-                       hover:text-fg-secondary hover:bg-fill transition
-                       focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            <Funnel className="w-4 h-4" aria-hidden />
-          </button>
-        )}
-        <div className={`relative flex-1 min-w-48 max-w-sm
-                         ${phone && !filterExpanded ? "hidden" : ""}`}>
-          {/* A funnel, not a spyglass: this narrows what is already here,
-              where the topbar's spyglass goes and finds things. Two controls
-              on one screen wearing the same icon read as the same control. */}
-          <Funnel className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
-          <input
-            ref={filterInputRef}
-            type="search"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            // Escape clears rather than blurs: the field holds the only thing
-            // standing between the viewer and the whole library, so the way
-            // out of it should be the way back to everything. On a phone the
-            // field IS the row, so one Escape gives the row back too.
-            onKeyDown={e => {
-              if (e.key !== "Escape") return;
-              if (phone && filterExpanded) collapseFilter(); else setQuery("");
-            }}
-            placeholder="Filter recordings..."
-            aria-label="Filter recordings"
-            className={`w-full pl-10 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
-                       text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
-                       focus:bg-fill transition shadow-inner ${query ? "pr-10" : "pr-4"}`}
-          />
-          {/* Escape empties it for a keyboard and the phone layout collapses
-              the whole row, but a pointer had nothing to aim at - and this is
-              the one control that hides things until it is cleared, now that
-              it also outlives a reload. */}
-          {query && (
-            <button
-              onClick={() => { setQuery(""); filterInputRef.current?.focus(); }}
-              title="Clear filter"
-              aria-label="Clear filter"
-              className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
-                         flex items-center justify-center text-fg-muted
-                         hover:text-fg hover:bg-fill transition
-                         focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              <X className="w-4 h-4" aria-hidden />
-            </button>
-          )}
-        </div>
-        {/* The way back to the row. Dropping the query with it: a filter left
-            behind an icon is a library missing recordings for no reason
-            anyone can see. */}
-        {phone && filterExpanded && (
-          <button
-            onMouseDown={e => e.preventDefault()}
-            onClick={collapseFilter}
-            aria-label="Close filter"
-            className="touch-target shrink-0 flex items-center justify-center p-2.5 rounded-xl
-                       text-fg-muted hover:text-fg-secondary hover:bg-fill-soft transition
-                       focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            <X className="w-4 h-4" aria-hidden />
-          </button>
-        )}
         <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
 
         {/* What narrows the page on the left, what arranges it on the right.
@@ -829,7 +731,7 @@ export function LibraryView() {
               Nothing Matches
             </p>
             <button
-              onClick={() => { setQuery(""); setContentFilter("all"); }}
+              onClick={() => { onClearQuery(); setContentFilter("all"); }}
               className="touch-target px-4 py-2 rounded-xl glass text-xs font-bold uppercase
                          tracking-widest text-fg-muted hover:text-fg hover:bg-fill transition"
             >
