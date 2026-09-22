@@ -1144,6 +1144,23 @@ describe("what the artwork offers", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith(90203, true));
   });
 
+  it("draws the eye the recording is in, not the one the click makes", async () => {
+    // Watched wears an open eye; unwatched wears the struck-through one. Same
+    // rule as the lock beside it, and as the series panel's episode rows.
+    renderWith({ ...FINISHED, object_id: 90213, watched: true });
+
+    const toggle = await screen.findByRole("button", { name: "Mark unwatched" });
+    expect(toggle.querySelector(".lucide-eye")).toBeTruthy();
+    expect(toggle.querySelector(".lucide-eye-off")).toBeNull();
+  });
+
+  it("draws a struck-through eye on one not yet watched", async () => {
+    renderWith({ ...FINISHED, object_id: 90214, watched: false });
+
+    expect((await screen.findByRole("button", { name: "Mark watched" }))
+      .querySelector(".lucide-eye-off")).toBeTruthy();
+  });
+
   it("draws the lock the recording is in, not the one the click makes", async () => {
     // A protected recording wears a CLOSED lock. Drawing the act instead — an
     // open lock, because clicking opens it — reads at a glance as

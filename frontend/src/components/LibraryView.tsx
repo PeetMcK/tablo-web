@@ -1136,9 +1136,14 @@ export function LibraryView() {
                         className="z-20 w-7 h-7 rounded-full glass flex items-center justify-center
                                    text-media-fg hover:bg-fill transition"
                       >
+                        {/* The glyph shows the STATE, as the lock beside it
+                            does: an open eye means this has been watched, a
+                            struck-through one means it has not. The act is in
+                            the name and the tooltip. The series panel's
+                            episode rows have always drawn it this way. */}
                         {rec.watched
-                          ? <EyeOff className="w-3.5 h-3.5" aria-hidden />
-                          : <Eye className="w-3.5 h-3.5" aria-hidden />}
+                          ? <Eye className="w-3.5 h-3.5" aria-hidden />
+                          : <EyeOff className="w-3.5 h-3.5" aria-hidden />}
                       </button>
                       <button
                         onClick={(e) => {
