@@ -42,15 +42,17 @@ describe("the worker's caption messages", () => {
   it("posts cues stamped with the current epoch", async () => {
     const { posted, handle, emitOutput } = harness();
     await handle({ type: "open" });
-    emitOutput({ video: [], audio: [], captions: [cue] });
+    emitOutput({ video: [], audio: [], captions: [cue], captions708: [] });
 
-    expect(posted).toContainEqual({ type: "captions", cues: [cue], epoch: 0 });
+    expect(posted).toContainEqual(
+      { type: "captions", cues: [cue], epoch: 0, source: "cea608" },
+    );
   });
 
   it("says nothing when a read round produced no captions", async () => {
     const { posted, handle, emitOutput } = harness();
     await handle({ type: "open" });
-    emitOutput({ video: [], audio: [], captions: [] });
+    emitOutput({ video: [], audio: [], captions: [], captions708: [] });
 
     expect(posted.some((m) => m.type === "captions")).toBe(false);
   });
@@ -59,8 +61,10 @@ describe("the worker's caption messages", () => {
     const { posted, handle, emitOutput } = harness();
     await handle({ type: "open" });
     await handle({ type: "reset", epoch: 4 });
-    emitOutput({ video: [], audio: [], captions: [cue] });
+    emitOutput({ video: [], audio: [], captions: [cue], captions708: [] });
 
-    expect(posted).toContainEqual({ type: "captions", cues: [cue], epoch: 4 });
+    expect(posted).toContainEqual(
+      { type: "captions", cues: [cue], epoch: 4, source: "cea608" },
+    );
   });
 });

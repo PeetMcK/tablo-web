@@ -43,9 +43,15 @@ describe("extractCcData", () => {
       [false, 0, 0xfa, 0x00],  // padding
     ]));
 
-    expect(extractCcData(bytes)).toEqual([
+    const out = extractCcData(bytes);
+    expect(out.cea608).toEqual([
       { field: 0, a: 0x4f, b: 0xc4 },
       { field: 1, a: 0x80, b: 0x80 },
+    ]);
+    // DTVCC is kept now rather than dropped: it is how CEA-708 travels.
+    expect(out.dtvcc).toEqual([
+      { field: 3, a: 0xc2, b: 0x22 },
+      { field: 2, a: 0x4f, b: 0x44 },
     ]);
   });
 
@@ -54,36 +60,46 @@ describe("extractCcData", () => {
       ...SLICE,
       ...userData([[true, 0, 0x41, 0x42]]),
     ]);
-    expect(extractCcData(bytes)).toEqual([]);
+    expect(extractCcData(bytes)).toEqual({ cea608: [], dtvcc: [] });
   });
 
   it("ignores user data that is not ATSC A/53 captions", () => {
     const notGa94 = [0x00, 0x00, 0x01, 0xb2, 0x44, 0x54, 0x47, 0x31, 0x03, 0xc1, 0xff, 0xfc, 0x41, 0x42];
     const wrongTypeCode = [0x00, 0x00, 0x01, 0xb2, 0x47, 0x41, 0x39, 0x34, 0x06, 0xc1, 0xff, 0xfc, 0x41, 0x42];
-    expect(extractCcData(new Uint8Array(notGa94))).toEqual([]);
-    expect(extractCcData(new Uint8Array(wrongTypeCode))).toEqual([]);
+    expect(extractCcData(new Uint8Array(notGa94))).toEqual({ cea608: [], dtvcc: [] });
+    expect(extractCcData(new Uint8Array(wrongTypeCode))).toEqual({ cea608: [], dtvcc: [] });
   });
 
   it("refuses a block that claims more entries than it carries", () => {
     // Says four entries, carries one. Trusting the count would read past the
     // end and invent captions out of whatever followed.
     const truncated = [0x00, 0x00, 0x01, 0xb2, 0x47, 0x41, 0x39, 0x34, 0x03, 0xc4, 0xff, 0xfc, 0x41, 0x42];
-    expect(extractCcData(new Uint8Array(truncated))).toEqual([]);
+    expect(extractCcData(new Uint8Array(truncated))).toEqual({ cea608: [], dtvcc: [] });
   });
 
   it("honours a cleared process_cc_data_flag", () => {
     const body = userData([[true, 0, 0x41, 0x42]]);
     body[9] = 0x80 | 0x01;  // process_em_data set, process_cc_data clear
-    expect(extractCcData(new Uint8Array(body))).toEqual([]);
+    expect(extractCcData(new Uint8Array(body))).toEqual({ cea608: [], dtvcc: [] });
   });
 
   it("reads real broadcast bytes out of the 1080i fixture", () => {
     const bytes = new Uint8Array(readFileSync(FIXTURE));
     // The first user-data block in this capture. Verified by hand against the
     // file: 000001B2 "GA94" 03, twenty entries, four of them valid.
-    expect(extractCcData(bytes.subarray(708))).toEqual([
+    const out = extractCcData(bytes.subarray(708));
+    expect(out.cea608).toEqual([
       { field: 0, a: 0x4f, b: 0xc4 },
       { field: 1, a: 0x80, b: 0x80 },
+    ]);
+    // And the DTVCC entries alongside them, which is what CEA-708 is
+    // assembled from. Three in this picture: a packet start, its data, and
+    // the start of the next - one picture's worth of user data is free to
+    // carry the end of one packet and the beginning of another.
+    expect(out.dtvcc).toEqual([
+      { field: 3, a: 0xc2, b: 0x22 },
+      { field: 2, a: 0x4f, b: 0x44 },
+      { field: 3, a: 0x01, b: 0x00 },
     ]);
   });
 
@@ -97,9 +113,15 @@ describe("extractCcData", () => {
     }
     // One second of 29.97fps broadcast, captioned on every picture.
     expect(starts.length).toBe(31);
+    let dtvccSeen = 0;
     for (const start of starts) {
       const pairs = extractCcData(bytes.subarray(start));
-      expect(pairs.some((p) => p.field === 0)).toBe(true);
+      expect(pairs.cea608.some((p) => p.field === 0)).toBe(true);
+      dtvccSeen += pairs.dtvcc.length;
     }
+    // 708 rides alongside 608 here, though not on every single picture -
+    // DTVCC packets span pictures, so some carry only continuation and some
+    // carry none at all.
+    expect(dtvccSeen).toBeGreaterThan(0);
   });
 });

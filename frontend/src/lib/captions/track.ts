@@ -9,6 +9,7 @@
  */
 
 import Cea608Parser, { type CaptionScreen, type CueSink } from "./cea608";
+import { createReorderBuffer } from "./reorder";
 import type { CaptionCue, CcPair } from "./types";
 
 /**
@@ -46,22 +47,6 @@ class CueCollector implements CueSink {
   }
 }
 
-/**
- * How far behind the newest picture the parser is fed from.
- *
- * The decoder hands packets over in decode order, a read round at a time, and
- * MPEG-2 reorders for B-frames — so a picture that belongs earlier in display
- * order routinely arrives in the *next* round. Sorting within a round is not
- * enough, and 608 is a command stream: bytes in the wrong order spell the
- * wrong words. Measured against a live broadcast, "[cheers, applause]" came
- * out as "[cheerpps, alause]".
- *
- * So pairs wait until a picture half a second newer has arrived, which is well
- * past any display reordering distance — a handful of frames — and costs
- * nothing visible, because the decoder already runs seconds ahead of the
- * playhead.
- */
-export const REORDER_SECONDS = 0.5;
 
 export interface CaptionTrack {
   /**
@@ -98,24 +83,12 @@ export function createCaptionTrack(): CaptionTrack {
   const parser = new Cea608Parser(1, cc1, cc2);
   let seen = false;
 
-  /** Pairs waiting for their order to be settled, in arrival order. */
-  let pending: Array<{ seconds: number; pair: CcPair }> = [];
-  /** The newest picture time offered, which is what the wait is measured from. */
-  let newest = Number.NEGATIVE_INFINITY;
+  const pending = createReorderBuffer<CcPair>();
 
-  /** Feed everything at or before `upTo`, oldest first, and keep the rest. */
-  const feedThrough = (upTo: number) => {
-    if (!pending.length) return;
-    // Stable, so pairs from the same picture keep the order the encoder wrote
-    // them in — within a picture the sequence is already correct.
-    pending.sort((a, b) => a.seconds - b.seconds);
-    let i = 0;
-    while (i < pending.length && pending[i].seconds <= upTo) {
-      const { seconds, pair } = pending[i];
-      parser.addData(seconds, [pair.a, pair.b]);
-      i++;
+  const feed = (held: Array<{ seconds: number; item: CcPair }>) => {
+    for (const { seconds, item } of held) {
+      parser.addData(seconds, [item.a, item.b]);
     }
-    pending = i === pending.length ? [] : pending.slice(i);
   };
 
   return {
@@ -125,28 +98,26 @@ export function createCaptionTrack(): CaptionTrack {
         // Set on arrival rather than on release: it is what the CC button is
         // shown on, and holding it back would delay the button for no reason.
         seen = true;
-        pending.push({ seconds, pair });
-        if (seconds > newest) newest = seconds;
+        pending.add(seconds, pair);
       }
     },
 
     // CC1 only. CC2 is a second service on the same field — usually a second
     // language — and the parser needs somewhere to put it either way.
     drain() {
-      feedThrough(newest - REORDER_SECONDS);
+      feed(pending.take());
       return cc1.cues.splice(0);
     },
 
     flush() {
-      feedThrough(Number.POSITIVE_INFINITY);
+      feed(pending.takeAll());
       return cc1.cues.splice(0);
     },
 
     get seen() { return seen; },
 
     reset() {
-      pending = [];
-      newest = Number.NEGATIVE_INFINITY;
+      pending.reset();
       parser.reset();
       cc1.reset();
       cc2.reset();

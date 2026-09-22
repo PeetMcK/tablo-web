@@ -16,7 +16,7 @@ function fakeDecoder(
   overrides: Partial<LibavDecoder> = {},
 ): LibavDecoder {
   return {
-    push: vi.fn(async () => { onOutput({ video: [frame], audio: [chunk], captions: [] }); }),
+    push: vi.fn(async () => { onOutput({ video: [frame], audio: [chunk], captions: [], captions708: [] }); }),
     flush: vi.fn(async () => {}),
     reset: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
@@ -141,7 +141,7 @@ describe("createWorkerHandler", () => {
     const posted: FromWorker[] = [];
     let emit!: (out: DecodeOutput) => void;
     const decoder = fakeDecoder(() => {}, {
-      reset: vi.fn(async () => { emit({ video: [frame], audio: [], captions: [] }); }),
+      reset: vi.fn(async () => { emit({ video: [frame], audio: [], captions: [], captions708: [] }); }),
     });
     const handle = createWorkerHandler(
       async (onOutput) => { emit = onOutput; return decoder; },

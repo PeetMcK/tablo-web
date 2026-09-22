@@ -8,7 +8,7 @@
  * nothing else.
  */
 
-import type { CaptionCue } from "../captions";
+import type { PositionedCue } from "../captions";
 import { log } from "../debug";
 import type { CaptionSource } from "../playbackSurface";
 import { initialFallbackState, reduceFallback } from "./fallback";
@@ -317,9 +317,27 @@ export function createSession(deps: SessionDeps): LiveSession {
    * it. Converting at the point of the question is one conversion instead of
    * two, and it cannot be done too early.
    */
-  let cues: CaptionCue[] = [];
+  let cues: PositionedCue[] = [];
+  /**
+   * The 708 queue, held apart from the 608 one.
+   *
+   * Both decoders run; only one is shown. Keeping the queues separate is what
+   * lets the choice be a latch rather than a merge - two decoders' idea of
+   * the screen interleaved would produce text belonging to neither.
+   */
+  let cues708: PositionedCue[] = [];
   /** Whether this stream has ever carried captions. Survives a seek. */
   let captionsSeen = false;
+  let captions708Seen = false;
+  /**
+   * Once 708 has spoken it is the source, for the rest of the session.
+   *
+   * Never the reverse. If 708 falls silent mid-programme its last cue expires
+   * and nothing is drawn, which is what a gap in captions looks like anyway -
+   * switching back would resume 608 mid-sentence from a decoder that has been
+   * running unwatched.
+   */
+  let use708 = false;
   const captionHandlers = new Set<() => void>();
 
   /** Media time of the first segment fed since the last reset. */
@@ -471,18 +489,23 @@ export function createSession(deps: SessionDeps): LiveSession {
       return;
     }
     if (message.type === "captions") {
-      captionsSeen = true;
+      const is708 = message.source === "cea708";
+      if (is708) { captions708Seen = true; use708 = true; } else { captionsSeen = true; }
+
+      let queue = is708 ? cues708 : cues;
       for (const cue of message.cues) {
-        // The parser revises a cue as more of it arrives and re-sends it under
+        // A parser revises a cue as more of it arrives and re-sends it under
         // the same start, so a repeat replaces rather than stacks.
-        const at = cues.findIndex((c) => c.startSeconds === cue.startSeconds);
-        if (at >= 0) cues[at] = cue; else cues.push(cue);
+        const at = queue.findIndex((c) => c.startSeconds === cue.startSeconds);
+        if (at >= 0) queue[at] = cue; else queue.push(cue);
       }
-      cues.sort((a, b) => a.startSeconds - b.startSeconds);
+      queue.sort((a, b) => a.startSeconds - b.startSeconds);
       // A long recording would otherwise accumulate every caption of every
       // hour played. Forty is more than a screen's worth of history, and the
       // overlay only ever asks about now.
-      if (cues.length > CAPTION_QUEUE_LIMIT) cues = cues.slice(-CAPTION_QUEUE_LIMIT);
+      if (queue.length > CAPTION_QUEUE_LIMIT) queue = queue.slice(-CAPTION_QUEUE_LIMIT);
+      if (is708) cues708 = queue; else cues = queue;
+
       captionHandlers.forEach((fn) => fn());
       emit("captions");
       return;
@@ -1112,6 +1135,7 @@ export function createSession(deps: SessionDeps): LiveSession {
       // them: the channel is still a captioned one, and a CC button that
       // vanished on every skip would flicker.
       cues = [];
+      cues708 = [];
       // Bumped before the reset is posted, so a poll already awaiting a fetch
       // abandons what it is holding rather than sending it on afterwards.
       epoch += 1;
@@ -1168,17 +1192,22 @@ export function createSession(deps: SessionDeps): LiveSession {
     get failure() { return fallback.failed; },
 
     captions: {
-      get available() { return captionsSeen; },
+      // Either decoder having spoken is enough to offer the control: a
+      // broadcast carrying only 708 still gets a CC button.
+      get available() { return captionsSeen || captions708Seen; },
 
       at(mediaSeconds: number) {
         // Media time back into the decoder's, which is what the cues carry.
         // Before the clock is anchored there is no offset to apply and no
         // cue that could be right anyway; zero is as good an answer as any.
         const raw = mediaSeconds - (ptsOffset ?? 0);
-        // Backwards: the newest cue covering a time is the one the parser
+        // Whichever decoder this stream latched onto. 708 where it speaks,
+        // because it carries placement; 608 otherwise, because it always works.
+        const queue = use708 ? cues708 : cues;
+        // Backwards: the newest cue covering a time is the one the decoder
         // revised last, and on a roll-up the spans overlap.
-        for (let i = cues.length - 1; i >= 0; i--) {
-          const cue = cues[i];
+        for (let i = queue.length - 1; i >= 0; i--) {
+          const cue = queue[i];
           if (raw >= cue.startSeconds && raw < cue.endSeconds) return cue;
         }
         return null;
@@ -1207,7 +1236,9 @@ export function createSession(deps: SessionDeps): LiveSession {
       fedThroughMedia,
       takenThrough,
       captionsSeen,
-      captionCues: cues.length,
+      captions708Seen,
+      captionStandard: use708 ? "cea708" : "cea608",
+      captionCues: (use708 ? cues708 : cues).length,
       /**
        * The span the queued cues cover, against the time they are asked about.
        *
@@ -1217,11 +1248,17 @@ export function createSession(deps: SessionDeps): LiveSession {
        * two are counting in different domains. Raw, in the decoder's PTS, so
        * it can be compared against what a cue carries.
        */
-      captionWindow: cues.length
-        ? [cues[0].startSeconds, cues[cues.length - 1].endSeconds]
+      captionWindow: (use708 ? cues708 : cues).length
+        ? [(use708 ? cues708 : cues)[0].startSeconds,
+           (use708 ? cues708 : cues)[(use708 ? cues708 : cues).length - 1].endSeconds]
         : null,
       captionAsksAt: (deps.audio.clockSeconds ?? 0),
-      captionRecent: cues.slice(-6).map((c) => [
+      /* Placement is the reason 708 is decoded at all, so it belongs in the
+         snapshot beside the text - a cue arriving with no region means the
+         window mapping has gone wrong, which reads identically to 608 on
+         screen. */
+      captionRecent: (use708 ? cues708 : cues).slice(-6).map((c) => [
+        c.region ? `${c.region.anchor}@${Math.round(c.region.xPercent)},${Math.round(c.region.yPercent)}` : "none",
         Number(c.startSeconds.toFixed(2)), Number(c.endSeconds.toFixed(2)),
         c.text.slice(0, 18),
       ]),

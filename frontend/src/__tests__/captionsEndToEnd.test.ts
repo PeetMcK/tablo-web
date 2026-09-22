@@ -36,9 +36,13 @@ const GLUE = pathToFileURL(
 describe("captions end to end", () => {
   it("produces caption text from real broadcast bytes", async () => {
     const collected: CaptionCue[] = [];
+    const collected708: CaptionCue[] = [];
     const decoder = await createDecoder({
       wasmUrl: WASM, glueUrl: GLUE, openDeadlineMs: 20_000,
-      onOutput: (out) => { collected.push(...out.captions); },
+      onOutput: (out) => {
+        collected.push(...out.captions);
+        collected708.push(...out.captions708);
+      },
     });
 
     await decoder.push(new Uint8Array(readFileSync(FIXTURE)));
@@ -64,6 +68,12 @@ describe("captions end to end", () => {
     // assertion looking for a single keyword still passed.
     const flat = text.replace(/\s+/g, " ");
     expect(flat).toContain("Elliot had shown them how to find light in the darkness.");
+
+    // And the same sentence again out of CEA-708, which is the only place the
+    // 708 decoder meets real presentation timestamps - a fixture walked by
+    // hand yields decode order, where DTVCC reassembly cannot be judged.
+    const text708 = collected708.map((c) => c.text).join(" ").replace(/\s+/g, " ");
+    expect(text708).toContain("Elliot had shown them how to find light in the darkness.");
 
     for (const cue of collected) {
       expect(cue.endSeconds).toBeGreaterThan(cue.startSeconds);
