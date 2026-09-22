@@ -1444,19 +1444,30 @@ async def delete_recording(object_id: int):
     exists and the local record has to keep saying so. The local clean-up is
     what stops a deleted recording from lingering as a search result that fails
     when clicked, or as an info sheet still offering to delete it.
+
+    A copy kept offline after the Tablo deleted the original has no device half
+    left to delete, and the same reasoning that lets `_offline_detail` describe
+    one from our own snapshot lets this delete one: it is the only copy there
+    is, and we are the only thing that can remove it. Reporting "Recording not
+    found" there left the viewer with a card nothing could get rid of.
     """
     _require_auth()
     try:
         path, _ = await state.resolve_recording(object_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail="Recording not found") from None
+        # Not on the device. Ours alone if we kept a copy; otherwise it really
+        # is nothing we know about.
+        if cache.read_meta(object_id) is None:
+            raise HTTPException(status_code=404, detail="Recording not found") from None
+        path = None
 
-    try:
-        await state.delete_recording(path)
-    except Exception:
-        raise HTTPException(
-            status_code=502, detail="The Tablo would not delete this recording."
-        ) from None
+    if path is not None:
+        try:
+            await state.delete_recording(path)
+        except Exception:
+            raise HTTPException(
+                status_code=502, detail="The Tablo would not delete this recording."
+            ) from None
 
     await cache.stop(object_id)
     cache.evict(object_id, force=True)
