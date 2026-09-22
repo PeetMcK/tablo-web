@@ -71,49 +71,48 @@ describe("the space under the header", () => {
   });
 });
 
-describe("Live TV's content filter chips", () => {
+describe("Live TV's content filter", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "#/live");
     mockShell();
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("wraps, the same way the guide's do", async () => {
-    // The same hidden-scrollbar overflow the guide had, with the same result
-    // at a narrow window: the last chips simply gone off the edge.
+  it("is one control, at every width", async () => {
+    // It was a row of eight chips above `sm` and this same pill-and-popover
+    // below it. The chips are gone: they spent a full row of the page saying
+    // what the trigger says in 120px, and offered eight decisions where there
+    // is one.
     renderShell();
-    const pills = (await screen.findByRole("button", { name: /Movies/ })).parentElement!;
-
-    expect(pills.className).toMatch(/flex-wrap/);
-    expect(pills.className).not.toMatch(/overflow-x-auto/);
-  });
-
-  it("collapses into the same one control at phone width", async () => {
-    // Eight chips do not fit a phone here either, and Live TV is the tab that
-    // opens by default — so it collapses the way the guide's do, into the same
-    // pill-and-popover rather than a second idea of what this control is.
-    renderShell();
-    await screen.findByRole("button", { name: /Movies/ });
-
-    const chips = document.querySelector<HTMLElement>("[data-filter-chips]")!;
     const menu = document.querySelector<HTMLElement>("[data-filter-menu]")!;
 
-    expect(chips.className).toMatch(/\bhidden\b/);
-    expect(chips.className).toMatch(/\bsm:flex\b/);
-    expect(menu.className).toMatch(/\bsm:hidden\b/);
+    await within(menu).findByRole("button", { name: /All/ });
+    expect(document.querySelector("[data-filter-chips]")).toBeNull();
+    expect(menu.className).not.toMatch(/\bsm:hidden\b/);
   });
 
-  it("filters from that control too", async () => {
+  it("filters from that control", async () => {
     renderShell();
-    await screen.findByRole("button", { name: /Movies/ });
     const menu = within(document.querySelector<HTMLElement>("[data-filter-menu]")!);
+    fireEvent.click(await menu.findByRole("button", { name: /All/ }));
 
-    fireEvent.click(menu.getByRole("button"));
     fireEvent.click(menu.getByRole("menuitemradio", { name: /Sports/ }));
 
-    // The trigger names what is in force, which is how the row reports itself
-    // once the chips are gone.
+    // The trigger names what is in force, which is the whole of how this row
+    // reports itself now that there are no chips to light one of.
     expect(menu.getByRole("button", { name: /Sports/ })).toBeInTheDocument();
+  });
+
+  it("offers every filter the chips did", async () => {
+    renderShell();
+    const menu = within(document.querySelector<HTMLElement>("[data-filter-menu]")!);
+    fireEvent.click(await menu.findByRole("button", { name: /All/ }));
+
+    for (const label of ["All", "Movies", "Sports", "News", "Reality",
+                         "Documentary", "Broadcast", "Streaming"]) {
+      expect(menu.getByRole("menuitemradio", { name: new RegExp(label) }))
+        .toBeInTheDocument();
+    }
   });
 });
 

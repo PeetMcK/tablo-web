@@ -1132,6 +1132,9 @@ class AppState:
             # should read whichever the record has.
             "series_path": data.get("series_path"),
             "sport_path": data.get("sport_path"),
+            # Episode, game or film. Free - it is read off `path`, which this
+            # record already carries. See `_recording_kind`.
+            "kind": AppState._recording_kind(data.get("path")),
             "season_number": episode.get("season_number"),
             "episode_number": episode.get("number"),
             "orig_air_date": episode.get("orig_air_date"),
@@ -1254,6 +1257,25 @@ class AppState:
             return None
 
     @staticmethod
+    def _recording_kind(path: str | None) -> str | None:
+        """What sort of thing this recording is: "episode", "sport" or "movie".
+
+        The category segment of the recording's own path - `/recordings/series/
+        episodes/{id}`, `/recordings/sports/events/{id}`, `/recordings/movies/
+        episodes/{id}` - which is the same segment a delete has to be addressed
+        by, so it is present on everything the device lists.
+
+        `series_path` and `sport_path` cannot answer this: a film carries
+        neither, and neither does a recording whose show record has aged out.
+
+        Named for what the thing is rather than for the device's plural, so the
+        Library's filter reads the same word the guide's airings do.
+        """
+        parts = [p for p in (path or "").split("/") if p]
+        category = parts[1] if len(parts) > 1 and parts[0] == "recordings" else None
+        return {"series": "episode", "sports": "sport", "movies": "movie"}.get(category)
+
+    @staticmethod
     def _channel_fields(ad: dict) -> dict | None:
         """Station identity, flattened out of the nested airing record."""
         wrapper = ad.get("channel") or {}
@@ -1270,6 +1292,11 @@ class AppState:
             "call_sign": ch.get("call_sign"),
             "network": ch.get("network"),
             "number": f"{major}.{minor}" if major is not None else None,
+            # The device says `source` here where the guide mirror says `kind`,
+            # and both spell an aerial station "ota". The Library filters on it
+            # the way Live and the guide filter their channel rows, so the two
+            # have to answer with the same word.
+            "kind": ch.get("source"),
         }
 
     async def get_recordings(self, limit: int = 200) -> list[dict]:

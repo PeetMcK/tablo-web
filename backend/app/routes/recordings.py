@@ -57,10 +57,44 @@ def _decorate(item: dict, meta=None) -> dict:
     # Scrub-preview thumbnails, fetched from the device and kept locally.
     item["has_preview"] = cache.preview_available(oid)
     item.setdefault("offline_only", False)
+    # An offline copy is listed from the snapshot taken when it was pinned, and
+    # a snapshot written before this field existed carries no `kind`. Defaulted
+    # rather than backfilled: the device no longer has the recording to ask.
+    item.setdefault("kind", None)
     return item
 
 
-async def _show_covers(items: list[dict]) -> dict[int, str]:
+async def _show_record(path: str, memo: dict[str, dict | None]) -> dict | None:
+    """The show record behind `path`, read at most once per listing.
+
+    Two things want it — the card's fallback artwork and the recording's genres
+    — and they want it for overlapping but different sets of shows. The memo is
+    what keeps a listing that needs both from asking the device twice for the
+    same sport.
+
+    Returns the inner record under whichever noun the device used, or None when
+    the device will not serve one — which is a different answer from a record
+    that simply carries no genres and no cover. Genres are stored permanently,
+    so "could not ask" must not be written down as "has none".
+
+    Never raises: both callers treat a missing show as "nothing to add", which
+    is where they already were.
+    """
+    if path in memo:
+        return memo[path]
+    try:
+        data = await state.request_device("GET", path)
+    except Exception as e:
+        print(f"[recordings] show record {path} unavailable: {e}", flush=True)
+        memo[path] = None
+        return None
+    # Whichever noun this record uses. Identical shape inside - see
+    # `recording_series` for what the device means by the two.
+    memo[path] = data.get("series") or data.get("sport") or {}
+    return memo[path]
+
+
+async def _show_covers(items: list[dict], memo: dict[str, dict]) -> dict[int, str]:
     """Each recording's show cover, from the device rather than the guide.
 
     What the artwork falls back to when the guide has no airing left to describe
@@ -86,19 +120,59 @@ async def _show_covers(items: list[dict]) -> dict[int, str]:
 
     out: dict[int, str] = {}
     for path, ids in paths.items():
-        try:
-            data = await state.request_device("GET", path)
-        except Exception:
-            continue
-        # Whichever noun this record uses. Identical shape inside - see
-        # `recording_series` for what the device means by the two.
-        show = data.get("series") or data.get("sport") or {}
-        cover = (show.get("cover_image") or {}).get("image_id")
+        show = await _show_record(path, memo)
+        cover = ((show or {}).get("cover_image") or {}).get("image_id")
         if not cover:
             continue
         for object_id in ids:
             out[object_id] = f"/api/channels/image/{cover}"
     return out
+
+
+async def _with_genres(items: list[dict], memo: dict[str, dict]) -> None:
+    """Say what each recording is about, so the Library can filter on it.
+
+    A recording carries no genres: they live on the show record its
+    `series_path` or `sport_path` points at, which is a device read per distinct
+    show. Six NFL games share one sport record, so this reads shows rather than
+    recordings — and then keeps what it learned, because a show's genres do not
+    change. A settled library makes no device calls here at all.
+
+    A film answers with nothing and is meant to: no show record, and none
+    needed. The Movies filter reads `kind`, which is free.
+
+    Never raises, and never blocks the listing on a show that will not load. The
+    cost of failing is a card the genre filters do not catch until the next
+    listing tries again; the cost of raising is no library at all.
+    """
+    paths = {
+        p for rec in items
+        if (p := rec.get("series_path") or rec.get("sport_path"))
+    }
+    known = await _run_sync(store.show_genres_for, sorted(paths))
+
+    gate = asyncio.Semaphore(ART_FETCH_CONCURRENCY)
+
+    async def learn(path: str) -> None:
+        async with gate:
+            show = await _show_record(path, memo)
+        if show is None:
+            # The device would not say. Left unknown rather than written down
+            # as "no genres", so the next listing asks again.
+            return
+        genres = [g for g in (show.get("genres") or []) if isinstance(g, str)]
+        known[path] = genres
+        # Stored even when empty: "this show has none" is an answer, and
+        # re-asking the device for it on every listing is not.
+        await _run_sync(partial(store.save_show_genres, path, genres))
+
+    missing = [p for p in sorted(paths) if p not in known]
+    if missing:
+        await asyncio.gather(*[learn(p) for p in missing], return_exceptions=True)
+
+    for rec in items:
+        path = rec.get("series_path") or rec.get("sport_path")
+        rec["genres"] = known.get(path) or [] if path else []
 
 
 async def _store_covers(needy: list[dict]) -> int:
@@ -266,13 +340,30 @@ async def list_recordings():
         except Exception as e:
             print(f"[art] pruning recording assets failed: {e}", flush=True)
 
+    # Show records read for this listing, so the two things that want one - the
+    # fallback artwork below and the genres after it - share the read rather
+    # than each asking the device for the same sport.
+    shows: dict[str, dict | None] = {}
+
+    # What each card is about, for the Library's content filter. Before the
+    # artwork so a first listing reads each show once for both, and guarded the
+    # way every other enrichment here is: a listing is worth more than the
+    # thing that decorates it.
+    try:
+        await _with_genres(merged, shows)
+    except Exception as e:
+        print(f"[recordings] resolving genres failed: {e}", flush=True)
+        for item in merged:
+            item.setdefault("genres", [])
+
     # Work out each card's picture once and keep it, because the airing it came
     # from is gone from the guide within days and the recording is not. Failing
     # here costs a card its artwork, never the listing.
     try:
         needy = await _run_sync(store.recordings_without_art, merged)
         await _run_sync(
-            partial(store.resolve_recording_art, fallback=await _show_covers(needy)),
+            partial(store.resolve_recording_art,
+                    fallback=await _show_covers(needy, shows)),
             merged,
         )
         # And then actually hold the picture, rather than a URL pointing at

@@ -2643,3 +2643,157 @@ def test_status_says_there_is_no_preview_to_ask_for(tmp_path, monkeypatch):
     client.get("/api/recordings/74776/preview?t=10")
 
     assert client.get("/api/recordings/74776/status").json()["preview"] == "absent"
+
+
+# ---------------------------------------------------------------------------
+# What a recording is about - the Library's content filter
+# ---------------------------------------------------------------------------
+
+def test_a_recording_says_whether_it_is_an_episode_a_game_or_a_film():
+    """Read off the recording's own path, which every listed recording has.
+
+    `series_path`/`sport_path` cannot answer it: a film carries neither, and
+    neither does anything whose show record has aged off the device.
+    """
+    kind = AppState._recording_kind
+    assert kind("/recordings/series/episodes/86040") == "episode"
+    assert kind("/recordings/sports/events/66220") == "sport"
+    assert kind("/recordings/movies/episodes/71002") == "movie"
+
+
+def test_an_unrecognised_path_names_no_kind():
+    """Better an unfiltered card than one filed under a guess."""
+    kind = AppState._recording_kind
+    assert kind(None) is None
+    assert kind("") is None
+    assert kind("/guide/series/episodes/1") is None
+    assert kind("/recordings") is None
+
+
+def test_a_recording_carries_the_same_word_for_ota_the_guide_does():
+    """The device says `source` on the channel where the guide mirror says
+    `kind`, and the Broadcast/Streaming filters read one field on both pages."""
+    out = AppState._recording_fields({
+        **DEVICE_RECORDING,
+        "airing_details": {
+            **DEVICE_RECORDING["airing_details"],
+            "channel": {"channel": {
+                "call_sign": "KTMFABC", "channel_identifier": "S34654_008_01",
+                "major": 23, "minor": 1, "source": "ota",
+            }},
+        },
+    })
+    assert out["channel"]["kind"] == "ota"
+
+
+def _library_of(monkeypatch, recordings: list[dict], shows: dict) -> list[str]:
+    """A device serving these recordings, and these show records by path."""
+    from app.routes import recordings as rec
+    asked: list[str] = []
+
+    async def get_recordings(limit=200):
+        return [AppState._recording_fields(r) for r in recordings]
+
+    async def request_device(_method, path):
+        asked.append(path)
+        if path not in shows:
+            raise KeyError(path)
+        return shows[path]
+
+    monkeypatch.setattr(type(rec.state), "is_authenticated", property(lambda _s: True))
+    monkeypatch.setattr(rec.state, "get_recordings", get_recordings)
+    monkeypatch.setattr(rec.state, "request_device", request_device)
+    return asked
+
+
+def test_a_card_carries_the_genres_of_the_show_it_belongs_to(monkeypatch):
+    """A recording holds none of its own - they live on the show record its
+    `sport_path` points at, which is why the Library could not filter on them
+    until the listing went and got them."""
+    asked = _library_of(
+        monkeypatch,
+        [dict(DEVICE_GAME, object_id=oid, path=f"/recordings/sports/events/{oid}")
+         for oid in (66220, 66221)],
+        {"/recordings/sports/63558": DEVICE_SPORT},
+    )
+
+    body = client.get("/api/recordings").json()
+
+    assert [r["genres"] for r in body["recordings"]] == [["Football"]] * 2
+    # One read for the sport both games share - and the same one the artwork
+    # wants, rather than one per card and one per consumer.
+    assert asked == ["/recordings/sports/63558"]
+
+
+def test_a_settled_library_asks_the_device_for_no_genres_at_all(monkeypatch):
+    """Genres do not change, so a show is read once and remembered. Without the
+    cache every listing would re-read every show on the device."""
+    asked = _library_of(
+        monkeypatch, [DEVICE_GAME], {"/recordings/sports/63558": DEVICE_SPORT},
+    )
+
+    client.get("/api/recordings")
+    client.get("/api/recordings")
+
+    assert asked == ["/recordings/sports/63558"]
+    assert client.get("/api/recordings").json()["recordings"][0]["genres"] == ["Football"]
+
+
+def test_a_show_the_device_will_not_serve_is_asked_again_next_listing(monkeypatch):
+    """"Could not ask" must not be written down as "has no genres": that answer
+    is kept permanently, and a device briefly unreachable would file every show
+    under nothing for good."""
+    asked = _library_of(monkeypatch, [DEVICE_GAME], {})
+
+    first = client.get("/api/recordings").json()["recordings"][0]
+
+    assert first["genres"] == []
+    assert asked == ["/recordings/sports/63558"]
+
+    client.get("/api/recordings")
+    assert asked == ["/recordings/sports/63558"] * 2
+
+
+def test_a_show_that_really_has_no_genres_is_only_asked_once(monkeypatch):
+    """The other half of the rule above: an empty answer is still an answer."""
+    asked = _library_of(
+        monkeypatch, [DEVICE_GAME],
+        {"/recordings/sports/63558": {"sport": {
+            "title": "NFL Football",
+            # Carried so the artwork settles on the first listing too - without
+            # a cover the art resolver keeps asking, and this test is about the
+            # genres rather than about that.
+            "cover_image": {"image_id": 38765, "has_title": True},
+        }}},
+    )
+
+    client.get("/api/recordings")
+    client.get("/api/recordings")
+
+    assert asked == ["/recordings/sports/63558"]
+
+
+def test_a_film_needs_no_show_record_to_be_filed_as_one(monkeypatch):
+    """It has neither `series_path` nor `sport_path`, and needs neither: the
+    Movies filter reads `kind`, which the path already says."""
+    film = {
+        "object_id": 71002,
+        "path": "/recordings/movies/episodes/71002",
+        "airing_details": {
+            "datetime": "2026-09-21T02:30Z", "duration": 7200,
+            "show_title": "Knives Out",
+            "channel": {"channel": {
+                "call_sign": "MVSGLD", "channel_identifier": "S34654_008_07",
+                "major": 8, "minor": 7, "source": "ota",
+            }},
+        },
+        "video_details": {"state": "finished", "duration": 7215, "height": 480},
+        "user_info": {},
+    }
+    asked = _library_of(monkeypatch, [film], {})
+
+    card = client.get("/api/recordings").json()["recordings"][0]
+
+    assert card["kind"] == "movie"
+    assert card["genres"] == []
+    assert asked == []

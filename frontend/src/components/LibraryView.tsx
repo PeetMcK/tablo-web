@@ -3,7 +3,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadUrl } from "../api/tablo";
 import type { Recording, RecordingList } from "../api/tablo";
 import { VideoPlayer, LIVE_EDGE } from "./VideoPlayer";
-import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Trash2, X } from "lucide-react";
+import { AlertTriangle, Play, Download, CheckCircle2, CloudOff, Eye, EyeOff, FileDown, ImageOff, Loader2, Lock, LockOpen, Pause, Radio, Search, Trash2, X } from "lucide-react";
+import { recordingMatchesFilter, type ContentFilter } from "../lib/contentFilters";
+import { ContentFilterMenu } from "./ContentFilterMenu";
 import { onRoutePop, parseRoute, writeRoute } from "../lib/route";
 import { dayKey, formatAired, formatDayHeading } from "../lib/format";
 import { ConfirmDialog, type Confirmation } from "./ConfirmDialog";
@@ -215,6 +217,15 @@ export function LibraryView() {
   const devicePositionRef = useRef(0);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const playingRef = useRef<Recording | null>(null);
+  /**
+   * The toolbar's two controls.
+   *
+   * Deliberately not in the URL. The header's search is a route — it names a
+   * results page anyone can link to — where these two narrow a page already
+   * open, and survive nothing but the scroll.
+   */
+  const [query, setQuery] = useState("");
+  const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
 
   const qc = useQueryClient();
 
@@ -372,6 +383,28 @@ export function LibraryView() {
   const truncated = data ? data.total > data.returned : false;
 
   /**
+   * The recordings left after the toolbar has had its say.
+   *
+   * Filtered here rather than in `days` so the grid below can tell a library
+   * with nothing in it from one where nothing matches — two different things
+   * to say, and the day groups alone cannot tell them apart.
+   *
+   * The search is local, over what the listing already returned: a Library is
+   * a few hundred rows in hand, so typing filters them instantly and without a
+   * round trip. Title, episode and blurb, because an episode is as often
+   * remembered by what it was about as by what it was called.
+   */
+  const shown = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return recordings.filter(rec => {
+      if (!recordingMatchesFilter(rec, contentFilter)) return false;
+      if (!needle) return true;
+      return [rec.title, rec.subtitle, rec.description]
+        .some(field => field?.toLowerCase().includes(needle));
+    });
+  }, [recordings, query, contentFilter]);
+
+  /**
    * The recordings split into the days they aired on, newest day first.
    *
    * A flat wall of cards gave no sense of when anything was recorded; the
@@ -382,7 +415,7 @@ export function LibraryView() {
     // a bare `2026-09-14`, which Date parses as UTC midnight and would name the
     // day before for anyone west of UTC — the very slip the key exists to avoid.
     const byDay = new Map<string, { start: string; items: Recording[] }>();
-    for (const rec of recordings) {
+    for (const rec of shown) {
       const start = rec.start ?? "";
       const key = dayKey(start);
       const bucket = byDay.get(key);
@@ -392,7 +425,7 @@ export function LibraryView() {
     return [...byDay.entries()]
       .sort((a, b) => b[0].localeCompare(a[0]))
       .map(([key, group]) => ({ key, ...group }));
-  }, [recordings]);
+  }, [shown]);
 
   // A recording named in the URL reopens as soon as the list contains it.
   // Derived rather than assigned from an effect, which would cascade renders.
@@ -642,6 +675,35 @@ export function LibraryView() {
         />
       )}
 
+      {/* Above the first day's rule, because it narrows every day below it and
+          not the one it sits over.
+
+          The field and the menu, in that order, and sized so the pair reads as
+          one control: the field takes the room it can up to `max-w-sm` — the
+          same ceiling the header's search uses — and the menu keeps its
+          natural width beside it. `flex-wrap` so the menu drops under the field
+          at phone width rather than squeezing it to nothing. */}
+      <div data-library-toolbar className="flex flex-wrap items-center gap-3 mb-4">
+        <div className="relative flex-1 min-w-48 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted" aria-hidden />
+          <input
+            type="search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            // Escape clears rather than blurs: the field holds the only thing
+            // standing between the viewer and the whole library, so the way
+            // out of it should be the way back to everything.
+            onKeyDown={e => { if (e.key === "Escape") setQuery(""); }}
+            placeholder="Filter recordings..."
+            aria-label="Filter recordings"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-fill-soft border border-border-subtle
+                       text-sm placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent
+                       focus:bg-fill transition shadow-inner"
+          />
+        </div>
+        <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
+      </div>
+
       {/* With no days to hang it on there is no rule to sit on either, so the
           readout falls back to a row of its own. Without this an empty library
           would drop it entirely — and an empty library is exactly when "106.9
@@ -662,6 +724,22 @@ export function LibraryView() {
         {recordings.length === 0 ? (
           <div className="col-span-full py-48 text-center bg-fill-soft rounded-3xl border border-border-subtle">
             <p className="text-fg-muted font-black tracking-widest uppercase">No Recordings Found</p>
+          </div>
+        ) : shown.length === 0 ? (
+          /* A library that holds things and a toolbar that finds none of them
+             are two different states, and one message for both reads as "your
+             recordings are gone". This one says what to undo, and offers it. */
+          <div className="col-span-full py-48 flex flex-col items-center gap-4 text-center bg-fill-soft rounded-3xl border border-border-subtle">
+            <p className="text-fg-muted font-black tracking-widest uppercase">
+              Nothing Matches
+            </p>
+            <button
+              onClick={() => { setQuery(""); setContentFilter("all"); }}
+              className="touch-target px-4 py-2 rounded-xl glass text-xs font-bold uppercase
+                         tracking-widest text-fg-muted hover:text-fg hover:bg-fill transition"
+            >
+              Clear filters
+            </button>
           </div>
         ) : (
           days.map(({ key, start, items }, dayIndex) => (

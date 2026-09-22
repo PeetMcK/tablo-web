@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { recordingFor, useRecordingsInProgress } from "../lib/useRecordingsInProgress";
 import { recordedSpan } from "../lib/recording";
 import { api, type GridChannel, type Program } from "../api/tablo";
-import { CONTENT_FILTERS, type ContentFilter } from "../lib/contentFilters";
+import type { ContentFilter } from "../lib/contentFilters";
 import { ContentFilterMenu } from "./ContentFilterMenu";
 import {
   DATE_GAIN, DRAG_SLOP, GLIDE_DECAY, GLIDE_STOP, MIN_THROW,
@@ -689,70 +689,26 @@ export function GuideGridView({ onPlay, jumpTo }: Props) {
     // content — so a single ancestor without it silently cancels the `flex-1`
     // below and the card goes back to overflowing the page.
     <div className="flex flex-col gap-4 flex-1 min-h-0">
-    {/* Content type filters, and the jump control beside or below them.
+    {/* The content filter, and the jump control beside it.
 
-        Three shapes as the window narrows, in order:
+        One row at every width now that the filter is one control. It was eight
+        chips — 809px of them — which is what all the width-dependent shapes
+        here used to be for: they wrapped onto two and three lines, then
+        collapsed into this same pill-and-popover on a phone. So the phone's
+        answer was already the good one, and the desktop was spending a third
+        of the toolbar to say what a 120px button says.
 
-          wide     chips on one line, NOW and the date jump at the right end
-          tighter  NOW and the jump drop to a line of their own beneath the
-                   chips, which are still one line
-          tighter  the chips wrap onto as many lines as they need
-          phone    the chips become one pill-and-popover, and all three
-                   controls share a single line again
-
-        No breakpoint decides the first of those, because the thing that
-        matters is not a width: it is Streaming and NOW meeting in the middle.
-        So the row simply wraps, and `min-w-max` on the chips keeps them a
-        single line while there is room for one — which leaves the controls
-        nowhere to go but the next line at exactly the moment the two would
-        crowd. The browser works out where that is; a number here would only
-        ever be an estimate of it, and `xl` was a bad one, stacking them with
-        164px of the row still empty.
-
-        `gap-x-4` is what "would crowd" means: 16px, twice the space between
-        NOW and the date pill beside it. They break apart before they touch,
-        not after.
-
-        `min-w-max` only above 880px — 809px of chips inside `main`'s 48px of
-        padding, and a little over. Below that the chips themselves have to
-        wrap, so they must be allowed to shrink. */}
+        `flex-wrap` survives that: the pair still breaks onto two lines rather
+        than overlapping in a narrow window, it just no longer needs to. */}
     <div data-filter-row
          className="flex flex-wrap items-start gap-x-4 gap-y-2">
-    {/* Wrapping, not a hidden-scrollbar overflow. As a scroller the eighth
-        chip ran under the NOW pill and off the edge with nothing to say it was
-        there — 809px of chips in 553px of room at the width this was found at.
-        `min-w-0` so the wrapping box may actually be narrower than its
-        content, which a flex child refuses by default. */}
-    <div data-filter-chips
-         className="hidden sm:flex flex-wrap gap-2 min-[880px]:min-w-max">
-      {CONTENT_FILTERS.map(f => (
-        <button
-          key={f.id}
-          onClick={() => setContentFilter(f.id)}
-          className={`touch-target shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
-            ${contentFilter === f.id
-              /* A flat accent rather than the brand ramp: this chip carries a
-                 12px bold LABEL, and nothing clears 4.5:1 against both ends of
-                 the gradient. `bg-accent text-accent-fg` is 6.37:1 light and
-                 5.40:1 dark. The ramp stays on the marks and bars below. */
-              ? "bg-accent text-accent-fg shadow-lg shadow-accent-glow"
-              : "bg-fill-soft text-fg-muted hover:bg-fill hover:text-fg-secondary border border-border-subtle"
-            }`}
-        >
-          <f.Icon className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
-          <span>{f.label}</span>
-        </button>
-      ))}
-    </div>
-
-      {/* The chips, as one control, at the only width they cannot be a row.
-          Shown where they are hidden and hidden where they are shown. */}
-      <div data-filter-menu className="sm:hidden">
+      {/* The eight filters, as one control, at every width. */}
+      <div data-filter-menu>
         <ContentFilterMenu value={contentFilter} onChange={setContentFilter} />
       </div>
 
       {/* Right-aligned at every width, whichever line it is on: `ml-auto` eats
-          whatever is left of the row, beside the chips or under them. Without
+          whatever is left of the row, beside the filter or under it. Without
           it the pair sat left once it wrapped, so it crossed the toolbar as the
           window narrowed. */}
       <div data-filter-controls className="ml-auto shrink-0">

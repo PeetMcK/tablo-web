@@ -68,10 +68,11 @@ const REC: Recording = {
   cached_seconds: 0,
   rate: { mbps: 0, realtime: 0 },
   // Matches the real recording: ABC broadcasts 720p60 progressive.
-  channel: { identifier: "S34654_008_01", call_sign: "KTMFABC", network: "ABC", number: "23.1" },
+  channel: { identifier: "S34654_008_01", call_sign: "KTMFABC", network: "ABC", number: "23.1", kind: "ota" },
   scan: "720p",
   interlaced: false,
   image_url: null, cover_frame: null,
+  kind: "sport", genres: ["Football"],
   has_preview: false,
 };
 
@@ -183,7 +184,7 @@ describe("LibraryView", () => {
     // CBS and NBC broadcast 1080i; it must be deinterlaced on the way to H.264,
     // which halves throughput and roughly doubles the cached size.
     vi.spyOn(api, "recordings").mockResolvedValue(list({
-      recordings: [{ ...REC, channel: { identifier: "S34654_008_01", call_sign: "KPAX", network: "CBS", number: "8.1" },
+      recordings: [{ ...REC, channel: { identifier: "S34654_008_01", call_sign: "KPAX", network: "CBS", number: "8.1", kind: "ota" },
                      scan: "1080i", interlaced: true }],
     }));
     renderLibrary();
@@ -753,7 +754,7 @@ describe("reaching a recording's information", () => {
   const withChannel = (over: Partial<Recording> = {}): Recording => ({
     ...REC,
     channel: { identifier: "S34654_008_01", call_sign: "KPAX",
-               network: "CBS", number: "8.1" },
+               network: "CBS", number: "8.1", kind: "ota" },
     ...over,
   });
 
@@ -1001,7 +1002,7 @@ describe("reaching a recording's information", () => {
     const air = vi.spyOn(api, "airingDetail");
     renderWith(withChannel({ object_id: 86462,
                              channel: { identifier: null, call_sign: "KPAX",
-                                        network: "CBS", number: "8.1" } }));
+                                        network: "CBS", number: "8.1", kind: "ota" } }));
     await screen.findByText("NFL Football");
 
     fireEvent.click(screen.getByRole("button", { name: /information about/i }));
@@ -1268,5 +1269,164 @@ describe("where Resume opens", () => {
                  duration: 600, position: 99999 });
 
     expect(await screen.findByRole("button", { name: /resume 10:00/i })).toBeInTheDocument();
+  });
+});
+
+
+/**
+ * The Library's own toolbar: a search field and the content filter, above the
+ * first day's rule.
+ *
+ * Both narrow what is already loaded. The header's search is a route — a
+ * results page across the whole library — where these two are a lens on the
+ * page in front of you, which is why neither touches the URL.
+ */
+describe("the Library toolbar", () => {
+  const KRATTS: Recording = {
+    ...REC, object_id: 90001, identifier: 90001,
+    path: "/recordings/series/episodes/90001",
+    title: "Wild Kratts", subtitle: "The Fourth Bald Eagle",
+    description: "Martin and Chris help out when a bald eagle goes missing.",
+    kind: "episode", genres: ["Children", "Documentary"],
+  };
+  const FILM: Recording = {
+    ...REC, object_id: 90002, identifier: 90002,
+    path: "/recordings/movies/episodes/90002",
+    title: "Knives Out", subtitle: null, description: null,
+    kind: "movie", genres: [],
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(api, "storage").mockResolvedValue({
+      pinned_bytes: 0, cache_bytes: 0, total_bytes: 0,
+      budget_bytes: 250 * 1024 ** 3, free_bytes: 1024 ** 4, pinned_count: 0,
+    });
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [REC, KRATTS, FILM], returned: 3, total: 3,
+    }));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** The filter field, addressed the way a viewer addresses it. */
+  const field = () => screen.getByRole("searchbox", { name: /filter recordings/i });
+
+  async function openFilter() {
+    const menu = within(document.querySelector<HTMLElement>("[data-library-toolbar]")!);
+    fireEvent.click(await menu.findByRole("button", { name: /All/ }));
+    return menu;
+  }
+
+  it("filters the cards by title as it is typed", async () => {
+    renderLibrary();
+    await screen.findByText("Wild Kratts");
+
+    fireEvent.change(field(), { target: { value: "knives" } });
+
+    expect(screen.getByText("Knives Out")).toBeInTheDocument();
+    expect(screen.queryByText("Wild Kratts")).not.toBeInTheDocument();
+    expect(screen.queryByText("NFL Football")).not.toBeInTheDocument();
+  });
+
+  it("looks in the episode title and the blurb, not only the show", async () => {
+    // An episode is as often remembered by what it was about as by what the
+    // show is called.
+    renderLibrary();
+    await screen.findByText("Wild Kratts");
+
+    fireEvent.change(field(), { target: { value: "bald eagle" } });
+    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
+
+    fireEvent.change(field(), { target: { value: "arrowhead" } });
+    expect(screen.getByText("NFL Football")).toBeInTheDocument();
+    expect(screen.queryByText("Wild Kratts")).not.toBeInTheDocument();
+  });
+
+  it("empties on Escape rather than merely losing focus", async () => {
+    // The field holds the only thing standing between the viewer and the whole
+    // library, so the way out of it is the way back to everything.
+    renderLibrary();
+    await screen.findByText("Wild Kratts");
+    fireEvent.change(field(), { target: { value: "knives" } });
+
+    fireEvent.keyDown(field(), { key: "Escape" });
+
+    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
+    expect(field()).toHaveValue("");
+  });
+
+  it("files a film under Movies without asking the device anything", async () => {
+    // A film carries no genres - there is no show record behind it - so the
+    // filter reads `kind`, which its own path already said.
+    renderLibrary();
+    await screen.findByText("Knives Out");
+    const menu = await openFilter();
+
+    fireEvent.click(menu.getByRole("menuitemradio", { name: /Movies/ }));
+
+    expect(screen.getByText("Knives Out")).toBeInTheDocument();
+    expect(screen.queryByText("Wild Kratts")).not.toBeInTheDocument();
+  });
+
+  it("files a game under Sports the same way", async () => {
+    renderLibrary();
+    await screen.findByText("NFL Football");
+    const menu = await openFilter();
+
+    fireEvent.click(menu.getByRole("menuitemradio", { name: /Sports/ }));
+
+    expect(screen.getByText("NFL Football")).toBeInTheDocument();
+    expect(screen.queryByText("Knives Out")).not.toBeInTheDocument();
+  });
+
+  it("filters by the genres of the show an episode belongs to", async () => {
+    // The recording carries none of its own; the listing goes and gets them.
+    renderLibrary();
+    await screen.findByText("Wild Kratts");
+    const menu = await openFilter();
+
+    fireEvent.click(menu.getByRole("menuitemradio", { name: /Documentary/ }));
+
+    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
+    expect(screen.queryByText("Knives Out")).not.toBeInTheDocument();
+  });
+
+  it("says nothing matches, and offers the way back", async () => {
+    // A library that holds things and a toolbar that finds none of them are
+    // two different states; one message for both reads as "your recordings are
+    // gone".
+    renderLibrary();
+    await screen.findByText("Wild Kratts");
+
+    fireEvent.change(field(), { target: { value: "zzzz" } });
+    expect(screen.getByText(/nothing matches/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no recordings found/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+
+    expect(screen.getByText("Wild Kratts")).toBeInTheDocument();
+    expect(field()).toHaveValue("");
+  });
+
+  it("keeps an empty library's own message", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue(list({
+      recordings: [], returned: 0, total: 0,
+    }));
+    renderLibrary();
+
+    expect(await screen.findByText(/no recordings found/i)).toBeInTheDocument();
+  });
+
+  it("leaves the URL alone", async () => {
+    // Unlike the header's search, which names a page anyone can link to. The
+    // page's own route is all the hash ever holds here.
+    renderLibrary();
+    await screen.findByText("Wild Kratts");
+    const before = window.location.hash;
+
+    fireEvent.change(field(), { target: { value: "knives" } });
+
+    expect(window.location.hash).toBe(before);
   });
 });

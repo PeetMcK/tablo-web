@@ -352,6 +352,23 @@ export interface Recording {
   scan: string | null;
   /** 1080i sources need deinterlacing; 720p60 ones pass through untouched. */
   interlaced: boolean;
+  /**
+   * What sort of thing this is: "episode", "sport" or "movie".
+   *
+   * Read server-side off the recording's own path. Null for an offline copy
+   * snapshotted before the field existed — such a card simply falls out of the
+   * Movies and Sports filters rather than being filed under a guess.
+   */
+  kind: string | null;
+  /**
+   * What the show this belongs to is about, e.g. ["Documentary", "History"].
+   *
+   * Off the show record rather than the recording, which carries none of its
+   * own — see the backend's `_with_genres`. Empty for a film, for a show the
+   * device describes with no genres, and for anything recorded before this
+   * listing could ask.
+   */
+  genres: string[];
 }
 
 /** A recording in flight, as Live and Guide need it to mark their rows. */
@@ -389,6 +406,14 @@ export interface RecordingChannel {
   network: string | null;
   /** Virtual channel, e.g. "8.1". */
   number: string | null;
+  /**
+   * "ota" for an aerial station, "ott" for a streaming one.
+   *
+   * The same word the guide's channels carry, so the Broadcast and Streaming
+   * filters mean one thing across all three pages. Null for an offline copy
+   * snapshotted before the field existed.
+   */
+  kind: string | null;
 }
 
 export interface TranscodeRate {

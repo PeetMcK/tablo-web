@@ -9,17 +9,18 @@ interface Props {
 }
 
 /**
- * The row of content filters, as one control.
+ * The content filters, as one control. The only one — Live, Guide and Library
+ * all use this, at every width.
  *
- * Eight chips need about 810px of row. There is no width at which a phone can
- * hold that, and what used to happen instead was a hidden-scrollbar overflow —
- * the last chips simply off the edge with nothing to say they existed. Below
- * the row's width they become this.
+ * It began as the phone's answer to a row of eight chips that needed 810px and
+ * overflowed: below that width they became this. The row is gone now. Eight
+ * chips cost a full line of every page to say what the trigger says in 120px,
+ * and offered eight decisions where there is one — so the narrow window's
+ * answer turned out to be the right answer everywhere.
  *
- * Deliberately the same pill-and-popover as the date jump sitting beside it:
- * at that width the two are the entire toolbar, and two idioms for one job
- * would read as two unrelated things. It keeps each filter's icon, which a
- * native `select` cannot.
+ * Deliberately the same pill-and-popover as the date jump beside it in the
+ * guide: two idioms for one job read as two unrelated things. It keeps each
+ * filter's icon, which a native `select` cannot.
  */
 export function ContentFilterMenu({ value, onChange }: Props) {
   const [open, setOpen] = useState(false);

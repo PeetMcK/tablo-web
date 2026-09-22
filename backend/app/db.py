@@ -31,7 +31,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TABLO_DB_PATH", "/data/tablo.db"))
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -346,6 +346,23 @@ CREATE TABLE IF NOT EXISTS title_lookup (
 """
 
 
+# What a show is about, kept per show record rather than per recording.
+#
+# A recording carries no genres of its own — they live on the series/sport/movie
+# record its `series_path` or `sport_path` points at, which is one device read
+# per distinct show. The Library filters on them, so without a cache every
+# listing would re-read every show on the device. A show's genres do not
+# change, so a row here is never refreshed; `fetched_at` exists to say when it
+# was learned, not to expire it.
+_SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS show_genres (
+    show_path   TEXT PRIMARY KEY,
+    genres      TEXT NOT NULL,
+    fetched_at  REAL NOT NULL
+);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -438,6 +455,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.executescript(_SCHEMA_V8)
             if version < 9:
                 conn.executescript(_SCHEMA_V9)
+            if version < 10:
+                conn.executescript(_SCHEMA_V10)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         print(f"[db] schema at version {SCHEMA_VERSION} ({DB_PATH})", flush=True)
         _initialized = True
