@@ -524,3 +524,87 @@ def test_a_state_nobody_has_seen_still_reads_as_recording(monkeypatch):
                    params={"channel": "ch2", "start": start}).json()
 
     assert d["scheduled"] is True
+
+
+def test_a_game_reaches_the_mirror_with_the_show_it_belongs_to():
+    """A sport airing carries `sport_path` where an episode carries
+    `series_path`, and the device means the same thing by both.
+
+    Reading only the latter is why no game ever had a route to its own show:
+    measured on a real mirror, 0 of 79 `sportEvent` rows carried a show path,
+    while the Series tab listed the NFL with five games recorded against
+    `/guide/sports/38763` - the very path being dropped here.
+    """
+    from app.state import AppState
+
+    got = AppState._airing_row({
+        "path": "/guide/sports/events/66220",
+        "sport_path": "/guide/sports/38763",
+        "event": {"title": "Green Bay Packers at Minnesota Vikings",
+                  "description": "The Vikings host the Packers."},
+        "airing_details": {"datetime": "2026-09-13T20:25Z", "duration": 12915,
+                           "channel_path": "/guide/channels/1",
+                           "show_title": "NFL Football", "event_type": "sportEvent"},
+    })
+
+    assert got["series_path"] == "/guide/sports/38763"
+    # The matchup, which is what a game keeps where an episode keeps its title.
+    # The sheet had been showing games with no subtitle at all.
+    assert got["episode_title"] == "Green Bay Packers at Minnesota Vikings"
+    assert got["description"] == "The Vikings host the Packers."
+
+
+def test_an_episodes_own_path_still_wins():
+    """Both keys on one record would be the device contradicting itself, but
+    the episode namespace is the one this column was built for."""
+    from app.state import AppState
+
+    got = AppState._airing_row({
+        "series_path": "/guide/series/6472",
+        "sport_path": "/guide/sports/38763",
+        "airing_details": {"datetime": "2026-09-16T08:00Z", "duration": 3600,
+                           "show_title": "Finding Your Roots"},
+    })
+
+    assert got["series_path"] == "/guide/series/6472"
+
+
+def test_a_film_belongs_to_no_show():
+    """It has neither key, and needs neither - there is nothing behind it to
+    open."""
+    from app.state import AppState
+
+    got = AppState._airing_row({
+        "airing_details": {"datetime": "2026-09-16T08:00Z", "duration": 7200,
+                           "show_title": "Knives Out", "event_type": "movieAiring"},
+    })
+
+    assert got["series_path"] is None
+
+
+def test_a_sport_show_record_is_stored_under_its_own_noun():
+    """`/guide/sports/{id}` nests title, description and cover under `sport`
+    where a series nests them under `series`.
+
+    Sport paths only now reach the mirror, so without this every one of them
+    would be captured as a row of nulls - a show with no name and no picture,
+    which is worse than the nothing it replaced.
+    """
+    from app.state import AppState
+
+    got = AppState._series_row({
+        "path": "/guide/sports/38763",
+        "identifier": "C191277_SPORTS_SH000031280000",
+        "sport": {
+            "title": "NFL Football",
+            "description": "Football action from around the National Football League.",
+            "genres": ["Football"],
+            "cover_image": {"image_id": 38765},
+        },
+    })
+
+    assert got["title"] == "NFL Football"
+    assert got["cover_image_id"] == 38765
+    assert got["genres"] == ["Football"]
+    # A sport has no `series_rating`. Absent, not guessed at.
+    assert got["rating"] is None

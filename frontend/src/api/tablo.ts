@@ -212,6 +212,16 @@ export interface AiringDetail {
   recording_id: number | null;
   /** Null for a one-off, a movie, or an airing whose series is unknown. */
   series: { path: string; schedule_rule: string | null } | null;
+  /**
+   * The show this belongs to, in the recordings namespace — `/recordings/
+   * series/{id}` or `/recordings/sports/{id}`.
+   *
+   * Only a recording's sheet carries one, and it is the durable route to the
+   * show panel: `series` above comes from the guide airing, which is gone
+   * within days of a broadcast, where this is on the recording itself for as
+   * long as the recording exists.
+   */
+  show_path?: string | null;
   channel: {
     /**
      * Null when the answer came from a recording rather than an airing.

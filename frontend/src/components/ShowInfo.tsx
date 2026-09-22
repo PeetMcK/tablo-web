@@ -309,6 +309,21 @@ export function ShowInfo({
   }, [onClose, confirming]);
 
   /**
+   * The show behind this programme, as the panel wants to be addressed.
+   *
+   * The recording's own path wins where there is one: it names the show in the
+   * recordings namespace, which is where the panel reads its episode list
+   * from, and it is still true long after the airing has left the guide. The
+   * guide path is what a sheet opened from the Guide or Live has instead —
+   * nothing there has been recorded, so nothing carries the other one.
+   *
+   * Either is enough to open the panel, which is why a game now has the
+   * button: a sport's show path reaches the mirror as `/guide/sports/{id}` and
+   * its recordings as `/recordings/sports/{id}`, where before it had neither.
+   */
+  const showPath = detail?.show_path || detail?.series?.path || null;
+
+  /**
    * Apply a write optimistically, and put the old state back if it fails.
    *
    * Optimistic because the common failure is the network rather than a
@@ -376,6 +391,20 @@ export function ShowInfo({
    * differ whenever a capture was stopped and restarted.
    */
   const deletable = recordingId ?? detail?.recording_id ?? null;
+
+  /**
+   * Whether the rule editor belongs on this sheet.
+   *
+   * Only to start a series off, and only where a rule could take effect: the
+   * device has to be able to record this, the airing has to name a series, and
+   * a sheet about a recording that already exists is no place to change what
+   * happens tonight. Named because the seam below asks it too — a seam with
+   * nothing under it is a rule drawn across the sheet for no reason.
+   */
+  const canEditRule = Boolean(
+    detail?.schedulable && detail.series
+    && detail.series.schedule_rule === "none" && deletable == null,
+  );
 
   /**
    * The recording this sheet can play, and how far into it someone got.
@@ -795,7 +824,12 @@ export function ShowInfo({
               The Tablo app draws the same seam in the same place, and its
               recorded-episode sheet is the proof: no rule editor there at all,
               and the line still falls above Series Information. */}
-          {detail?.schedulable && (detail.series || backToSeries) && (
+          {/* The seam appears when there is something to put below it: a way
+              to the show, or the way back from it. It used to require
+              `schedulable`, which is an airing's word — so a recording whose
+              airing had aged out of the guide lost the route to its own show
+              along with the ability to schedule something already past. */}
+          {(backToSeries || canEditRule || Boolean(onOpenSeries && showPath)) && (
             <div data-series-seam
                  className="mt-3 pt-3 border-t border-border-subtle space-y-2">
 
@@ -805,9 +839,10 @@ export function ShowInfo({
                   something to change in passing from one episode's card.
 
                   Gone entirely on a finished recording, where a control that
-                  can stop tonight's recording has no business at all. */}
-              {detail.series && detail.series.schedule_rule === "none"
-                && deletable == null && (
+                  can stop tonight's recording has no business at all — and on
+                  anything the device cannot record, which is what
+                  `schedulable` answers. */}
+              {canEditRule && (
                 <div className="rounded-xl bg-fill-soft p-3">
                   <p className="flex items-center gap-3 text-sm font-semibold text-fg">
                     <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden />
@@ -815,7 +850,7 @@ export function ShowInfo({
                   </p>
                   <div className="mt-3 flex gap-2">
                     {RULES.map(({ value, label }) => {
-                      const on = detail.series?.schedule_rule === value;
+                      const on = detail?.series?.schedule_rule === value;
                       return (
                         <button
                           key={value}
@@ -850,10 +885,10 @@ export function ShowInfo({
                   <ArrowLeft className="w-4 h-4 shrink-0" aria-hidden />
                   Back to Series
                 </button>
-              ) : onOpenSeries && detail?.series?.path ? (
+              ) : onOpenSeries && showPath ? (
                 <button
                   onClick={() => onOpenSeries(
-                    detail.series!.path, detail.title ?? "This series")}
+                    showPath, detail?.title ?? "This series")}
                   className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl
                              text-sm font-semibold bg-fill-soft text-fg
                              hover:bg-fill transition

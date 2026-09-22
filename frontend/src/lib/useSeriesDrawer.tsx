@@ -15,12 +15,18 @@ import { useState } from "react";
 import { api, type SeriesCard } from "../api/tablo";
 import { SeriesDetail } from "../components/SeriesDetail";
 
+/** Whether a show path addresses the library rather than the guide. */
+function isRecordingsPath(path: string): boolean {
+  return path.startsWith("/recordings/");
+}
+
 /** What the sheet knew, in the shape the panel takes. */
-function cardFromGuide(guidePath: string, title: string): SeriesCard {
+function cardFromPath(path: string, title: string): SeriesCard {
+  const recordings = isRecordingsPath(path);
   return {
-    recordings_path: null,
+    recordings_path: recordings ? path : null,
     identifier: null,
-    guide_path: guidePath,
+    guide_path: recordings ? null : path,
     kind: null,
     title,
     cover_image_id: null,
@@ -40,18 +46,28 @@ function cardFromGuide(guidePath: string, title: string): SeriesCard {
 export function useSeriesDrawer() {
   const [card, setCard] = useState<SeriesCard | null>(null);
 
-  async function openSeries(guidePath: string, title: string) {
+  /**
+   * Open the panel for a show, named by either of its two paths.
+   *
+   * A guide airing knows the show as `/guide/series/{id}` or
+   * `/guide/sports/{id}`; a recording knows it as `/recordings/…`, which is
+   * the only one still true once the airing has aged out of the guide. Both
+   * are on the index card, so either finds it.
+   */
+  async function openSeries(path: string, title: string) {
     // A plain fetch rather than the query cache: this hook is called from the
     // Guide and Live, whose components carry no QueryClient of their own, and
     // requiring one of them to get here would be the tail wagging the dog.
     let known: SeriesCard | undefined;
     try {
       const index = await api.series.index();
-      known = index.series.find((s) => s.guide_path === guidePath);
+      known = index.series.find((s) => (
+        isRecordingsPath(path) ? s.recordings_path === path : s.guide_path === path
+      ));
     } catch {
       // The index is an optimisation, not a requirement.
     }
-    setCard(known ?? cardFromGuide(guidePath, title));
+    setCard(known ?? cardFromPath(path, title));
   }
 
   const drawer = card
