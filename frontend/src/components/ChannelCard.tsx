@@ -6,6 +6,16 @@ import { recordedSpan } from "../lib/recording";
 interface Props {
   channel: GuideChannel;
   now: number;
+  /**
+   * This channel's listing has not arrived yet — as opposed to not existing.
+   *
+   * The guide streams in phases, so for a stretch of a cold load a card holds
+   * a real channel and a null programme. That is the same shape as a channel
+   * the guide has nothing for, and the card used to answer both with "No
+   * Information" — stating as fact, for up to fifteen seconds, the one thing
+   * it did not yet know. While this is true the card says nothing instead.
+   */
+  pending?: boolean;
   /** Tune this channel. The tile's job. */
   onPlay: () => void;
   /** Open the programme's sheet. The content's job. */
@@ -43,7 +53,7 @@ function label(ch: GuideChannel): string {
  * two different things to want.
  */
 export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
-                              recording = null }: Props) {
+                              recording = null, pending = false }: Props) {
   const program = channel.current_program;
 
   // What has actually been captured, when something is recording this. The
@@ -110,6 +120,14 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
                  loading="lazy"
                  className="w-full h-full object-cover"
                  style={{ objectPosition: "50% 0%" }} />
+          ) : pending ? (
+            /* A ring on the plate the mark will land on, at the size of the
+               mark, so the tile neither resizes nor changes colour when the
+               real artwork arrives. `border-2` rather than the page
+               spinner's `border-4`: this one is 32px across, not 48. */
+            <div data-pending-logo
+                 className="w-8 h-8 rounded-full border-2 border-fill-strong
+                            border-t-accent animate-spin" />
           ) : (
             <ChannelLogo src={channel.logo_url} callSign={channel.call_sign} className="w-8 h-8" />
           )}
@@ -140,15 +158,33 @@ export function ChannelCard({ channel, now, onPlay, onInfo, infoOpen = false,
       {/* What is on, and everything the device knows about it. Plain content
           now - the controls are on the scrim. */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-bold text-fg-secondary truncate mb-0.5">
-          {program?.title || "No Information"}
-        </p>
+        {/* Skeletons rather than words while the listing is in flight, and
+            they occupy the identical boxes: the title's own line height and
+            the blurb's `h-10`, so the card does not reflow under the reader
+            when the real text lands. A channel the guide truly has nothing
+            for still says "No Information" — by then that is an answer rather
+            than a guess. */}
+        {pending ? (
+          <div data-pending-title
+               className="h-5 w-2/3 mb-0.5 rounded bg-fill-strong animate-pulse" />
+        ) : (
+          <p className="text-sm font-bold text-fg-secondary truncate mb-0.5">
+            {program?.title || "No Information"}
+          </p>
+        )}
         {/* 20px lines in a 40px box is exactly two of them. It was
             `leading-relaxed h-8` - 19.5px lines in 32px - so the second line
             was sliced through the middle on every card that had one. */}
-        <p className="text-xs text-fg-muted line-clamp-2 leading-5 h-10">
-          {program?.description || `Watching ${channel.display_name}`}
-        </p>
+        {pending ? (
+          <div data-pending-blurb className="h-10 flex flex-col justify-start gap-1.5">
+            <div className="h-3 w-full rounded bg-fill animate-pulse" />
+            <div className="h-3 w-4/5 rounded bg-fill animate-pulse" />
+          </div>
+        ) : (
+          <p className="text-xs text-fg-muted line-clamp-2 leading-5 h-10">
+            {program?.description || `Watching ${channel.display_name}`}
+          </p>
+        )}
 
         {program && (
           <div className="mt-3">

@@ -326,3 +326,64 @@ describe("the Live card's tile", () => {
     }
   });
 });
+
+/**
+ * A card whose listing has not arrived yet.
+ *
+ * The guide streams in phases — bare channels, then logos, then programmes,
+ * and on a cold cache the gap between the first and the last runs to fifteen
+ * seconds. Through all of it a card held a real channel and a null programme,
+ * which is the same shape as a channel the guide genuinely has nothing for.
+ * The card answered both with "No Information": it stated as settled fact the
+ * one thing it did not yet know, and it looked finished doing it.
+ */
+describe("a Live TV card still waiting for its listing", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const blank = () => channel({ current_program: null });
+
+  it("does not claim there is no information", () => {
+    render(<ChannelCard channel={blank()} now={NOW} pending
+                        onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(screen.queryByText(/no information/i)).toBeNull();
+    // Nor the fallback blurb, which reads as settled in exactly the same way.
+    expect(screen.queryByText(/watching 7\.1 PBS/i)).toBeNull();
+  });
+
+  it("says so where the listing will land", () => {
+    const r = render(<ChannelCard channel={blank()} now={NOW} pending
+                                  onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(r.container.querySelector("[data-pending-logo]")).toBeTruthy();
+    expect(r.container.querySelector("[data-pending-title]")).toBeTruthy();
+    expect(r.container.querySelector("[data-pending-blurb]")).toBeTruthy();
+  });
+
+  it("keeps the blurb's box, so nothing reflows when the words arrive", () => {
+    // Two 20px lines in a 40px box. A skeleton of a different height would
+    // shove every card below it down the moment the guide landed.
+    const r = render(<ChannelCard channel={blank()} now={NOW} pending
+                                  onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(r.container.querySelector("[data-pending-blurb]")!.className)
+      .toMatch(/\bh-10\b/);
+  });
+
+  it("answers plainly once the stream is done and there is still nothing", () => {
+    // By then "No Information" is an answer rather than a guess.
+    render(<ChannelCard channel={blank()} now={NOW}
+                        onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(screen.getByText(/no information/i)).toBeInTheDocument();
+  });
+
+  it("leaves a card alone once its own programme has landed", () => {
+    // `pending` is per card, not per stream: the rest of the guide still
+    // arriving is no reason to blank one that is already finished.
+    render(<ChannelCard channel={channel()} now={NOW}
+                        onPlay={() => {}} onInfo={() => {}} />);
+
+    expect(screen.getByText("First Civilizations")).toBeInTheDocument();
+  });
+});
