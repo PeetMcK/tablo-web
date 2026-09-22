@@ -1253,7 +1253,12 @@ export function createSession(deps: SessionDeps): LiveSession {
            (use708 ? cues708 : cues)[(use708 ? cues708 : cues).length - 1].endSeconds]
         : null,
       captionAsksAt: (deps.audio.clockSeconds ?? 0),
+      /* Placement is the reason 708 is decoded at all, so it belongs in the
+         snapshot beside the text - a cue arriving with no region means the
+         window mapping has gone wrong, which reads identically to 608 on
+         screen. */
       captionRecent: (use708 ? cues708 : cues).slice(-6).map((c) => [
+        c.region ? `${c.region.anchor}@${Math.round(c.region.xPercent)},${Math.round(c.region.yPercent)}` : "none",
         Number(c.startSeconds.toFixed(2)), Number(c.endSeconds.toFixed(2)),
         c.text.slice(0, 18),
       ]),
