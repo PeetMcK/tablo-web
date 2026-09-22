@@ -67,7 +67,7 @@ function EpisodeRow({
           are not. A whole-row click would fight all four. */}
       <button
         onClick={onOpen}
-        className="min-w-0 flex-1 text-left rounded hover:bg-fill/60 transition px-1 -mx-1
+        className="min-w-0 flex-1 text-left rounded hover:bg-fill transition px-1 -mx-1
                    focus:outline-none focus:ring-2 focus:ring-accent"
       >
         <div className="flex items-center gap-2">
@@ -151,7 +151,7 @@ function AiringsPane({
             <button
               onClick={() => onOpen(a)}
               disabled={!a.channel_identifier || !a.datetime}
-              className="min-w-0 flex-1 text-left rounded hover:bg-fill/60 transition px-1 -mx-1
+              className="min-w-0 flex-1 text-left rounded hover:bg-fill transition px-1 -mx-1
                          disabled:hover:bg-transparent
                          focus:outline-none focus:ring-2 focus:ring-accent"
             >

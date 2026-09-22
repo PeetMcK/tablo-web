@@ -14,7 +14,10 @@
 //               scrims, glows). The alpha lives in a companion `--x-a` variable
 //               so each theme can pick its own strength - light needs a much
 //               weaker ink wash than dark needs a white one. Do NOT put an
-//               opacity modifier on these; it is ignored.
+//               opacity modifier on these: it does not scale the alpha, it
+//               REPLACES it, so `bg-fill/60` is a flat white/60 slab in dark
+//               that buries the text under it. Reach for the -soft / -strong
+//               sibling instead when you want a different strength.
 const rgb = (name) => `rgb(var(--${name}) / <alpha-value>)`
 const rgba = (name) => `rgb(var(--${name}) / var(--${name}-a))`
 
