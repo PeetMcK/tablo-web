@@ -173,6 +173,56 @@ describe("the transcode is not a rescue", () => {
     expect(transcode).not.toHaveBeenCalled();
   });
 
+  it("corrects itself once when the decoder has no such codec", async () => {
+    // A null codec takes the MPEG-2 path, so a recording the device did not
+    // label fails exactly as 94904 did. "Codec not found" is not a fault to
+    // report — it is this routing being wrong, and the device's own stream is
+    // the same picture, not a worse one.
+    const vod = vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 10, growing: false,
+      codec: null, mode: "vod",
+    });
+    const transcode = vi.spyOn(api, "watchRecording");
+    wasm.open.mockImplementation((options: OpenOptions) => {
+      wasm.opens.push(options);
+      return Promise.resolve({
+        ...stubSurface(),
+        diagnostics: () => ({ kind: "wasm", failureDetail: "Codec not found" }),
+      });
+    });
+
+    renderRecording({ ...REC, codec: null });
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(1));
+
+    await act(async () => { failureOf(0)("decode error"); });
+
+    // Corrected, not rebuilt: the decoder is not asked the same question twice,
+    // and the encoder is never asked at all.
+    await waitFor(() => expect(vod).toHaveBeenCalledTimes(2));
+    // And it asks for audio it can decode, rather than reopening to silence.
+    expect(vod).toHaveBeenLastCalledWith(REC.object_id, { swapAudio: true });
+    expect(wasm.open).toHaveBeenCalledTimes(1);
+    expect(transcode).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Decoding stopped/)).toBeNull();
+  });
+
+  it("still rebuilds when the failure is not about the codec", async () => {
+    // The existing rule, untouched: one rebuild, then the reason.
+    vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
+      object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",
+      duration: REC.duration, segments: 10, growing: false,
+      codec: "mpeg2", mode: "vod",
+    });
+
+    renderRecording({ ...REC, codec: "mpeg2" });
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(1));
+
+    await act(async () => { failureOf(0)("decode error"); });
+
+    await waitFor(() => expect(wasm.open).toHaveBeenCalledTimes(2));
+  });
+
   it("still gives an MPEG-2 recording to the WASM decoder", async () => {
     vi.spyOn(api, "watchRecordingVod").mockResolvedValue({
       object_id: REC.object_id, session_id: "v-1", stream_url: "/v.m3u8",

@@ -2998,3 +2998,23 @@ def test_a_recording_whose_codec_cannot_be_read_is_served_untouched(monkeypatch)
         assert stream_routes.vod_sessions[body["session_id"]].swap_audio is False
     finally:
         stream_routes.vod_sessions.pop(body["session_id"], None)
+
+
+def test_a_caller_that_knows_better_can_ask_for_the_swap(monkeypatch):
+    """The decoder answering "Codec not found" is proof the recording is not
+    MPEG-2, whatever the device called it. The player knows that before this
+    route does, and a corrected session that played silently would have traded
+    one half-failure for another."""
+    from app.routes import recordings as rec
+    from app.routes import stream as stream_routes
+
+    async def snapshot(object_id):
+        return {"object_id": object_id, "codec": None}
+
+    _stub_vod(monkeypatch, rec, snapshot)
+    body = client.post("/api/recordings/94904/watch-vod?swap_audio=1").json()
+    try:
+        assert body["codec"] is None
+        assert stream_routes.vod_sessions[body["session_id"]].swap_audio is True
+    finally:
+        stream_routes.vod_sessions.pop(body["session_id"], None)

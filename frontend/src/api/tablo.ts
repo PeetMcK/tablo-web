@@ -1012,7 +1012,7 @@ export const api = {
    * belief that the device offered no reachable beginning for one; measured
    * against the device, it publishes from byte 0 and appends.
    */
-  watchRecordingVod: (objectId: number) =>
+  watchRecordingVod: (objectId: number, opts?: { swapAudio?: boolean }) =>
     req<{
       object_id: number;
       session_id: string;
@@ -1022,7 +1022,8 @@ export const api = {
       growing: boolean;
       codec: "mpeg2" | "h264" | null;
       mode: string;
-    }>(`/recordings/${objectId}/watch-vod`, { method: "POST" }),
+    }>(`/recordings/${objectId}/watch-vod`
+       + (opts?.swapAudio ? "?swap_audio=1" : ""), { method: "POST" }),
 
   /**
    * What is being recorded right now, for the views that are not the Library.

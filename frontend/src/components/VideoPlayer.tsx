@@ -1158,6 +1158,50 @@ export function VideoPlayer({
                   // VOD can seek anywhere, and the packet that failed is not
                   // necessarily the one the viewer is sitting on.
                   const at = surfaceRef.current?.currentTime ?? 0;
+
+                  // A codec this build does not have is not a fault to report:
+                  // it is this routing being wrong about what the recording
+                  // is, which happens when the device labelled it nothing at
+                  // all. Rebuilding the decoder only asks the same question
+                  // again and gets the same answer, so correct the route
+                  // instead — the device's own stream is the same picture the
+                  // WASM path was trying to decode, not a worse one, and this
+                  // is where a viewer would otherwise be left with
+                  // "Decoding stopped: decode error" over a black frame.
+                  const detail = String(
+                    surfaceRef.current?.diagnostics?.().failureDetail ?? "");
+                  if (/codec not found/i.test(detail)) {
+                    reportWasmFailure(reason, "gave up");
+                    log.warn(`recording ${current.recording.object_id} is not `
+                      + `mpeg-2 after all (${detail}) — playing the device's `
+                      + "own stream", { at: fmt(at) });
+                    api.stopStream(raw.session_id).catch(() => {});
+                    surface.destroy();
+                    if (surfaceRef.current === surface) surfaceRef.current = null;
+                    setUsingWasm(false);
+                    // Asking for the converted audio outright: the decoder
+                    // just proved this is not MPEG-2, and a session opened on
+                    // the device's label alone would serve AC-3 nothing here
+                    // can decode — picture back, sound silently gone.
+                    void api.watchRecordingVod(current.recording.object_id,
+                                               { swapAudio: true })
+                      .then((again) => {
+                        if (cancelled) {
+                          api.stopStream(again.session_id).catch(() => {});
+                          return;
+                        }
+                        setSessionId(again.session_id);
+                        openSurface(again.stream_url);
+                        if (at > 0) surfaceRef.current?.seek(at);
+                      })
+                      .catch((e) => {
+                        if (!cancelled) {
+                          setApiError(e instanceof Error ? e.message : String(e));
+                        }
+                      });
+                    return;
+                  }
+
                   if (rebuilt) {
                     reportWasmFailure(reason, "gave up");
                     log.warn(`recording wasm gave up (${reason})`, { at: fmt(at) });

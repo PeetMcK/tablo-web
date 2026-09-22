@@ -8,7 +8,7 @@ from functools import partial
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -906,7 +906,7 @@ async def recording_detail(object_id: int):
 
 
 @router.post("/{object_id}/watch-vod")
-async def watch_recording_vod(object_id: int):
+async def watch_recording_vod(object_id: int, swap_audio: bool = Query(False)):
     """Serve a recording straight from the device, decoded in the browser.
 
     A recording is *usually* MPEG-2 video with AC-3 audio - the same thing the
@@ -920,6 +920,12 @@ async def watch_recording_vod(object_id: int):
     one is served with its audio converted and its picture still untouched.
     `video_details.container_format` is how the device says which, and it is
     read here, once, because it names every segment the playlist publishes.
+
+    `swap_audio` is for the caller that knows better than the label. A decoder
+    answering "Codec not found" has proved the recording is not MPEG-2 whatever
+    the device called it, and the player learns that before this route could -
+    so it may ask for the converted audio outright rather than reopening to
+    silence.
 
     The index is held; the media is not. Downloading it would be ~25GB for one
     viewing of something the device already has, so segments are fetched on
@@ -973,7 +979,8 @@ async def watch_recording_vod(object_id: int):
     )
     # The variant url is kept because a growing index is re-read from it.
     stream_routes.vod_sessions[session_id] = stream_routes.VodSession(
-        index=index, device_url=variant_url, swap_audio=codec == "h264",
+        index=index, device_url=variant_url,
+        swap_audio=codec == "h264" or swap_audio,
     )
     stream_routes.touch_session(session_id)
 
