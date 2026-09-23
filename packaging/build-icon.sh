@@ -16,12 +16,26 @@
 #                Goes in Contents/Resources, and the bundle's Info.plist needs
 #                CFBundleIconName = AppIcon to find it.
 #
-#   AppIcon.icns The fallback for everything older, and for the places that
-#                still want a plain icon file. Note it tops out at 256 -
-#                actool renders 16, 32, 128 and 256 from a `.icon` source and
-#                no more, at any --minimum-deployment-target (checked at 26.0
-#                and at 13.0). A 512 or 1024 legacy icon means rendering the
-#                composition separately.
+#   AppIcon.icns The fallback, and it tops out at 256 - actool renders 16, 32,
+#                128 and 256 from a `.icon` source and no more, at any
+#                --minimum-deployment-target (checked at 26.0, 13.0 and 11.0,
+#                byte-identical each time). That cap does not bite: the
+#                catalog itself carries 32, 64, 128, 256, 512 and 1024 at both
+#                scales, and `CFBundleIconName` has been read since macOS
+#                10.13, so everything at or above our floor takes the icon
+#                from Assets.car and never sees the icns.
+#
+# The icon is built for the current OS while the app's own floor is macOS 11.
+# That is deliberate: this catalog should express everything the newest system
+# can render, and the older ones take the same file with whatever they
+# understand of it.
+#
+# The target changes nothing in the bytes - 26.0, 13.0 and 11.0 all produced
+# byte-identical output - beyond the catalog's PlatformVersion stamp. Whether a
+# Big Sur CoreUI refuses a catalog stamped newer than itself is **untested**;
+# there is no macOS 11 here to try it on. If it does refuse, the icon falls
+# back to AppIcon.icns and its 256px ceiling, which is a soft icon in Finder's
+# larger views rather than a missing one.
 #
 # `actool` ships with macOS but needs Xcode installed to run. If a machine has
 # no Xcode, compile this once elsewhere and commit the results.
@@ -46,7 +60,7 @@ actool "$ICON_PATH" --compile "$OUTPUT_PATH" \
   --enable-on-demand-resources NO \
   --development-region en \
   --target-device mac \
-  --minimum-deployment-target 26.0 \
+  --minimum-deployment-target 27.0 \
   --platform macosx
 
 # The partial plist only restates CFBundleIconFile/CFBundleIconName, which the
