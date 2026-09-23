@@ -111,13 +111,33 @@ A static build avoids all of that and is the recommendation.
 Homebrew's ffmpeg is built `--enable-gpl --enable-libx264`, and shipping that
 inside a distributed app drags GPL obligations along with it.
 
-It is also unnecessary. On this path FFmpeg needs MPEG-2 decode, `bwdif`,
-`scale`, AAC encode and `h264_videotoolbox` - all built in, none of them GPL.
-**x264 is only ever the container fallback** (`_profiles()` defaults to
-`libx264`, and `run-native.sh` overrides it to VideoToolbox), and a `.app` has
-no container. So the bundle should carry an **LGPL build with x264 left out**,
-and `video_encoder()`'s default should be reconsidered for the bundled case,
-where falling back to an absent encoder is worse than failing loudly.
+It is also unnecessary, and not marginally so: **x264 is unreachable on macOS
+and the bundle ships without it.** Decided 2026-09-23.
+
+Separate the two things "H.264 support" can mean, because only one is GPL:
+
+| | Licence | In the bundle |
+|---|---|---|
+| **libx264**, the encoder | GPL | **no** |
+| FFmpeg's built-in **h264 decoder** | LGPL | yes, and needed - previews and thumbnails decode H.264, and so does anything the box encoded itself |
+
+Nothing on this path can reach the encoder. `run-native.sh` pins
+`h264_videotoolbox`; when the Media Engine is unavailable the profile's own
+`-allow_sw 1` falls back to *VideoToolbox's* software encoder rather than to
+x264; and a `.app` has no container, which is the only place `libx264` was
+ever the answer. The rest of what FFmpeg does here - MPEG-2 decode, `bwdif`,
+`scale`, AAC encode, `h264_videotoolbox` - is built in and none of it is GPL.
+
+Two consequences for the code:
+
+- `video_encoder()` defaults to `"libx264"`, chosen when the container was the
+  normal case. In the bundle that default is a silent path to an encoder that
+  is not there, so the bundled build must default to `h264_videotoolbox` and
+  fail loudly rather than fall back to nothing.
+- The `libx264` profile itself stays in `_profiles()`. It costs nothing, it is
+  still right for the Linux container, and `2026-09-22-hardware-encode-path-design.md`
+  has sweeping its `-crf` as step one - this decision is about what the macOS
+  *bundle* carries, not about removing support.
 
 Six call sites hardcode the executable name:
 

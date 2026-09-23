@@ -65,6 +65,9 @@ serve `frontend/dist` from FastAPI (removes Docker from the dev loop, and with
 it the wrong-backend failure mode `CLAUDE.md` opens with), and resolve the
 FFmpeg binaries through one helper instead of six hardcoded `"ffmpeg"` strings.
 
-One licence trap worth knowing before packaging: Homebrew's FFmpeg is built
-`--enable-gpl --enable-libx264`, and this repo is MIT. x264 is only ever the
-container fallback, so a bundle should carry an LGPL build without it.
+Decided 2026-09-23: **the bundle ships an LGPL FFmpeg with no x264.** Homebrew's
+is built `--enable-gpl --enable-libx264` against an MIT repo, and on macOS the
+encoder is unreachable anyway - VideoToolbox is pinned, its own `-allow_sw 1`
+is the fallback, and a `.app` has no container. FFmpeg's built-in h264
+*decoder* is LGPL and stays; previews need it. The `libx264` profile stays in
+the tree for the Linux container.
