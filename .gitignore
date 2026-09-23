@@ -29,3 +29,6 @@ Thumbs.db
 
 # Claude Code worktrees are full checkouts; the skills beside them are not.
 .claude/worktrees/
+
+# Compiled app icon — rebuild with packaging/build-icon.sh (needs Xcode).
+packaging/build/
