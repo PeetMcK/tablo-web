@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="507.31" height="512" viewBox="0 0 507.31 512" role="img" aria-label="Tablo">
+  <!-- The app's stadium TV mark alone, in white, trimmed to its own ink.
+       Geometry is lifted verbatim from frontend/public/favicon.svg (itself
+       lifted from the header logo in ChannelGrid.tsx) so all three stay in
+       step: a 24-unit grid, stroked at 2.5 with round caps and joins.
+
+       Inked bounds on that grid are 20.56 x 20.75 once the half-stroke is
+       counted on every side - very slightly taller than wide - so the height
+       takes the 512 and the width falls out at 507.31. Scale is
+       512 / 20.75 = 24.674699, and the translate puts the ink's top-left
+       corner (1.72, 1.5) on the origin.
+
+       Stroke width is left at its grid value: the group transform scales it
+       along with the geometry, to 61.69 at this size. -->
+  <g transform="scale(24.674699) translate(-1.72 -1.5)"
+     fill="none" stroke="#fff" stroke-width="2.5"
+     stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.97" y="2.75" width="18.06" height="13" rx="6.5"/>
+    <path d="M12 15.75v5.25"/>
+    <path d="M8 21h8"/>
+  </g>
+</svg>
