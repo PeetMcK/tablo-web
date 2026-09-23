@@ -18,3 +18,27 @@ airing has no `airing_path` for the device to schedule against.
 Next step is the implementation plan. It starts at the schema V10 migration;
 the one open question the spec carried (are feed channel ids durable?) was
 answered yes on 2026-09-21, so nothing blocks it.
+
+## Hardware encoding on Windows and Linux
+
+**Spec:** `docs/superpowers/specs/2026-09-22-hardware-encode-path-design.md`
+(design only, nothing verified against hardware)
+**Plan:** not written
+**Branch:** none
+
+macOS is done and measured. The `h264_vaapi` and `h264_nvenc` profiles in
+`_profiles()` were written from FFmpeg's documented pipelines and have never
+been run; `docker-compose.gpu.yml` carries the same warning. QSV and AMF have
+no profile at all.
+
+The 2026-09-22 quality work carries over for free — B-frames, the 720 cap and
+the interlace probe are properties of H.264 and the source, not of
+VideoToolbox. What does not carry is rate control: every encoder's quality
+knob is on its own scale and two of them run backwards, so each one has to be
+swept against the portable target of 0.072 bits per pixel.
+
+Two steps need no hardware and are worth doing first: sweeping `-crf` for
+x264, which is the fallback every platform lands on and has never been
+measured, and replacing `TRANSCODE_VIDEO_ENCODER` with a startup trial encode.
+`ffmpeg -encoders` is not evidence — the macOS spec measured every hardware
+encoder listed and inert.
