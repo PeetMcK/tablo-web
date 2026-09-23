@@ -200,6 +200,53 @@ after that path is re-tested under WebKit rather than assumed.
 
 ---
 
+## Minimum macOS 11
+
+Decided 2026-09-23: **the floor is macOS 11 Big Sur.** A polite distance back
+without reaching into the pre-M1 era.
+
+It constrains more than it looks, because every bundled binary has to run
+there - not just our code:
+
+- **The Python runtime.** Homebrew's is built for the host OS and will not
+  launch on 11. The bundle needs a python.org universal2 build, or one built
+  from source with `MACOSX_DEPLOYMENT_TARGET=11.0`.
+- **The eight native wheels** - pydantic-core, uvloop, cryptography, watchfiles,
+  websockets, PyYAML, charset-normalizer, and whatever `tablo-api` pulls. Each
+  needs a wheel tagged for 11 or older, or building from source against the
+  same target. Worth checking before committing to the floor, since one wheel
+  with no 11-compatible build decides this.
+- **The static FFmpeg**, same target.
+- **VideoToolbox is not a constraint.** `h264_videotoolbox` and
+  `AllowFrameReordering` both long predate 11, so nothing in
+  `2026-09-22-hardware-encode-path-design.md` is at risk.
+
+### The architecture question this opens, and does not answer
+
+Big Sur runs on Intel Macs as well as Apple Silicon. An arm64-only build would
+refuse to launch on a machine that meets the stated floor, which is worse than
+a floor that excludes it honestly. Either the bundle is universal2, or the
+requirement is "macOS 11 on Apple Silicon" and says so. **Not decided here.**
+
+### The icon, which is the one part already built
+
+`packaging/AppIcon.icon` is compiled by `packaging/build-icon.sh` with
+`--minimum-deployment-target 27.0` - the icon expresses everything the newest
+system renders, while the app's floor stays at 11. Measured while deciding
+this:
+
+| | |
+|---|---|
+| Catalog renditions | 32, 64, 128, 256, 512, 1024, at both scales |
+| `.icns` fallback | 16, 32, 128, 256 and no more, at every target tried |
+| `CFBundleIconName` | read since macOS 10.13, so 11 takes the catalog |
+
+So the icns ceiling does not bite at this floor. The one untested edge is
+whether a Big Sur CoreUI accepts a catalog stamped `PlatformVersion 27.0`;
+there is no macOS 11 here to try. If it refuses, the icon falls back to the
+icns and looks soft in Finder's larger views - a blemish, not a failure, and
+both files ship either way.
+
 ## Signing, and who this is for
 
 Ad-hoc signing is enough to run it on the machine that built it. Anything else

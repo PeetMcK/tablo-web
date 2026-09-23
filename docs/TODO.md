@@ -65,6 +65,14 @@ serve `frontend/dist` from FastAPI (removes Docker from the dev loop, and with
 it the wrong-backend failure mode `CLAUDE.md` opens with), and resolve the
 FFmpeg binaries through one helper instead of six hardcoded `"ffmpeg"` strings.
 
+Decided 2026-09-23: **the floor is macOS 11 Big Sur**, and the app icon is
+built and committed already (`packaging/AppIcon.icon`, compiled by
+`packaging/build-icon.sh`). The floor constrains every bundled binary, not just
+our code - the Python runtime and its eight native wheels and the static FFmpeg
+all have to run there - and it leaves one question open: Big Sur runs on Intel
+too, so the bundle is either universal2 or the requirement says "Apple Silicon"
+out loud.
+
 Decided 2026-09-23: **the bundle ships an LGPL FFmpeg with no x264.** Homebrew's
 is built `--enable-gpl --enable-libx264` against an MIT repo, and on macOS the
 encoder is unreachable anyway - VideoToolbox is pinned, its own `-allow_sw 1`
